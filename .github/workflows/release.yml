@@ -52,7 +52,9 @@ jobs:
         run: |
           # sed, а НЕ head: head закрывает канал после N строк, писатель слева
           # получает SIGPIPE, и при `set -o pipefail` падает весь шаг.
-          PREV=$(git tag --sort=-creatordate | grep -v "^$TAG$" | sed -n 1p)
+          # `|| true` обязателен: на ПЕРВОМ релизе тег ровно один, grep не находит
+          # ничего и возвращает 1 — под `set -e` это убивало весь шаг.
+          PREV=$(git tag --sort=-creatordate | grep -v "^$TAG$" | sed -n 1p || true)
 
           echo "## Что нового" > notes.md
           echo >> notes.md
