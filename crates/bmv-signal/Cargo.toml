@@ -18,3 +18,9 @@ tokio-tungstenite = { version = "0.24", default-features = false, features = ["c
 # паникой «no process-level CryptoProvider». Несём ring сами и ставим в install_default.
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 futures-util = { version = "0.3", default-features = false, features = ["sink"] }
+
+# Только для тестов: серверная сторона WS (рукопожатие) — поднять
+# координатора-молчуна и проверить, что клиент сам заметит тишину.
+[dev-dependencies]
+tokio-tungstenite = { version = "0.24", default-features = false, features = ["handshake"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

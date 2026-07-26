@@ -164,6 +164,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     1 => { ui.set_vpn_state(1); ui.set_vpn_host_id(id.clone().into()); ui.set_vpn_status("Подключаюсь…".into()); ui.set_vpn_sub(format!("к {name}").into()); }
                     2 => {
                         ui.set_vpn_state(2); ui.set_vpn_host_id(id.clone().into()); ui.set_vpn_status(name.into());
+                        // Кто именно подключился, знает хелпер: при «Старте» он сам
+                        // выбирает хост из списка кандидатов, и до этого момента id
+                        // нам неизвестен. Заполняем карточку здесь — иначе ячейки
+                        // пустуют до ответа каталога.
+                        if let Some(h) = hosts.lock().unwrap().iter().find(|h| h.id == id) {
+                            fill_vpn_card(&ui, h);
+                        }
                         { let mut r = recent.lock().unwrap(); r.retain(|x| x != &id); r.insert(0, id.clone()); r.truncate(6); }
                         let _ = store::add_recent(ui.get_coord_url().as_ref(), &id);
                     }
@@ -329,8 +336,15 @@ fn spawn_refresh(
                         if ui.get_vpn_state() == 1 {
                             ui.set_vpn_state(2);
                             ui.set_vpn_host_id(id.clone().into());
-                            let name = names.lock().unwrap().iter().find(|h| &h.id == id)
-                                .map(display_name).unwrap_or_else(|| id.clone());
+                            let name = {
+                                let hs = names.lock().unwrap();
+                                if let Some(h) = hs.iter().find(|h| &h.id == id) {
+                                    fill_vpn_card(&ui, h); // догнали статус — догоняем и ячейки
+                                    display_name(h)
+                                } else {
+                                    id.clone()
+                                }
+                            };
                             ui.set_vpn_status(name.into());
                             ui.set_vpn_sub("".into());
                         }

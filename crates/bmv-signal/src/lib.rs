@@ -502,6 +502,14 @@ async fn supervisor(sh: Arc<Shared>, mut out_rx: mpsc::UnboundedReceiver<String>
             let _ = sink.send(Message::Text(json!({ "t": "watch" }).to_string())).await;
         }
 
+        // Часы живости: любой входящий кадр (в т.ч. Ping/Pong) — признак жизни.
+        // MissedTickBehavior::Delay: после заморозки процесса (сон, App Nap)
+        // накопленные тики не выстреливают пачкой, а проверка идёт один раз —
+        // и сразу видит огромную тишину, то есть будим связь мгновенно.
+        let mut alive_iv = tokio::time::interval(LINK_CHECK_EVERY);
+        alive_iv.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut last_rx = std::time::Instant::now();
+
         loop {
             tokio::select! {
                 out = out_rx.recv() => match out {
@@ -511,11 +519,16 @@ async fn supervisor(sh: Arc<Shared>, mut out_rx: mpsc::UnboundedReceiver<String>
                     None => return, // канал исходящих закрыт
                 },
                 inc = read.next() => match inc {
-                    Some(Ok(Message::Text(txt))) => handle_incoming(&sh, &txt),
-                    Some(Ok(Message::Ping(p))) => { let _ = sink.send(Message::Pong(p)).await; }
+                    Some(Ok(Message::Text(txt))) => { last_rx = std::time::Instant::now(); handle_incoming(&sh, &txt); }
+                    Some(Ok(Message::Ping(p))) => { last_rx = std::time::Instant::now(); let _ = sink.send(Message::Pong(p)).await; }
                     Some(Ok(Message::Close(_))) | Some(Err(_)) | None => break,
-                    _ => {}
+                    _ => last_rx = std::time::Instant::now(), // Pong и прочие кадры — тоже жизнь
                 },
+                // Тишина дольше дедлайна → сокет мёртв, рвём и переподключаемся.
+                // Реконнект восстановит host/watch и пришлёт СВЕЖИЙ снапшот каталога.
+                _ = alive_iv.tick() => {
+                    if last_rx.elapsed() > LINK_SILENCE_LIMIT { break; }
+                }
                 // Последний клон Coordinator уронен → аккуратно закрываем сокет и выходим
                 // (хост при этом мгновенно исчезает из каталога — «прощание» = закрытие).
                 _ = closed.changed() => {
@@ -538,6 +551,18 @@ async fn supervisor(sh: Arc<Shared>, mut out_rx: mpsc::UnboundedReceiver<String>
 /// Границы бэкоффа реконнекта.
 const RECONNECT_MIN: Duration = Duration::from_millis(500);
 const RECONNECT_MAX: Duration = Duration::from_secs(8);
+
+/// Ничего не пришло дольше этого → считаем сокет мёртвым и переподключаемся.
+///
+/// Без такой проверки клиент висел на `read.next()` бесконечно: сокет умирает
+/// ТИХО (ноутбук уснул, сменилась сеть, NAT выкинул трансляцию) — FIN/RST не
+/// приходит, читатель не просыпается. Итог: `connected` остаётся true, дельты
+/// каталога не идут, счётчики гостей и список хостов заморожены навсегда.
+/// Координатор шлёт Ping каждые 3с (WS_PING_INTERVAL), так что тишина в 12с —
+/// это три подряд не дошедших пинга, ложных срабатываний не даёт.
+const LINK_SILENCE_LIMIT: Duration = Duration::from_secs(12);
+/// Как часто сверяем тишину. Реже дедлайна — проверка дешёвая, но не суетливая.
+const LINK_CHECK_EVERY: Duration = Duration::from_secs(2);
 
 /// Прибавить к паузе случайный джиттер до +100% (размазать «стадо» реконнектов).
 /// rand не тянем — дешёвого псевдослучая из наносекунд часов хватает для джиттера.
@@ -611,5 +636,54 @@ fn handle_incoming(sh: &Arc<Shared>, txt: &str) {
             }
         }
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// ТИХО умерший сокет обязан приводить к переподключению.
+    ///
+    /// Ноутбук уснул, сменилась сеть, NAT выкинул трансляцию — FIN/RST не
+    /// приходит, `read.next()` не просыпается. Раньше клиент висел в таком
+    /// состоянии вечно: `connected` = true, дельт нет, каталог заморожен
+    /// (счётчики гостей врут, ушедшие хосты остаются в списке). Тест поднимает
+    /// координатора-молчуна: он принимает рукопожатие и НЕ шлёт ничего, даже
+    /// пингов. Второе подключение возможно, только если клиент сам заметил
+    /// тишину по LINK_SILENCE_LIMIT.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn silent_socket_triggers_reconnect() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (tx, mut rx) = mpsc::unbounded_channel::<()>();
+
+        tokio::spawn(async move {
+            while let Ok((sock, _)) = listener.accept().await {
+                let tx = tx.clone();
+                tokio::spawn(async move {
+                    if let Ok(ws) = tokio_tungstenite::accept_async(sock).await {
+                        let _ = tx.send(()); // подключение состоялось
+                        let _keep = ws; // держим сокет открытым и МОЛЧИМ
+                        std::future::pending::<()>().await;
+                    }
+                });
+            }
+        });
+
+        let c = Coordinator::new(format!("http://127.0.0.1:{port}")).unwrap();
+        let _ = c.health().await; // разбудить ленивый супервизор
+
+        tokio::time::timeout(Duration::from_secs(15), rx.recv())
+            .await
+            .expect("клиент не подключился к тестовому координатору")
+            .expect("канал закрыт");
+
+        // Таймаут НАМЕРЕННО литеральный, а не LINK_SILENCE_LIMIT + запас: иначе
+        // при поломке самой константы тест не падает, а виснет на её значении.
+        tokio::time::timeout(Duration::from_secs(25), rx.recv())
+            .await
+            .expect("клиент НЕ переподключился при полной тишине — дедлайн живости не работает")
+            .expect("канал закрыт");
     }
 }
