@@ -121,7 +121,7 @@ final class AppState: ObservableObject {
     @Published var hostName = UserDefaults.standard.string(forKey: "host_name") ?? UIDevice.current.name
     @Published var hostMax = UserDefaults.standard.object(forKey: "host_max") as? Int ?? 8
     @Published var hostPassword = UserDefaults.standard.string(forKey: "host_pw") ?? ""
-    @Published var hostProtocol = UserDefaults.standard.string(forKey: "host_proto") ?? "noise"
+    @Published var hostProtocol = UserDefaults.standard.string(forKey: "host_proto") ?? "noise-obfs"
     @Published var hostPublic = UserDefaults.standard.object(forKey: "host_public") as? Bool ?? true
     @Published var hostError: String? = nil
     @Published var myHostInfo: Host? = nil        // своя запись в каталоге (гости/IP/…)

@@ -96,7 +96,7 @@ impl BmvEngine {
             config.host.token.clone()
         };
         let default_proto = if config.default_protocol.is_empty() {
-            "noise".to_string()
+            "noise-obfs".to_string() // дефолт проекта — «Маскировка» (см. bmv-config)
         } else {
             config.default_protocol.clone()
         };

@@ -28,7 +28,7 @@ export component HostPage inherits Rectangle {
     in-out property <bool> host-public: true;
     in-out property <int> host-max: 8;
     in-out property <string> host-password;
-    in-out property <string> host-protocol: "noise";
+    in-out property <string> host-protocol: "noise-obfs";  // «Маскировка» — дефолт проекта
     callback toggle();
     callback copy-code();
     callback copy-text(string);

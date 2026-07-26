@@ -229,9 +229,36 @@ jobs:
           export ANDROID_NDK_HOME="${ANDROID_NDK_HOME:-${ANDROID_NDK_LATEST_HOME:-$ANDROID_HOME/ndk-bundle}}"
           echo "NDK: $ANDROID_NDK_HOME"
           cargo ndk -t arm64-v8a -o ../app/src/main/jniLibs build --release
+      # ПОСТОЯННЫЙ ключ подписи. Без него gradle падает на отладочный ключ, а он
+      # генерируется на каждом раннере заново — у каждого релиза своя подпись, и
+      # Android отказывается ставить обновление поверх («Приложение не
+      # установлено»). Секрета нет → шаг просто пропускается, сборка не ломается.
+      - name: Restore signing key
+        # Через env, а НЕ `if: secrets.…`: контекст secrets в условиях доступен
+        # не везде, и шаг молча выполнялся бы всегда (или никогда).
+        if: env.KEYSTORE_B64 != ''
+        working-directory: apps/android
+        env:
+          KEYSTORE_B64: ${{ secrets.KEYSTORE_B64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          echo "$KEYSTORE_B64" | base64 -d > release.jks
+          cat > keystore.properties <<EOF
+          storeFile=release.jks
+          storePassword=$KEYSTORE_PASSWORD
+          keyAlias=$KEY_ALIAS
+          keyPassword=$KEY_PASSWORD
+          EOF
       - name: Build APK
         working-directory: apps/android
         run: BMV_VERSION="${GITHUB_REF_NAME#v}" ./gradlew assembleRelease
+      # Ключ и пароли не должны пережить джоб даже в кеше рабочей папки.
+      - name: Wipe signing key
+        if: always()
+        working-directory: apps/android
+        run: rm -f release.jks keystore.properties
       - name: Rename asset
         run: cp apps/android/app/build/outputs/apk/release/app-release.apk bemyvpn-android-arm64.apk
       - name: Publish to Release

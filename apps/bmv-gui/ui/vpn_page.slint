@@ -228,8 +228,15 @@ export component VpnPage inherits Rectangle {
                         HorizontalLayout {
                             spacing: 8px;
                             // «Код сети» — копировать id.
+                            // min/preferred-width: 0 — ОБЯЗАТЕЛЬНО: «Скопировано»
+                            // длиннее «Код сети», и без этого ячейка на секунду
+                            // раздувалась, толкая соседнюю. Ширину задаёт stretch
+                            // (50/50), а не длина текста. Так же сделано в CardButton.
                             Rectangle {
                                 horizontal-stretch: 1;
+                                min-width: 0px;
+                                preferred-width: 0px;
+                                clip: true;
                                 height: 42px;
                                 border-radius: 12px;
                                 background: Theme.tile;
@@ -245,13 +252,18 @@ export component VpnPage inherits Rectangle {
                                         text: root.copied-invite ? "Скопировано" : "Код сети";
                                         color: root.copied-invite ? Theme.green : Theme.accent;
                                         font-size: 13px; font-weight: 700; vertical-alignment: center;
+                                        overflow: elide; min-width: 0px;
                                     }
                                 }
                                 TouchArea { clicked => { root.copy-text(root.vpn-host-id); root.copied-invite = true; } }
                             }
-                            // QR-код.
+                            // QR-код. Те же ограничения ширины — иначе половинки
+                            // ряда перестают быть равными, когда меняется сосед.
                             Rectangle {
                                 horizontal-stretch: 1;
+                                min-width: 0px;
+                                preferred-width: 0px;
+                                clip: true;
                                 height: 42px;
                                 border-radius: 12px;
                                 background: Theme.tile;
@@ -260,7 +272,7 @@ export component VpnPage inherits Rectangle {
                                 HorizontalLayout {
                                     alignment: center; spacing: 6px;
                                     VerticalLayout { alignment: center; IconQr { width: 14px; height: 14px; tint: Theme.accent; } }
-                                    Text { text: "QR-код"; color: Theme.accent; font-size: 13px; font-weight: 700; vertical-alignment: center; }
+                                    Text { text: "QR-код"; color: Theme.accent; font-size: 13px; font-weight: 700; vertical-alignment: center; overflow: elide; min-width: 0px; }
                                 }
                                 TouchArea { clicked => { root.open-invite(); } }
                             }

@@ -179,7 +179,7 @@ pub async fn run(config: Config, seed: Seed) -> Result<(), Box<dyn std::error::E
             .filter(|p| !p.is_empty())
             .unwrap_or_else(|| {
                 let p = config.default_protocol.clone();
-                if p.is_empty() { "noise".into() } else { p }
+                if p.is_empty() { "noise-obfs".into() } else { p }
             }),
         public: seed.host_public.unwrap_or(config.host.public),
     };
