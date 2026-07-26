@@ -1,0 +1,14 @@
+[package]
+name = "bmv-net"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+bmv-common.workspace = true
+async-trait.workspace = true
+tokio.workspace = true
+parking_lot.workspace = true
+rand.workspace = true
+socket2.workspace = true
+log.workspace = true

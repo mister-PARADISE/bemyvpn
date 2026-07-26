@@ -1,0 +1,33 @@
+[package]
+name = "bmv-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "bemyvpn"
+path = "src/main.rs"
+
+[dependencies]
+bmv-config.workspace = true
+bmv-core.workspace = true
+bmv-tunnel.workspace = true
+bmv-signal.workspace = true
+# Десктопный роутinг гостя (TUN + завернуть трафик) — общий с bmv-gui.
+bmv-desktop = { path = "../../crates/bmv-desktop" }
+# Режим «Сервер» — тот же бинарь `bemyvpn` поднимает координатор (не отдельный
+# бинарь). С фичей tls: сам отдаёт HTTPS по путям из конфига.
+bmv-coordinator = { path = "../../server/coordinator" }
+clap.workspace = true
+tokio.workspace = true
+tracing-subscriber.workspace = true
+# TUI-меню (запуск без аргументов): вкладки VPN/Хост/Сервер, стрелки, живой статус.
+ratatui = "0.29"
+crossterm = { version = "0.28", features = ["event-stream"] }
+futures = "0.3"
+# QR-код приглашения прямо в терминале (юникод-полублоки) — как кнопка QR на iOS.
+qrcode = { version = "0.14", default-features = false }
+
+# geteuid: режим 24/7 (systemd-демон) доступен только под root на Linux.
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"

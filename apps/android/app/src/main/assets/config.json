@@ -1,0 +1,4 @@
+{
+  "_comment": "Настройки по умолчанию для BeMyVPN. default_coordinator — адрес главного сервера (каталог хостов). Пользователь может задать свой во вкладке «Сервер».",
+  "default_coordinator": "https://bemyvpn.net"
+}

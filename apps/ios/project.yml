@@ -1,0 +1,132 @@
+name: BeMyVPN
+options:
+  bundleIdPrefix: org.bemyvpn
+  deploymentTarget:
+    iOS: "16.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    # Общее для всех таргетов: команда и правило подписи.
+    # ID команды НЕ хранится в репозитории (он публично привязан к владельцу
+    # аккаунта). Задать локально: xcodebuild DEVELOPMENT_TEAM=XXXXXXXXXX
+    DEVELOPMENT_TEAM: "$(DEVELOPMENT_TEAM)"
+    CODE_SIGN_STYLE: Automatic
+    # Подпись отключаем ТОЛЬКО для симулятора (быстрые проверки без аккаунта).
+    # Для устройства/архива Xcode подпишет автоматически.
+    CODE_SIGNING_ALLOWED[sdk=iphonesimulator*]: NO
+    CODE_SIGN_IDENTITY[sdk=iphonesimulator*]: ""
+targets:
+  BeMyVPN:
+    type: application
+    platform: iOS
+    sources:
+      - BeMyVPN
+    dependencies:
+      - framework: BmvFFI.xcframework
+        embed: false
+      # Встраиваем расширение-туннель в приложение (PlugIns).
+      - target: BeMyVPNTunnel
+    entitlements:
+      path: BeMyVPN/BeMyVPN.entitlements
+      properties:
+        com.apple.developer.networking.networkextension:
+          - packet-tunnel-provider
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.bemyvpn.app
+        MARKETING_VERSION: "1.0"
+        CURRENT_PROJECT_VERSION: "2"
+        GENERATE_INFOPLIST_FILE: YES
+        # Иконка «Звено» — из Assets.xcassets (канон: brand/logo.svg).
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        INFOPLIST_KEY_CFBundleDisplayName: BeMyVPN
+        # Категория приложения. Для Mac App Store ключ ОБЯЗАТЕЛЕН — без него
+        # загрузка Catalyst-сборки падает с ошибкой 90242. iOS его игнорирует.
+        # Значение должно совпадать с категорией, выбранной в App Store Connect.
+        INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.utilities
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
+        INFOPLIST_KEY_NSCameraUsageDescription: "Камера нужна, чтобы сканировать QR-код приглашения."
+        # iPhone — только портрет (интерфейс рассчитан на него).
+        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone: UIInterfaceOrientationPortrait
+        # Mac Catalyst: то же приложение (SwiftUI + туннель-расширение) нативно на
+        # macOS, с настоящим NEPacketTunnelProvider (как iOS: разрешение один раз,
+        # без пароля). Catalyst требует семейство iPad (2); bundle id сохраняем.
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SUPPORTS_MACCATALYST: YES
+        DERIVE_MACCATALYST_PRODUCT_BUNDLE_IDENTIFIER: NO
+        # Catalyst = macOS App Sandbox: сетевым вызовам нужны network.client/server
+        # (на iOS не требуются, там их нет). Отдельные entitlements ТОЛЬКО для
+        # macosx-sdk — iOS-подпись не трогаем.
+        CODE_SIGN_ENTITLEMENTS[sdk=macosx*]: BeMyVPN/BeMyVPN.catalyst.entitlements
+        # iPad — обязаны быть все четыре: семейство устройств 1,2 (нужно для
+        # Catalyst), а iPad-мультитаскинг без всех ориентаций отклоняется
+        # валидатором App Store (ошибка 90474). Суффикс именно _iPad —
+        # вариант «~ipad» Xcode игнорирует, и ключ не попадает в Info.plist.
+        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad: "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
+        # ITSAppUsesNonExemptEncryption намеренно НЕ задан.
+        # Своя криптография внутри приложения (Noise/snow для туннеля,
+        # rustls/ring для TLS к координатору) — не системная криптография
+        # Apple, поэтому экспортное исключение неприменимо и честный ответ YES.
+        # Но YES в plist требует ещё и ITSEncryptionExportComplianceCode —
+        # код выдают только после подачи экспортной документации, иначе
+        # загрузка падает с ошибкой 90592. Пока кода нет, ключ не указываем:
+        # App Store Connect задаст те же вопросы при отправке сборки.
+
+  # ── Расширение Packet Tunnel: отдельный процесс, где живёт реальный туннель ──
+  BeMyVPNTunnel:
+    type: app-extension
+    platform: iOS
+    sources:
+      - BeMyVPNTunnel
+    dependencies:
+      - framework: BmvFFI.xcframework
+        embed: false
+    entitlements:
+      path: BeMyVPNTunnel/BeMyVPNTunnel.entitlements
+      properties:
+        com.apple.developer.networking.networkextension:
+          - packet-tunnel-provider
+    info:
+      path: BeMyVPNTunnel/Info.plist
+      properties:
+        CFBundleDisplayName: BeMyVPN Tunnel
+        # Версия расширения ОБЯЗАНА совпадать с приложением, иначе Xcode ругается
+        # «app extension version must match parent app». Берём из тех же build-настроек.
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.networkextension.packet-tunnel
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).PacketTunnelProvider
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.bemyvpn.app.tunnel
+        MARKETING_VERSION: "1.0"
+        CURRENT_PROJECT_VERSION: "2"
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SUPPORTS_MACCATALYST: YES
+        DERIVE_MACCATALYST_PRODUCT_BUNDLE_IDENTIFIER: NO
+        # Песочница Catalyst: расширению-туннелю нужен сетевой доступ (координатор
+        # + UDP-пробитие к хосту) → network.client/server. Только для macosx-sdk.
+        CODE_SIGN_ENTITLEMENTS[sdk=macosx*]: BeMyVPNTunnel/BeMyVPNTunnel.catalyst.entitlements
+
+# ЕДИНСТВЕННАЯ схема — приложение BeMyVPN (оно уже встраивает туннель-расширение).
+# Без этого блока xcodegen плодит схему на КАЖДЫЙ таргет, включая расширение
+# BeMyVPNTunnel; запуск схемы-расширения даёт диалог «Choose an app to run».
+# Явная схема отключает автогенерацию — расширение больше не выбрать по ошибке.
+schemes:
+  BeMyVPN:
+    build:
+      targets:
+        BeMyVPN: all
+    run:
+      config: Debug
+    test:
+      config: Debug
+    profile:
+      config: Release
+    analyze:
+      config: Debug
+    archive:
+      config: Release

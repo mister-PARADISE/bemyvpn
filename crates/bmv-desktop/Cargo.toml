@@ -1,0 +1,19 @@
+# Десктопная платформенная часть режима VPN-гостя: создание TUN и заворачивание
+# ВСЕГО трафика в туннель с откатом на Drop. Общий код для CLI (bmv-cli) и
+# GUI (bmv-gui) — чтобы роутинг жил в ОДНОМ месте, а не дублировался. Ядро
+# (bmv-core/bmv-tunnel) остаётся платформенно-независимым; это — только десктоп.
+[package]
+name = "bmv-desktop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+bmv-tunnel = { path = "../bmv-tunnel" }
+# Для TunDevice-адаптера (AsyncRead/AsyncWrite поверх tun::AsyncDevice: снятие
+# 4-байтового utun-заголовка на macOS).
+tokio = { workspace = true }
+
+[target.'cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))'.dependencies]
+tun = { workspace = true }

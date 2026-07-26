@@ -1,0 +1,68 @@
+# BeMyVPN — Cargo workspace.
+# Архитектура: docs/ARCHITECTURE.md. Всё модульно, слои развязаны трейтами.
+[workspace]
+resolver = "2"
+members = [
+    "crates/bmv-common",
+    "crates/bmv-config",
+    "crates/bmv-protocol",
+    "crates/bmv-net",
+    "crates/bmv-signal",
+    "crates/bmv-tunnel",
+    "crates/bmv-core",
+    "crates/bmv-ffi",
+    "crates/bmv-desktop",
+    "apps/bmv-cli",
+    "apps/bmv-gui",
+]
+# Самодостаточные крейты (свои зависимости/цели, собираются отдельно):
+# координатор (axum) и Android-FFI (cdylib под aarch64 через cargo-ndk).
+exclude = ["server/coordinator", "apps/android/rust", "vendor/ipstack"]
+
+# ФОРК ipstack (vendor/ipstack): window scaling (RFC 7323) + RTO-таймер + MSS.
+# Без него окно TCP ≤64КБ → потолок 64КБ/RTT на соединение. См. vendor/ipstack/Cargo.toml.
+[patch.crates-io]
+ipstack = { path = "vendor/ipstack" }
+
+[workspace.package]
+version = "1.0.0"
+edition = "2021"
+license = "Apache-2.0"
+repository = "https://github.com/mister-PARADISE/bemyvpn"
+rust-version = "1.85"
+
+# Единые версии зависимостей для всех крейтов — меняешь тут, применяется везде.
+[workspace.dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "sync", "net", "time"] }
+tokio-util = "0.7"   # PollSender — настоящий backpressure на send-пути туннеля
+parking_lot = "0.12" # Mutex без отравления (паника под локом не роняет весь движок)
+socket2 = "0.6"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+thiserror = "2"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+log = "0.4"
+async-trait = "0.1"
+clap = { version = "4", features = ["derive"] }
+rand = "0.8"
+serde_json = "1"
+snow = "0.9"
+tun = { version = "0.6", features = ["async"] }
+ipstack = "1"
+
+# внутренние крейты
+bmv-common = { path = "crates/bmv-common" }
+bmv-config = { path = "crates/bmv-config" }
+bmv-protocol = { path = "crates/bmv-protocol" }
+bmv-net = { path = "crates/bmv-net" }
+bmv-signal = { path = "crates/bmv-signal" }
+bmv-tunnel = { path = "crates/bmv-tunnel" }
+bmv-core = { path = "crates/bmv-core" }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true

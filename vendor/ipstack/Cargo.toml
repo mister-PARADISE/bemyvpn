@@ -1,0 +1,59 @@
+# ФОРК ipstack 1.0.0 (Apache-2.0, Narrowlink) для BeMyVPN.
+# Зачем форк — три критических для VPN-скорости патча (см. src/stream/):
+#   1. TCP window scaling (RFC 7323): оригинал хранит окно пира сырым u16 →
+#      максимум 64 КБ в полёте → потолок 64КБ/RTT на соединение. Теперь парсим
+#      wscale из SYN, отвечаем своим — окно растёт до мегабайт.
+#   2. Таймер ретрансмита: оригинал проверяет ретрансмиты ТОЛЬКО на входящих
+#      пакетах — потеря всего окна = вечный столл. Добавлен периодический тик.
+#   3. MSS в SYN-ACK: оригинал не слал опцию MSS → пир по RFC использует 536 байт
+#      на сегмент (аплоад платит ×2.5 pps). Теперь анонсируем mtu-40.
+# Подключается через [patch.crates-io] в корневом Cargo.toml и apps/android/rust.
+
+[package]
+edition = "2024"
+name = "ipstack"
+version = "1.0.0"
+authors = ["Narrowlink <opensource@narrowlink.com>"]
+description = "Asynchronous lightweight userspace TCP/IP stack (BeMyVPN fork: wscale + RTO timer + MSS)"
+readme = "README.md"
+license = "Apache-2.0"
+repository = "https://github.com/narrowlink/ipstack"
+
+[lib]
+name = "ipstack"
+path = "src/lib.rs"
+
+[dependencies.ahash]
+version = "0.8"
+features = ["std"]
+default-features = false
+
+[dependencies.etherparse]
+version = "0.19"
+features = ["std"]
+default-features = false
+
+[dependencies.log]
+version = "0.4"
+default-features = false
+
+[dependencies.rand]
+version = "0.9"
+features = ["thread_rng"]
+default-features = false
+
+[dependencies.thiserror]
+version = "2.0"
+default-features = false
+
+[dependencies.tokio]
+version = "1.48"
+features = [
+    "sync",
+    "rt",
+    "time",
+    "io-util",
+    "macros",
+    "rt-multi-thread",
+]
+default-features = false

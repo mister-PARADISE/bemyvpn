@@ -1,0 +1,359 @@
+// Вкладка «VPN» — построчный перенос iOS VPNTab: герой-статус, «Подключиться по
+// коду» (поле + вставить + стрелка), «Сканировать QR», недавние, список хостов
+// карточками с раскрытием.
+import { Theme } from "theme.slint";
+import { HostRow, Card, StatTile, CopyTile, GradientButton, SectionLabel, Field, HeroCircle } from "components.slint";
+import { IconShield, IconShieldCheck, IconShieldSlash, IconShieldLock, IconMask, IconLock, IconLockOpen,
+         IconPeople, IconCopy, IconCheck, IconQr, IconScan, IconPaste, IconArrowRight, IconChevronRight, IconChevronUp } from "icons.slint";
+import { ScrollView } from "std-widgets.slint";
+
+// Значок протокола по id — семейство щита.
+component ProtoIcon inherits Rectangle {
+    in property <string> id;
+    in property <color> tint: Theme.dim;
+    if id == "noise" || id == "noise-aes": IconShieldLock { width: 100%; height: 100%; tint: root.tint; hole: Theme.card-hi; }
+    if id == "noise-obfs": IconMask { width: 100%; height: 100%; tint: root.tint; }
+    if id == "plain" || id == "": IconShieldSlash { width: 100%; height: 100%; tint: root.tint; hole: Theme.card-hi; }
+}
+
+// Карточка хоста: свёрнутый вид + раскрытие (детали + Подключить).
+component HostCard inherits Rectangle {
+    in property <HostRow> h;
+    in property <int> index;
+    in property <bool> expanded: false;
+    in-out property <string> guest-password;
+    callback toggle();
+    callback connect(int);
+    callback copy-text(string);
+    border-radius: 16px;
+    background: root.expanded ? Theme.card-hi : Theme.card;
+    border-width: 1px;
+    border-color: root.expanded ? Theme.accent.with-alpha(0.28) : #FFFFFF0D;
+    animate background, border-color { duration: 200ms; easing: ease-in-out; }
+
+    VerticalLayout {
+        padding: 14px;
+        spacing: 0px;
+
+        // ── свёрнутая строка (тап раскрывает) ──
+        header := TouchArea {
+            clicked => { root.toggle(); }
+            HorizontalLayout {
+                spacing: 12px;
+                // Флаг-аватарка слева.
+                Rectangle {
+                    width: 56px; height: 56px;
+                    border-radius: 14px;
+                    background: Theme.tile;
+                    border-width: 1px;
+                    border-color: #FFFFFF14;
+                    if h.has-flag: Image { source: h.flag-img; width: 34px; height: 24px; }
+                    if !h.has-flag: Text { text: "🌍"; font-size: 26px; }
+                }
+                VerticalLayout {
+                    alignment: center;
+                    spacing: 5px;
+                    horizontal-stretch: 1;
+                    Text {
+                        text: h.name; color: Theme.fg; font-size: 16px; font-weight: 600; overflow: elide;
+                    }
+                    HorizontalLayout {
+                        spacing: 4px;
+                        Text { text: h.subtitle; color: Theme.dim; font-size: 13px; overflow: elide; vertical-alignment: center; }
+                        if h.obfs: ProtoIcon { id: h.proto-id; width: 13px; height: 13px; }
+                    }
+                    // Полоса заполненности.
+                    Rectangle {
+                        height: 3px;
+                        border-radius: 1.5px;
+                        background: #FFFFFF17;
+                        Rectangle {
+                            x: 0;
+                            width: parent.width * h.fill;
+                            height: 3px;
+                            border-radius: 1.5px;
+                            background: h.fill < 0.8 ? Theme.green : Theme.amber;
+                        }
+                    }
+                }
+                if h.locked: VerticalLayout { alignment: center; IconLock { width: 15px; height: 15px; tint: Theme.dim; } }
+                VerticalLayout {
+                    alignment: center;
+                    if !root.expanded: IconChevronRight { width: 15px; height: 15px; tint: Theme.dim; }
+                    if root.expanded: IconChevronUp { width: 15px; height: 15px; tint: Theme.dim; }
+                }
+            }
+        }
+
+        // ── детали (раскрыто) — АНИМИРОВАННОЕ раскрытие по высоте (как iOS) ──
+        // clip + анимация height от 0 до реальной высоты содержимого (preferred-height).
+        Rectangle {
+            clip: true;
+            height: root.expanded ? detail.preferred-height : 0px;
+            animate height { duration: 220ms; easing: ease-in-out; }
+            detail := VerticalLayout {
+                width: parent.width;
+                padding-top: 12px;
+                spacing: 8px;
+                HorizontalLayout {
+                    spacing: 8px;
+                    CopyTile { label: "КОД"; value: h.code; horizontal-stretch: 1; copy(t) => { root.copy-text(t); } }
+                    CopyTile { label: "IP"; value: h.ip; horizontal-stretch: 1; copy(t) => { root.copy-text(t); } }
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    StatTile { label: "СТРАНА"; value: h.country; horizontal-stretch: 1; }
+                    StatTile { label: "ГОСТЕЙ"; value: h.guests; horizontal-stretch: 1; }
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    StatTile {
+                        label: "ДОСТУП"; value: h.access; horizontal-stretch: 1;
+                        if h.locked: IconLock { width: 12px; height: 12px; tint: Theme.fg; }
+                        if !h.locked: IconLockOpen { width: 12px; height: 12px; tint: Theme.fg; }
+                    }
+                    StatTile {
+                        label: "ПРОТОКОЛ"; value: h.proto; horizontal-stretch: 1;
+                        ProtoIcon { id: h.proto-id; width: 12px; height: 12px; tint: Theme.fg; }
+                    }
+                }
+                if h.locked: Field { placeholder: "Пароль"; secure: true; text <=> root.guest-password; }
+                GradientButton { title: "Подключить"; enabled: h.usable; clicked => { root.connect(root.index); } }
+            }
+        }
+    }
+}
+
+export component VpnPage inherits Rectangle {
+    in property <[HostRow]> hosts;
+    in property <[string]> recent-names;   // подписи недавних чипов
+    in property <[string]> recent-ids;
+    in property <int> vpn-state;
+    in property <string> vpn-status;
+    in property <int> coord-state;
+    in property <string> vpn-host-id;
+    in property <string> vpn-sub;
+    in property <string> vpn-ip;
+    in property <string> vpn-guests;
+    in property <string> vpn-proto;
+    in property <string> vpn-proto-id;
+    in property <string> vpn-country;
+    in property <string> vpn-elapsed;
+    in property <int> host-count;
+    in-out property <string> code;
+    in-out property <string> guest-password;
+    property <int> expanded: -1;
+    property <bool> copied-invite: false;
+    callback connect(int);
+    callback connect-code();
+    callback disconnect();
+    callback paste();
+    callback copy-text(string);
+    callback open-invite();
+
+    property <color> tint: vpn-state == 1 ? Theme.amber : vpn-state == 2 ? Theme.green : Theme.accent;
+
+    invite-reset := Timer {
+        interval: 1.3s;
+        running: root.copied-invite;
+        triggered() => { root.copied-invite = false; }
+    }
+
+    ScrollView {
+        vertical-scrollbar-policy: ScrollBarPolicy.always-off;
+        horizontal-scrollbar-policy: ScrollBarPolicy.always-off;
+        VerticalLayout {
+            alignment: start;
+            padding: Theme.pad;
+            padding-bottom: 108px;   // не под плавающим нав-баром (iOS navPadding 96)
+            spacing: Theme.gap;
+
+            // ── Герой-статус ──
+            Rectangle {
+                border-radius: 22px;
+                background: @linear-gradient(180deg, Theme.panel 0%, Theme.card 100%);
+                border-width: 1px;
+                border-color: root.tint.with-alpha(0.2);
+                VerticalLayout {
+                    padding-top: 26px; padding-bottom: 26px;
+                    padding-left: 18px; padding-right: 18px;
+                    spacing: 12px;
+                    HeroCircle {
+                        tint: root.tint;
+                        pulsing: root.vpn-state == 1;
+                        glow: root.vpn-state == 2;
+                        HorizontalLayout {
+                            alignment: center;
+                            VerticalLayout {
+                                alignment: center;
+                                if root.vpn-state == 0: IconShieldSlash { width: 40px; height: 40px; tint: root.tint; hole: Theme.card; }
+                                if root.vpn-state == 1: IconShield { width: 40px; height: 40px; tint: root.tint; }
+                                if root.vpn-state == 2: IconShieldCheck { width: 40px; height: 40px; tint: root.tint; hole: Theme.card; }
+                                if root.vpn-state == 3: IconShieldSlash { width: 40px; height: 40px; tint: Theme.red; hole: Theme.card; }
+                            }
+                        }
+                    }
+                    Text {
+                        text: root.vpn-status;
+                        color: Theme.fg; font-size: 21px; font-weight: 800;
+                        horizontal-alignment: center; overflow: elide;
+                    }
+                    Text {
+                        text: root.vpn-state == 2
+                            ? (root.vpn-country + "  ·  " + root.vpn-proto)
+                            : (root.vpn-sub != "" ? root.vpn-sub
+                               : (root.host-count == 0 ? "Введите код сети или поднимите свой хост"
+                                  : "Доступно хостов: " + root.host-count + " · выберите ниже или жмите «Старт»"));
+                        color: Theme.dim; font-size: 13px;
+                        horizontal-alignment: center; wrap: word-wrap;
+                    }
+
+                    // Подключено — время, плитки, приглашение.
+                    if root.vpn-state == 2: VerticalLayout {
+                        spacing: 8px;
+                        Text {
+                            text: root.vpn-elapsed;
+                            color: Theme.green; font-size: 15px; font-weight: 700;
+                            font-family: "monospace"; horizontal-alignment: center;
+                        }
+                        HorizontalLayout {
+                            spacing: 8px;
+                            CopyTile { label: "IP ХОСТА"; value: root.vpn-ip; horizontal-stretch: 1; copy(t) => { root.copy-text(t); } }
+                            StatTile {
+                                label: "ГОСТЕЙ"; value: root.vpn-guests; horizontal-stretch: 1;
+                                IconPeople { width: 12px; height: 12px; tint: Theme.fg; }
+                            }
+                        }
+                        Rectangle { height: 1px; background: Theme.dim.with-alpha(0.15); }
+                        HorizontalLayout {
+                            spacing: 8px;
+                            // «Код сети» — копировать id.
+                            Rectangle {
+                                horizontal-stretch: 1;
+                                height: 42px;
+                                border-radius: 12px;
+                                background: Theme.tile;
+                                border-width: 1px;
+                                border-color: root.copied-invite ? Theme.green.with-alpha(0.5) : #FFFFFF14;
+                                HorizontalLayout {
+                                    alignment: center; spacing: 6px;
+                                    VerticalLayout { alignment: center;
+                                        if !root.copied-invite: IconCopy { width: 13px; height: 13px; tint: Theme.accent; }
+                                        if root.copied-invite: IconCheck { width: 13px; height: 13px; tint: Theme.green; }
+                                    }
+                                    Text {
+                                        text: root.copied-invite ? "Скопировано" : "Код сети";
+                                        color: root.copied-invite ? Theme.green : Theme.accent;
+                                        font-size: 13px; font-weight: 700; vertical-alignment: center;
+                                    }
+                                }
+                                TouchArea { clicked => { root.copy-text(root.vpn-host-id); root.copied-invite = true; } }
+                            }
+                            // QR-код.
+                            Rectangle {
+                                horizontal-stretch: 1;
+                                height: 42px;
+                                border-radius: 12px;
+                                background: Theme.tile;
+                                border-width: 1px;
+                                border-color: #FFFFFF14;
+                                HorizontalLayout {
+                                    alignment: center; spacing: 6px;
+                                    VerticalLayout { alignment: center; IconQr { width: 14px; height: 14px; tint: Theme.accent; } }
+                                    Text { text: "QR-код"; color: Theme.accent; font-size: 13px; font-weight: 700; vertical-alignment: center; }
+                                }
+                                TouchArea { clicked => { root.open-invite(); } }
+                            }
+                        }
+                        Text { text: "Позвать друзей в эту же сеть"; color: Theme.dim; font-size: 11px; horizontal-alignment: center; }
+                    }
+                }
+            }
+
+            // ── Подключиться по коду ──
+            SectionLabel { text: "Подключиться по коду"; }
+            Rectangle {
+                height: 54px;
+                border-radius: 14px;
+                background: Theme.card;
+                HorizontalLayout {
+                    padding: 5px;
+                    spacing: 6px;
+                    // Поле кода.
+                    Rectangle {
+                        horizontal-stretch: 1;
+                        code-in := TextInput {
+                            x: 12px;
+                            width: parent.width - 24px;
+                            height: parent.height;
+                            vertical-alignment: center;
+                            color: Theme.fg; font-size: 15px;
+                            text <=> root.code;
+                            single-line: true;
+                            accepted => { root.connect-code(); }
+                        }
+                        if root.code == "": Text {
+                            x: 12px; height: parent.height;
+                            text: "КОД СЕТИ"; color: Theme.dim; font-size: 15px; vertical-alignment: center;
+                        }
+                    }
+                    // Вставить.
+                    Rectangle {
+                        width: 44px; height: 44px;
+                        border-radius: 10px;
+                        background: #2E3B57;
+                        VerticalLayout { alignment: center; HorizontalLayout { alignment: center; IconPaste { width: 18px; height: 18px; tint: white; } } }
+                        TouchArea { clicked => { root.paste(); } }
+                    }
+                    // Перейти.
+                    Rectangle {
+                        width: 48px; height: 44px;
+                        border-radius: 10px;
+                        background: @linear-gradient(90deg, Theme.accent 0%, Theme.accent2 100%);
+                        VerticalLayout { alignment: center; HorizontalLayout { alignment: center; IconArrowRight { width: 18px; height: 18px; tint: white; } } }
+                        TouchArea { clicked => { root.connect-code(); } }
+                    }
+                }
+            }
+
+            // ── Недавние ──
+            if root.recent-ids.length > 0: SectionLabel { text: "Недавние"; }
+            if root.recent-ids.length > 0: HorizontalLayout {
+                spacing: 8px;
+                for name[i] in root.recent-names: Rectangle {
+                    property <bool> hot: root.recent-ids[i] == root.vpn-host-id;
+                    height: 38px;
+                    border-radius: 16px;
+                    background: hot ? Theme.accent.with-alpha(0.16) : Theme.card-sel;
+                    border-width: 1px;
+                    border-color: hot ? Theme.accent.with-alpha(0.5) : transparent;
+                    HorizontalLayout {
+                        padding-left: 13px; padding-right: 13px;
+                        Text { text: name; color: hot ? Theme.accent : Theme.fg; font-size: 13px; font-weight: 700; vertical-alignment: center; }
+                    }
+                    TouchArea { clicked => { if (root.vpn-state == 0) { root.code = root.recent-ids[i]; root.connect-code(); } } }
+                }
+                Rectangle { horizontal-stretch: 1; }
+            }
+
+            // ── Хосты ──
+            SectionLabel { text: "Хосты"; }
+            if root.hosts.length == 0: Text {
+                text: root.coord-state == 2
+                    ? "Нет связи с сервером.\nПроверьте адрес во вкладке «Сервер»."
+                    : "Хостов пока нет.\nВведите код сети или поднимите свой во вкладке «Хост».";
+                color: Theme.dim; font-size: 14px;
+                horizontal-alignment: center; wrap: word-wrap;
+            }
+            for h[i] in root.hosts: HostCard {
+                h: h;
+                index: i;
+                expanded: root.expanded == i;
+                guest-password <=> root.guest-password;
+                toggle() => { root.expanded = (root.expanded == i) ? -1 : i; }
+                connect(idx) => { root.connect(idx); }
+                copy-text(t) => { root.copy-text(t); }
+            }
+        }
+    }
+}

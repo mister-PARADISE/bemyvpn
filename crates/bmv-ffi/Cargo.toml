@@ -1,0 +1,28 @@
+[package]
+name = "bmv-ffi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Плоский C-ABI поверх ядра BeMyVPN — ЕДИНЫЙ мост для всех платформ.
+# iOS/macOS линкуют staticlib (Swift зовёт C-функции напрямую), Android-мост
+# (apps/android/rust) подключает как rlib и оборачивает те же функции в JNI —
+# логика подключения/реконнекта/BYE одна на всех, платформы ведут себя одинаково.
+# staticlib — для iOS (xcframework), rlib — для Android-моста (линкует как
+# обычную Rust-зависимость). cdylib не нужен: отдельная .so только раздувала APK.
+[lib]
+name = "bmv_ffi"
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+bmv-common.workspace = true
+bmv-config.workspace = true
+bmv-core.workspace = true
+bmv-net.workspace = true
+bmv-signal.workspace = true
+bmv-tunnel.workspace = true
+tokio.workspace = true
+log.workspace = true
+serde_json.workspace = true
+once_cell = "1"
+libc = "0.2"

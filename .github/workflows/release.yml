@@ -1,0 +1,294 @@
+name: Release
+
+# Пуш тега vX.Y → собираем сборки и кладём в Releases.
+# Ручной прогон (workflow_dispatch) — только сборка, без публикации (проверка).
+#
+# ЭКОНОМИЯ: macOS здесь НЕ собираем — macOS-раннеры стоят ×10 минут, а Мак
+# разработчика собирает то же локально бесплатно (packaging/macos/build-app.sh +
+# cargo build --release -p bmv-cli) и заливает `gh release upload vX.Y <файлы>`.
+# CI собирает только Linux (×1) и Windows (×2) + Android (ubuntu).
+#
+# ПРАВИЛО АССЕТОВ: никаких архивов — каждый файл скачал и запустил.
+# ЕДИНЫЙ ПАТТЕРН ИМЁН: bemyvpn-<os>-<arch>[-terminal].<ext>
+#   приложение (GUI) — БЕЗ суффикса; терминал/сервер — с суффиксом `-terminal`.
+#   bemyvpn-android-arm64.apk               Android-приложение    (локально с Мака)
+#   bemyvpn-linux-x86_64.AppImage           Linux-приложение      (CI)
+#   bemyvpn-windows-x86_64.exe              Windows-приложение     (CI)
+#   bemyvpn-linux-x86_64-terminal           терминал/сервер Linux (CI)
+#   bemyvpn-windows-x86_64-terminal.exe     терминал Windows       (CI)
+#   bemyvpn-macos-arm64.dmg                 macOS-приложение       (локально с Мака)
+#   bemyvpn-macos-arm64-terminal            терминал macOS         (локально с Мака)
+# wintun.dll ВШИТА в Windows-exe (bmv-desktop::ensure_wintun) — отдельного файла нет.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  # Описание релиза («что скачать») — создаёт/обновляет тело релиза.
+  # Заметки к релизу. Главное здесь — СПИСОК ИЗМЕНЕНИЙ: он собирается из коммитов
+  # между прошлым и текущим тегом, поэтому у каждой версии он свой (раньше текст
+  # был захардкожен и одинаков для всех релизов — бесполезен).
+  # Идёт последним: ждёт сборки, чтобы посчитать sha256 готовых файлов.
+  notes:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [cli, gui-macos, android, gui-linux, gui-windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # нужна вся история и теги, иначе списка изменений не будет
+      - name: "Build release notes"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          # sed, а НЕ head: head закрывает канал после N строк, писатель слева
+          # получает SIGPIPE, и при `set -o pipefail` падает весь шаг.
+          PREV=$(git tag --sort=-creatordate | grep -v "^$TAG$" | sed -n 1p)
+
+          echo "## Что нового" > notes.md
+          echo >> notes.md
+          if [ -n "$PREV" ]; then
+            # Только заголовки коммитов (тело — многострочное, в список не годится).
+            ALL=$(git log --no-merges --pretty=format:'- %s' "$PREV..$TAG")
+            # Внутренняя кухня (chore/docs/ci/test) пользователю не интересна —
+            # но если после фильтра пусто, показываем всё, чтобы раздел не был пустым.
+            USER_FACING=$(printf '%s\n' "$ALL" | grep -vE '^- (chore|docs|ci|test)(\(.*\))?:' || true)
+            LIST="${USER_FACING:-$ALL}"
+            # Между релизами бывает и сотня коммитов — простыня на странице релиза
+            # так же бесполезна, как пустота. Показываем свежие, остальное — ссылкой.
+            TOTAL=$(printf '%s\n' "$LIST" | wc -l | tr -d ' ')
+            printf '%s\n' "$LIST" | sed -n '1,20p' >> notes.md
+            if [ "$TOTAL" -gt 20 ]; then
+              echo >> notes.md
+              echo "<sub>…и ещё $((TOTAL - 20)) изменений.</sub>" >> notes.md
+            fi
+            echo >> notes.md
+            echo "Все изменения: [\`$PREV\` → \`$TAG\`](https://github.com/$REPO/compare/$PREV...$TAG)" >> notes.md
+          else
+            echo "Первый релиз." >> notes.md
+          fi
+
+          cat >> notes.md <<'MD'
+
+          ---
+
+          ## Что это такое
+
+          **BeMyVPN — бесплатный VPN без серверов-посредников.** Один человек
+          (**хост**) делится своим интернетом, другой (**гость**) через него выходит
+          в сеть. Трафик идёт **напрямую между устройствами** — сервер проекта
+          (**координатор**) только помогает вам найти друг друга и самих данных
+          не видит.
+
+          Подключение — по короткому коду хоста или выбором из списка открытых
+          хостов. Регистрация не нужна.
+
+          ## Какой файл скачать
+
+          ### 1. Просто пользоваться — приложение с кнопками
+
+          Обычная программа: открыл, нажал. Умеет и подключаться к чужому хосту,
+          и раздавать свой интернет.
+
+          | Система | Файл |
+          |---|---|
+          | **Android** | `bemyvpn-android-arm64.apk` |
+          | **macOS** (Apple Silicon) | `bemyvpn-macos-arm64.dmg` |
+          | **Windows** | `bemyvpn-windows-x86_64.exe` |
+          | **Linux** | `bemyvpn-linux-x86_64.AppImage` |
+
+          ### 2. Для сервера — терминальная версия
+
+          Тот же проект без графики, меню прямо в консоли. **Один файл совмещает
+          все три роли:** гость (подключиться), хост 24/7 (раздавать) и
+          собственный координатор (`bemyvpn server`) — если не хотите зависеть
+          от чужого сервера, поднимите свой.
+
+          | Система | Файл |
+          |---|---|
+          | **Linux (терминал)** | `bemyvpn-linux-x86_64-terminal` |
+          | **macOS (терминал)** | `bemyvpn-macos-arm64-terminal` |
+          | **Windows (терминал)** | `bemyvpn-windows-x86_64-terminal.exe` |
+
+          Архивов и установщиков нет: скачали файл — запустили.
+
+          ## Что важно знать до запуска
+
+          | | |
+          |---|---|
+          | **macOS, первый запуск** | Правый клик по программе → «Открыть». Приложение не подписано **намеренно** — платный сертификат Apple не используется. Дальше открывается обычным двойным кликом. |
+          | **Linux и терминал** | Перед первым запуском разрешить исполнение: `chmod +x <файл>` |
+          | **Права администратора** | Нужны **только гостю** — система создаёт сетевой интерфейс. Хосту и координатору не нужны. |
+          | **Чтобы стать хостом** | Нужен **белый (публичный) IP**. За NAT — домашний роутер, мобильный интернет — раздавать нельзя, координатор такой хост отклонит. Подходит любой VPS. |
+          | **Настройка** | Терминал без аргументов открывает меню, всё сохраняется само. Конфиг руками писать не нужно. |
+
+          ## Проверка скачанного
+
+          Файлы не подписаны, поэтому сверьте хэш — так вы убедитесь, что скачали
+          именно то, что собрал этот релиз:
+
+          | Система | Команда |
+          |---|---|
+          | Linux | `sha256sum <файл>` |
+          | macOS | `shasum -a 256 <файл>` |
+          | Windows | `certutil -hashfile <файл> SHA256` |
+
+          MD
+
+          gh release download "$TAG" -R "$REPO" -D dl
+          echo '```' >> notes.md
+          ( cd dl && sha256sum * ) >> notes.md
+          echo '```' >> notes.md
+      - name: "Publish notes"
+        uses: softprops/action-gh-release@v2
+        with:
+          body_path: notes.md
+
+  # bemyvpn (CLI + TUI + режим сервера) — ГОЛЫЙ бинарь под каждую ОС, без архивов.
+  cli:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            asset: bemyvpn-linux-x86_64-terminal
+            bin: bemyvpn
+          - os: windows-latest
+            asset: bemyvpn-windows-x86_64-terminal.exe
+            bin: bemyvpn.exe
+          - os: macos-latest
+            asset: bemyvpn-macos-arm64-terminal
+            bin: bemyvpn
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build
+        run: cargo build --release -p bmv-cli
+      - name: Rename asset
+        shell: bash
+        run: cp "target/release/${{ matrix.bin }}" "${{ matrix.asset }}"
+      - name: Publish to Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ matrix.asset }}
+
+  # macOS GUI как .dmg. Подпись АД-ХОК (сертификата нет и не надо): первый запуск
+  # правым кликом → «Открыть». Собирается тут, а не локально — тогда для выпуска
+  # релиза не нужна ни одна своя машина.
+  gui-macos:
+    runs-on: macos-latest
+    env:
+      CARGO_PROFILE_RELEASE_LTO: "false"
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      # build-app.sh только упаковывает — бинарь должен уже лежать в target/release.
+      - name: Build GUI
+        run: cargo build --release -p bmv-gui
+      - name: Package dmg
+        run: VERSION="${GITHUB_REF_NAME#v}" bash packaging/macos/build-app.sh
+      - name: Publish to Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/bemyvpn-macos-arm64.dmg
+
+  # Android APK (arm64, sideload — ставится файлом, магазин не нужен). Rust-часть
+  # собирает cargo-ndk, обёртку — gradle. Раннер чужой, поэтому путей сборочной
+  # машины в .so не остаётся (локальные сборки этим страдали, см. build-apk.sh).
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk --locked
+      - name: Build native lib
+        working-directory: apps/android/rust
+        run: |
+          # На раннере NDK предустановлен, но переменная называется по-разному —
+          # подставляем запасные, только если основная пуста.
+          export ANDROID_NDK_HOME="${ANDROID_NDK_HOME:-${ANDROID_NDK_LATEST_HOME:-$ANDROID_HOME/ndk-bundle}}"
+          echo "NDK: $ANDROID_NDK_HOME"
+          cargo ndk -t arm64-v8a -o ../app/src/main/jniLibs build --release
+      - name: Build APK
+        working-directory: apps/android
+        run: ./gradlew assembleRelease
+      - name: Rename asset
+        run: cp apps/android/app/build/outputs/apk/release/app-release.apk bemyvpn-android-arm64.apk
+      - name: Publish to Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: bemyvpn-android-arm64.apk
+
+  # Linux-GUI как ОДИН файл (AppImage) — «APK для Linux»: скачал, chmod +x,
+  # запустил, без apt/сервисов/зависимостей. LTO выключен — Slint иначе жрёт память.
+  gui-linux:
+    runs-on: ubuntu-latest
+    env:
+      CARGO_PROFILE_RELEASE_LTO: "false"
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build deps (Slint femtovg/GL + rsvg)
+        run: sudo apt-get update && sudo apt-get install -y libfontconfig-dev libxkbcommon-dev libxkbcommon-x11-0 libwayland-dev libxcb1-dev libx11-dev libgl1-mesa-dev libegl1-mesa-dev librsvg2-bin
+      - name: Build GUI
+        run: cargo build --release -p bmv-gui
+      - name: Package AppImage
+        run: VERSION="${GITHUB_REF_NAME#v}" bash packaging/linux/build-appimage.sh dist
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bemyvpn-appimage
+          path: dist/*.AppImage
+      - name: Publish to Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.AppImage
+
+  # GUI под Windows — голый exe, wintun.dll вшита в бинарь (распаковывается сама).
+  # macOS (.dmg) собирается локально на Маке — см. шапку файла (экономия ×10).
+  gui-windows:
+    runs-on: windows-latest
+    env:
+      CARGO_PROFILE_RELEASE_LTO: "false"
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build GUI
+        run: cargo build --release -p bmv-gui
+      - name: Rename exe
+        shell: bash
+        run: cp target/release/bemyvpn-gui.exe bemyvpn-windows-x86_64.exe
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: gui-windows
+          path: bemyvpn-windows-x86_64.exe
+      - name: Publish to Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: bemyvpn-windows-x86_64.exe

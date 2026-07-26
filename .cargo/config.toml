@@ -1,0 +1,7 @@
+# Windows: статическая линковка MSVC-рантайма (crt-static).
+# Без этого exe требует vcruntime140.dll (Visual C++ Redistributable) — на чистой
+# Windows выскакивает «не найден vcruntime140.dll». С crt-static рантайм вшит в
+# сам exe: скачал → запустил, ничего доустанавливать не нужно (как и wintun.dll,
+# которая уже вшита через bmv-desktop::ensure_wintun).
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

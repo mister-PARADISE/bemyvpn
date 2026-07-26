@@ -1,0 +1,51 @@
+# Координатор BeMyVPN — САМОДОСТАТОЧНЫЙ крейт (не тянет bmv-*).
+# Протокол — обычный JSON поверх HTTP, поэтому сервер независим от клиента и
+# каждый может поднять свой одним бинарём (или переписать на чём угодно).
+[package]
+name = "bmv-coordinator"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+
+[lib]
+name = "bmv_coordinator"
+path = "src/lib.rs"
+
+[[bin]]
+name = "bmv-coordinator"
+path = "src/main.rs"
+
+[dependencies]
+axum = { version = "0.7", features = ["ws"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rand = "0.8"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# Подпись кодов хостов (HMAC-SHA256): сервер — ЕДИНСТВЕННЫЙ источник кодов,
+# самовольный код без валидной подписи не принимается. Проверенные крейты
+# RustCrypto — свою крипту не пишем.
+hmac = "0.12"
+sha2 = "0.10"
+hex = "0.4"
+# Нативный HTTPS (ядро само отдаёт TLS — без реверс-прокси). Опционально: в
+# Android-сборке координатор встраивается БЕЗ этой фичи (там TLS не нужен).
+# Провайдер крипты — ring (без C/cmake, ставим сами в serve()).
+axum-server = { version = "0.7", default-features = false, features = ["tls-rustls-no-provider"], optional = true }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"], optional = true }
+# Авто-HTTPS: встроенный клиент Let's Encrypt (ACME TLS-ALPN-01 на 443). Указал
+# домен в конфиге → бинарь САМ получает и продлевает сертификат. Без certbot/nginx.
+rustls-acme = { version = "0.13", default-features = false, features = ["ring", "axum", "tokio"], optional = true }
+# futures-util нужен ВСЕГДА: WebSocket-сигналинг делит сокет на приём/передачу
+# (StreamExt/SinkExt). Раньше был только под tls.
+futures-util = { version = "0.3", default-features = false, features = ["sink"] }
+
+[features]
+default = ["tls"]
+tls = ["dep:axum-server", "dep:rustls", "dep:rustls-acme"]
+
+[profile.release]
+opt-level = 3
+lto = true
+strip = true

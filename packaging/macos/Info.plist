@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>CFBundleName</key><string>BeMyVPN</string>
+  <key>CFBundleDisplayName</key><string>BeMyVPN</string>
+  <key>CFBundleExecutable</key><string>bemyvpn-gui</string>
+  <key>CFBundleIdentifier</key><string>org.bemyvpn.gui</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleShortVersionString</key><string>__VERSION__</string>
+  <key>CFBundleVersion</key><string>__VERSION__</string>
+  <key>CFBundleIconFile</key><string>bemyvpn.icns</string>
+  <!-- Retina: без этого окно рисуется в 1x и ОС растягивает → мутно -->
+  <key>NSHighResolutionCapable</key><true/>
+  <key>LSMinimumSystemVersion</key><string>11.0</string>
+</dict></plist>

@@ -1,0 +1,280 @@
+// Главное окно BeMyVPN-desktop — построчная копия iOS ContentView: тёмный фон,
+// активная страница, ПЛАВАЮЩИЙ нав-бар поверх снизу (Сервер | VPN | Хост) с умной
+// центральной ячейкой (Старт/Стоп). Всё состояние — входные свойства, действия —
+// колбэки; заполняет их Rust (main.rs).
+import { Theme } from "theme.slint";
+import { HostRow } from "components.slint";
+import { IconServer, IconRouter, IconShield, IconBolt, IconX, IconQr } from "icons.slint";
+import { VpnPage } from "vpn_page.slint";
+import { HostPage } from "host_page.slint";
+import { ServerPage } from "server_page.slint";
+
+// Ячейка нав-бара: значок + подпись; пилюля активной/центральной.
+// min-width: 0 — чтобы ячейки были РОВНО по трети ширины независимо от длины
+// подписи («Сервер» vs «Хост», центр «VPN»/«Старт»/«Стоп»). Иначе разная
+// min-width текста перекашивала распределение → бар «менял размер по бокам».
+component NavCell inherits Rectangle {
+    in property <string> label;
+    in property <brush> pill: transparent;
+    in property <color> tint: Theme.dim;
+    callback clicked;
+    min-width: 0px;
+    Rectangle {
+        x: 2px; y: 3px;
+        width: parent.width - 4px; height: parent.height - 6px;
+        border-radius: 22px;
+        background: root.pill;
+        animate background { duration: 160ms; easing: ease-in-out; }
+    }
+    VerticalLayout {
+        alignment: center;
+        spacing: 3px;
+        HorizontalLayout { alignment: center; VerticalLayout { alignment: center; height: 22px; @children } }
+        Text {
+            text: root.label; font-size: 11px; font-weight: 700;
+            horizontal-alignment: center; color: root.tint; overflow: elide;
+        }
+    }
+    TouchArea { clicked => { root.clicked(); } }
+}
+
+export { HostRow }
+
+export component AppWindow inherits Window {
+    title: "BeMyVPN";
+    default-font-size: 14px;
+    background: Theme.bg;
+    // Фиксированный размер: окно можно двигать, но НЕ менять габариты (min == max).
+    // Как мобильное приложение — макет рассчитан на одну ширину.
+    preferred-width: 400px;
+    preferred-height: 820px;
+    min-width: 400px;
+    max-width: 400px;
+    min-height: 820px;
+    max-height: 820px;
+
+    // ── интерфейс для Rust (VPN) ──
+    in property <[HostRow]> hosts;
+    in property <[string]> recent-names;
+    in property <[string]> recent-ids;
+    in property <int> vpn-state;
+    in property <string> vpn-status: "VPN выключен";
+    in property <string> vpn-host-id;
+    in property <string> vpn-sub;
+    in property <string> vpn-ip;
+    in property <string> vpn-country;
+    in property <string> vpn-guests;
+    in property <string> vpn-proto;
+    in property <string> vpn-proto-id;
+    in property <string> vpn-elapsed;
+    in property <image> vpn-qr-img;
+    // ── хост ──
+    in property <int> host-state;
+    in property <string> host-status;
+    in property <string> host-code;
+    in property <string> host-error;
+    in property <string> host-ip;
+    in property <string> host-guests;
+    in property <string> host-elapsed;
+    in-out property <string> host-name;
+    in-out property <bool> host-public: true;
+    in-out property <int> host-max: 8;
+    in-out property <string> host-password;
+    in-out property <string> host-protocol: "noise";
+    in property <image> host-qr-img;
+    // ── сервер ──
+    in property <string> coord-url;
+    in property <int> coord-state;
+    in property <int> coord-ping;
+    in property <int> coord-hosts;
+    in property <string> coord-ip;
+    in property <bool> coord-is-default: true;
+    in property <[string]> server-history;
+    // ── навигация/ввод ──
+    in-out property <int> tab: 0;            // 0 VPN · 1 Хост · 2 Сервер
+    in-out property <string> code;
+    in-out property <string> guest-password;
+    in-out property <string> coord-field;
+    // QR-оверлей: "" скрыт, иначе код для показа.
+    in-out property <string> qr-overlay: "";
+    in property <image> qr-overlay-img;
+
+    callback connect(int);
+    callback connect-code();
+    callback quick-connect();
+    callback disconnect();
+    callback toggle-host();
+    callback set-coord(string);
+    callback reset-coord();
+    callback recheck();
+    callback paste();
+    callback copy-code();
+    callback copy-text(string);
+    callback new-code();
+    callback apply-host();
+    callback show-qr(string);   // Rust рисует qr-overlay-img и открывает оверлей
+
+    // «Пульс» цикла: idle winit-loop на macOS не сливает invoke_from_event_loop,
+    // пока не придёт событие ввода — фоновые обновления статуса (подключение из
+    // root-хелпера, живой каталог) зависали в очереди. Пустой таймер будит цикл
+    // 4×/сек → отложенные апдейты применяются вовремя. Копейки CPU.
+    Timer {
+        interval: 250ms;
+        running: true;
+        triggered => {}
+    }
+
+    VerticalLayout {
+        // ── область страницы (во всю высоту; нав-бар плавает поверх) ──
+        Rectangle {
+            vertical-stretch: 1;
+            if tab == 0: VpnPage {
+                hosts: root.hosts;
+                recent-names: root.recent-names;
+                recent-ids: root.recent-ids;
+                vpn-state: root.vpn-state;
+                vpn-status: root.vpn-status;
+                coord-state: root.coord-state;
+                vpn-host-id: root.vpn-host-id;
+                vpn-sub: root.vpn-sub;
+                vpn-ip: root.vpn-ip;
+                vpn-country: root.vpn-country;
+                vpn-guests: root.vpn-guests;
+                vpn-proto: root.vpn-proto;
+                vpn-proto-id: root.vpn-proto-id;
+                vpn-elapsed: root.vpn-elapsed;
+                host-count: root.hosts.length;
+                code <=> root.code;
+                guest-password <=> root.guest-password;
+                connect(i) => { root.connect(i); }
+                connect-code() => { root.connect-code(); }
+                disconnect() => { root.disconnect(); }
+                paste() => { root.paste(); }
+                copy-text(t) => { root.copy-text(t); }
+                open-invite() => { root.show-qr(root.vpn-host-id); }
+            }
+            if tab == 1: HostPage {
+                host-state: root.host-state;
+                host-status: root.host-status;
+                host-code: root.host-code;
+                host-error: root.host-error;
+                host-ip: root.host-ip;
+                host-guests: root.host-guests;
+                host-elapsed: root.host-elapsed;
+                host-name <=> root.host-name;
+                host-public <=> root.host-public;
+                host-max <=> root.host-max;
+                host-password <=> root.host-password;
+                host-protocol <=> root.host-protocol;
+                toggle() => { root.toggle-host(); }
+                copy-code() => { root.copy-code(); }
+                copy-text(t) => { root.copy-text(t); }
+                new-code() => { root.new-code(); }
+                apply-host() => { root.apply-host(); }
+                open-qr() => { root.show-qr(root.host-code); }
+            }
+            if tab == 2: ServerPage {
+                coord-url: root.coord-url;
+                coord-state: root.coord-state;
+                coord-ping: root.coord-ping;
+                coord-hosts: root.coord-hosts;
+                coord-ip: root.coord-ip;
+                coord-is-default: root.coord-is-default;
+                history: root.server-history;
+                coord-field <=> root.coord-field;
+                set-coord(t) => { root.set-coord(t); }
+                reset-coord() => { root.reset-coord(); }
+                recheck() => { root.recheck(); }
+                copy-text(t) => { root.copy-text(t); }
+            }
+        }
+    }
+
+    // ── Плавающий нав-бар (поверх страницы, как ZStack .bottom на iOS) ──
+    Rectangle {
+        x: 18px;
+        y: parent.height - self.height - 22px;
+        width: parent.width - 36px;
+        height: 66px;
+        border-radius: 28px;
+        background: #161C2B.with-alpha(0.98);
+        border-width: 1px;
+        border-color: #FFFFFF10;
+        drop-shadow-blur: 14px;
+        drop-shadow-color: #00000099;
+        drop-shadow-offset-y: 6px;
+        HorizontalLayout {
+            padding: 6px;
+            spacing: 4px;
+            NavCell {
+                horizontal-stretch: 1;
+                label: "Сервер";
+                pill: tab == 2 ? Theme.accent.with-alpha(0.26) : transparent;
+                tint: tab == 2 ? Theme.accent : Theme.dim;
+                clicked => { tab = 2; }
+                IconServer { width: 21px; height: 21px; tint: tab == 2 ? Theme.accent : Theme.dim; }
+            }
+            // Центральная — контекстная: VPN / Старт / Стоп.
+            NavCell {
+                horizontal-stretch: 1;
+                label: tab != 0 ? "VPN" : (vpn-state == 0 ? "Старт" : "Стоп");
+                pill: tab != 0 ? transparent
+                    : (vpn-state == 0 ? @linear-gradient(180deg, #34E29E 0%, #12B07E 100%)
+                       : @linear-gradient(180deg, #FF6473 0%, #E23B4C 100%));
+                tint: tab != 0 ? Theme.dim : white;
+                clicked => {
+                    if (tab != 0) { tab = 0; }
+                    else if (vpn-state == 0) { root.quick-connect(); }
+                    else { root.disconnect(); }
+                }
+                if tab != 0: IconShield { width: 21px; height: 21px; tint: Theme.dim; }
+                if tab == 0 && vpn-state == 0: IconBolt { width: 21px; height: 21px; tint: white; }
+                if tab == 0 && vpn-state != 0: IconX { width: 20px; height: 20px; tint: white; }
+            }
+            NavCell {
+                horizontal-stretch: 1;
+                label: "Хост";
+                pill: tab == 1 ? Theme.accent.with-alpha(0.26) : transparent;
+                tint: tab == 1 ? Theme.accent : Theme.dim;
+                clicked => { tab = 1; }
+                IconRouter { width: 21px; height: 21px; tint: tab == 1 ? Theme.accent : Theme.dim; }
+            }
+        }
+    }
+
+    // ── QR-оверлей приглашения (полноэкранный, как iOS QRSheet) ──
+    if root.qr-overlay != "": Rectangle {
+        background: Theme.bg.with-alpha(0.97);
+        TouchArea {}   // перехват кликов под оверлеем
+        VerticalLayout {
+            alignment: center;
+            spacing: 22px;
+            padding: 40px;
+            HorizontalLayout {
+                alignment: center;
+                Rectangle {
+                    width: 264px; height: 264px;
+                    border-radius: 18px;
+                    background: white;
+                    Image { source: root.qr-overlay-img; width: 232px; height: 232px; }
+                }
+            }
+            Text {
+                text: root.qr-overlay; color: Theme.accent;
+                font-size: 26px; font-weight: 800; font-family: "monospace"; letter-spacing: 2px;
+                horizontal-alignment: center;
+            }
+            Text { text: "Отсканируйте, чтобы подключиться к этой сети"; color: Theme.dim; font-size: 13px; horizontal-alignment: center; }
+            HorizontalLayout {
+                alignment: center;
+                Rectangle {
+                    width: 220px; height: 50px;
+                    border-radius: 14px;
+                    background: @linear-gradient(90deg, Theme.accent 0%, Theme.accent2 100%);
+                    Text { text: "Закрыть"; color: white; font-size: 16px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; width: 100%; height: 100%; }
+                    TouchArea { clicked => { root.qr-overlay = ""; } }
+                }
+            }
+        }
+    }
+}

@@ -1,0 +1,14 @@
+# Генерируется xcodegen'ом из project.yml — не коммитим.
+BeMyVPN.xcodeproj/
+# Собирается build-xcframework.sh из bmv-ffi — бинарь, регенерируется.
+BmvFFI.xcframework/
+headers/
+# Генерируются xcodegen'ом из project.yml — не коммитим.
+BeMyVPN/BeMyVPN.entitlements
+BeMyVPNTunnel/Info.plist
+BeMyVPNTunnel/BeMyVPNTunnel.entitlements
+# Артефакты сборки.
+build/
+build-dev/
+DerivedData/
+*.xcuserstate

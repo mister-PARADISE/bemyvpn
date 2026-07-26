@@ -1,0 +1,21 @@
+// Дизайн-токены — ЕДИНСТВЕННОЕ место цветов и метрик. Палитра — байт-в-байт
+// iOS Theme.swift (эталон вида). Меняешь тему — меняешь здесь.
+export global Theme {
+    out property <color> bg: #0B0E14;
+    out property <color> card: #161B26;
+    out property <color> card-sel: #1E2A44;
+    out property <color> panel: #121722;
+    // Слои внутри карточки хоста: страница → карточка → плитка (светлеет кверху).
+    out property <color> card-hi: #1A2233;
+    out property <color> tile: #242D3E;
+    out property <color> accent: #5E93FF;
+    out property <color> accent2: #3D6FE0;
+    out property <color> fg: #EAECEF;
+    out property <color> dim: #8B93A7;
+    out property <color> green: #34E29E;
+    out property <color> red: #FF5A6A;
+    out property <color> amber: #F5B14C;
+
+    out property <length> pad: 20px;     // отступ страницы (iOS .padding(20))
+    out property <length> gap: 14px;     // зазор секций (iOS spacing: 14)
+}

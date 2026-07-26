@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 108 108">
+  <defs>
+    <radialGradient id="bg" cx="54" cy="38" r="82" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#EAF0FB"/>
+    </radialGradient>
+    <linearGradient id="ocean" x1="28" y1="30" x2="80" y2="82" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#22D3EE"/>
+      <stop offset="0.45" stop-color="#5B8DEF"/>
+      <stop offset="1" stop-color="#A855F7"/>
+    </linearGradient>
+  </defs>
+  <rect x="0" y="0" width="108" height="108" rx="22" fill="url(#bg)"/>
+  <!-- океан -->
+  <circle cx="54" cy="54" r="28" fill="url(#ocean)"/>
+  <!-- континенты -->
+  <path d="M40,40 q8,-4 13,1 q3,4 -2,7 q-6,3 -11,-1 q-4,-4 0,-7 Z" fill="#34D399" fill-opacity="0.92"/>
+  <path d="M60,52 q7,-2 9,4 q2,6 -4,9 q-7,2 -9,-4 q-2,-7 4,-9 Z" fill="#FBBF24" fill-opacity="0.92"/>
+  <path d="M43,62 q5,-1 6,3 q1,4 -3,5 q-5,1 -6,-3 q-1,-4 3,-5 Z" fill="#FB7185" fill-opacity="0.92"/>
+  <!-- сетка -->
+  <g fill="none">
+    <path d="M26.5,54 H81.5" stroke="#FFFFFF" stroke-opacity="0.95" stroke-width="2"/>
+    <path d="M30,42 H78" stroke="#FFFFFF" stroke-opacity="0.6" stroke-width="1.6"/>
+    <path d="M30,66 H78" stroke="#FFFFFF" stroke-opacity="0.6" stroke-width="1.6"/>
+    <path d="M54,26 C40,40 40,68 54,82 C68,68 68,40 54,26 Z" stroke="#FFFFFF" stroke-opacity="0.8" stroke-width="1.8"/>
+    <circle cx="54" cy="54" r="28" stroke="#FFFFFF" stroke-width="2.5"/>
+  </g>
+</svg>

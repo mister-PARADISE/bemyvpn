@@ -1,0 +1,20 @@
+[package]
+name = "bmv-signal"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+bmv-common.workspace = true
+serde = { workspace = true }
+serde_json.workspace = true
+tokio = { workspace = true }
+# Клиент координатора — чистый WebSocket (wss). Один персистентный сокет: сокет =
+# живость хоста, каталог/знакомство пушем. webpki-roots — встроенные корневые CA
+# (не тянем системное хранилище, важно для Android/iOS).
+tokio-tungstenite = { version = "0.24", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
+# КРИПТО-ПРОВАЙДЕР ЯВНО: rustls 0.23 сам по себе провайдера не несёт — на платформах,
+# где в дереве нет других rustls-потребителей (Android/iOS!), первый wss:// падал бы
+# паникой «no process-level CryptoProvider». Несём ring сами и ставим в install_default.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+futures-util = { version = "0.3", default-features = false, features = ["sink"] }

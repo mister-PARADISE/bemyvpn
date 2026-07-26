@@ -1,0 +1,10 @@
+[package]
+name = "bmv-config"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+bmv-common.workspace = true
+serde.workspace = true
+toml.workspace = true

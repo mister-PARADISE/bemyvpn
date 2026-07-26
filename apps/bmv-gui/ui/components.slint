@@ -1,0 +1,315 @@
+// Переиспользуемые блоки — построчный перенос iOS ContentView.swift:
+// плитки (Stat/Copy/Action), кнопки, карточка, герой-круг с пульсом, поле ввода.
+import { Theme } from "theme.slint";
+import { IconCopy, IconCheck, IconRefresh } from "icons.slint";
+
+// Модель карточки хоста (заполняет Rust).
+export struct HostRow {
+    id: string,
+    name: string,
+    flag-img: image,
+    has-flag: bool,
+    subtitle: string,
+    obfs: bool,          // «Скрытный» — значок в подписи
+    locked: bool,
+    usable: bool,
+    fill: float,         // заполненность 0..1 (полоса под подписью)
+    code: string,
+    ip: string,
+    country: string,
+    guests: string,
+    access: string,
+    proto: string,       // имя протокола
+    proto-id: string,    // сырой id протокола (для значка)
+}
+
+// ── Точка статуса (с пульсом) ────────────────────────────────────────────────
+export component Dot inherits Rectangle {
+    in property <color> fill: Theme.green;
+    in property <bool> pulse: false;
+    property <float> t: Math.mod(animation-tick() / 1ms, 2000) / 2000;
+    width: 11px;
+    height: 11px;
+    border-radius: 5.5px;
+    background: root.fill;
+    opacity: pulse ? (t < 0.5 ? 1 - 1.3 * t : 0.35 + 1.3 * (t - 0.5)) : 1.0;
+}
+
+// ── Герой-круг: заливка/кольцо в цвет статуса + расходящаяся волна ───────────
+export component HeroCircle inherits Rectangle {
+    in property <color> tint: Theme.accent;
+    in property <bool> pulsing: false;
+    in property <bool> glow: false;
+    property <float> t: Math.mod(animation-tick() / 1ms, 1200) / 1200;
+    height: 88px;
+    // Волна расходится, пока идёт процесс (проверка/пробитие).
+    if pulsing: Rectangle {
+        property <length> d: 84px * (1 + 0.28 * root.t);
+        x: (parent.width - self.d) / 2;
+        y: (88px - self.d) / 2;
+        width: self.d;
+        height: self.d;
+        border-radius: self.d / 2;
+        border-width: 2px;
+        border-color: root.tint.with-alpha(0.5 * (1 - root.t));
+    }
+    // Свечение (тень iOS) — мягкий ореол позади круга.
+    if glow: Rectangle {
+        x: (parent.width - 108px) / 2;
+        y: -10px;
+        width: 108px;
+        height: 108px;
+        border-radius: 54px;
+        background: @radial-gradient(circle, root.tint.with-alpha(0.22) 0%, transparent 70%);
+    }
+    Rectangle {
+        x: (parent.width - 84px) / 2;
+        y: 2px;
+        width: 84px;
+        height: 84px;
+        border-radius: 42px;
+        background: root.tint.with-alpha(0.13);
+        border-width: 1px;
+        border-color: root.tint.with-alpha(0.3);
+    }
+    // Значок кладёт страница (@children поверх круга).
+    @children
+}
+
+// ── Плитки ───────────────────────────────────────────────────────────────────
+
+// Каркас плитки: подпись мелко сверху, значение снизу (TileBody на iOS).
+component TileFrame inherits Rectangle {
+    in property <color> stroke: #FFFFFF12;
+    // Равные колонки: и min-, и preferred-width = 0 → ширину задаёт ТОЛЬКО stretch
+    // (иначе Slint сперва даёт каждой плитке preferred по её содержимому, и длинный
+    // код перетягивает место у IP). clip — чтобы длинное значение не вылезало.
+    min-width: 0px;
+    preferred-width: 0px;
+    clip: true;
+    height: 52px;
+    border-radius: 12px;
+    background: Theme.tile;
+    border-width: 1px;
+    border-color: root.stroke;
+    animate border-color { duration: 180ms; easing: ease-out; }
+}
+
+// Плитка-факт. Значок — ПОСЛЕ значения (как копи-значок у CopyTile), значение
+// всегда прижато влево → все плитки в сетке выровнены одинаково.
+export component StatTile inherits TileFrame {
+    in property <string> label;
+    in property <string> value;
+    in property <color> tint: Theme.fg;
+    VerticalLayout {
+        padding-left: 11px; padding-right: 11px; padding-top: 9px; padding-bottom: 9px;
+        spacing: 4px;
+        Text { text: root.label; color: Theme.dim; font-size: 10px; font-weight: 900; letter-spacing: 0.7px; }
+        HorizontalLayout {
+            spacing: 5px;
+            Text {
+                text: root.value; color: root.tint; font-size: 13.5px; font-weight: 600;
+                overflow: elide; horizontal-stretch: 1; min-width: 0px; vertical-alignment: center;
+            }
+            VerticalLayout { alignment: center; @children }
+        }
+    }
+}
+
+// Плитка со значением, которое копируется тапом (код, IP).
+export component CopyTile inherits TileFrame {
+    in property <string> label;
+    in property <string> value;
+    callback copy(string);
+    property <bool> copied: false;
+    stroke: copied ? Theme.green.with-alpha(0.5) : #FFFFFF12;
+    reset := Timer {
+        interval: 1.3s;
+        running: root.copied;
+        triggered() => { root.copied = false; }
+    }
+    VerticalLayout {
+        padding-left: 11px; padding-right: 11px; padding-top: 9px; padding-bottom: 9px;
+        spacing: 4px;
+        Text { text: root.label; color: Theme.dim; font-size: 10px; font-weight: 900; letter-spacing: 0.7px; }
+        HorizontalLayout {
+            spacing: 5px;
+            Text {
+                text: root.copied ? "Скопировано" : root.value;
+                color: root.copied ? Theme.green : Theme.fg;
+                font-size: 13.5px; font-weight: 600;
+                overflow: elide; horizontal-stretch: 1; min-width: 0px; vertical-alignment: center;
+            }
+            if root.value != "" && root.value != "—": VerticalLayout {
+                alignment: center;
+                if !root.copied: IconCopy { width: 13px; height: 13px; tint: Theme.accent; }
+                if root.copied: IconCheck { width: 13px; height: 13px; tint: Theme.green; }
+            }
+        }
+    }
+    ta := TouchArea {
+        clicked => {
+            if (root.value != "" && root.value != "—") {
+                root.copy(root.value);
+                root.copied = true;
+            }
+        }
+    }
+}
+
+// Плитка-кнопка (перепроверить пинг).
+export component ActionTile inherits TileFrame {
+    in property <string> label;
+    in property <string> value;
+    in property <color> tint: Theme.fg;
+    in property <bool> busy: false;
+    callback action;
+    VerticalLayout {
+        padding-left: 11px; padding-right: 11px; padding-top: 9px; padding-bottom: 9px;
+        spacing: 4px;
+        Text { text: root.label; color: Theme.dim; font-size: 10px; font-weight: 900; letter-spacing: 0.7px; }
+        HorizontalLayout {
+            spacing: 5px;
+            Text {
+                text: root.busy ? "проверяю…" : root.value;
+                color: root.busy ? Theme.dim : root.tint;
+                font-size: 13.5px; font-weight: 600;
+                overflow: elide; horizontal-stretch: 1; vertical-alignment: center;
+            }
+            VerticalLayout {
+                alignment: center;
+                IconRefresh { width: 13px; height: 13px; tint: Theme.accent; opacity: root.busy ? 0.5 : 1.0; }
+            }
+        }
+    }
+    TouchArea { clicked => { root.action(); } }
+}
+
+// ── Кнопки ───────────────────────────────────────────────────────────────────
+
+// Кнопка в карточке: значок + подпись на приподнятой плитке (CardButton iOS).
+export component CardButton inherits Rectangle {
+    in property <string> title;
+    in property <bool> copied: false;    // внешнее «Скопировано ✓» (управляет страница)
+    in property <bool> feedback: false;  // сам показать «Скопировано» после клика (копи-кнопки)
+    property <bool> did: false;
+    property <bool> show: root.copied || root.did;
+    callback clicked;
+    height: 44px;
+    min-width: 0px;         // в ряду «Код | QR» кнопки строго 50/50 —
+    preferred-width: 0px;   // ширину задаёт stretch, а не длина «Скопировано»
+    clip: true;
+    border-radius: 12px;
+    background: ta.has-hover ? Theme.tile.brighter(0.12) : Theme.tile;
+    border-width: 1px;
+    border-color: root.show ? Theme.green.with-alpha(0.5) : #FFFFFF14;
+    animate border-color { duration: 180ms; easing: ease-out; }
+    reset := Timer { interval: 1.3s; running: root.did; triggered() => { root.did = false; } }
+    HorizontalLayout {
+        alignment: center;
+        spacing: 7px;
+        VerticalLayout { alignment: center; @children }
+        Text {
+            text: root.show ? "Скопировано" : root.title;
+            color: root.show ? Theme.green : Theme.fg;
+            font-size: 14px; font-weight: 700; overflow: elide; min-width: 0px; vertical-alignment: center;
+        }
+    }
+    ta := TouchArea { clicked => { if (root.feedback) { root.did = true; } root.clicked(); } }
+}
+
+// Главная градиентная кнопка.
+export component GradientButton inherits Rectangle {
+    in property <string> title;
+    in property <bool> enabled: true;
+    in property <length> corner: 14px;
+    callback clicked;
+    height: 50px;
+    border-radius: root.corner;
+    background: @linear-gradient(90deg, Theme.accent 0%, Theme.accent2 100%);
+    opacity: root.enabled ? (ta.has-hover ? 0.92 : 1.0) : 0.5;
+    Text {
+        text: root.title; color: white; font-size: 16px; font-weight: 700;
+        horizontal-alignment: center; vertical-alignment: center;
+        width: 100%; height: 100%;
+    }
+    ta := TouchArea { enabled: root.enabled; clicked => { root.clicked(); } }
+}
+
+// ── Карточка и подписи ───────────────────────────────────────────────────────
+
+export component Card inherits Rectangle {
+    border-radius: 16px;
+    background: Theme.panel;
+    VerticalLayout {
+        padding: 16px;
+        spacing: 10px;
+        @children
+    }
+}
+
+export component SectionLabel inherits Text {
+    color: Theme.dim;
+    font-size: 13px;
+    font-weight: 700;
+}
+
+// ── Поле ввода в стиле iOS ───────────────────────────────────────────────────
+export component Field inherits Rectangle {
+    in property <string> placeholder;
+    in-out property <string> text;
+    in property <bool> secure: false;
+    callback edited;
+    callback accepted;
+    height: 48px;
+    border-radius: 14px;
+    background: Theme.card;
+    input := TextInput {
+        x: 14px;
+        width: parent.width - 28px;
+        height: parent.height;
+        vertical-alignment: center;
+        color: Theme.fg;
+        font-size: 15px;
+        input-type: root.secure ? InputType.password : InputType.text;
+        text <=> root.text;
+        single-line: true;
+        edited => { root.edited(); }
+        accepted => { root.accepted(); }
+    }
+    if root.text == "": Text {
+        x: 14px;
+        height: parent.height;
+        text: root.placeholder;
+        color: Theme.dim;
+        font-size: 15px;
+        vertical-alignment: center;
+    }
+}
+
+// Толстый чип: значок сверху, название снизу (bigChip iOS).
+export component BigChip inherits Rectangle {
+    in property <string> name;
+    in property <bool> on: false;
+    callback clicked;
+    height: 64px;
+    border-radius: 14px;
+    background: root.on
+        ? @linear-gradient(180deg, Theme.accent 0%, Theme.accent2 100%)
+        : (ta.has-hover ? Theme.card.brighter(0.15) : Theme.card);
+    border-width: 1px;
+    border-color: root.on ? transparent : #FFFFFF12;
+    VerticalLayout {
+        alignment: center;
+        spacing: 5px;
+        HorizontalLayout { alignment: center; @children }
+        Text {
+            text: root.name;
+            color: root.on ? white : Theme.dim;
+            font-size: 13px; font-weight: 700;
+            horizontal-alignment: center;
+            overflow: elide;
+        }
+    }
+    ta := TouchArea { clicked => { root.clicked(); } }
+}

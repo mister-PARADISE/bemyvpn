@@ -1,0 +1,113 @@
+// Вкладка «Сервер» — построчный перенос iOS ServerTab: герой-статус координатора
+// (кольцо + пинг/хостов/IP), поле другого адреса, «Сохранить и проверить»,
+// «Вернуть стандартный сервер», недавние серверы. Трафик через координатор НЕ идёт.
+import { Theme } from "theme.slint";
+import { StatTile, ActionTile, CopyTile, SectionLabel, GradientButton, Field, HeroCircle } from "components.slint";
+import { IconAntenna, IconAntennaOff } from "icons.slint";
+import { ScrollView } from "std-widgets.slint";
+
+export component ServerPage inherits Rectangle {
+    in property <string> coord-url;
+    in property <int> coord-state;      // 0 проверяю · 1 на связи · 2 нет связи
+    in property <int> coord-ping;       // мс
+    in property <int> coord-hosts;
+    in property <string> coord-ip;
+    in property <bool> coord-is-default: true;
+    in property <[string]> history;
+    in-out property <string> coord-field;
+    callback set-coord(string);
+    callback reset-coord();
+    callback recheck();
+    callback copy-text(string);
+
+    property <color> tint: coord-state == 1 ? Theme.green : coord-state == 2 ? Theme.red : Theme.amber;
+    property <string> status-text: coord-state == 1 ? "На связи" : coord-state == 2 ? "Нет связи" : "Проверяю связь…";
+    property <color> ping-color: coord-ping < 200 ? Theme.green : coord-ping < 600 ? Theme.fg : Theme.amber;
+
+    ScrollView {
+        vertical-scrollbar-policy: ScrollBarPolicy.always-off;
+        horizontal-scrollbar-policy: ScrollBarPolicy.always-off;
+        VerticalLayout {
+            alignment: start;
+            padding: Theme.pad;
+            padding-bottom: 108px;
+            spacing: Theme.gap;
+
+            // ── Герой-статус ──
+            Rectangle {
+                border-radius: 22px;
+                background: @linear-gradient(180deg, Theme.panel 0%, Theme.card 100%);
+                border-width: 1px;
+                border-color: root.tint.with-alpha(0.2);
+                VerticalLayout {
+                    padding-top: 26px; padding-bottom: 26px;
+                    padding-left: 18px; padding-right: 18px;
+                    spacing: 12px;
+                    HeroCircle {
+                        tint: root.tint;
+                        pulsing: root.coord-state == 0;
+                        glow: root.coord-state == 1;
+                        HorizontalLayout {
+                            alignment: center;
+                            VerticalLayout {
+                                alignment: center;
+                                if root.coord-state != 2: IconAntenna { width: 36px; height: 36px; tint: root.tint; }
+                                if root.coord-state == 2: IconAntennaOff { width: 36px; height: 36px; tint: root.tint; hole: Theme.card; }
+                            }
+                        }
+                    }
+                    Text { text: root.status-text; color: Theme.fg; font-size: 21px; font-weight: 800; horizontal-alignment: center; }
+                    Text { text: root.coord-url; color: Theme.dim; font-size: 13px; font-family: "monospace"; horizontal-alignment: center; overflow: elide; }
+
+                    VerticalLayout {
+                        padding-top: 4px;
+                        spacing: 8px;
+                        HorizontalLayout {
+                            spacing: 8px;
+                            ActionTile {
+                                label: "ПИНГ";
+                                value: root.coord-state == 1 ? (root.coord-ping + " мс") : "—";
+                                tint: root.ping-color;
+                                busy: root.coord-state == 0;
+                                horizontal-stretch: 1;
+                                action => { root.recheck(); }
+                            }
+                            StatTile { label: "ХОСТОВ"; value: root.coord-hosts; horizontal-stretch: 1; }
+                        }
+                        CopyTile { label: "ВАШ IP"; value: root.coord-ip == "" ? "—" : root.coord-ip; copy(t) => { root.copy-text(t); } }
+                    }
+                }
+            }
+
+            Text {
+                text: "Сервер ведёт каталог хостов и сводит участников. Ваш трафик через него не проходит.";
+                color: Theme.dim; font-size: 12px; wrap: word-wrap;
+            }
+
+            SectionLabel { text: "Другой адрес сервера"; }
+            Field { placeholder: "http://адрес:3330"; text <=> root.coord-field; accepted => { root.set-coord(root.coord-field); } }
+            GradientButton { title: "Сохранить и проверить"; clicked => { root.set-coord(root.coord-field); } }
+            if !root.coord-is-default: Text {
+                text: "Вернуть стандартный сервер";
+                color: Theme.dim; font-size: 13px; horizontal-alignment: center;
+                TouchArea { clicked => { root.reset-coord(); } }
+            }
+
+            if root.history.length > 0: SectionLabel { text: "Недавние серверы"; }
+            if root.history.length > 0: HorizontalLayout {
+                spacing: 8px;
+                for url in root.history: Rectangle {
+                    height: 36px;
+                    border-radius: 16px;
+                    background: Theme.card-sel;
+                    HorizontalLayout {
+                        padding-left: 14px; padding-right: 14px;
+                        Text { text: url; color: Theme.fg; font-size: 13px; font-weight: 700; vertical-alignment: center; }
+                    }
+                    TouchArea { clicked => { root.coord-field = url; root.set-coord(url); } }
+                }
+                Rectangle { horizontal-stretch: 1; }
+            }
+        }
+    }
+}

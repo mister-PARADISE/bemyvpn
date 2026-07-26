@@ -1,0 +1,11 @@
+[package]
+name = "bmv-common"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+async-trait.workspace = true
+tokio.workspace = true
+rand.workspace = true

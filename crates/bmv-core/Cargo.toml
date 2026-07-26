@@ -1,0 +1,21 @@
+[package]
+name = "bmv-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+bmv-common.workspace = true
+bmv-config.workspace = true
+bmv-protocol.workspace = true
+bmv-net.workspace = true
+bmv-signal.workspace = true
+bmv-tunnel.workspace = true
+async-trait.workspace = true
+tokio.workspace = true
+parking_lot.workspace = true
+tracing.workspace = true
+log.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }

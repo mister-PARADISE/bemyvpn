@@ -1,0 +1,228 @@
+//! LinkIo — мост между датаграммным `Link` и `AsyncRead + AsyncWrite`.
+//!
+//! `ipstack` хочет «устройство» как байтовый поток, где каждый read/write —
+//! один IP-пакет (как у TUN). Наш `Link` датаграммный (send/recv пакет целиком),
+//! так что адаптер один-в-один: read = один `Link::recv`, write = один
+//! `Link::send`. Границы пакетов сохраняются.
+//!
+//! Две тонкости записи:
+//!
+//! 1. Отправку в сеть делает ОТДЕЛЬНАЯ фоновая задача (её кормит очередь). Петля
+//!    `ipstack` — одна задача с `select!` между чтением устройства (ACK гостя) и
+//!    записью (данные гостю); если бы запись блокировалась на переполненном
+//!    UDP-буфере, петля перестала бы читать ACK'и и поток встал бы. Поэтому в сеть
+//!    пишет фоновый сток, а `poll_write` лишь кладёт пакет в очередь.
+//!
+//! 2. ПЕЙСИНГ (опциональный). Некоторые провайдеры полисят исходящий UDP по
+//!    пакетам-в-секунду токен-бакетом (замеряли ~2800 pps): burst проходит,
+//!    дальше режется → потеря → слабый ретрансмит ipstack не вывозит → поток
+//!    встаёт. Для ТАКИХ хостов есть пейсинг чуть ниже лимита. НО на нормальных
+//!    сетях он зря режет скорость, поэтому ПО УМОЛЧАНИЮ ВЫКЛЮЧЕН — темп задаёт
+//!    само TCP-окно гостя. Включается env `BMV_TX_PPS=<пакетов/с>` (0 = без
+//!    пейсинга). При нехватке токенов `poll_write` возвращает Pending (тормозит
+//!    ipstack, не теряет пакет).
+
+use std::future::Future;
+use std::io;
+use std::pin::Pin;
+use std::sync::Arc;
+use std::task::{Context, Poll};
+
+use bmv_common::Link;
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+use tokio::sync::mpsc;
+use tokio::time::{Duration, Instant, Sleep};
+use tokio_util::sync::PollSender;
+
+/// Разрешённый мгновенный всплеск (пакетов) при включённом пейсинге.
+const BURST: f64 = 50.0;
+/// Глубина очереди к фоновому стоку.
+const SEND_QUEUE: usize = 4096;
+/// Глубина приёмной очереди (readahead: UDP-приём не ждёт, пока ipstack
+/// переварит предыдущий пакет).
+const RECV_QUEUE: usize = 512;
+/// Потолок пула переиспользуемых приёмных буферов (возвращаются из poll_read).
+const POOL_CAP: usize = RECV_QUEUE + 8;
+
+/// Целевой темп отправки из env `BMV_TX_PPS` (пакетов/с). 0/пусто → пейсинг ВЫКЛ.
+fn tx_pps() -> f64 {
+    std::env::var("BMV_TX_PPS")
+        .ok()
+        .and_then(|s| s.parse::<f64>().ok())
+        .filter(|v| *v > 0.0)
+        .unwrap_or(0.0)
+}
+
+pub struct LinkIo {
+    /// Приёмная очередь: постоянная фоновая задача зовёт `link.recv()` и кормит
+    /// канал; `poll_read` лишь опрашивает его (без пересоздания boxed-future и
+    /// аллокаций на каждый пакет, как было раньше). Закрытие канала = EOF.
+    recv_rx: mpsc::Receiver<Vec<u8>>,
+    /// Очередь к фоновому стоку. PollSender даёт НАСТОЯЩИЙ backpressure: когда
+    /// очередь полна, `poll_write` возвращает Pending (а не «отправил» с тихим
+    /// дропом) — ipstack притормаживает чтение, его TCP-окно закрывается само.
+    send_tx: PollSender<Vec<u8>>,
+    // Токен-бакет пейсинга (живёт в poll_write). rate<=0 → пейсинг выключен.
+    rate: f64,
+    tokens: f64,
+    last: Instant,
+    sleep: Option<Pin<Box<Sleep>>>,
+    /// Одноразовый сигнал «канал умер» — по нему хост прерывает свой стек.
+    /// (ipstack сам EOF устройства не обрабатывает, поэтому сносим его снаружи.)
+    dead: Option<tokio::sync::oneshot::Sender<()>>,
+    eof: bool,
+    /// Пул переиспользуемых приёмных буферов. Фоновая задача берёт буфер отсюда,
+    /// `recv_into` заполняет его, `poll_read` после копирования в ipstack ВОЗВРАЩАЕТ
+    /// буфер сюда → в устоявшемся режиме приём вообще не аллоцирует.
+    pool: Arc<std::sync::Mutex<Vec<Vec<u8>>>>,
+}
+
+impl LinkIo {
+    pub fn new(link: Arc<dyn Link>, dead: tokio::sync::oneshot::Sender<()>) -> Self {
+        let (send_tx, mut send_rx) = mpsc::channel::<Vec<u8>>(SEND_QUEUE);
+        // Единственный, кто реально зовёт link.send. Пейсинг — на входе в очередь
+        // (в poll_write), поэтому здесь просто проталкиваем в сеть по мере сил.
+        let sender = link.clone();
+        tokio::spawn(async move {
+            while let Some(pkt) = send_rx.recv().await {
+                if sender.send(&pkt).await.is_err() {
+                    break; // канал мёртв; смерть заметит и recv-путь (keepalive)
+                }
+            }
+        });
+        // Единственный, кто зовёт link.recv: кормит приёмную очередь. Обрыв
+        // (EOF/ошибка/keepalive-смерть) → задача выходит, tx дропается, канал
+        // закрывается → poll_read увидит None и объявит сессию мёртвой.
+        let (recv_tx, recv_rx) = mpsc::channel::<Vec<u8>>(RECV_QUEUE);
+        let pool: Arc<std::sync::Mutex<Vec<Vec<u8>>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let receiver = link;
+        let rpool = pool.clone();
+        tokio::spawn(async move {
+            loop {
+                // Буфер из пула (или свежий, если пусто/гонка) — заполняем recv_into.
+                let mut buf = rpool.lock().unwrap().pop().unwrap_or_default();
+                match receiver.recv_into(&mut buf).await {
+                    Ok(true) => {
+                        if recv_tx.send(buf).await.is_err() {
+                            break; // LinkIo дропнут — сессии больше нет
+                        }
+                    }
+                    _ => break, // Ok(false)=закрыт или ошибка/keepalive-смерть
+                }
+            }
+        });
+        LinkIo {
+            recv_rx,
+            send_tx: PollSender::new(send_tx),
+            rate: tx_pps(),
+            tokens: BURST,
+            last: Instant::now(),
+            sleep: None,
+            dead: Some(dead),
+            eof: false,
+            pool,
+        }
+    }
+
+    fn mark_dead(&mut self) {
+        self.eof = true;
+        if let Some(tx) = self.dead.take() {
+            let _ = tx.send(());
+        }
+    }
+}
+
+impl AsyncRead for LinkIo {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        if self.eof {
+            return Poll::Pending; // мёртв — паркуемся, стек прервут снаружи по сигналу
+        }
+        match self.recv_rx.poll_recv(cx) {
+            Poll::Ready(Some(pkt)) => {
+                if pkt.len() > buf.remaining() {
+                    // Не должно случаться (ipstack всегда даёт буфер ≥ MTU). Но если
+                    // случится — обрезать IP-пакет нельзя (порча, не пройдёт checksum
+                    // → тихо теряется). Роняем пакет ЦЕЛИКОМ (как сетевую потерю,
+                    // TCP ретрансмитит) и будим себя за следующим — но НЕ EOF.
+                    tracing::warn!("linkio: пакет {} Б > буфера {} Б — дропнут целиком", pkt.len(), buf.remaining());
+                    cx.waker().wake_by_ref();
+                    return Poll::Pending;
+                }
+                buf.put_slice(&pkt);
+                // Возвращаем буфер в пул (с ограничением, чтобы не рос бесконечно).
+                if let Ok(mut p) = self.pool.lock() {
+                    if p.len() < POOL_CAP {
+                        p.push(pkt);
+                    }
+                }
+                Poll::Ready(Ok(()))
+            }
+            Poll::Ready(None) => {
+                self.mark_dead(); // приёмная задача вышла: EOF/ошибка/keepalive
+                Poll::Pending
+            }
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
+impl AsyncWrite for LinkIo {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        // Пейсинг только если задан темп (env BMV_TX_PPS). Иначе — полная
+        // скорость: темп задаёт TCP-окно гостя, ipstack не всплескивает сверх него.
+        if self.rate > 0.0 {
+            let rate = self.rate;
+            // Пополняем токены по прошедшему времени.
+            let now = Instant::now();
+            self.tokens = (self.tokens + now.duration_since(self.last).as_secs_f64() * rate).min(BURST);
+            self.last = now;
+
+            // Нет токена — тормозим ipstack (Pending), ждём таймер, НЕ теряем пакет.
+            if self.tokens < 1.0 {
+                if self.sleep.is_none() {
+                    let wait = Duration::from_secs_f64((1.0 - self.tokens) / rate);
+                    self.sleep = Some(Box::pin(tokio::time::sleep(wait)));
+                }
+                let ready = self.sleep.as_mut().unwrap().as_mut().poll(cx).is_ready();
+                if !ready {
+                    return Poll::Pending;
+                }
+                self.sleep = None;
+                self.tokens = 1.0; // проспали ровно один токен
+            }
+            self.tokens -= 1.0;
+        }
+
+        // Backpressure вместо тихого дропа: резервируем слот в очереди. Полна →
+        // Pending (ipstack перестанет читать upstream, его окно закроется — это и
+        // есть правильный flow control). Пакет НЕ теряем и не выдаём фальшивый Ok
+        // (иначе ipstack взводил RTO на сегмент, который не ушёл, → столл).
+        match self.send_tx.poll_reserve(cx) {
+            Poll::Ready(Ok(())) => {}
+            Poll::Ready(Err(_)) => {
+                return Poll::Ready(Err(io::Error::new(io::ErrorKind::BrokenPipe, "link закрыт")));
+            }
+            Poll::Pending => return Poll::Pending,
+        }
+        match self.send_tx.send_item(buf.to_vec()) {
+            Ok(()) => Poll::Ready(Ok(buf.len())),
+            Err(_) => Poll::Ready(Err(io::Error::new(io::ErrorKind::BrokenPipe, "link закрыт"))),
+        }
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+}

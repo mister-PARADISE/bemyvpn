@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=BeMyVPN
+GenericName=P2P VPN
+Comment=Свободный интернет через друга — P2P VPN
+Exec=bemyvpn-gui
+Icon=bemyvpn
+Categories=Network;Security;
+Terminal=false
+StartupWMClass=bemyvpn-gui

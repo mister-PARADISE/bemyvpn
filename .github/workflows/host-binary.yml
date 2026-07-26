@@ -1,0 +1,34 @@
+name: Host binary (Linux)
+
+# Быстрая сборка ТОЛЬКО linux-бинаря `bemyvpn` (он же host + coordinator в режиме
+# server) для деплоя на серверы. Один ubuntu-раннер (4 ядра / 16 ГБ) собирает за
+# ~5-8 мин вместо ~20-40 на 1-ядерном VPS, и сервер вообще не трогается.
+# Бинарь кладётся как СКАЧИВАЕМЫЙ артефакт (не релиз, без тега).
+#
+# Деплой:
+#   gh workflow run host-binary.yml            # запустить сборку
+#   gh run watch                               # (опц.) следить
+#   gh run download -n bemyvpn-linux-x86_64    # скачать бинарь
+#   scp bemyvpn root@<server>:...  &&  restart # разлить + рестарт
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      # Кеш cargo-реестра и target — повторные сборки идут ещё быстрее.
+      - uses: Swatinem/rust-cache@v2
+      - name: Сборка bemyvpn (release)
+        run: cargo build --release -p bmv-cli
+      - name: Выложить бинарь артефактом
+        uses: actions/upload-artifact@v4
+        with:
+          name: bemyvpn-linux-x86_64
+          path: target/release/bemyvpn
+          if-no-files-found: error

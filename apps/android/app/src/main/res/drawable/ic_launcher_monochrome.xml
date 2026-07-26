@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Монохромный глиф для тем Android 13+ (система красит сама): те же кольца
+     одним цветом, без перекраски пересечений. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:pathData="M49.2,54 a15.2,15.2 0 1,0 30.4,0 a15.2,15.2 0 1,0 -30.4,0"
+        android:fillColor="#00000000"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="8.8" />
+    <path
+        android:pathData="M28.4,54 a15.2,15.2 0 1,0 30.4,0 a15.2,15.2 0 1,0 -30.4,0"
+        android:fillColor="#00000000"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="8.8" />
+</vector>

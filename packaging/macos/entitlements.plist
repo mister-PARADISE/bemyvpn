@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Entitlements для нотаризованной сборки (hardened runtime). Приложение НЕ в
+     App Sandbox (гостю нужен utun/маршруты), поэтому список минимальный. Сетевой
+     доступ у несэндбоксного приложения и так есть; JIT нам не нужен (femtovg не
+     джитит). Файл — задел под подпись Developer ID, применяется только когда есть
+     сертификат (env MACOS_SIGN_ID); при ад-хок подписи не используется. -->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Разрешаем грузить свои dylib/фреймворки без строгой валидации библиотек
+         (на будущее — если появятся встроенные плагины/рендереры). -->
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+</dict>
+</plist>

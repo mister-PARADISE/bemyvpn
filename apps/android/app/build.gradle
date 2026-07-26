@@ -1,0 +1,94 @@
+plugins {
+    id 'com.android.application'
+    id 'org.jetbrains.kotlin.android'
+}
+
+// Ключ для Google Play читаем из keystore.properties — файл НЕ в репозитории
+// (см. .gitignore). Нет файла — release собирается отладочным ключом, как раньше,
+// чтобы прямая раздача APK продолжала работать без ключа.
+def keystorePropsFile = rootProject.file('keystore.properties')
+def keystoreProps = new Properties()
+if (keystorePropsFile.exists()) {
+    keystoreProps.load(new FileInputStream(keystorePropsFile))
+}
+
+android {
+    namespace 'org.bemyvpn'
+    compileSdk 35
+
+    defaultConfig {
+        applicationId 'org.bemyvpn'
+        minSdk 24
+        // Google Play не принимает сборки со старым targetSdk. 33 отклонялся.
+        targetSdk 35
+        versionCode 100
+        versionName '1.0'
+        ndk {
+            abiFilters 'arm64-v8a'
+        }
+    }
+
+
+    signingConfigs {
+        if (keystorePropsFile.exists()) {
+            upload {
+                storeFile rootProject.file(keystoreProps['storeFile'])
+                storePassword keystoreProps['storePassword']
+                keyAlias keystoreProps['keyAlias']
+                keyPassword keystoreProps['keyPassword']
+            }
+        }
+    }
+
+    buildTypes {
+        debug {
+            // отладочная сборка — быстрая, без минификации (для разработки)
+        }
+        release {
+            // Боевая сборка: R8 срезает неиспользуемый код androidx/kotlin и
+            // ресурсы — APK заметно меньше БЕЗ потери функционала (JNI-мост
+            // защищён правилами в proguard-rules.pro).
+            minifyEnabled true
+            shrinkResources true
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            // Есть keystore.properties → подписываем боевым ключом (для Google
+            // Play, он отладочные подписи не принимает). Нет файла → debug-ключ,
+            // как раньше: прямая раздача APK продолжает работать.
+            signingConfig keystorePropsFile.exists() ? signingConfigs.upload : signingConfigs.debug
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+    kotlinOptions {
+        jvmTarget = '17'
+    }
+    // UI — Jetpack Compose: декларативный, как SwiftUI на iOS. Экраны Android —
+    // построчный перенос ContentView.swift, включая анимации и отступы.
+    buildFeatures {
+        compose true
+    }
+    composeOptions {
+        // Совместим с Kotlin 1.9.24 (см. таблицу compose-kotlin compatibility).
+        kotlinCompilerExtensionVersion '1.5.14'
+    }
+}
+
+dependencies {
+    implementation platform('androidx.compose:compose-bom:2024.06.00')
+    implementation 'androidx.compose.ui:ui'
+    implementation 'androidx.compose.foundation:foundation'
+    // material3 — ТОЛЬКО ради Slider/CircularProgressIndicator (дизайн свой,
+    // Material-темизация не используется). R8 срежет остальное.
+    implementation 'androidx.compose.material3:material3'
+    // Аналоги SF Symbols из iOS-приложения (Shield/Router/Bolt/…). Пакет большой,
+    // но R8 в release оставляет только реально использованные иконки.
+    implementation 'androidx.compose.material:material-icons-extended'
+    implementation 'androidx.activity:activity-compose:1.9.0'
+    implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1'
+    implementation 'androidx.core:core-ktx:1.13.1'
+    // Генерация QR (zxing:core) + ВСТРОЕННЫЙ сканер камеры (zxing-android-embedded).
+    implementation 'com.journeyapps:zxing-android-embedded:4.3.0'
+}

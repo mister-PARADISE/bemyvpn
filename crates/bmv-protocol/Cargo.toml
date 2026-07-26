@@ -1,0 +1,21 @@
+[package]
+name = "bmv-protocol"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+bmv-common.workspace = true
+async-trait.workspace = true
+tokio.workspace = true
+snow.workspace = true
+rand.workspace = true
+# Деривация маски nonce для «Маскировки» (QUIC-подобная защита шапки). Проверенный
+# крейт RustCrypto — свою крипту не пишем. sha2 и так в дереве (snow тянет).
+sha2 = "0.10"
+curve25519-elligator2 = "0.1.0-alpha.2"
+
+[features]
+default = []
+# тяжёлые транспорты подключаются флагами (webrtc-rs и т.п.)
+webrtc = []

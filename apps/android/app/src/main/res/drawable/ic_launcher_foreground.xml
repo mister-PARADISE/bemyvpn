@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- «Звено» BeMyVPN: два сцепленных кольца (канон: brand/logo.svg, глиф ×0.8
+     в безопасной зоне adaptive-иконки). Синее — гость, мятное — хост.
+     Сцепка: снизу синее поверх; сверху зелёное перерисовано в клипе верхней
+     полудуги внешнего круга синего кольца (границы совпадают с кольцами — швов нет). -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Зелёное кольцо (центр 64.4,54, r=15.2, толщина 8.8) -->
+    <path
+        android:pathData="M49.2,54 a15.2,15.2 0 1,0 30.4,0 a15.2,15.2 0 1,0 -30.4,0"
+        android:fillColor="#00000000"
+        android:strokeWidth="8.8">
+        <aapt:attr name="android:strokeColor">
+            <gradient
+                android:type="linear"
+                android:startX="64.4" android:startY="34.4"
+                android:endX="64.4" android:endY="73.6"
+                android:startColor="#FF3EE6A8"
+                android:endColor="#FF14B981" />
+        </aapt:attr>
+    </path>
+
+    <!-- Синее кольцо поверх (центр 43.6,54) — нижнее пересечение синее -->
+    <path
+        android:pathData="M28.4,54 a15.2,15.2 0 1,0 30.4,0 a15.2,15.2 0 1,0 -30.4,0"
+        android:fillColor="#00000000"
+        android:strokeWidth="8.8">
+        <aapt:attr name="android:strokeColor">
+            <gradient
+                android:type="linear"
+                android:startX="43.6" android:startY="34.4"
+                android:endX="43.6" android:endY="73.6"
+                android:startColor="#FF6EA2FF"
+                android:endColor="#FF3D6FE0" />
+        </aapt:attr>
+    </path>
+
+    <!-- Верхнее пересечение — зелёное снова поверх (сцепка) -->
+    <group>
+        <clip-path android:pathData="M24,54 A19.6,19.6 0 0 1 63.2,54 Z" />
+        <path
+            android:pathData="M49.2,54 a15.2,15.2 0 1,0 30.4,0 a15.2,15.2 0 1,0 -30.4,0"
+            android:fillColor="#00000000"
+            android:strokeWidth="8.8">
+            <aapt:attr name="android:strokeColor">
+                <gradient
+                    android:type="linear"
+                    android:startX="64.4" android:startY="34.4"
+                    android:endX="64.4" android:endY="73.6"
+                    android:startColor="#FF3EE6A8"
+                    android:endColor="#FF14B981" />
+            </aapt:attr>
+        </path>
+    </group>
+</vector>

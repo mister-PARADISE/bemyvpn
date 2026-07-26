@@ -1,0 +1,9 @@
+# Аппаратный AES-GCM на ARMv8 (Crypto Extensions) для протокола noise-aes.
+#
+# Крейт `aes` на aarch64 включает интринсики ARMv8 только под cfg-флагом
+# `aes_armv8`. При нём выбор бэкенда РАНТАЙМНЫЙ (через cpufeatures/HWCAP_AES):
+# на устройствах с крипторасширениями — аппаратный AES, на редких без них —
+# безопасный откат на софт (без SIGILL). Без флага AES всегда шёл софтом и
+# проигрывал ChaCha20 — теперь noise-aes реально быстрый на телефонах.
+[target.aarch64-linux-android]
+rustflags = ["--cfg", "aes_armv8"]
