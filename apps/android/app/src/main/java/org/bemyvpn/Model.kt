@@ -51,7 +51,7 @@ fun parseHost(json: String): Host? = try {
 /** Имя протокола по-человечески — без крипто-жаргона, одним словом. */
 fun protoName(p: String): String = when (p) {
     "noise", "noise-aes" -> "Обычный"
-    "noise-obfs" -> "Скрытный"
+    "noise-obfs" -> "Маскировка"
     "plain", "" -> "Без шифра"
     else -> p
 }

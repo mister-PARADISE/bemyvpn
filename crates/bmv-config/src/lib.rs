@@ -180,7 +180,10 @@ impl Default for Config {
             // собственный (см. README → «Свой сервер»). Не захардкожено в логике —
             // это лишь дефолт, любой адрес переопределяет.
             coordinators: vec!["https://bemyvpn.net".into()],
-            default_protocol: "noise".into(),
+            // По умолчанию «Маскировка»: то же шифрование, что и «Обычный», плюс
+            // защита от DPI — провайдер видит просто случайные данные, а не VPN.
+            // Цена — небольшой оверхед; выигрыш в местах с блокировками важнее.
+            default_protocol: "noise-obfs".into(),
             guest: GuestConfig::default(),
             host: HostConfig::default(),
             protocols: ProtocolsConfig::default(),
@@ -312,7 +315,8 @@ mod tests {
     #[test]
     fn defaults_are_sane() {
         let c = Config::default();
-        assert_eq!(c.default_protocol, "noise");
+        // По умолчанию «Маскировка» — шифрование плюс защита от DPI.
+        assert_eq!(c.default_protocol, "noise-obfs");
         assert_eq!(c.guest.dns, "tunnel");
         assert_eq!(c.protocols.reality.sni, "www.mi.com");
         assert_eq!(c.host.max_guests, 4);

@@ -363,6 +363,11 @@ async fn register_host(state: &Db, mut ann: HostAnnounce, observed_ip: String) -
     // Санитизация полей: режем размеры и адреса — защита от мусора/амплификации.
     ann.name = clamp(&ann.name, MAX_NAME);
     ann.country = clamp(&ann.country, MAX_COUNTRY);
+    // Пароль ⇒ скрытая сеть. Ядро это уже соблюдает, но клиент можно подменить,
+    // а каталог обязан быть верным при любом клиенте — правило и здесь.
+    if ann.has_password {
+        ann.public = false;
+    }
     ann.protocol = clamp(&ann.protocol, MAX_PROTOCOL);
     ann.endpoints = ann.endpoints.iter().filter_map(|s| sane_addr(s)).take(MAX_ENDPOINTS).collect();
     // СЕРВЕР ставит IP хоста сам (наблюдаемый), а не берёт на веру — анти-спуфинг.

@@ -6,7 +6,7 @@ import CoreImage.CIFilterBuiltins
 func protoName(_ p: String) -> String {
     switch p {
     case "noise", "noise-aes": return "Обычный"
-    case "noise-obfs": return "Скрытный"
+    case "noise-obfs": return "Маскировка"
     case "plain", "": return "Без шифра"
     default: return p
     }
@@ -18,7 +18,7 @@ func protoName(_ p: String) -> String {
 ///   глаз — видимость хоста в списке
 ///   замок — доступ (пароль)
 /// `eye.slash` тут был ошибкой: он читается как «скрыт из списка», хотя
-/// «Скрытный» — про маскировку трафика, а не про видимость.
+/// «Маскировка» — про маскировку трафика, а не про видимость.
 func protoIcon(_ p: String) -> String {
     switch p {
     case "noise", "noise-aes": return "lock.shield.fill"   // защищено
@@ -383,7 +383,7 @@ func hostSubtitle(_ h: Host) -> Text {
     else if !h.ip.isEmpty { parts.append(h.ip) }
     parts.append("гостей \(h.guests)/\(h.max)")
     let base = Text(parts.joined(separator: " · "))
-    // «Скрытный» отмечаем значком прямо в подписи — видно, не раскрывая карточку.
+    // «Маскировку» отмечаем значком прямо в подписи — видно, не раскрывая карточку.
     return h.proto == "noise-obfs" ? base + Text(" · ") + Text(Image(systemName: protoIcon(h.proto))) : base
 }
 

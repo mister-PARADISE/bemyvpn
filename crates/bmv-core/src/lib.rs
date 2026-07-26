@@ -325,16 +325,24 @@ impl BmvEngine {
 
     /// Собрать анонс из конфига + ЖИВОГО числа гостей + рантайм-настроек.
     fn build_announce(&self) -> bmv_signal::HostAnnounce {
+        // Пароль ⇒ сеть ВСЕГДА скрытая. Паролем закрываются от посторонних, а
+        // публичная карточка светит существование сети, её страну и адрес всему
+        // каталогу — то есть ровно тем, от кого закрывались. Правило живёт ЗДЕСЬ,
+        // в сборке анонса: через неё проходят все платформы и все пути (старт,
+        // смена пароля на лету, восстановление после реконнекта), поэтому
+        // рассогласования между оболочками быть не может.
+        let has_password = !self.host_password.lock().is_empty();
+        let public = self.host_public.load(Ordering::SeqCst) && !has_password;
         bmv_signal::HostAnnounce {
             id: self.host_id.clone(),
             token: self.host_token.clone(),
             name: self.host_name.lock().clone(),
             endpoints: self.host_endpoints.lock().clone(),
             country: self.config.host.country_hint.clone(),
-            public: self.host_public.load(Ordering::SeqCst),
+            public,
             max_guests: self.host_max.load(Ordering::SeqCst),
             guests: self.active_guests.lock().len() as u32,
-            has_password: !self.host_password.lock().is_empty(),
+            has_password,
             protocol: self.host_protocol.lock().clone(),
             code_sig: self.host_code_sig.clone(),
             params: bmv_signal::Params::new(),
@@ -651,5 +659,31 @@ async fn echo_session(link: Box<dyn Link>) -> Result<()> {
             return Ok(());
         }
         link.send(&pkt).await?;
+    }
+}
+
+#[cfg(test)]
+mod announce_tests {
+    use super::*;
+
+    /// Пароль ⇒ сеть скрытая, что бы ни стояло в настройке публичности.
+    /// Правило живёт в build_announce, потому что через неё проходят ВСЕ пути
+    /// (старт, смена пароля на лету, восстановление после реконнекта) и все
+    /// платформы — иначе одна из оболочек рано или поздно разошлась бы с ядром.
+    #[test]
+    fn password_forces_hidden_network() {
+        let mut cfg = bmv_config::Config::default();
+        cfg.host.public = true;
+        cfg.host.password = "секрет".into();
+        let eng = BmvEngine::from_config(cfg);
+        let ann = eng.build_announce();
+        assert!(ann.has_password, "пароль должен быть виден как флаг");
+        assert!(!ann.public, "с паролем сеть обязана быть скрытой");
+
+        // Без пароля публичность работает как обычно.
+        let mut cfg2 = bmv_config::Config::default();
+        cfg2.host.public = true;
+        let eng2 = BmvEngine::from_config(cfg2);
+        assert!(eng2.build_announce().public, "без пароля публичный хост остаётся публичным");
     }
 }

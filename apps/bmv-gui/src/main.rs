@@ -40,7 +40,7 @@ fn uptime_text(sec: u64) -> String {
 fn proto_name(p: &str) -> &str {
     match p {
         "noise" | "noise-aes" => "Обычный",
-        "noise-obfs" => "Скрытный",
+        "noise-obfs" => "Маскировка",
         _ => "Без шифра",
     }
 }

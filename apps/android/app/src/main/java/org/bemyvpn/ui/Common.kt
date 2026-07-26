@@ -72,12 +72,12 @@ import org.bemyvpn.Theme
 // Семейство ЩИТА — уровень защиты трафика: есть / замаскирована / нет.
 fun protoIcon(p: String): ImageVector = when (p) {
     "noise", "noise-aes" -> Icons.Filled.Security          // защищено (щит с замком)
-    "noise-obfs" -> MaskIcon                               // «Скрытный» — маска (как iOS theatermasks)
+    "noise-obfs" -> MaskIcon                               // «Маскировка» — маска (как iOS theatermasks)
     "plain", "" -> Icons.Filled.RemoveModerator            // защиты нет (щит перечёркнут)
     else -> Icons.AutoMirrored.Filled.HelpOutline
 }
 
-/** Маскарадная маска — «Скрытный» протокол (обфускация/маскировка). Аккуратный
+/** Маскарадная маска — «Маскировка» протокол (обфускация/маскировка). Аккуратный
  *  вектор с прорезями-глазами (evenodd), чистый на любом размере. Аналог iOS
  *  theatermasks.fill, но без «мусора» на мелких размерах. */
 val MaskIcon: ImageVector by lazy {

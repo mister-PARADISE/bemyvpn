@@ -1469,7 +1469,7 @@ fn default_host_name() -> String {
 // «съедал» пробел после них (🕶/🛡 были текст-презентации шириной 1 → липли).
 fn proto_short(p: &str) -> &str {
     match p {
-        "noise-obfs" => "🎭 Скрытный",
+        "noise-obfs" => "🎭 Маскировка",
         "plain" => "🔓 Без шифра",
         "" | "noise" => "🔐 Обычный",
         other => other,
@@ -1553,7 +1553,7 @@ mod tests {
     #[test]
     fn helpers() {
         assert_eq!(uptime(Instant::now()), "0 сек");
-        assert_eq!(proto_short("noise-obfs"), "🎭 Скрытный");
+        assert_eq!(proto_short("noise-obfs"), "🎭 Маскировка");
         assert_eq!(proto_short(""), "🔐 Обычный");
         assert!(!qr_lines("bemyvpn://connect?code=ABCD1234").is_empty());
     }

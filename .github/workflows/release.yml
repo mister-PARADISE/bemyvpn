@@ -3,21 +3,19 @@ name: Release
 # Пуш тега vX.Y → собираем сборки и кладём в Releases.
 # Ручной прогон (workflow_dispatch) — только сборка, без публикации (проверка).
 #
-# ЭКОНОМИЯ: macOS здесь НЕ собираем — macOS-раннеры стоят ×10 минут, а Мак
-# разработчика собирает то же локально бесплатно (packaging/macos/build-app.sh +
-# cargo build --release -p bmv-cli) и заливает `gh release upload vX.Y <файлы>`.
-# CI собирает только Linux (×1) и Windows (×2) + Android (ubuntu).
+# ВСЁ собирается здесь: репозиторий публичный, значит стандартные раннеры
+# бесплатны и держать свою машину для сборки не нужно ни для одного файла.
 #
 # ПРАВИЛО АССЕТОВ: никаких архивов — каждый файл скачал и запустил.
 # ЕДИНЫЙ ПАТТЕРН ИМЁН: bemyvpn-<os>-<arch>[-terminal].<ext>
 #   приложение (GUI) — БЕЗ суффикса; терминал/сервер — с суффиксом `-terminal`.
-#   bemyvpn-android-arm64.apk               Android-приложение    (локально с Мака)
+#   bemyvpn-android-arm64.apk               Android-приложение     (CI)
 #   bemyvpn-linux-x86_64.AppImage           Linux-приложение      (CI)
 #   bemyvpn-windows-x86_64.exe              Windows-приложение     (CI)
 #   bemyvpn-linux-x86_64-terminal           терминал/сервер Linux (CI)
 #   bemyvpn-windows-x86_64-terminal.exe     терминал Windows       (CI)
-#   bemyvpn-macos-arm64.dmg                 macOS-приложение       (локально с Мака)
-#   bemyvpn-macos-arm64-terminal            терминал macOS         (локально с Мака)
+#   bemyvpn-macos-arm64.dmg                 macOS-приложение       (CI)
+#   bemyvpn-macos-arm64-terminal            терминал macOS         (CI)
 # wintun.dll ВШИТА в Windows-exe (bmv-desktop::ensure_wintun) — отдельного файла нет.
 on:
   push:
@@ -233,7 +231,7 @@ jobs:
           cargo ndk -t arm64-v8a -o ../app/src/main/jniLibs build --release
       - name: Build APK
         working-directory: apps/android
-        run: ./gradlew assembleRelease
+        run: BMV_VERSION="${GITHUB_REF_NAME#v}" ./gradlew assembleRelease
       - name: Rename asset
         run: cp apps/android/app/build/outputs/apk/release/app-release.apk bemyvpn-android-arm64.apk
       - name: Publish to Release
