@@ -9,9 +9,9 @@
 > к информации. Обычный VPN по классу ПО — целиком в рамках закона.
 
 <p align="center">
-  <img src="docs/img/app-vpn.png" width="255" alt="Список хостов — выбирай и подключайся">
-  <img src="docs/img/app-host.png" width="255" alt="Раздать свой интернет — одна кнопка">
-  <img src="docs/img/app-qr.png" width="255" alt="Позвать к себе — код или QR">
+  <img src="docs/img/app-vpn.png" width="255" alt="Список живых хостов со странами и числом гостей — выбирай и подключайся">
+  <img src="docs/img/app-host.png" width="255" alt="Раздать свой интернет: имя, видимость, лимит гостей, пароль, протокол — и одна кнопка">
+  <img src="docs/img/app-qr.png" width="255" alt="Позвать к себе — код сети или QR">
 </p>
 
 ---
@@ -94,23 +94,19 @@ curl -LO https://github.com/mister-PARADISE/bemyvpn/releases/latest/download/bem
 
 Всё — ты в каталоге, к тебе могут подключаться. 🎉
 
-<details><summary>⚙️ <b>Чтобы работал всегда (автозапуск, systemd)</b> — клик</summary>
+<details><summary>⚙️ <b>Чтобы работал всегда — одна кнопка</b> — клик</summary>
+
+Юниты systemd руками писать не нужно: запусти меню под root и включи хост.
 
 ```bash
-sudo mv bemyvpn-linux-x86_64-terminal /opt/bemyvpn-host && sudo tee /etc/systemd/system/bemyvpn-host.service >/dev/null <<'UNIT'
-[Unit]
-Description=BeMyVPN Host
-After=network-online.target
-Wants=network-online.target
-[Service]
-ExecStart=/opt/bemyvpn-host host --tunnel
-Restart=always
-RestartSec=2
-[Install]
-WantedBy=multi-user.target
-UNIT
-sudo systemctl daemon-reload && sudo systemctl enable --now bemyvpn-host
+sudo ./bemyvpn-linux-x86_64-terminal
 ```
+
+Вкладка **📡 Хост** → **«Стать хостом»**. Раздача поднимется сразу и **переживёт
+выход из меню, обрыв SSH и перезагрузку сервера** — службу приложение заводит
+само. Выключается той же кнопкой, она же и показывает текущее состояние.
+
+Проверить со стороны системы: `systemctl status bemyvpn-host`
 </details>
 
 <details><summary>🖥 <b>Полноэкранное меню в терминале</b> — клик</summary>
@@ -151,7 +147,9 @@ sudo ./bemyvpn --config bemyvpn.toml server
 Проверка: `bemyvpn --coordinator https://твой.домен ping` → «жив ✅».
 В приложениях друзей: вкладка **«Сервер»** → вписать `https://твой.домен`.
 
-Автозапуск (кнопка в меню / systemd) и все команды — в [docs/RUNNING.md](docs/RUNNING.md).
+Чтобы координатор работал всегда — в меню вкладка **🌐 Сервер** → **«Запустить
+свой сервер»**: служба заведётся сама и переживёт перезагрузку. Все команды и
+подробности — в [docs/RUNNING.md](docs/RUNNING.md).
 </details>
 
 ---
