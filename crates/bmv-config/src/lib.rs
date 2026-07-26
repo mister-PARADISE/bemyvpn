@@ -215,7 +215,7 @@ impl Default for HostConfig {
             code_sig: String::new(),
             public: false,
             password: String::new(),
-            max_guests: 4,
+            max_guests: suggested_max_guests(),
             country_hint: "auto".into(),
         }
     }
@@ -310,6 +310,29 @@ fn restore_owner_after_sudo(path: &Path) {
 #[cfg(not(unix))]
 fn restore_owner_after_sudo(_path: &Path) {}
 
+/// Сколько гостей предлагать по умолчанию НОВОМУ хосту.
+///
+/// Считаем от числа ядер: шифрование и userspace-TCP упираются в процессор.
+/// Плоская четвёрка была одинаковой и для Raspberry Pi, и для 16-ядерного VPS —
+/// мощная машина занижала себя в разы, а список хостов выглядел одинаково
+/// бедным. Оценка НАМЕРЕННО скромная (4 гостя на ядро, не выше 64): настоящий
+/// потолок задаёт ширина канала, а её без прогона трафика не измерить. Это лишь
+/// стартовое значение — в меню оно меняется одним нажатием.
+pub fn suggested_max_guests() -> u32 {
+    let cores = std::thread::available_parallelism().map(|n| n.get() as u32).unwrap_or(1);
+    let raw = cores.saturating_mul(4).clamp(4, 64);
+    // Округляем ВНИЗ до значения из набора пресетов интерфейса — иначе на
+    // 10 ядрах вышло бы 40, а такой кнопки в меню нет, и выбранным не подсветится
+    // ни один пресет. Вниз, а не вверх: занизить безопаснее, чем пообещать лишнее.
+    match raw {
+        64.. => 64,
+        32..=63 => 32,
+        16..=31 => 16,
+        8..=15 => 8,
+        _ => 4,
+    }
+}
+
 fn resolve_path(explicit: Option<&Path>) -> Option<PathBuf> {
     if let Some(p) = explicit {
         return Some(p.to_path_buf());
@@ -342,7 +365,10 @@ mod tests {
         assert_eq!(c.default_protocol, "noise-obfs");
         assert_eq!(c.guest.dns, "tunnel");
         assert_eq!(c.protocols.reality.sni, "www.mi.com");
-        assert_eq!(c.host.max_guests, 4);
+        // Лимит подбирается от числа ядер, поэтому проверяем не число, а рамки:
+        // не ниже минимума и не выше потолка, и всегда одно из значений пресетов.
+        assert!((4..=64).contains(&c.host.max_guests), "лимит вне рамок: {}", c.host.max_guests);
+        assert_eq!(c.host.max_guests, suggested_max_guests());
     }
 
     /// Авто-сохранение: save() → user_path() → load обратно с теми же значениями.
