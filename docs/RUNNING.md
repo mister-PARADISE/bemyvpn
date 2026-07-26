@@ -62,30 +62,29 @@
 
 ## 📡 Хост — раздать интернет (без конфига)
 
-Root не нужен. Одна команда (пример для Linux):
+**Фоном навсегда — одна команда.** Юнит systemd писать руками не нужно:
 ```bash
 chmod +x bemyvpn-linux-x86_64-terminal
-./bemyvpn-linux-x86_64-terminal --coordinator https://bemyvpn.net \
-  host --tunnel --name "Мой сервер" --max 16
+sudo ./bemyvpn-linux-x86_64-terminal host --tunnel --autostart
 ```
-Флаги: `--tunnel` (реальная раздача), `--name`, `--max` (4/8/16/32/64/128),
-`--password` (пусто = открытый), `--proto noise|obfs|plain`, `--hidden` (скрыть из списка).
-Гости подключаются, выбрав твой хост в приложении.
+Служба поставится и включится: раздача переживёт выход, обрыв SSH и
+перезагрузку. Ничего указывать больше не надо — **имя** берётся от машины,
+**лимит гостей** подбирается по ОЗУ (512 МБ → 32, 1 ГБ → 64).
 
-**Фоном навсегда (systemd)** — `/etc/systemd/system/bemyvpn-host.service`:
-```ini
-[Unit]
-Description=BeMyVPN host
-After=network-online.target
-[Service]
-ExecStart=/opt/bemyvpn/bemyvpn --coordinator https://bemyvpn.net host --tunnel --name "Мой сервер" --max 16
-Restart=always
-[Install]
-WantedBy=multi-user.target
-```
 ```bash
-systemctl enable --now bemyvpn-host
+systemctl status bemyvpn-host          # состояние
+systemctl disable --now bemyvpn-host   # выключить
 ```
+
+**Разово, пока открыт терминал** (root не нужен — хост работает в userspace):
+```bash
+./bemyvpn-linux-x86_64-terminal host --tunnel
+```
+Закроется SSH — раздача погаснет.
+
+Флаги: `--name`, `--max` (4/8/16/32/64/128), `--password` (пусто = открытый),
+`--proto noise|obfs|plain`, `--hidden` (скрыть из списка). **Пароль делает сеть
+скрытой всегда** — публичной она быть не может.
 
 ---
 
@@ -97,33 +96,26 @@ systemctl enable --now bemyvpn-host
 ```
 Клиенты указывают `http://ТВОЙ_IP:3330`.
 
-**Боевой (HTTPS, свой домен).** Нужно заранее: домен, DNS **A-запись** домена на IP сервера, открытый порт **443**. Мини-конфиг `coord.toml`:
-```toml
-[server]
-bind       = "0.0.0.0:443"
-domain     = "coord.твойдомен.com"    # сертификат выпустится сам (Let's Encrypt)
-acme_email = "ты@почта.com"
-```
+**Боевой (HTTPS, свой домен).** Нужно заранее: домен, DNS **A-запись** домена на
+IP сервера, открытый порт **443**. Одна команда — и сразу службой:
 ```bash
-./bemyvpn --config coord.toml server
+sudo ./bemyvpn server --domain coord.твойдомен.com --autostart
 ```
-Клиенты указывают `https://coord.твойдомен.com`.
+Конфиг писать не нужно: настройки сохранятся сами, порт переключится на 443,
+сертификат Let's Encrypt выпустится и будет продлеваться сам (`certbot` и
+`nginx` не нужны), **почта не требуется**. Служба переживёт выход, обрыв SSH и
+перезагрузку. Клиенты указывают `https://coord.твойдомен.com`.
 
-**Фоном навсегда (systemd)** — `/etc/systemd/system/bemyvpn-coord.service`:
-```ini
-[Unit]
-Description=BeMyVPN coordinator
-After=network-online.target
-[Service]
-ExecStart=/opt/bemyvpn/bemyvpn --config /opt/bemyvpn/coord.toml server
-Restart=always
-WorkingDirectory=/opt/bemyvpn
-[Install]
-WantedBy=multi-user.target
-```
+Без домена то же самое по HTTP: `sudo ./bemyvpn server --autostart`.
+
 ```bash
-systemctl enable --now bemyvpn-coord
+systemctl status bemyvpn-coord      # состояние
+systemctl disable --now bemyvpn-coord   # выключить
 ```
+
+<sub>Ручной `.toml` нужен, только если хочется своего сертификата вместо
+Let's Encrypt (`[server] tls_cert` / `tls_key`) — тогда `./bemyvpn --config
+свой.toml server`.</sub>
 
 ---
 
@@ -138,14 +130,20 @@ systemctl enable --now bemyvpn-coord
 
 Запусти просто `./bemyvpn` (без аргументов) — откроется меню. В нём:
 
-- **Вкладка «Сервер»**: `D` — ввести домен своего координатора (HTTPS-сертификат
-  Let's Encrypt **получится и будет продлеваться сам**, почта не нужна; требуется
-  только DNS-запись домена на этот сервер и открытый порт 443), `B` — порт,
-  `S` — старт/стоп, `A` — **автозапуск ВКЛ/ВЫКЛ** (при загрузке сервера).
-- **Вкладка «Хост»**: имя/лимит/пароль/протокол/видимость — стрелками и Enter,
-  `A` — автозапуск раздачи.
+Навигация везде одинаковая: **←→** между вкладками, **↑↓** по строкам,
+**Enter** — изменить или переключить, **q** — выход.
+
+- **Вкладка «Сервер»**: адрес координатора, свой домен (сертификат Let's Encrypt
+  **получится и будет продлеваться сам**, почта не нужна; требуется лишь
+  DNS-запись домена на этот сервер и открытый порт 443), порт и последняя
+  строка — **«Запустить свой сервер»**.
+- **Вкладка «Хост»**: имя, лимит гостей, пароль, протокол, видимость и последняя
+  строка — **«Стать хостом»**.
 - **Все настройки сохраняются сами** в `~/.config/bemyvpn/config.toml` — руками
   файлы создавать/править не нужно. Код сети тоже сохраняется навсегда.
 
-Автозапуск работает на Linux (systemd) и требует root: `sudo ./bemyvpn`.
-Ручные `.toml` и systemd-юниты выше — для тех, кто хочет полный контроль.
+**Что означает кнопка запуска.** Под `sudo` на Linux она ставит службу systemd:
+раздача (или координатор) поднимается сразу и **переживает выход из меню, обрыв
+SSH и перезагрузку**; та же кнопка выключает. Без root — работает только пока
+открыто меню. Отдельной строки «автозапуск» больше нет: **ВКЛ значит всегда
+ВКЛ**.

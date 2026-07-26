@@ -94,7 +94,19 @@ enum Cmd {
     /// Режим СЕРВЕРА: поднять свой координатор (каталог хостов). Тот же бинарь —
     /// отдельного нет. Слушает [server] bind; при заданных путях к сертификату
     /// сам отдаёт HTTPS. Ctrl+C — стоп.
-    Server,
+    Server {
+        /// Домен координатора — HTTPS-сертификат получится и будет продлеваться
+        /// сам (Let's Encrypt внутри). Нужны DNS-запись на этот сервер и порт 443.
+        #[arg(long)]
+        domain: Option<String>,
+        /// Адрес прослушивания, по умолчанию 0.0.0.0:3330 (с доменом ставьте :443).
+        #[arg(long)]
+        bind: Option<String>,
+        /// Поставить как службу и включить: координатор переживёт выход, обрыв
+        /// SSH и перезагрузку. Нужен root (`sudo`).
+        #[arg(long)]
+        autostart: bool,
+    },
 }
 
 #[tokio::main]
@@ -186,19 +198,37 @@ async fn main() {
         }
     }
 
-    // `--autostart`: поставить службу и выйти, а не раздавать в этом процессе.
-    // Настройки (включая только что полученный код) сохраняем в конфиг — служба
-    // читает именно его, поэтому в юните нет ни пароля, ни прочих аргументов.
-    if let Cmd::Host { autostart: true, .. } = &cmd {
+    // Аргументы режима СЕРВЕРА → в конфиг: и запуск, и служба читают его же,
+    // поэтому отдельный .toml писать руками не нужно.
+    if let Cmd::Server { domain, bind, .. } = &cmd {
+        if let Some(d) = domain {
+            config.server.domain = d.clone();
+            // С доменом осмысленен только 443: ACME проверяет домен именно там.
+            if bind.is_none() && config.server.bind == "0.0.0.0:3330" {
+                config.server.bind = "0.0.0.0:443".into();
+            }
+        }
+        if let Some(b) = bind { config.server.bind = b.clone(); }
+    }
+
+    // `--autostart`: поставить службу и выйти, а не работать в этом процессе.
+    // Настройки (включая только что полученный код хоста) сохраняем в конфиг —
+    // служба читает именно его, поэтому в юните нет ни пароля, ни прочих
+    // аргументов, а сам файл в /etc/systemd/system/ читаем всеми.
+    let autostart_host = matches!(cmd, Cmd::Host { autostart: true, .. });
+    let autostart_srv = matches!(cmd, Cmd::Server { autostart: true, .. });
+    if autostart_host || autostart_srv {
         if let Err(e) = config.save() {
             fail(format!("не удалось сохранить конфиг {}: {e}", bmv_config::Config::user_path().display()));
         }
-        match tui::enable_service(true) {
+        let unit = if autostart_host { "bemyvpn-host" } else { "bemyvpn-coord" };
+        let what = if autostart_host { "раздача" } else { "координатор" };
+        match tui::enable_service(autostart_host) {
             Ok(()) => {
-                println!("Служба bemyvpn-host установлена и запущена.");
-                println!("  раздача переживёт выход, обрыв SSH и перезагрузку");
-                println!("  состояние:  systemctl status bemyvpn-host");
-                println!("  выключить:  systemctl disable --now bemyvpn-host");
+                println!("Служба {unit} установлена и запущена.");
+                println!("  {what} переживёт выход, обрыв SSH и перезагрузку");
+                println!("  состояние:  systemctl status {unit}");
+                println!("  выключить:  systemctl disable --now {unit}");
                 return;
             }
             Err(e) => fail(format!("автозапуск не настроен: {e}")),
@@ -245,7 +275,7 @@ async fn main() {
             tunnel,
         } => run_guest(&engine, country, public, connect, password, tunnel).await,
 
-        Cmd::Server => run_server(engine.config()).await,
+        Cmd::Server { .. } => run_server(engine.config()).await,
 
         Cmd::Demo { message } => {
             print!("Демо loopback ({})… ", engine.active_protocol());

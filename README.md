@@ -151,27 +151,29 @@ HTTPS-сертификат он получит и будет продлеват�
 
 <details><summary>🗂 <b>Инструкция</b> — клик</summary>
 
+Понадобится: домен, **A-запись** на IP сервера и свободный порт **443**.
+
 ```bash
 mkdir -p /opt/bemyvpn && cd /opt/bemyvpn
 curl -LO https://github.com/mister-PARADISE/bemyvpn/releases/latest/download/bemyvpn-linux-x86_64-terminal
 mv bemyvpn-linux-x86_64-terminal bemyvpn && chmod +x bemyvpn
 
-cat > bemyvpn.toml <<'CFG'
-[server]
-bind       = "0.0.0.0:443"
-domain     = "твой.домен"       # ← сертификат получится сам
-acme_email = "you@example.com"  # (необязательно)
-CFG
-
-sudo ./bemyvpn --config bemyvpn.toml server
+sudo ./bemyvpn server --domain твой.домен --autostart
 ```
 
-Проверка: `bemyvpn --coordinator https://твой.домен ping` → «жив ✅».
+Всё. Конфиг писать руками не нужно — команда сохранит настройки сама, поставит
+службу и включит её: координатор переживёт выход, обрыв SSH и перезагрузку.
+Сертификат Let's Encrypt получится и будет продлеваться сам, `certbot` и `nginx`
+не нужны. Почта для сертификата **не требуется**.
+
+Проверка: `./bemyvpn --coordinator https://твой.домен ping` → «жив ✅».
 В приложениях друзей: вкладка **«Сервер»** → вписать `https://твой.домен`.
 
-Чтобы координатор работал всегда — в меню вкладка **🌐 Сервер** → **«Запустить
-свой сервер»**: служба заведётся сама и переживёт перезагрузку. Все команды и
-подробности — в [docs/RUNNING.md](docs/RUNNING.md).
+<sub>Без домена — `sudo ./bemyvpn server --autostart`: HTTP на порту 3330, клиенты
+указывают `http://ВАШ_IP:3330`. То же самое можно сделать и в меню: вкладка
+**🌐 Сервер** → вписать домен → «Запустить свой сервер». Ручной `bemyvpn.toml`
+нужен, только если хочется своего сертификата вместо Let's Encrypt — см.
+[docs/RUNNING.md](docs/RUNNING.md).</sub>
 </details>
 
 ---
@@ -253,13 +255,10 @@ server/
   coordinator     «главный сервер» (встроен в `bemyvpn server`; авто-HTTPS/ACME)
 vendor/
   ipstack         форк userspace TCP/IP — наш фикс window-scaling (×7–13 скорость)
-packaging/        скрипты сборки: windows(.exe) / linux(.AppImage) / macos(.dmg)
+packaging/        скрипты сборки: windows(.exe) / linux(.AppImage) / macos(.dmg) / android(.apk)
 brand/            логотип «Звено» + иконки (исходники SVG/PNG)
-store/            ассеты для магазинов (скриншоты App Store / Google Play)
-site/             страница поддержки (support.bemyvpn.net)
-deploy/           systemd-юнит боевого координатора
-docs/             ARCHITECTURE.md — архитектурные решения и принципы
-bemyvpn.toml      пример конфига клиента/хоста
+tools/            вспомогательные скрипты (сборка базы стран по IP)
+docs/             ARCHITECTURE.md · RUNNING.md (запуск) · IOS.md (сборка под iOS)
 ```
 Одно Rust-ядро компилируется под все платформы; **4 оболочки** (CLI, десктоп-GUI,
 iOS/Apple, Android) — тонкие морды, логику VPN не дублируют.
@@ -267,34 +266,38 @@ iOS/Apple, Android) — тонкие морды, логику VPN не дубл�
 ### Протоколы
 | Имя | Что | Когда |
 |---|---|---|
-| `noise` | ChaCha20-Poly1305 (как в WireGuard) | по умолчанию |
-| `noise-obfs` | + случайный паддинг, без «шапки» | маскировка от DPI |
+| `noise` | ChaCha20-Poly1305 (как в WireGuard) | «Обычный» — если DPI не мешает |
+| `noise-obfs` | + случайный паддинг, маскировка шапки | «Маскировка» — **по умолчанию** |
 | `plain` | без шифрования | доверенная сеть, максимум скорости |
 
 Крипта — библиотека `snow` (Noise, как внутри WireGuard), своей не пишем.
 
 ### Конфиг (`bemyvpn.toml`)
-Любого ключа может не быть — подставится дефолт (все дефолты в `bmv-config`):
+Руками писать его не нужно: меню и флаги сохраняют всё сами в
+`~/.config/bemyvpn/config.toml`. Файл нужен, только если хочется править
+настройки текстом. Любого ключа может не быть — подставится дефолт (все дефолты
+живут в `bmv-config` и больше нигде):
 
 ```toml
 coordinators = ["https://bemyvpn.net"]
-default_protocol = "noise"
+default_protocol = "noise-obfs"   # «Маскировка»: шифрование + защита от DPI
 
 [host]
-public     = false   # true → виден в каталоге; false → только по коду
-password   = ""
-max_guests = 4
+public     = true    # true → виден в каталоге; false → только по коду
+password   = ""      # задан → сеть ВСЕГДА скрытая, публичной быть не может
+max_guests = 32      # по умолчанию подбирается по ОЗУ (512 МБ → 32, 1 ГБ → 64)
 ```
 
 Тонкая настройка хоста (env): `BMV_TCP_WINDOW`, `BMV_MAX_CONNS`,
 `BMV_HOST_ALLOW_PRIVATE` (LAN закрыт по умолчанию — SSRF-защита), `BMV_TX_PPS`.
-Координатора: `BMV_RATE_PER_SEC`, `BMV_MAX_INFLIGHT`, `BMV_TRUST_XFF`.
+Координатора: `BMV_TRUST_XFF`.
 
 ### Безопасность (что уже сделано)
 - Сквозной Noise XX; DNS всегда в туннеле (анти-утечка).
 - SSRF-защита хоста: гостю закрыты 169.254.169.254 / 127.0.0.1 / LAN.
 - Анти-угон записи хоста (owner-токен), коды подписывает только сервер (HMAC).
-- Анти-флуд координатора: пер-IP rate-limit, лимиты тела/каталога, TTL-реапер.
+- Анти-флуд координатора: лимит WS-соединений с одного IP, потолок размера
+  сообщения, ворота на одновременные рукопожатия у хоста.
 - Пароль сравнивается в постоянное время.
 </details>
 
