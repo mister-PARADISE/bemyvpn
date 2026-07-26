@@ -814,7 +814,7 @@ fn set_host_err(weak: &Weak<AppWindow>, msg: String) {
 
 // ── Сервер (смена координатора) ──────────────────────────────────────────────
 
-fn wire_coord(ui: &AppWindow, engine: EngineSlot, _handle: &tokio::runtime::Handle) {
+fn wire_coord(ui: &AppWindow, engine: EngineSlot, handle: &tokio::runtime::Handle) {
     let apply = {
         let engine = engine.clone();
         let weak = ui.as_weak();
@@ -836,9 +836,27 @@ fn wire_coord(ui: &AppWindow, engine: EngineSlot, _handle: &tokio::runtime::Hand
     ui.on_set_coord(move |url| apply_set(url.to_string()));
     let apply_reset = apply.clone();
     ui.on_reset_coord(move || apply_reset(DEFAULT_COORD.to_string()));
-    // «Перепроверить» — форсируем «проверяю…», фон обновит в течение 3с.
+    // «Перепроверить» — САМА измеряет связь, а не ждёт фон. Раньше кнопка лишь
+    // ставила «проверяю…» и надеялась на фоновый цикл, но тот висит в длинном
+    // опросе каталога (до ~25с) — результата приходилось ждать столько же, будто
+    // всё зависло. Теперь это отдельный запрос: ответ за десятые доли секунды.
     let weak = ui.as_weak();
-    ui.on_recheck(move || { if let Some(ui) = weak.upgrade() { ui.set_coord_state(0); } });
+    let (eng_slot, handle) = (engine.clone(), handle.clone());
+    ui.on_recheck(move || {
+        let Some(ui) = weak.upgrade() else { return };
+        ui.set_coord_state(0);
+        let (eng, weak2) = (eng_slot.lock().unwrap().clone(), weak.clone());
+        handle.spawn(async move {
+            let t0 = std::time::Instant::now();
+            let ok = eng.coordinator_health().await.is_ok();
+            let ping = t0.elapsed().as_millis() as i32;
+            let _ = slint::invoke_from_event_loop(move || {
+                let Some(ui) = weak2.upgrade() else { return };
+                ui.set_coord_state(if ok { 1 } else { 2 });
+                ui.set_coord_ping(if ok { ping } else { 0 });
+            });
+        });
+    });
 }
 
 // ── QR приглашения ───────────────────────────────────────────────────────────

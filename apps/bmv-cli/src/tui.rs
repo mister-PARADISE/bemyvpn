@@ -685,6 +685,27 @@ fn toggle_autostart(host: bool) -> Result<bool, String> {
         run(&["disable", "--now", unit])?;
         return Ok(false);
     }
+    enable_service(host)?;
+    Ok(true)
+}
+
+/// Поставить и включить службу — ИДЕМПОТЕНТНО. Отдельно от `toggle_autostart`,
+/// потому что этим же пользуется флаг `--autostart` в командной строке: сервер
+/// настраивают скриптом, а меню скриптом не понажимаешь.
+///
+/// Настройки в юнит НЕ пишем — он читает тот же сохранённый конфиг. Так пароль
+/// раздачи не оказывается ни в `/etc/systemd/system/` (читаемом всеми), ни в
+/// списке процессов.
+#[cfg(target_os = "linux")]
+pub fn enable_service(host: bool) -> Result<(), String> {
+    let unit = unit_name(host);
+    let run = |args: &[&str]| {
+        std::process::Command::new("systemctl")
+            .args(args)
+            .output()
+            .map_err(|e| e.to_string())
+            .and_then(|o| if o.status.success() { Ok(()) } else { Err(String::from_utf8_lossy(&o.stderr).trim().to_string()) })
+    };
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let cmd = if host { "host --tunnel" } else { "server" };
     let text = format!(
@@ -700,8 +721,12 @@ fn toggle_autostart(host: bool) -> Result<bool, String> {
     // --now: поднять СРАЗУ фоновым демоном (не только при загрузке). Тогда после
     // выхода из меню (q/Ctrl+C) раздача/сервер ПРОДОЛЖАЮТ работать — это и есть
     // «работает 24/7». Демон читает тот же сохранённый конфиг (user_path).
-    run(&["enable", "--now", unit])?;
-    Ok(true)
+    run(&["enable", "--now", unit])
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn enable_service(_host: bool) -> Result<(), String> {
+    Err("автозапуск — только на Linux с systemd".into())
 }
 
 #[cfg(not(target_os = "linux"))]

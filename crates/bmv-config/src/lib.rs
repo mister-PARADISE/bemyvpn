@@ -283,9 +283,32 @@ impl Config {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir).map_err(|e| Error::Config(format!("{}: {e}", dir.display())))?;
         }
-        std::fs::write(&path, self.to_toml()).map_err(|e| Error::Config(format!("{}: {e}", path.display())))
+        std::fs::write(&path, self.to_toml()).map_err(|e| Error::Config(format!("{}: {e}", path.display())))?;
+        restore_owner_after_sudo(&path);
+        Ok(())
     }
 }
+
+/// Под `sudo` вернуть конфиг во владение тому, кто запускал.
+///
+/// `sudo` сохраняет HOME пользователя, поэтому root писал файл прямо в его
+/// `~/.config/bemyvpn/` — и после первого же запуска под sudo приложение,
+/// запущенное обычным пользователем, больше НЕ МОГЛО сохранить настройки
+/// (Permission denied), причём молча. Возвращаем владельца по SUDO_UID/SUDO_GID.
+/// Ошибки глотаем: не смогли — файл просто остаётся root'овым, как раньше.
+#[cfg(unix)]
+fn restore_owner_after_sudo(path: &Path) {
+    let (Ok(uid), Ok(gid)) = (std::env::var("SUDO_UID"), std::env::var("SUDO_GID")) else { return };
+    let (Ok(uid), Ok(gid)) = (uid.parse::<u32>(), gid.parse::<u32>()) else { return };
+    for p in [path.parent(), Some(path)].into_iter().flatten() {
+        if let Ok(c) = std::ffi::CString::new(p.as_os_str().as_encoded_bytes()) {
+            unsafe { libc::chown(c.as_ptr(), uid, gid) };
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn restore_owner_after_sudo(_path: &Path) {}
 
 fn resolve_path(explicit: Option<&Path>) -> Option<PathBuf> {
     if let Some(p) = explicit {

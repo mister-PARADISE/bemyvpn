@@ -918,6 +918,7 @@ name = "bmv-config"
 version = "1.0.0"
 dependencies = [
  "bmv-common",
+ "libc",
  "serde",
  "toml 0.8.23",
 ]
