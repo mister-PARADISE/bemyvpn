@@ -338,9 +338,27 @@ export component VpnPage inherits Rectangle {
 
             // ── Хосты ──
             SectionLabel { text: "Хосты"; }
+            // Связь с сервером потеряна, а список НЕ пуст: цифры и состав хостов
+            // ниже — последние известные, то есть могут врать. Молчать нельзя,
+            // иначе устаревший список выглядит как живой.
+            if root.coord-state == 2 && root.hosts.length > 0: Rectangle {
+                background: #3A2A15;
+                border-radius: 10px;
+                border-width: 1px;
+                border-color: Theme.amber;
+                height: txt.preferred-height + 20px;
+                HorizontalLayout {
+                    padding: 10px;
+                    txt := Text {
+                        text: "Нет связи с сервером — список ниже может устареть. Восстанавливаю связь…";
+                        color: Theme.amber; font-size: 12px; wrap: word-wrap;
+                        vertical-alignment: center;
+                    }
+                }
+            }
             if root.hosts.length == 0: Text {
                 text: root.coord-state == 2
-                    ? "Нет связи с сервером.\nПроверьте адрес во вкладке «Сервер»."
+                    ? "Нет связи с сервером. Восстанавливаю…\nЕсли не проходит — проверьте адрес во вкладке «Сервер»."
                     : "Хостов пока нет.\nВведите код сети или поднимите свой во вкладке «Хост».";
                 color: Theme.dim; font-size: 14px;
                 horizontal-alignment: center; wrap: word-wrap;

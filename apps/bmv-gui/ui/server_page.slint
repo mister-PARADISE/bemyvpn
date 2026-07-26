@@ -21,7 +21,9 @@ export component ServerPage inherits Rectangle {
     callback copy-text(string);
 
     property <color> tint: coord-state == 1 ? Theme.green : coord-state == 2 ? Theme.red : Theme.amber;
-    property <string> status-text: coord-state == 1 ? "На связи" : coord-state == 2 ? "Нет связи" : "Проверяю связь…";
+    // При обрыве важно сказать, что связь восстанавливается САМА: клиент
+    // переподключается по дедлайну тишины, вручную ничего делать не нужно.
+    property <string> status-text: coord-state == 1 ? "На связи" : coord-state == 2 ? "Нет связи — восстанавливаю…" : "Проверяю связь…";
     property <color> ping-color: coord-ping < 200 ? Theme.green : coord-ping < 600 ? Theme.fg : Theme.amber;
 
     ScrollView {
