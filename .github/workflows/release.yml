@@ -234,9 +234,10 @@ jobs:
       # Android отказывается ставить обновление поверх («Приложение не
       # установлено»). Секрета нет → шаг просто пропускается, сборка не ломается.
       - name: Restore signing key
-        # Через env, а НЕ `if: secrets.…`: контекст secrets в условиях доступен
-        # не везде, и шаг молча выполнялся бы всегда (или никогда).
-        if: env.KEYSTORE_B64 != ''
+        # Проверка наличия ключа — В СКРИПТЕ, а не в `if`. Ни `secrets`, ни env
+        # самого шага в условии не годятся: `if` вычисляется ДО применения env
+        # этого шага, и ключ мог бы молча не подставиться, а APK уехать с
+        # отладочной подписью. В шелле переменная точно на месте.
         working-directory: apps/android
         env:
           KEYSTORE_B64: ${{ secrets.KEYSTORE_B64 }}
@@ -244,6 +245,10 @@ jobs:
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
+          if [ -z "$KEYSTORE_B64" ]; then
+            echo "::warning::Ключа подписи нет — APK уйдёт с ОТЛАДОЧНОЙ подписью, обновление поверх не встанет"
+            exit 0
+          fi
           echo "$KEYSTORE_B64" | base64 -d > release.jks
           cat > keystore.properties <<EOF
           storeFile=release.jks
@@ -251,6 +256,7 @@ jobs:
           keyAlias=$KEY_ALIAS
           keyPassword=$KEY_PASSWORD
           EOF
+          echo "ключ подписи на месте ($(wc -c < release.jks) байт)"
       - name: Build APK
         working-directory: apps/android
         run: BMV_VERSION="${GITHUB_REF_NAME#v}" ./gradlew assembleRelease
