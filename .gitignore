@@ -30,3 +30,13 @@ keystore.properties
 *.jks
 *.keystore
 
+
+# Xcode: пользовательские настройки, состояние окон, схемы и результаты сборки.
+# Появляются при первом же открытии проекта — в репозиторий им нельзя (это
+# локальный мусор, а xcuserdata ещё и содержит имя пользователя Мака).
+xcuserdata/
+*.xcuserdatad
+DerivedData/
+*.xcscmblueprint
+*.xccheckout
+apps/ios/build/
