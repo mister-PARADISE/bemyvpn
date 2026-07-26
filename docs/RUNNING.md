@@ -52,9 +52,9 @@
 
 | Что | Файл | |
 |---|---|---|
-| 🐧 Linux (обычный сервер) | [bemyvpn-linux-x86_64-terminal](https://github.com/mister-PARADISE/bemyvpn/releases/latest/download/bemyvpn-linux-x86_64-terminal) | ⏳ скоро в релизах |
+| 🐧 Linux (обычный сервер) | [bemyvpn-linux-x86_64-terminal](https://github.com/mister-PARADISE/bemyvpn/releases/latest/download/bemyvpn-linux-x86_64-terminal) | ✅ |
 | 🍎 macOS | [bemyvpn-macos-arm64-terminal](https://github.com/mister-PARADISE/bemyvpn/releases/latest/download/bemyvpn-macos-arm64-terminal) | ✅ |
-| 🪟 Windows | [bemyvpn-windows-x86_64-terminal.exe](https://github.com/mister-PARADISE/bemyvpn/releases/latest/download/bemyvpn-windows-x86_64-terminal.exe) | ⏳ скоро |
+| 🪟 Windows | [bemyvpn-windows-x86_64-terminal.exe](https://github.com/mister-PARADISE/bemyvpn/releases/latest/download/bemyvpn-windows-x86_64-terminal.exe) | ✅ |
 
 Приложения с кнопками (Android/десктоп) — в [README](../README.md#-скачать).
 
@@ -62,29 +62,37 @@
 
 ## 📡 Хост — раздать интернет (без конфига)
 
-**Фоном навсегда — одна команда.** Юнит systemd писать руками не нужно:
+**Проще всего — через меню.** Запусти под root и нажми одну кнопку:
+
 ```bash
 chmod +x bemyvpn-linux-x86_64-terminal
-sudo ./bemyvpn-linux-x86_64-terminal host --tunnel --autostart
+sudo ./bemyvpn-linux-x86_64-terminal
 ```
-Служба поставится и включится: раздача переживёт выход, обрыв SSH и
-перезагрузку. Ничего указывать больше не надо — **имя** берётся от машины,
-**лимит гостей** подбирается по ОЗУ (512 МБ → 32, 1 ГБ → 64).
+
+Вкладка **📡 Хост** → **«Стать хостом»**. Служба заведётся сама: раздача
+переживёт выход, обрыв SSH и перезагрузку. Имя берётся от машины, лимит гостей
+подбирается по ОЗУ (512 МБ → 32, 1 ГБ → 64), всё сохраняется автоматически.
 
 ```bash
 systemctl status bemyvpn-host          # состояние
 systemctl disable --now bemyvpn-host   # выключить
 ```
 
+**Для скриптов — то же без меню:**
+
+```bash
+sudo ./bemyvpn-linux-x86_64-terminal host --tunnel --autostart
+```
+
+Необязательные флаги: `--name "…"` (своё имя), `--max 32` (свой лимит),
+`--password …` (**с паролем сеть всегда скрытая**), `--hidden` (не показывать в
+списке), `--proto noise|obfs|plain`.
+
 **Разово, пока открыт терминал** (root не нужен — хост работает в userspace):
 ```bash
 ./bemyvpn-linux-x86_64-terminal host --tunnel
 ```
 Закроется SSH — раздача погаснет.
-
-Флаги: `--name`, `--max` (4/8/16/32/64/128), `--password` (пусто = открытый),
-`--proto noise|obfs|plain`, `--hidden` (скрыть из списка). **Пароль делает сеть
-скрытой всегда** — публичной она быть не может.
 
 ---
 

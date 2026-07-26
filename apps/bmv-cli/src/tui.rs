@@ -1318,7 +1318,7 @@ fn host_tab(f: &mut Frame, area: Rect, a: &App) {
 
     // QR по коду, если включён показ — на весь экран.
     if a.show_qr && !code.is_empty() {
-        let lines = qr_lines(&format!("bemyvpn://connect?code={code}"));
+        let lines = qr_lines(&format!("bemyvpn://{code}"));
         let text: Vec<Line> = std::iter::once(Line::from(Span::styled(format!("🔑 {code}"), Style::default().fg(ACCENT).add_modifier(Modifier::BOLD))))
             .chain(lines.into_iter().map(Line::from))
             .chain(std::iter::once(Line::from(Span::styled("Shift+Q — скрыть", Style::default().fg(DIM)))))
@@ -1580,6 +1580,6 @@ mod tests {
         assert_eq!(uptime(Instant::now()), "0 сек");
         assert_eq!(proto_short("noise-obfs"), "🎭 Маскировка");
         assert_eq!(proto_short(""), "🔐 Обычный");
-        assert!(!qr_lines("bemyvpn://connect?code=ABCD1234").is_empty());
+        assert!(!qr_lines("bemyvpn://ABCD1234").is_empty());
     }
 }

@@ -130,7 +130,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let weak = ui.as_weak();
         ui.on_show_qr(move |code| {
             if let Some(ui) = weak.upgrade() {
-                if let Some(img) = qr_image(&format!("bemyvpn://connect?code={code}")) {
+                if let Some(img) = qr_image(&format!("bemyvpn://{code}")) {
                     ui.set_qr_overlay_img(img);
                 }
                 ui.set_qr_overlay(code);
@@ -865,7 +865,10 @@ fn qr_image(text: &str) -> Option<slint::Image> {
     let code = qrcode::QrCode::new(text.as_bytes()).ok()?;
     let colors = code.to_colors();
     let w = code.width();
-    let (quiet, scale) = (4usize, 8usize);
+    // Поле — 2 модуля, а не 4: белая карточка под картинкой даёт свой отступ,
+    // и вместе с запечённым получалась двойная рамка (на Android поле вообще 0,
+    // роль тихой зоны играет карточка). Меньше поле — крупнее сам код.
+    let (quiet, scale) = (2usize, 8usize);
     let dim = (w + quiet * 2) * scale;
     let mut buf = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::new(dim as u32, dim as u32);
     let px = buf.make_mut_slice();
