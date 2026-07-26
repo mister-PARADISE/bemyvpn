@@ -57,6 +57,17 @@ fn host_cc(h: &HostInfo) -> Option<String> {
     })
 }
 
+/// Заполнить карточку активного подключения по записи хоста. Зовётся В МОМЕНТ
+/// подключения (данные уже на руках — гость выбрал этот хост) и потом на каждом
+/// обновлении каталога, чтобы живые цифры (гости) не отставали.
+fn fill_vpn_card(ui: &AppWindow, h: &HostInfo) {
+    ui.set_vpn_ip(if h.ip.is_empty() { "—".into() } else { h.ip.clone().into() });
+    ui.set_vpn_country(host_cc(h).unwrap_or_else(|| "—".into()).into());
+    ui.set_vpn_guests(format!("{} / {}", h.guests, h.max_guests).into());
+    ui.set_vpn_proto(proto_name(&h.protocol).into());
+    ui.set_vpn_proto_id(h.protocol.clone().into());
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Режим привилегированного туннель-хелпера (root): поднят самим приложением
     // через системный запрос пароля. Без окна — только качает туннель. Никогда
@@ -324,6 +335,20 @@ fn spawn_refresh(
                             ui.set_vpn_sub("".into());
                         }
                     }
+                    // …и НАОБОРОТ: маркера нет — значит туннеля нет. Маркер вводили
+                    // потому, что STATE по TCP на «спящем» event-loop macOS до окна
+                    // доходит не всегда; проверялось только его появление, поэтому
+                    // потерянный STATE 0 оставлял карточку «подключено» навсегда
+                    // (часы при этом уже стояли — vpn_since гасится симметрично).
+                    // Маркер пишется ДО отправки STATE 2, так что «подключились, но
+                    // файла ещё нет» не бывает — ложного сброса не будет.
+                    #[cfg(not(windows))]
+                    if helper_up.is_none() && ui.get_vpn_state() == 2 {
+                        ui.set_vpn_state(0);
+                        ui.set_vpn_host_id("".into());
+                        ui.set_vpn_status("VPN выключен".into());
+                        ui.set_vpn_sub("".into());
+                    }
                     if ui.get_vpn_state() == 2 { ui.set_vpn_elapsed(vpn_el.unwrap_or_default().into()); }
                     if ui.get_host_state() == 2 { ui.set_host_elapsed(host_el.unwrap_or_default().into()); }
                 });
@@ -422,15 +447,14 @@ fn spawn_refresh(
                         ui.set_host_guests(format!("{} / {}", h.guests, h.max_guests).into());
                     }
                 }
-                // Инфо-блок подключения (часы ведёт тик-задача).
+                // Инфо-блок подключения (часы ведёт тик-задача). Здесь только
+                // ОБНОВЛЕНИЕ живых цифр: первично карточку заполняет fill_vpn_card
+                // в момент подключения — иначе поля пустуют до следующего ответа
+                // каталога (длинный опрос, до ~25с), а для скрытого хоста навсегда.
                 if ui.get_vpn_state() == 2 {
                     let id = ui.get_vpn_host_id().to_string();
                     if let Some(h) = list.iter().find(|h| h.id == id) {
-                        ui.set_vpn_ip(if h.ip.is_empty() { "—".into() } else { h.ip.clone().into() });
-                        ui.set_vpn_country(host_cc(h).unwrap_or_else(|| "—".into()).into());
-                        ui.set_vpn_guests(format!("{} / {}", h.guests, h.max_guests).into());
-                        ui.set_vpn_proto(proto_name(&h.protocol).into());
-                        ui.set_vpn_proto_id(h.protocol.clone().into());
+                        fill_vpn_card(&ui, h);
                     }
                 }
             });
@@ -455,6 +479,13 @@ fn wire_vpn(
         ui.set_vpn_status("Подключаюсь…".into());
         ui.set_vpn_sub(format!("к {name}").into());
         ui.set_vpn_host_id(id.into());
+        // Чистим карточку: иначе от прошлого подключения остаются чужие IP и
+        // счётчик гостей, пока не придёт каталог. Дальше заполнит fill_vpn_card.
+        ui.set_vpn_ip("—".into());
+        ui.set_vpn_country("—".into());
+        ui.set_vpn_guests("—".into());
+        ui.set_vpn_proto("".into());
+        ui.set_vpn_proto_id("".into());
     }
     fn busy(ui: &AppWindow) -> bool {
         let s = ui.get_vpn_state();
@@ -477,6 +508,7 @@ fn wire_vpn(
             let pw = if host.has_password { u.get_guest_password().to_string() } else { String::new() };
             u.set_guest_password("".into());
             begin(&u, &host.id, &display_name(&host));
+            fill_vpn_card(&u, &host); // данные уже на руках — не ждём ответа каталога
             hlp.connect(u.get_coord_url().as_ref(), &host.id, &pw, &host.protocol);
         });
     }
@@ -484,7 +516,7 @@ fn wire_vpn(
     // Подключение по коду.
     {
         let weak = ui.as_weak();
-        let hlp = hlp.clone();
+        let (hosts, hlp) = (hosts.clone(), hlp.clone());
         ui.on_connect_code(move || {
             let Some(u) = weak.upgrade() else { return };
             if busy(&u) { return; }
@@ -498,6 +530,10 @@ fn wire_vpn(
             }
             u.set_code("".into());
             begin(&u, &code, &code);
+            // Код мог быть и от хоста из каталога — тогда цифры есть сразу.
+            if let Some(h) = hosts.lock().unwrap().iter().find(|h| h.id == code) {
+                fill_vpn_card(&u, h);
+            }
             hlp.connect(u.get_coord_url().as_ref(), &code, "", "");
         });
     }
