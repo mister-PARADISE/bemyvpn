@@ -4,7 +4,7 @@
 import { Theme } from "theme.slint";
 import { HostRow, Card, StatTile, CopyTile, GradientButton, SectionLabel, Field, HeroCircle } from "components.slint";
 import { IconShield, IconShieldCheck, IconShieldSlash, IconShieldLock, IconMask, IconLock, IconLockOpen,
-         IconPeople, IconCopy, IconCheck, IconQr, IconScan, IconPaste, IconArrowRight, IconChevronRight, IconChevronUp } from "icons.slint";
+         IconPeople, IconCopy, IconCheck, IconClose, IconQr, IconScan, IconPaste, IconArrowRight, IconChevronRight, IconChevronUp } from "icons.slint";
 import { ScrollView } from "std-widgets.slint";
 
 // Значок протокола по id — семейство щита.
@@ -143,6 +143,9 @@ export component VpnPage inherits Rectangle {
     /// Версия свежего релиза («1.6») или "" — плашки нет. Приходит от
     /// координатора уже с проверенной подписью, здесь только показ.
     in property <string> update-version;
+    /// 0 — простаивает · 1 — качаю · 2 — готово, нужен перезапуск · 3 — ошибка
+    in property <int> update-state;
+    in property <string> update-error;
     property <bool> update-dismissed: false;
     in-out property <string> code;
     in-out property <string> guest-password;
@@ -155,6 +158,7 @@ export component VpnPage inherits Rectangle {
     callback copy-text(string);
     callback open-invite();
     callback open-notes();
+    callback do-update();
 
     property <color> tint: vpn-state == 1 ? Theme.amber : vpn-state == 2 ? Theme.green : Theme.accent;
 
@@ -179,46 +183,54 @@ export component VpnPage inherits Rectangle {
             // навязываться обновлением неправильно, решает человек.
             if root.update-version != "" && !root.update-dismissed: Rectangle {
                 border-radius: 14px;
-                background: Theme.accent.with-alpha(0.12);
+                background: root.update-state == 3 ? Theme.red.with-alpha(0.12) : Theme.accent.with-alpha(0.12);
                 border-width: 1px;
-                border-color: Theme.accent.with-alpha(0.35);
+                border-color: root.update-state == 3 ? Theme.red.with-alpha(0.4) : Theme.accent.with-alpha(0.35);
                 height: 46px;
                 HorizontalLayout {
-                    padding-left: 14px; padding-right: 10px;
-                    spacing: 10px;
-                    VerticalLayout {
-                        alignment: center;
+                    padding-left: 14px; padding-right: 8px;
+                    spacing: 8px;
+                    // Текст сам по себе ссылка на описание релиза: отдельная
+                    // кнопка «Что нового» не влезала в 400px и резала заголовок.
+                    txt-ta := TouchArea {
                         horizontal-stretch: 1;
-                        Text {
-                            text: "Доступна версия " + root.update-version;
-                            color: Theme.accent; font-size: 13px; font-weight: 700;
+                        clicked => { if (root.update-state == 0) { root.open-notes(); } }
+                        VerticalLayout {
+                            alignment: center;
+                            Text {
+                                text: root.update-state == 1 ? "Скачиваю " + root.update-version + "…"
+                                    : root.update-state == 2 ? "Готово — перезапустите"
+                                    : root.update-state == 3 ? root.update-error
+                                    : "Версия " + root.update-version + " доступна";
+                                color: root.update-state == 3 ? Theme.red : Theme.accent;
+                                font-size: 13px; font-weight: 700; overflow: elide;
+                            }
                         }
                     }
-                    VerticalLayout {
+                    if root.update-state != 1 && root.update-state != 2: VerticalLayout {
                         alignment: center;
                         Rectangle {
-                            width: 96px; height: 30px;
+                            width: 92px; height: 30px;
                             border-radius: 10px;
-                            background: notes-ta.pressed ? Theme.accent2 : Theme.accent;
+                            background: upd-ta.pressed ? Theme.accent2 : Theme.accent;
                             Text {
-                                text: "Что нового"; color: white; font-size: 12px; font-weight: 700;
+                                text: root.update-state == 3 ? "Ещё раз" : "Обновить";
+                                color: white; font-size: 12px; font-weight: 700;
                                 horizontal-alignment: center; vertical-alignment: center;
                                 width: 100%; height: 100%;
                             }
-                            notes-ta := TouchArea { clicked => { root.open-notes(); } }
+                            upd-ta := TouchArea { clicked => { root.do-update(); } }
                         }
                     }
-                    VerticalLayout {
+                    // Крестик рисуем ЛИНИЯМИ, а не символом: «✕» в системном
+                    // шрифте отсутствовал и показывался пустым квадратом.
+                    if root.update-state != 1: VerticalLayout {
                         alignment: center;
                         Rectangle {
-                            width: 28px; height: 28px;
+                            width: 30px; height: 30px;
                             border-radius: 8px;
                             background: close-ta.has-hover ? Theme.card-sel : transparent;
-                            Text {
-                                text: "✕"; color: Theme.dim; font-size: 13px;
-                                horizontal-alignment: center; vertical-alignment: center;
-                                width: 100%; height: 100%;
-                            }
+                            IconClose { width: 13px; height: 13px; tint: Theme.dim; }
                             close-ta := TouchArea { clicked => { root.update-dismissed = true; } }
                         }
                     }

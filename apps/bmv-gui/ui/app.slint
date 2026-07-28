@@ -87,6 +87,8 @@ export component AppWindow inherits Window {
     in property <int> coord-state;
     in property <string> update-version;
     in property <string> update-notes;
+    in property <int> update-state;
+    in property <string> update-error;
     in property <int> coord-ping;
     in property <int> coord-hosts;
     in property <string> coord-ip;
@@ -115,7 +117,8 @@ export component AppWindow inherits Window {
     callback new-code();
     callback apply-host();
     callback show-qr(string);
-    callback open-notes();   // Rust рисует qr-overlay-img и открывает оверлей
+    callback open-notes();
+    callback do-update();   // Rust рисует qr-overlay-img и открывает оверлей
 
     // «Пульс» цикла: idle winit-loop на macOS не сливает invoke_from_event_loop,
     // пока не придёт событие ввода — фоновые обновления статуса (подключение из
@@ -139,7 +142,10 @@ export component AppWindow inherits Window {
                 vpn-status: root.vpn-status;
                 coord-state: root.coord-state;
                 update-version: root.update-version;
+                update-state: root.update-state;
+                update-error: root.update-error;
                 open-notes() => { root.open-notes(); }
+                do-update() => { root.do-update(); }
                 vpn-host-id: root.vpn-host-id;
                 vpn-sub: root.vpn-sub;
                 vpn-ip: root.vpn-ip;

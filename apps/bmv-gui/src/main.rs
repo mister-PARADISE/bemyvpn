@@ -57,6 +57,36 @@ fn host_cc(h: &HostInfo) -> Option<String> {
     })
 }
 
+/// Скачать релиз, сверить sha256 и запустить установку.
+///
+/// Возврат Ok означает «помощник запущен» — приложение после этого обязано
+/// завершиться, иначе подмена не пройдёт: пока процесс жив, файлы держатся.
+async fn fetch_update(m: &bmv_common::update::Manifest) -> Result<(), String> {
+    let asset = bmv_common::update::current_asset_name(true)
+        .ok_or("для этой платформы релизы не выпускаются")?;
+    let want = m.sha256_of(asset).ok_or("в манифесте нет файла для этой платформы")?;
+    let repo = std::env::var("BMV_REPO").unwrap_or_else(|_| "mister-PARADISE/bemyvpn".into());
+    let url = bmv_common::update::asset_url(&repo, &format!("v{}", m.version), asset);
+
+    let bytes = bmv_common::update::download(&url, bmv_common::update::MAX_ASSET_BYTES)
+        .await
+        // Частый случай: GitHub заблокирован. Наш же продукт это и решает.
+        .map_err(|e| format!("{e} — попробуйте подключиться к VPN"))?;
+
+    if !bmv_common::update::verify_file_hash(&bytes, want) {
+        return Err("сумма не сошлась — файл отклонён".into());
+    }
+
+    #[cfg(target_os = "macos")]
+    bmv_common::update::spawn_bundle_updater(&bytes).map_err(|e| e.to_string())?;
+    #[cfg(windows)]
+    bmv_common::update::spawn_exe_updater(&bytes).map_err(|e| e.to_string())?;
+    // Linux: AppImage — один файл, подменяем как терминальный бинарь.
+    #[cfg(all(unix, not(target_os = "macos")))]
+    bmv_common::update::replace_self(&bytes).map(|_| ()).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// Открыть ссылку в браузере пользователя. Команда своя на каждой ОС.
 fn open_url(url: &str) {
     #[cfg(target_os = "macos")]
@@ -146,6 +176,38 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if url.starts_with("https://") {
                 open_url(&url);
             }
+        });
+    }
+
+    // «Обновить»: скачать, проверить, установить. Порядок проверок тот же, что в
+    // терминале, — подпись уже проверена при получении манифеста, здесь остаётся
+    // sha256 файла. Установка на десктопе идёт через помощника: приложение не
+    // может подменить себя на ходу, поэтому оно выходит, а помощник доделывает.
+    {
+        let (weak, eng, handle2) = (ui.as_weak(), engine.clone(), handle.clone());
+        ui.on_do_update(move || {
+            let Some(ui) = weak.upgrade() else { return };
+            if ui.get_update_state() == 1 { return; } // уже качаем
+            ui.set_update_state(1);
+            let Some(m) = eng.lock().unwrap().clone().latest_update() else {
+                ui.set_update_state(3);
+                ui.set_update_error("нет сведений о релизе".into());
+                return;
+            };
+            let weak2 = weak.clone();
+            handle2.spawn(async move {
+                let res = fetch_update(&m).await;
+                let _ = slint::invoke_from_event_loop(move || {
+                    let Some(ui) = weak2.upgrade() else { return };
+                    match res {
+                        Ok(()) => ui.set_update_state(2),
+                        Err(e) => {
+                            ui.set_update_state(3);
+                            ui.set_update_error(e.into());
+                        }
+                    }
+                });
+            });
         });
     }
 

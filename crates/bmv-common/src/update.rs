@@ -211,6 +211,123 @@ pub fn replace_self(new_bytes: &[u8]) -> Result<std::path::PathBuf> {
     Ok(bak)
 }
 
+
+/// Обновить приложение, которое НЕ МОЖЕТ подменить себя на ходу (бандл macOS,
+/// exe под Windows), — так делают все приличные автообновлялки, включая Sparkle.
+///
+/// Схема одна на обе платформы:
+///   1. новое кладём рядом, проверенным;
+///   2. запускаем ПОМОЩНИКА и сразу выходим;
+///   3. помощник ждёт, пока наш процесс умрёт, меняет местами и запускает заново.
+///
+/// Почему именно так: пока приложение живо, заменить его файлы либо нельзя
+/// (Windows держит exe), либо опасно (macOS может грузить ресурсы бандла на
+/// лету). Подмена «удалить и скопировать поверх» — как раз то, что ломает
+/// установки у плохих обновлялок: обрыв на середине оставляет мусор вместо
+/// программы. Мы двигаем целиком уже готовое, старое сохраняем для отката.
+///
+/// Возвращает управление СРАЗУ: вызывающий обязан завершить процесс сам.
+#[cfg(target_os = "macos")]
+pub fn spawn_bundle_updater(dmg_bytes: &[u8]) -> Result<()> {
+    let app = current_app_bundle().ok_or_else(|| Error::Net("приложение запущено не из бандла .app".into()))?;
+    let tmp = std::env::temp_dir().join(format!("bemyvpn-upd-{}", std::process::id()));
+    std::fs::create_dir_all(&tmp).map_err(|e| Error::Net(format!("временная папка: {e}")))?;
+    let dmg = tmp.join("update.dmg");
+    std::fs::write(&dmg, dmg_bytes).map_err(|e| Error::Net(format!("запись образа: {e}")))?;
+
+    let script = tmp.join("apply.sh");
+    // Помощник намеренно на shell: его легко прочитать и проверить глазами, а
+    // ошибка в бинарном помощнике оставила бы пользователя без приложения.
+    // `xattr -dr` обязателен: скачанное помечено карантином, и без снятия
+    // Gatekeeper заблокирует уже установленное обновление.
+    let body = format!(
+        r#"#!/bin/sh
+set -e
+APP="{app}"
+DMG="{dmg}"
+TMP="{tmp}"
+PID={pid}
+# Ждём выхода приложения (до 30с), иначе подменять опасно.
+i=0
+while kill -0 "$PID" 2>/dev/null && [ $i -lt 60 ]; do sleep 0.5; i=$((i+1)); done
+
+MNT="$TMP/mnt"
+mkdir -p "$MNT"
+hdiutil attach -nobrowse -quiet "$DMG" -mountpoint "$MNT"
+NEW=$(ls -d "$MNT"/*.app | head -1)
+cp -R "$NEW" "$TMP/new.app"
+hdiutil detach "$MNT" -quiet || true
+
+xattr -dr com.apple.quarantine "$TMP/new.app" 2>/dev/null || true
+
+# Атомарно: старое в сторону, новое на место. Не удалось — возвращаем старое.
+rm -rf "$APP.old"
+mv "$APP" "$APP.old"
+if ! mv "$TMP/new.app" "$APP"; then
+  mv "$APP.old" "$APP"
+  exit 1
+fi
+rm -rf "$APP.old"
+open "$APP"
+rm -rf "$TMP"
+"#,
+        app = app.display(),
+        dmg = dmg.display(),
+        tmp = tmp.display(),
+        pid = std::process::id()
+    );
+    std::fs::write(&script, body).map_err(|e| Error::Net(format!("помощник: {e}")))?;
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))
+        .map_err(|e| Error::Net(format!("права помощника: {e}")))?;
+
+    std::process::Command::new("/bin/sh")
+        .arg(&script)
+        .spawn()
+        .map_err(|e| Error::Net(format!("запуск помощника: {e}")))?;
+    Ok(())
+}
+
+/// Путь к своему .app: `…/BeMyVPN.app/Contents/MacOS/bemyvpn-gui` → `…/BeMyVPN.app`.
+#[cfg(target_os = "macos")]
+fn current_app_bundle() -> Option<std::path::PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let p = exe.parent()?.parent()?.parent()?; // MacOS → Contents → .app
+    (p.extension()? == "app").then(|| p.to_path_buf())
+}
+
+/// То же для Windows: exe нельзя переписать, пока он выполняется.
+#[cfg(windows)]
+pub fn spawn_exe_updater(new_bytes: &[u8]) -> Result<()> {
+    let me = std::env::current_exe().map_err(|e| Error::Net(format!("свой путь: {e}")))?;
+    let dir = me.parent().ok_or_else(|| Error::Net("нет папки".into()))?;
+    let new = dir.join("bemyvpn-new.exe");
+    std::fs::write(&new, new_bytes).map_err(|e| Error::Net(format!("запись: {e}")))?;
+
+    let cmd = dir.join("bemyvpn-update.cmd");
+    // Скрипт ждёт освобождения файла: пока процесс жив, переименование не
+    // проходит, и цикл повторяет попытку. Так надёжнее, чем ждать по таймеру.
+    let body = format!(
+        "@echo off\r\n\
+         :wait\r\n\
+         timeout /t 1 /nobreak >nul\r\n\
+         move /y \"{me}\" \"{bak}\" >nul 2>&1 || goto wait\r\n\
+         move /y \"{new}\" \"{me}\" >nul 2>&1 || (move /y \"{bak}\" \"{me}\" >nul & exit /b 1)\r\n\
+         start \"\" \"{me}\"\r\n\
+         del \"%~f0\"\r\n",
+        me = me.display(),
+        bak = me.with_extension("bak").display(),
+        new = new.display()
+    );
+    std::fs::write(&cmd, body).map_err(|e| Error::Net(format!("помощник: {e}")))?;
+    std::process::Command::new("cmd")
+        .args(["/C", "start", "", "/min"])
+        .arg(&cmd)
+        .spawn()
+        .map_err(|e| Error::Net(format!("запуск помощника: {e}")))?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

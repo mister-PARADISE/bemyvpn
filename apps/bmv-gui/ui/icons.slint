@@ -118,6 +118,13 @@ export component IconCopy inherits Rectangle {
     StrokeIcon { width: 100%; height: 100%; tint: root.tint; commands: "M9 4 L19 4 L19 16 M5 8 L15 8 L15 20 L5 20 Z"; }
 }
 
+// Крестик «закрыть». Рисуем линиями, а не символом «✕»: его нет в системном
+// шрифте и вместо крестика показывался пустой квадрат.
+export component IconClose inherits StrokeIcon {
+    stroke-width: 2.2px;
+    commands: "M6 6 L18 18 M18 6 L6 18";
+}
+
 export component IconCheck inherits StrokeIcon {
     stroke-width: 2.6px;
     commands: "M4.5 12.5 L9.8 17.8 L19.5 7";
