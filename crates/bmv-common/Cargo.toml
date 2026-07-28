@@ -14,3 +14,9 @@ serde_json.workspace = true
 # Ed25519 для проверки подписи обновлений. ring УЖЕ в дереве (через rustls),
 # отдельная крипто-библиотека ради одной проверки не заводится.
 ring = { version = "0.17", default-features = false, features = ["std"] }
+# Скачивание обновлений по HTTPS. hyper и rustls УЖЕ в дереве — берём тонкую
+# обвязку поверх них, а не тяжёлый универсальный клиент.
+hyper = { version = "1", features = ["client", "http1"] }
+hyper-util = { version = "0.1", features = ["client-legacy", "tokio"] }
+hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "webpki-tokio", "ring", "tls12"] }
+http-body-util = "0.1"

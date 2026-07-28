@@ -104,6 +104,113 @@ fn hex_decode(s: &str) -> Option<Vec<u8>> {
         .collect()
 }
 
+// ── скачивание и установка ───────────────────────────────────────────────────
+
+/// Имя файла релиза для ЭТОЙ сборки — по нему ищем хэш в манифесте и строим
+/// адрес загрузки. Имена совпадают с ассетами релиза (см. release.yml).
+pub fn current_asset_name(is_gui: bool) -> Option<&'static str> {
+    Some(match (std::env::consts::OS, std::env::consts::ARCH, is_gui) {
+        ("linux", "x86_64", false) => "bemyvpn-linux-x86_64-terminal",
+        ("linux", "x86_64", true) => "bemyvpn-linux-x86_64.AppImage",
+        ("macos", "aarch64", false) => "bemyvpn-macos-arm64-terminal",
+        ("macos", "aarch64", true) => "bemyvpn-macos-arm64.dmg",
+        ("windows", "x86_64", false) => "bemyvpn-windows-x86_64-terminal.exe",
+        ("windows", "x86_64", true) => "bemyvpn-windows-x86_64.exe",
+        // Сборка под платформу, которую мы не выпускаем (например linux-aarch64):
+        // обновлять нечем, и честнее сказать «нет», чем подсунуть чужой файл.
+        _ => return None,
+    })
+}
+
+/// Прямая ссылка на файл последнего релиза.
+pub fn asset_url(repo: &str, tag: &str, asset: &str) -> String {
+    format!("https://github.com/{repo}/releases/download/{tag}/{asset}")
+}
+
+/// Скачать по HTTPS, следуя перенаправлениям (GitHub уводит на свой CDN).
+///
+/// Ограничение размера обязательно: без него подменённый ответ мог бы занять всю
+/// память. Наши файлы — десятки мегабайт, потолок берём с большим запасом.
+pub async fn download(url: &str, max_bytes: usize) -> Result<Vec<u8>> {
+    use http_body_util::BodyExt;
+
+    let tls = hyper_rustls::HttpsConnectorBuilder::new()
+        .with_webpki_roots()
+        .https_only() // только HTTPS: по http подсунуть подмену куда проще
+        .enable_http1()
+        .build();
+    let client: hyper_util::client::legacy::Client<_, String> =
+        hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new()).build(tls);
+
+    let mut url = url.to_string();
+    // До 5 перенаправлений: GitHub отдаёт 302 на objects.githubusercontent.com.
+    for _ in 0..5 {
+        let req = hyper::Request::get(&url)
+            .header(hyper::header::USER_AGENT, "bemyvpn")
+            .body(String::new())
+            .map_err(|e| Error::Net(format!("запрос: {e}")))?;
+        let resp = client.request(req).await.map_err(|e| Error::Net(format!("загрузка: {e}")))?;
+
+        if resp.status().is_redirection() {
+            let loc = resp
+                .headers()
+                .get(hyper::header::LOCATION)
+                .and_then(|v| v.to_str().ok())
+                .ok_or_else(|| Error::Net("перенаправление без адреса".into()))?;
+            url = loc.to_string();
+            continue;
+        }
+        if !resp.status().is_success() {
+            return Err(Error::Net(format!("сервер ответил {}", resp.status())));
+        }
+
+        let body = resp.into_body().collect().await.map_err(|e| Error::Net(format!("тело: {e}")))?;
+        let bytes = body.to_bytes();
+        if bytes.len() > max_bytes {
+            return Err(Error::Net("файл больше ожидаемого — отклонён".into()));
+        }
+        return Ok(bytes.to_vec());
+    }
+    Err(Error::Net("слишком много перенаправлений".into()))
+}
+
+/// Потолок размера скачиваемого файла. Самый большой наш ассет — Windows-GUI
+/// (~19 МБ); 64 МБ дают запас на рост и при этом не дают залить память.
+pub const MAX_ASSET_BYTES: usize = 64 * 1024 * 1024;
+
+/// Заменить СВОЙ исполняемый файл скачанным и вернуть путь к резервной копии.
+///
+/// Порядок важен: сначала кладём новый файл РЯДОМ, потом переименованиями
+/// меняем местами. `rename` в пределах одной папки атомарен, поэтому на диске
+/// никогда не оказывается наполовину записанного бинаря — оборвись питание в
+/// любой момент, останется либо старый файл, либо новый, но не огрызок.
+///
+/// Работающий процесс при этом не страдает: на Unix он держит СТАРЫЙ inode и
+/// продолжает выполняться до перезапуска.
+#[cfg(unix)]
+pub fn replace_self(new_bytes: &[u8]) -> Result<std::path::PathBuf> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let me = std::env::current_exe().map_err(|e| Error::Net(format!("свой путь: {e}")))?;
+    let dir = me.parent().ok_or_else(|| Error::Net("нет родительской папки".into()))?;
+    let tmp = dir.join(format!(".bemyvpn-new-{}", std::process::id()));
+    let bak = me.with_extension("bak");
+
+    std::fs::write(&tmp, new_bytes).map_err(|e| Error::Net(format!("запись: {e}")))?;
+    std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755))
+        .map_err(|e| Error::Net(format!("права: {e}")))?;
+
+    // Старый — в .bak (откат), новый — на его место.
+    let _ = std::fs::remove_file(&bak);
+    std::fs::rename(&me, &bak).map_err(|e| Error::Net(format!("резервная копия: {e}")))?;
+    if let Err(e) = std::fs::rename(&tmp, &me) {
+        // Подмена не удалась — возвращаем старый файл, иначе останемся без бинаря.
+        let _ = std::fs::rename(&bak, &me);
+        return Err(Error::Net(format!("подмена: {e}")));
+    }
+    Ok(bak)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -163,6 +270,21 @@ mod tests {
     }
 
     #[test]
+    fn asset_name_and_url() {
+        // Под платформу, на которой идут тесты, имя обязано находиться —
+        // иначе обновление молча стало бы недоступно на своей же системе.
+        let term = current_asset_name(false).expect("нет имени терминального файла");
+        assert!(term.starts_with("bemyvpn-"), "имя не по паттерну: {term}");
+        let gui = current_asset_name(true).expect("нет имени приложения");
+        assert!(gui.starts_with("bemyvpn-"), "имя не по паттерну: {gui}");
+        assert_ne!(term, gui, "терминал и приложение — разные файлы");
+
+        let url = asset_url("owner/repo", "v1.6", term);
+        assert_eq!(url, format!("https://github.com/owner/repo/releases/download/v1.6/{term}"));
+        assert!(url.starts_with("https://"), "только HTTPS");
+    }
+
+    #[test]
     fn manifest_fields_parse() {
         let (pk, sig) = signed_with_temp_key(MANIFEST.as_bytes());
         assert!(verify_with(MANIFEST.as_bytes(), &sig, &pk));
@@ -173,3 +295,4 @@ mod tests {
         assert_eq!(m.sha256_of("нет-такого"), None);
     }
 }
+

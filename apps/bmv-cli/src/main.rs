@@ -33,6 +33,12 @@ struct Cli {
 enum Cmd {
     /// Показать версию сборки.
     Version,
+    /// Обновиться до свежего релиза: скачать, проверить подпись и подменить себя.
+    Update {
+        /// Только проверить, есть ли новая версия — ничего не скачивать.
+        #[arg(long)]
+        check: bool,
+    },
     /// Показать итоговый конфиг (с учётом дефолтов).
     Config,
     /// Список протоколов и их статус.
@@ -242,6 +248,8 @@ async fn main() {
     match cmd {
         Cmd::Version => println!("{}", bmv_common::version::VERSION),
 
+        Cmd::Update { check } => run_update(&engine, check).await,
+
         Cmd::Config => println!("{}", engine.config().to_toml()),
 
         Cmd::Protocols => {
@@ -301,7 +309,7 @@ async fn run_host(engine: std::sync::Arc<BmvEngine>, tunnel: bool) {
             println!("готово ✅");
             v
         }
-        Err(e) => return fail(format!("не удалось: {e}")),
+        Err(e) => fail(format!("не удалось: {e}")),
     };
     println!(
         "Хост #{id} в каталоге ({}){}.",
@@ -394,23 +402,23 @@ async fn run_guest(
                     .await
                 {
                     Ok(v) => v,
-                    Err(e) => return fail(format!("не соединился: {e}")),
+                    Err(e) => fail(format!("не соединился: {e}")),
                 };
                 let params = bmv_tunnel::TunParams::guest();
                 let (device, ifname) = match bmv_desktop::make_tun(&params) {
                     Ok(d) => d,
-                    Err(e) => return fail(format!("не создать TUN (нужен root/sudo): {e}")),
+                    Err(e) => fail(format!("не создать TUN (нужен root/sudo): {e}")),
                 };
                 // Полный туннель: split-default заворачивает ВЕСЬ трафик через хост,
                 // хост пинуется через реальный шлюз (анти-петля), DNS → 8.8.8.8.
                 // Снимается на Drop (тот же RouteGuard, что и в GUI). Ctrl+C → откат.
                 let _guard = match bmv_desktop::RouteGuard::install(peer.ip(), &ifname) {
                     Ok(g) => g,
-                    Err(e) => return fail(format!("не настроить маршруты (нужен root/sudo): {e}")),
+                    Err(e) => fail(format!("не настроить маршруты (нужен root/sudo): {e}")),
                 };
                 println!("  соединён с {peer}. Весь трафик идёт через хост (интерфейс {ifname}).");
                 if let Err(e) = bmv_tunnel::run_guest(device, std::sync::Arc::from(link)).await {
-                    return fail(format!("туннель оборвался: {e}"));
+                    fail(format!("туннель оборвался: {e}"));
                 }
                 println!("  туннель завершён.");
                 return;
@@ -457,7 +465,7 @@ async fn run_server(config: &Config) {
     let s = &config.server;
     let bind: std::net::SocketAddr = match s.bind.parse() {
         Ok(b) => b,
-        Err(e) => return fail(format!("[server] bind — неверный адрес «{}»: {e}", s.bind)),
+        Err(e) => fail(format!("[server] bind — неверный адрес «{}»: {e}", s.bind)),
     };
     let tls = tls_from_config(s);
     let mode = match &tls {
@@ -488,8 +496,79 @@ fn norm_proto(p: &str) -> String {
     }
 }
 
-fn fail(msg: String) {
+/// Напечатать ошибку и выйти. Возвращает `!` — компилятор знает, что после
+/// вызова кода нет, поэтому её можно ставить в ветку `else` у `let...else`.
+fn fail(msg: String) -> ! {
     eprintln!("{msg}");
     std::process::exit(1);
 }
 
+
+/// Обновление терминальной версии: проверить, скачать, подменить себя.
+///
+/// Порядок проверок не сокращаем ни при каких условиях: подпись манифеста →
+/// версия новее → sha256 файла. Рабочий бинарь трогается только после всех трёх,
+/// поэтому оборванная загрузка или подменённый файл не могут оставить систему
+/// без работающей программы.
+async fn run_update(engine: &std::sync::Arc<BmvEngine>, check_only: bool) {
+    if !bmv_common::version::is_release_build() {
+        println!("Это локальная сборка ({}) — обновлять нечего.", bmv_common::version::VERSION);
+        return;
+    }
+    // Манифест приходит от координатора с УЖЕ проверенной подписью; ждём его
+    // появления, соединение поднимается не мгновенно.
+    let mut manifest = None;
+    for _ in 0..20 {
+        if let Some(m) = engine.latest_update() {
+            manifest = Some(m);
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    }
+    let Some(m) = manifest else {
+        fail("координатор не сообщил о релизах (нет связи или манифест не выложен)".into());
+    };
+
+    if !m.is_newer_than_current() {
+        println!("Установлена свежая версия {} — обновлять нечего.", bmv_common::version::VERSION);
+        return;
+    }
+    println!("Доступна версия {} (у вас {})", m.version, bmv_common::version::VERSION);
+    if !m.notes.is_empty() {
+        println!("  что нового: {}", m.notes);
+    }
+    if check_only {
+        return;
+    }
+
+    let Some(asset) = bmv_common::update::current_asset_name(false) else {
+        fail("для этой платформы релизы не выпускаются".into());
+    };
+    let Some(want_sha) = m.sha256_of(asset) else {
+        fail(format!("в манифесте нет файла {asset}"));
+    };
+
+    let repo = std::env::var("BMV_REPO").unwrap_or_else(|_| "mister-PARADISE/bemyvpn".into());
+    let url = bmv_common::update::asset_url(&repo, &format!("v{}", m.version), asset);
+    println!("Скачиваю {asset}…");
+    let bytes = match bmv_common::update::download(&url, bmv_common::update::MAX_ASSET_BYTES).await {
+        Ok(b) => b,
+        // Частый случай в наших краях: GitHub заблокирован. Подсказываем, что
+        // ровно эту проблему решает само приложение.
+        Err(e) => fail(format!("{e}\n  подсказка: если GitHub недоступен — подключитесь к VPN и повторите")),
+    };
+
+    if !bmv_common::update::verify_file_hash(&bytes, want_sha) {
+        fail("СУММА НЕ СОШЛАСЬ — файл повреждён или подменён, обновление отменено".into());
+    }
+    println!("Проверено: {} байт, sha256 совпал", bytes.len());
+
+    match bmv_common::update::replace_self(&bytes) {
+        Ok(bak) => {
+            println!("Готово. Версия {} установлена.", m.version);
+            println!("  старая сохранена: {}", bak.display());
+            println!("  запустите программу заново");
+        }
+        Err(e) => fail(format!("замена не удалась: {e}")),
+    }
+}
