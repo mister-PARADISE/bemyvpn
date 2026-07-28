@@ -21,15 +21,38 @@ use tokio::net::{TcpStream, UdpSocket};
 use crate::linkio::LinkIo;
 use crate::MTU;
 
+/// Буфер перекачки на ОДНО направление TCP. Это не окно TCP (оно своё, 1 МБ, см.
+/// `tcp_window`), а лишь укрупнение системных вызовов, поэтому 32 КБ хватает с
+/// головой. Прежние 64 КБ давали 128 КБ на соединение — при лимите в 1024 штуки
+/// это 134 МБ памяти хоста, которые гость занимал одним циклом открытия сокетов.
+const TCP_COPY_BUF: usize = 32 * 1024;
+/// Буфер «от гостя». Резать здесь можно только потому, что размер ОГРАНИЧЕН
+/// СВЕРХУ по дороге: `LinkIo::poll_read` выбрасывает пакет крупнее буфера, а
+/// ipstack читает устройство буфером в один MTU (1400) — до разбора датаграмма
+/// больше просто не доходит. Держим 3-кратный запас. ВАЖНО: ipstack отдаёт
+/// полезную нагрузку через `put_slice`, а он не обрезает, а ПАДАЕТ, — так что
+/// уменьшать это число ниже MTU нельзя.
+const UDP_BUF_FROM_GUEST: usize = 4 * 1024;
+/// Буфер «от сервера»: датаграмма приходит из настоящего интернета, и всё, что
+/// не влезло, `recv` МОЛЧА ОТРЕЗАЕТ (сокет, а не паника). Поэтому запас щедрый —
+/// DNS с EDNS0 просит 4 КБ, реальные ответы не приближаются и к 32 КБ. На потолок
+/// памяти это не влияет: худший случай задают TCP-соединения, они «дороже».
+const UDP_BUF_FROM_SERVER: usize = 32 * 1024;
+
 /// Максимум одновременных проксируемых соединений на ОДНОГО гостя. Заслон от
-/// исчерпания файловых дескрипторов/памяти хоста злонамеренным гостем (открыть
-/// 100k соединений). Щедро: реальный браузер держит десятки-сотни. Настраивается
-/// env `BMV_MAX_CONNS` (0 = без лимита).
+/// исчерпания файловых дескрипторов и памяти хоста. Настраивается env
+/// `BMV_MAX_CONNS` (0 = без лимита).
+///
+/// 512 — компромисс: браузер с десятками вкладок держит сотни сокетов, торрент
+/// хочет больше, а верхняя граница обязана оставаться посчитанной. При нынешних
+/// буферах потолок памяти на гостя ≈ 512 × 64 КБ ≈ 32 МБ.
+/// ponytail: лимит по числу соединений, а не по памяти; если понадобится точнее —
+/// считать байты в пуле буферов, а не штуки.
 fn max_conns() -> usize {
     std::env::var("BMV_MAX_CONNS")
         .ok()
         .and_then(|s| s.parse().ok())
-        .unwrap_or(1024)
+        .unwrap_or(512)
 }
 
 /// SSRF-ЗАЩИТА ХОСТА. Гость сам задаёт адрес назначения (это его IP-пакеты),
@@ -178,17 +201,26 @@ async fn accept_loop(stack: &mut IpStack, conns: Arc<AtomicUsize>) {
     }
 }
 
+/// Сколько ждём установления соединения к адресату. Без таймаута на «чёрную дыру»
+/// (пакеты молча теряются) ждала бы сама ОС — до двух минут, — и всё это время
+/// попытка занимала бы слот из лимита соединений гостя: сотня таких адресов, и
+/// гость не может открыть ничего живого. 10с щедро даже для дальних хостов.
+const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// Мост одного TCP-потока гостя к настоящему серверу.
 async fn bridge_tcp(mut guest: ipstack::IpStackTcpStream, dst: SocketAddr) {
-    let mut server = match TcpStream::connect(dst).await {
-        Ok(s) => s,
-        Err(e) => {
+    let mut server = match tokio::time::timeout(CONNECT_TIMEOUT, TcpStream::connect(dst)).await {
+        Ok(Ok(s)) => s,
+        Ok(Err(e)) => {
             tracing::debug!(%dst, "TCP connect не удался: {e}");
             return;
         }
+        Err(_) => {
+            tracing::debug!(%dst, "TCP connect: таймаут");
+            return;
+        }
     };
-    // крупный буфер копирования — меньше пробуждений на высокой скорости
-    let _ = tokio::io::copy_bidirectional_with_sizes(&mut guest, &mut server, 65536, 65536).await;
+    let _ = tokio::io::copy_bidirectional_with_sizes(&mut guest, &mut server, TCP_COPY_BUF, TCP_COPY_BUF).await;
 }
 
 /// Мост одного UDP-потока гостя (например DNS) к настоящему серверу.
@@ -204,8 +236,8 @@ async fn bridge_udp(mut guest: ipstack::IpStackUdpStream, dst: SocketAddr) {
     if server.connect(dst).await.is_err() {
         return;
     }
-    let mut from_guest = vec![0u8; 65535];
-    let mut from_server = vec![0u8; 65535];
+    let mut from_guest = vec![0u8; UDP_BUF_FROM_GUEST];
+    let mut from_server = vec![0u8; UDP_BUF_FROM_SERVER];
     loop {
         tokio::select! {
             r = guest.read(&mut from_guest) => match r {
