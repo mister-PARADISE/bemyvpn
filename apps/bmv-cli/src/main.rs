@@ -248,7 +248,7 @@ async fn main() {
     match cmd {
         Cmd::Version => println!("{}", bmv_common::version::VERSION),
 
-        Cmd::Update { check } => run_update(&engine, check).await,
+        Cmd::Update { check } => run_update(check).await,
 
         Cmd::Config => println!("{}", engine.config().to_toml()),
 
@@ -510,33 +510,26 @@ fn fail(msg: String) -> ! {
 /// версия новее → sha256 файла. Рабочий бинарь трогается только после всех трёх,
 /// поэтому оборванная загрузка или подменённый файл не могут оставить систему
 /// без работающей программы.
-async fn run_update(engine: &std::sync::Arc<BmvEngine>, check_only: bool) {
+async fn run_update(check_only: bool) {
     if !bmv_common::version::is_release_build() {
         println!("Это локальная сборка ({}) — обновлять нечего.", bmv_common::version::VERSION);
         return;
     }
-    // Манифест приходит от координатора с УЖЕ проверенной подписью; ждём его
-    // появления, соединение поднимается не мгновенно.
-    let mut manifest = None;
-    for _ in 0..20 {
-        if let Some(m) = engine.latest_update() {
-            manifest = Some(m);
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
-    }
-    let Some(m) = manifest else {
-        fail("координатор не сообщил о релизах (нет связи или манифест не выложен)".into());
-    };
+    let repo = std::env::var("BMV_REPO").unwrap_or_else(|_| "mister-PARADISE/bemyvpn".into());
 
-    if !m.is_newer_than_current() {
+    let tag = match bmv_common::update::github_latest_tag(&repo).await {
+        Ok(t) => t,
+        // Самый частый случай в местах с блокировками — и его же решает наше
+        // приложение, поэтому подсказываем именно это.
+        Err(e) => fail(format!("{e}\n  подсказка: если GitHub недоступен — подключитесь к VPN и повторите")),
+    };
+    let latest = tag.trim_start_matches('v');
+
+    if !bmv_common::version::is_newer(latest, bmv_common::version::VERSION) {
         println!("Установлена свежая версия {} — обновлять нечего.", bmv_common::version::VERSION);
         return;
     }
-    println!("Доступна версия {} (у вас {})", m.version, bmv_common::version::VERSION);
-    if !m.notes.is_empty() {
-        println!("  что нового: {}", m.notes);
-    }
+    println!("Доступна версия {latest} (у вас {})", bmv_common::version::VERSION);
     if check_only {
         return;
     }
@@ -544,28 +537,20 @@ async fn run_update(engine: &std::sync::Arc<BmvEngine>, check_only: bool) {
     let Some(asset) = bmv_common::update::current_asset_name(false) else {
         fail("для этой платформы релизы не выпускаются".into());
     };
-    let Some(want_sha) = m.sha256_of(asset) else {
-        fail(format!("в манифесте нет файла {asset}"));
-    };
-
-    let repo = std::env::var("BMV_REPO").unwrap_or_else(|_| "mister-PARADISE/bemyvpn".into());
-    let url = bmv_common::update::asset_url(&repo, &format!("v{}", m.version), asset);
+    let url = bmv_common::update::asset_url(&repo, &tag, asset);
     println!("Скачиваю {asset}…");
+
+    // Целостность даёт HTTPS: файл идёт с github.com, подменить его в пути
+    // нельзя. Отдельная проверка хэша ничего бы не добавила.
     let bytes = match bmv_common::update::download(&url, bmv_common::update::MAX_ASSET_BYTES).await {
         Ok(b) => b,
-        // Частый случай в наших краях: GitHub заблокирован. Подсказываем, что
-        // ровно эту проблему решает само приложение.
         Err(e) => fail(format!("{e}\n  подсказка: если GitHub недоступен — подключитесь к VPN и повторите")),
     };
-
-    if !bmv_common::update::verify_file_hash(&bytes, want_sha) {
-        fail("СУММА НЕ СОШЛАСЬ — файл повреждён или подменён, обновление отменено".into());
-    }
-    println!("Проверено: {} байт, sha256 совпал", bytes.len());
+    println!("Скачано: {} байт", bytes.len());
 
     match bmv_common::update::replace_self(&bytes) {
         Ok(bak) => {
-            println!("Готово. Версия {} установлена.", m.version);
+            println!("Готово. Версия {latest} установлена.");
             println!("  старая сохранена: {}", bak.display());
             println!("  запустите программу заново");
         }

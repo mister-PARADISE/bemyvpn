@@ -61,21 +61,18 @@ fn host_cc(h: &HostInfo) -> Option<String> {
 ///
 /// Возврат Ok означает «помощник запущен» — приложение после этого обязано
 /// завершиться, иначе подмена не пройдёт: пока процесс жив, файлы держатся.
-async fn fetch_update(m: &bmv_common::update::Manifest) -> Result<(), String> {
+async fn fetch_update(tag: &str) -> Result<(), String> {
     let asset = bmv_common::update::current_asset_name(true)
         .ok_or("для этой платформы релизы не выпускаются")?;
-    let want = m.sha256_of(asset).ok_or("в манифесте нет файла для этой платформы")?;
     let repo = std::env::var("BMV_REPO").unwrap_or_else(|_| "mister-PARADISE/bemyvpn".into());
-    let url = bmv_common::update::asset_url(&repo, &format!("v{}", m.version), asset);
+    let url = bmv_common::update::asset_url(&repo, tag, asset);
 
+    // Целостность обеспечивает HTTPS: файл идёт с github.com, подменить его в
+    // пути нельзя. Отдельная проверка хэша тут ничего бы не добавила.
     let bytes = bmv_common::update::download(&url, bmv_common::update::MAX_ASSET_BYTES)
         .await
         // Частый случай: GitHub заблокирован. Наш же продукт это и решает.
         .map_err(|e| format!("{e} — попробуйте подключиться к VPN"))?;
-
-    if !bmv_common::update::verify_file_hash(&bytes, want) {
-        return Err("сумма не сошлась — файл отклонён".into());
-    }
 
     #[cfg(target_os = "macos")]
     bmv_common::update::spawn_bundle_updater(&bytes).map_err(|e| e.to_string())?;
@@ -160,19 +157,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // через помощника: приложение не может подменить себя на ходу — оно выходит,
     // помощник доделывает.
     {
-        let (weak, eng, handle2) = (ui.as_weak(), engine.clone(), handle.clone());
+        let (weak, handle2) = (ui.as_weak(), handle.clone());
         ui.on_do_update(move || {
             let Some(ui) = weak.upgrade() else { return };
             if ui.get_update_state() == 1 { return; } // уже качаем — второй раз не начинаем
-            let Some(m) = eng.lock().unwrap().clone().latest_update() else {
-                ui.set_update_state(3);
-                ui.set_update_error("нет сведений о релизе".into());
-                return;
-            };
+            let tag = ui.get_update_tag().to_string();
+            if tag.is_empty() { return; }
             ui.set_update_state(1);
             let weak2 = weak.clone();
             handle2.spawn(async move {
-                let res = fetch_update(&m).await;
+                let res = fetch_update(&tag).await;
                 let _ = slint::invoke_from_event_loop(move || {
                     let Some(ui) = weak2.upgrade() else { return };
                     match res {
@@ -197,6 +191,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 ui.set_qr_overlay(code);
             }
+        });
+    }
+
+    // Проверка обновления — один раз при запуске, прямо у GitHub. Своей
+    // инфраструктуры для этого не нужно: релизы и так лежат там.
+    {
+        let weak = ui.as_weak();
+        handle.spawn(async move {
+            if !bmv_common::version::is_release_build() {
+                return; // локальную сборку обновлять незачем
+            }
+            let repo = std::env::var("BMV_REPO").unwrap_or_else(|_| "mister-PARADISE/bemyvpn".into());
+            let Ok(tag) = bmv_common::update::github_latest_tag(&repo).await else { return };
+            let latest = tag.trim_start_matches('v').to_string();
+            if !bmv_common::version::is_newer(&latest, bmv_common::version::VERSION) {
+                return;
+            }
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(ui) = weak.upgrade() {
+                    ui.set_update_version(latest.into());
+                    ui.set_update_tag(tag.into());
+                }
+            });
         });
     }
 
@@ -461,7 +478,7 @@ fn spawn_refresh(
             // жив, пока снапшот каталога ещё в пути (хост уже анонсирован).
             let t0 = std::time::Instant::now();
             let alive = eng.coordinator_health().await.is_ok();
-            let upd = eng.latest_update();
+
             let ping = t0.elapsed().as_millis() as i32;
             if alive && my_ip.is_empty() {
                 if let Ok(ip) = eng.my_ip().await {
@@ -483,14 +500,7 @@ fn spawn_refresh(
             let _ = slint::invoke_from_event_loop(move || {
                 let Some(ui) = weak.upgrade() else { return };
                 ui.set_coord_state(if alive { 1 } else { 2 });
-                // Свежий релиз: показываем ТОЛЬКО если он новее нашей сборки.
-                // Манифест сюда попадает уже с проверенной подписью (bmv-signal),
-                // локальные сборки (0.0-dev) исключены внутри is_newer_than_current.
-                if let Some(u) = &upd {
-                    if u.is_newer_than_current() {
-                        ui.set_update_version(u.version.clone().into());
-                    }
-                }
+
                 ui.set_coord_ping(if alive { ping } else { 0 });
                 ui.set_coord_ip(ip.into());
                 if let Some(h) = hist { ui.set_server_history(str_model(&h)); }

@@ -157,12 +157,6 @@ impl BmvEngine {
         Ok(self.coord.get().expect("только что установлен").clone())
     }
 
-    /// Свежий релиз, о котором сообщил координатор (подпись уже проверена в
-    /// bmv-signal вшитым ключом). None — обновлять нечего либо не проверено.
-    pub fn latest_update(&self) -> Option<bmv_common::update::Manifest> {
-        self.coordinator().ok().and_then(|c| c.latest_update())
-    }
-
     /// Проверить, что координатор жив.
     pub async fn coordinator_health(&self) -> Result<()> {
         self.coordinator()?.health().await

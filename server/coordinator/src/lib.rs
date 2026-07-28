@@ -278,8 +278,6 @@ struct AppState {
     ws_hosts: Mutex<HashMap<String, tokio::sync::mpsc::Sender<Vec<String>>>>,
     /// Счётчик открытых WS-коннектов на IP — заслон от исчерпания сокетов флудом.
     ws_conns: std::sync::Mutex<HashMap<IpAddr, u32>>,
-    /// Кэш манифеста обновления (перечитывается по mtime, см. load_update).
-    update: std::sync::Mutex<UpdateInfo>,
 }
 
 impl AppState {
@@ -646,46 +644,6 @@ enum WsServerMsg {
     Ip { id: u64, addr: String },
     /// Ответ на resolve (найденный хост или null).
     Resolved { id: u64, host: Option<DirectoryItem> },
-    /// Сведения о свежем релизе — ПОДПИСАННЫЙ манифест и подпись к нему, как есть.
-    /// Координатор их НЕ разбирает и не может подделать: подпись проверяет сам
-    /// клиент вшитым ключом. Смысл — донести факт обновления туда, где GitHub
-    /// недоступен: узнал → подключился к VPN → скачал.
-    Update { manifest: String, sig: String },
-}
-
-/// Манифест обновления с диска рядом с координатором.
-///
-/// Файлы кладёт оператор после `tools/sign-release.sh` (в CI подписи нет и быть
-/// не должно). Перечитываем по mtime — выложил новый, подхватится без
-/// перезапуска: рестарт координатора рвёт сокеты всем хостам сразу.
-#[derive(Default)]
-struct UpdateInfo {
-    manifest: String,
-    sig: String,
-    mtime: Option<std::time::SystemTime>,
-}
-
-fn update_paths() -> (String, String) {
-    let base = std::env::var("BMV_UPDATE_MANIFEST").unwrap_or_else(|_| "update-manifest.json".into());
-    let sig = format!("{base}.sig");
-    (base, sig)
-}
-
-/// Свежий манифест или None, если файлов нет. Дёшево: читаем только при смене mtime.
-fn load_update(cache: &std::sync::Mutex<UpdateInfo>) -> Option<(String, String)> {
-    let (mp, sp) = update_paths();
-    let mtime = std::fs::metadata(&mp).ok()?.modified().ok();
-    {
-        let c = cache.lock().unwrap();
-        if c.mtime == mtime && !c.manifest.is_empty() {
-            return Some((c.manifest.clone(), c.sig.clone()));
-        }
-    }
-    let manifest = std::fs::read_to_string(&mp).ok()?;
-    let sig = std::fs::read_to_string(&sp).ok()?.trim().to_string();
-    let mut c = cache.lock().unwrap();
-    *c = UpdateInfo { manifest: manifest.clone(), sig: sig.clone(), mtime };
-    Some((manifest, sig))
 }
 
 /// Гард WS-коннекта: на Drop уменьшает пер-IP счётчик (даже при обрыве).
@@ -745,12 +703,6 @@ async fn ws_conn(socket: WebSocket, state: Db, ip: IpAddr, _guard: WsConnGuard) 
     let mut ping_iv = tokio::time::interval(WS_PING_INTERVAL);
     ping_iv.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut last_pong = Instant::now();
-
-    // Сразу сообщаем о свежем релизе, если оператор выложил манифест. Отправляем
-    // ОДИН раз на соединение: клиент держит сокет часами, а релизы выходят реже.
-    if let Some((manifest, sig)) = load_update(&state.update) {
-        let _ = out_tx.send(WsServerMsg::Update { manifest, sig }).await;
-    }
 
     'conn: loop {
         let text = tokio::select! {
@@ -988,7 +940,6 @@ pub async fn serve(
         next_seq: std::sync::atomic::AtomicU64::new(1),
         ws_hosts: Mutex::new(HashMap::new()),
         ws_conns: std::sync::Mutex::new(HashMap::new()),
-        update: Default::default(),
     });
     let reap = tokio::spawn(reaper(state.clone()));
     // Дебаунс версии каталога для ШУМНЫХ обновлений (ре-анонс/heartbeat): не чаще
@@ -1121,7 +1072,6 @@ mod tests {
             next_seq: std::sync::atomic::AtomicU64::new(1),
             ws_hosts: Mutex::new(HashMap::new()),
             ws_conns: std::sync::Mutex::new(HashMap::new()),
-            update: Default::default(),
         })
     }
 
