@@ -75,6 +75,57 @@ class AppState private constructor(val ctx: Context) {
     var ping by mutableStateOf(0)
     var checking by mutableStateOf(false)
 
+    // ── обновление приложения ────────────────────────────────────────────────
+    /** Версия свежего релиза («1.6») или null — плашки нет. */
+    var updateVersion by mutableStateOf<String?>(null)
+    /** Тег для скачивания («v1.6»). */
+    var updateTag by mutableStateOf<String?>(null)
+    /** 0 простаивает · 1 качаю · 2 отдал установщику · 3 ошибка */
+    var updateState by mutableStateOf(0)
+    var updateError by mutableStateOf("")
+    /** Скрыто крестиком — до следующего запуска не показываем. */
+    var updateDismissed by mutableStateOf(false)
+
+    /**
+     * Узнать у GitHub, есть ли релиз новее. Один раз при запуске.
+     * Локальные сборки («0.0») не трогаем — разработчику подсовывать релиз вредно.
+     */
+    fun checkUpdate() {
+        if (BuildConfig.VERSION_NAME == "0.0") return
+        scope.launch(Dispatchers.IO) {
+            val tag = Updater.latestTag() ?: return@launch
+            val ver = tag.trimStart('v')
+            if (!Updater.isNewer(ver, BuildConfig.VERSION_NAME)) return@launch
+            withContext(Dispatchers.Main) {
+                updateVersion = ver
+                updateTag = tag
+            }
+        }
+    }
+
+    /** Скачать и отдать системному установщику. Диалог покажет сама система. */
+    fun doUpdate() {
+        val tag = updateTag ?: return
+        if (updateState == 1) return // уже качаем — второй раз не начинаем
+        updateState = 1
+        scope.launch(Dispatchers.IO) {
+            try {
+                val apk = Updater.download(ctx, tag)
+                withContext(Dispatchers.Main) {
+                    updateState = 2
+                    Updater.install(ctx, apk)
+                }
+            } catch (e: Throwable) {
+                withContext(Dispatchers.Main) {
+                    updateState = 3
+                    // Самая частая причина у наших пользователей — блокировка
+                    // GitHub, и её же решает само приложение.
+                    updateError = "Не удалось скачать — подключитесь к VPN и повторите"
+                }
+            }
+        }
+    }
+
     // гость / VPN
     var vpnState by mutableStateOf(0)             // 0 выкл · 1 подключаюсь · 2 канал поднят · 3 ошибка
     var connectedTo by mutableStateOf<String?>(null)

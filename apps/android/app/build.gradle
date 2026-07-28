@@ -24,10 +24,14 @@ def bmvVersionName() {
 def bmvVersionCode() {
     def parts = bmvVersionName().split('\\.')
     def num = { i -> i < parts.length ? (parts[i].replaceAll('[^0-9]', '') ?: '0') as int : 0 }
-    return num(0) * 10000 + num(1) * 100 + num(2)
+    // Не ниже 1: у локальной сборки версия «0.0», а Android отвергает
+    // versionCode 0 и вообще не даёт собрать APK.
+    return Math.max(1, num(0) * 10000 + num(1) * 100 + num(2))
 }
 
 android {
+    // Версия сборки нужна коду для сравнения с последним релизом.
+    buildFeatures { buildConfig true }
     namespace 'org.bemyvpn'
     compileSdk 35
 

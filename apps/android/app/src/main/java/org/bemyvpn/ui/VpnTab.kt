@@ -1,6 +1,7 @@
 package org.bemyvpn.ui
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.tween
@@ -9,6 +10,8 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.border
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -89,6 +92,7 @@ fun VpnTab(app: AppState, bottomPad: Dp, openScanner: () -> Unit) {
             .padding(top = 20.dp, bottom = bottomPad),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
+        UpdateBanner(app)
         VpnHero(app) { inviteCode = it }
 
         SectionLabel("Подключиться по коду")
@@ -424,6 +428,75 @@ private fun CapacityBar(host: Host) {
                     .height(3.dp)
                     .background(if (frac < 0.8f) Theme.green else Theme.amber, CircleShape),
             )
+        }
+    }
+}
+
+
+/**
+ * Плашка «доступна новая версия». Тонкая полоса над героем: заметно, но не
+ * требует реакции — крестик убирает её до следующего запуска. Навязываться
+ * обновлением неправильно, решает человек.
+ */
+@Composable
+private fun UpdateBanner(app: AppState) {
+    val ver = app.updateVersion ?: return
+    if (app.updateDismissed) return
+    val err = app.updateState == 3
+    val tint = if (err) Theme.red else Theme.accent
+
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .background(tint.copy(alpha = 0.12f))
+            .border(1.dp, tint.copy(alpha = 0.35f), RoundedCornerShape(14.dp))
+            .padding(start = 14.dp, end = 8.dp)
+            .height(46.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = when (app.updateState) {
+                1 -> "Скачиваю $ver…"
+                2 -> "Открываю установщик…"
+                3 -> app.updateError
+                else -> "Версия $ver доступна"
+            },
+            color = tint,
+            fontSize = 13.sp,
+            fontWeight = FontWeight.Bold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f),
+        )
+        // Во время загрузки кнопок нет: нажимать нечего, а повторный тап
+        // запускал бы вторую загрузку поверх первой.
+        if (app.updateState != 1 && app.updateState != 2) {
+            Box(
+                Modifier
+                    .padding(start = 8.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(Theme.accent)
+                    .clickable { app.doUpdate() }
+                    .padding(horizontal = 16.dp, vertical = 7.dp),
+            ) {
+                Text(
+                    if (err) "Ещё раз" else "Обновить",
+                    color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold,
+                )
+            }
+        }
+        if (app.updateState != 1) {
+            Box(
+                Modifier
+                    .padding(start = 4.dp)
+                    .size(30.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .clickable { app.updateDismissed = true },
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(Icons.Filled.Close, contentDescription = "Скрыть", tint = Theme.dim, modifier = Modifier.size(15.dp))
+            }
         }
     }
 }
