@@ -284,6 +284,14 @@ impl Config {
             std::fs::create_dir_all(dir).map_err(|e| Error::Config(format!("{}: {e}", dir.display())))?;
         }
         std::fs::write(&path, self.to_toml()).map_err(|e| Error::Config(format!("{}: {e}", path.display())))?;
+        // Только владельцу: в файле лежат пароль хоста и token владения записью в
+        // каталоге. С правами по умолчанию (0644) их прочитал бы ЛЮБОЙ пользователь
+        // машины — на общем сервере это выдача чужого хоста вместе с паролем.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+        }
         restore_owner_after_sudo(&path);
         Ok(())
     }
@@ -421,6 +429,15 @@ mod tests {
         let loaded = Config::from_file(&Config::user_path()).unwrap();
         assert_eq!(loaded.default_protocol, "noise-obfs");
         assert_eq!(loaded.host.max_guests, 42);
+        // В конфиге лежат пароль хоста и token владения записью в каталоге —
+        // читать его должен ТОЛЬКО владелец, иначе на общей машине сосед забирает
+        // и то, и другое.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(Config::user_path()).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600, "конфиг с паролем доступен не только владельцу: {mode:o}");
+        }
         std::env::remove_var("XDG_CONFIG_HOME");
         let _ = std::fs::remove_dir_all(dir);
     }
