@@ -6,6 +6,7 @@
 
 pub mod error;
 pub mod ids;
+pub mod update;
 pub mod version;
 pub mod wire;
 

@@ -9,3 +9,8 @@ thiserror.workspace = true
 async-trait.workspace = true
 tokio.workspace = true
 rand.workspace = true
+serde = { workspace = true }
+serde_json.workspace = true
+# Ed25519 для проверки подписи обновлений. ring УЖЕ в дереве (через rustls),
+# отдельная крипто-библиотека ради одной проверки не заводится.
+ring = { version = "0.17", default-features = false, features = ["std"] }
