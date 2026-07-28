@@ -48,6 +48,10 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
 
             // Сеть туннеля — 1-в-1 как на Android (10.7.0.2/24, дефолт-маршрут,
             // MTU 1400, DNS 8.8.8.8): весь трафик заворачивается в туннель.
+            // ВНИМАНИЕ: адрес продублирован в ядре константой GUEST_TUN_ADDR
+            // (crates/bmv-tunnel/src/lib.rs) — по ней отсеиваются входящие пакеты,
+            // адресованные не нам. Поменяешь здесь, не поменяв там — фильтр начнёт
+            // резать ВСЁ и VPN тихо перестанет работать.
             let settings = NEPacketTunnelNetworkSettings(tunnelRemoteAddress: "10.7.0.1")
             let ipv4 = NEIPv4Settings(addresses: ["10.7.0.2"], subnetMasks: ["255.255.255.0"])
             ipv4.includedRoutes = [NEIPv4Route.default()]

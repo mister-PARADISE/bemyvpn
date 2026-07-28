@@ -76,6 +76,10 @@ class BmvVpnService : VpnService() {
                 Builder()
                     .setSession("BeMyVPN")
                     .setMtu(1400)
+                    // ВНИМАНИЕ: адрес продублирован в ядре константой GUEST_TUN_ADDR
+                    // (crates/bmv-tunnel/src/lib.rs) — по ней отсеиваются входящие
+                    // пакеты, адресованные не нам. Поменяешь здесь, не поменяв там —
+                    // фильтр начнёт резать ВСЁ и VPN тихо перестанет работать.
                     .addAddress("10.7.0.2", 24)
                     .addRoute("0.0.0.0", 0)
                     .addDnsServer("8.8.8.8")
