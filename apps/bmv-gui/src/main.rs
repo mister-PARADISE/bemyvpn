@@ -87,17 +87,6 @@ async fn fetch_update(m: &bmv_common::update::Manifest) -> Result<(), String> {
     Ok(())
 }
 
-/// Открыть ссылку в браузере пользователя. Команда своя на каждой ОС.
-fn open_url(url: &str) {
-    #[cfg(target_os = "macos")]
-    let (cmd, args): (&str, &[&str]) = ("open", &[]);
-    #[cfg(target_os = "windows")]
-    let (cmd, args): (&str, &[&str]) = ("cmd", &["/C", "start", ""]);
-    #[cfg(all(unix, not(target_os = "macos")))]
-    let (cmd, args): (&str, &[&str]) = ("xdg-open", &[]);
-    let _ = std::process::Command::new(cmd).args(args).arg(url).spawn();
-}
-
 /// Заполнить карточку активного подключения по записи хоста. Зовётся В МОМЕНТ
 /// подключения (данные уже на руках — гость выбрал этот хост) и потом на каждом
 /// обновлении каталога, чтобы живые цифры (гости) не отставали.
@@ -166,34 +155,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    // «Что нового» — открыть страницу релиза в браузере. Скачивание и установка
-    // появятся отдельной кнопкой; здесь только показать, что изменилось.
-    {
-        let weak = ui.as_weak();
-        ui.on_open_notes(move || {
-            let Some(ui) = weak.upgrade() else { return };
-            let url = ui.get_update_notes().to_string();
-            if url.starts_with("https://") {
-                open_url(&url);
-            }
-        });
-    }
-
-    // «Обновить»: скачать, проверить, установить. Порядок проверок тот же, что в
-    // терминале, — подпись уже проверена при получении манифеста, здесь остаётся
-    // sha256 файла. Установка на десктопе идёт через помощника: приложение не
-    // может подменить себя на ходу, поэтому оно выходит, а помощник доделывает.
+    // «Обновить»: скачать, проверить, установить. Подпись манифеста проверена
+    // ещё при получении, здесь остаётся sha256 файла. На десктопе установка идёт
+    // через помощника: приложение не может подменить себя на ходу — оно выходит,
+    // помощник доделывает.
     {
         let (weak, eng, handle2) = (ui.as_weak(), engine.clone(), handle.clone());
         ui.on_do_update(move || {
             let Some(ui) = weak.upgrade() else { return };
-            if ui.get_update_state() == 1 { return; } // уже качаем
-            ui.set_update_state(1);
+            if ui.get_update_state() == 1 { return; } // уже качаем — второй раз не начинаем
             let Some(m) = eng.lock().unwrap().clone().latest_update() else {
                 ui.set_update_state(3);
                 ui.set_update_error("нет сведений о релизе".into());
                 return;
             };
+            ui.set_update_state(1);
             let weak2 = weak.clone();
             handle2.spawn(async move {
                 let res = fetch_update(&m).await;
@@ -513,7 +489,6 @@ fn spawn_refresh(
                 if let Some(u) = &upd {
                     if u.is_newer_than_current() {
                         ui.set_update_version(u.version.clone().into());
-                        ui.set_update_notes(u.notes.clone().into());
                     }
                 }
                 ui.set_coord_ping(if alive { ping } else { 0 });

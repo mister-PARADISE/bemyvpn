@@ -157,7 +157,6 @@ export component VpnPage inherits Rectangle {
     callback paste();
     callback copy-text(string);
     callback open-invite();
-    callback open-notes();
     callback do-update();
 
     property <color> tint: vpn-state == 1 ? Theme.amber : vpn-state == 2 ? Theme.green : Theme.accent;
@@ -190,21 +189,16 @@ export component VpnPage inherits Rectangle {
                 HorizontalLayout {
                     padding-left: 14px; padding-right: 8px;
                     spacing: 8px;
-                    // Текст сам по себе ссылка на описание релиза: отдельная
-                    // кнопка «Что нового» не влезала в 400px и резала заголовок.
-                    txt-ta := TouchArea {
+                    VerticalLayout {
+                        alignment: center;
                         horizontal-stretch: 1;
-                        clicked => { if (root.update-state == 0) { root.open-notes(); } }
-                        VerticalLayout {
-                            alignment: center;
-                            Text {
+                        Text {
                                 text: root.update-state == 1 ? "Скачиваю " + root.update-version + "…"
                                     : root.update-state == 2 ? "Готово — перезапустите"
                                     : root.update-state == 3 ? root.update-error
                                     : "Версия " + root.update-version + " доступна";
-                                color: root.update-state == 3 ? Theme.red : Theme.accent;
-                                font-size: 13px; font-weight: 700; overflow: elide;
-                            }
+                            color: root.update-state == 3 ? Theme.red : Theme.accent;
+                            font-size: 13px; font-weight: 700; overflow: elide;
                         }
                     }
                     if root.update-state != 1 && root.update-state != 2: VerticalLayout {
