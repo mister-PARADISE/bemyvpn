@@ -11,6 +11,13 @@ def keystoreProps = new Properties()
 if (keystorePropsFile.exists()) {
     keystoreProps.load(new FileInputStream(keystorePropsFile))
 }
+// Ключ можно передать и переменными окружения — так пароль не попадает в файл
+// на диске и не проходит через разбор .properties, где обратный слэш
+// экранирующий (на этом уже спотыкались). Переменные имеют приоритет.
+def envStore = System.getenv('BMV_KEYSTORE_FILE')
+def envPass = System.getenv('BMV_KEYSTORE_PASSWORD')
+def useEnvKey = envStore != null && !envStore.isEmpty() && envPass != null && !envPass.isEmpty()
+def haveOwnKey = useEnvKey || keystorePropsFile.exists()
 
 /// Версия релиза: env BMV_VERSION («1.2»), иначе «0.0» для локальных сборок —
 /// так видно, что собрано не из тега, и такая сборка не выдаёт себя за релиз.
@@ -53,7 +60,16 @@ android {
 
 
     signingConfigs {
-        if (keystorePropsFile.exists()) {
+        if (useEnvKey) {
+            upload {
+                storeFile file(envStore)
+                storePassword envPass
+                keyAlias System.getenv('BMV_KEY_ALIAS') ?: 'bemyvpn'
+                // Пароль ключа обычно совпадает с паролем хранилища (keytool так
+                // и делает, если на вопрос нажать Enter) — но допускаем отдельный.
+                keyPassword System.getenv('BMV_KEY_PASSWORD') ?: envPass
+            }
+        } else if (keystorePropsFile.exists()) {
             upload {
                 storeFile rootProject.file(keystoreProps['storeFile'])
                 storePassword keystoreProps['storePassword']
@@ -77,7 +93,9 @@ android {
             // Есть keystore.properties → подписываем боевым ключом (для Google
             // Play, он отладочные подписи не принимает). Нет файла → debug-ключ,
             // как раньше: прямая раздача APK продолжает работать.
-            signingConfig keystorePropsFile.exists() ? signingConfigs.upload : signingConfigs.debug
+            // Условие ОТДЕЛЬНОЙ переменной: `signingConfig (a || b) ? x : y`
+            // Groovy разбирает как вызов метода signingConfig(...) и падает.
+            signingConfig haveOwnKey ? signingConfigs.upload : signingConfigs.debug
         }
     }
 
