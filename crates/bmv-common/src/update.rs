@@ -70,12 +70,22 @@ pub async fn download(url: &str, max_bytes: usize) -> Result<Vec<u8>> {
             return Err(Error::Net(format!("сервер ответил {}", resp.status())));
         }
 
-        let body = resp.into_body().collect().await.map_err(|e| Error::Net(format!("тело: {e}")))?;
-        let bytes = body.to_bytes();
-        if bytes.len() > max_bytes {
-            return Err(Error::Net("файл больше ожидаемого — отклонён".into()));
+        // Считаем ПО ХОДУ и обрываем, как только перебор. Раньше здесь был
+        // `collect()` с проверкой размера ПОСЛЕ — то есть ответ на терабайт
+        // сначала целиком въезжал бы в память, а потом «отклонялся». Лимит,
+        // который срабатывает после того, как вред уже нанесён, — не лимит.
+        let mut body = resp.into_body();
+        let mut out: Vec<u8> = Vec::new();
+        while let Some(frame) = body.frame().await {
+            let frame = frame.map_err(|e| Error::Net(format!("тело: {e}")))?;
+            if let Some(chunk) = frame.data_ref() {
+                if out.len() + chunk.len() > max_bytes {
+                    return Err(Error::Net("файл больше ожидаемого — отклонён".into()));
+                }
+                out.extend_from_slice(chunk);
+            }
         }
-        return Ok(bytes.to_vec());
+        return Ok(out);
     }
     Err(Error::Net("слишком много перенаправлений".into()))
 }
@@ -118,6 +128,15 @@ pub fn replace_self(new_bytes: &[u8]) -> Result<std::path::PathBuf> {
 }
 
 
+/// Путь → безопасный литерал для `/bin/sh`. Двойные кавычки, как было раньше, не
+/// закрывают `$`, `` ` `` и саму кавычку: приложение в папке вида `~/Все "мои"/`
+/// ломало скрипт, который в этот момент двигает бандл. Одинарные закрывают всё,
+/// кроме самих себя, — их и экранируем приёмом `'\''`.
+#[cfg(target_os = "macos")]
+fn sh_quote(p: &std::path::Path) -> String {
+    format!("'{}'", p.display().to_string().replace('\'', r"'\''"))
+}
+
 /// Обновить приложение, которое НЕ МОЖЕТ подменить себя на ходу (бандл macOS,
 /// exe под Windows), — так делают все приличные автообновлялки, включая Sparkle.
 ///
@@ -149,9 +168,9 @@ pub fn spawn_bundle_updater(dmg_bytes: &[u8]) -> Result<()> {
     let body = format!(
         r#"#!/bin/sh
 set -e
-APP="{app}"
-DMG="{dmg}"
-TMP="{tmp}"
+APP={app}
+DMG={dmg}
+TMP={tmp}
 PID={pid}
 # Ждём выхода приложения (до 30с), иначе подменять опасно.
 i=0
@@ -177,9 +196,9 @@ rm -rf "$APP.old"
 open "$APP"
 rm -rf "$TMP"
 "#,
-        app = app.display(),
-        dmg = dmg.display(),
-        tmp = tmp.display(),
+        app = sh_quote(&app),
+        dmg = sh_quote(&dmg),
+        tmp = sh_quote(&tmp),
         pid = std::process::id()
     );
     std::fs::write(&script, body).map_err(|e| Error::Net(format!("помощник: {e}")))?;
@@ -276,6 +295,28 @@ mod tests {
         let url = asset_url("owner/repo", "v1.6", term);
         assert_eq!(url, format!("https://github.com/owner/repo/releases/download/v1.6/{term}"));
         assert!(url.starts_with("https://"), "только HTTPS: по http подменить куда проще");
+    }
+
+    /// Путь с апострофом (`/Users/o'brien/Моё "приложение".app`) обязан доехать до
+    /// шелла ОДНИМ аргументом, а не разорвать команду. Проверяем не глазами по
+    /// строке, а настоящим `/bin/sh`: он и есть тот, кто это разбирает.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn sh_quote_survives_quotes_and_dollars() {
+        for raw in [
+            "/Users/o'brien/Моё.app",
+            "/Applications/Всё \"моё\".app",
+            "/tmp/a$HOME`id`.app",
+            "/tmp/обычный путь.app",
+        ] {
+            let q = sh_quote(std::path::Path::new(raw));
+            let out = std::process::Command::new("/bin/sh")
+                .arg("-c")
+                .arg(format!("printf %s {q}"))
+                .output()
+                .expect("sh");
+            assert_eq!(String::from_utf8_lossy(&out.stdout), raw, "шелл разобрал путь не как один аргумент: {q}");
+        }
     }
 
     #[test]

@@ -106,9 +106,20 @@ object Updater {
                     return@repeat
                 }
                 require(code == 200) { "сервер ответил $code" }
-                val body = c.inputStream.readBytes()
-                require(body.size <= maxBytes) { "файл больше ожидаемого" }
-                return body
+                // Читаем ПО КУСКАМ и обрываем на переборе. `readBytes()` с
+                // проверкой размера после — лимит, который срабатывает, когда
+                // память уже съедена: на телефоне это просто падение приложения.
+                val buf = java.io.ByteArrayOutputStream()
+                val chunk = ByteArray(64 * 1024)
+                c.inputStream.use { input ->
+                    while (true) {
+                        val n = input.read(chunk)
+                        if (n < 0) break
+                        require(buf.size() + n <= maxBytes) { "файл больше ожидаемого" }
+                        buf.write(chunk, 0, n)
+                    }
+                }
+                return buf.toByteArray()
             } finally {
                 c.disconnect()
             }
