@@ -548,11 +548,23 @@ async fn run_update(check_only: bool) {
     };
     println!("Скачано: {} байт", bytes.len());
 
+    // Unix подменяет себя сам: работающий процесс держит старый inode и спокойно
+    // доживает. На Windows файл запущенной программы переписать НЕЛЬЗЯ — там
+    // помощник ждёт нашего выхода и меняет уже он.
+    #[cfg(unix)]
     match bmv_common::update::replace_self(&bytes) {
         Ok(bak) => {
             println!("Готово. Версия {latest} установлена.");
             println!("  старая сохранена: {}", bak.display());
             println!("  запустите программу заново");
+        }
+        Err(e) => fail(format!("замена не удалась: {e}")),
+    }
+    #[cfg(windows)]
+    match bmv_common::update::spawn_exe_updater(&bytes) {
+        Ok(()) => {
+            println!("Готово. Версия {latest} будет установлена при выходе.");
+            println!("  закройте программу — обновление применится само");
         }
         Err(e) => fail(format!("замена не удалась: {e}")),
     }
