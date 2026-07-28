@@ -602,6 +602,107 @@ mod tests {
         }
     }
 
+    // ── КАТЕГОРИЯ Е: враждебные кадры в шифрованном канале ────────────────────
+    //
+    // Порт хоста открыт всему интернету, и до расшифровки в него может прилететь
+    // что угодно: сканер, чужой протокол, целенаправленный мусор. Шифрослой
+    // обязан такое молча выбрасывать — не падая по срезу и НЕ РАЗРЫВАЯ живую
+    // сессию, иначе любой посторонний глушит чужой туннель одним пакетом.
+
+    /// Канал, в который можно ПОДБРОСИТЬ произвольные кадры: они выдаются из
+    /// `recv_into` раньше настоящих, как если бы посторонний попал в наш порт.
+    struct Inject {
+        inner: Box<dyn Link>,
+        queue: Arc<std::sync::Mutex<std::collections::VecDeque<Vec<u8>>>>,
+    }
+    #[async_trait]
+    impl Link for Inject {
+        async fn send(&self, p: &[u8]) -> Result<()> {
+            self.inner.send(p).await
+        }
+        async fn recv_into(&self, b: &mut Vec<u8>) -> Result<bool> {
+            if let Some(f) = self.queue.lock().unwrap().pop_front() {
+                b.clear();
+                b.extend_from_slice(&f);
+                return Ok(true);
+            }
+            self.inner.recv_into(b).await
+        }
+    }
+
+    /// Мусор ЛЮБОГО вида не должен ни ронять приёмник, ни рвать сессию: после
+    /// него настоящий пакет обязан дойти. Отдельно проверяются длины 0..8 —
+    /// на них разбор трогает шапку-nonce, и ошибка среза была бы паникой.
+    #[tokio::test]
+    async fn hostile_frames_are_dropped_and_session_survives() {
+        let (a, b) = bmv_common::wire::memory_pair(256);
+        let q: Arc<std::sync::Mutex<std::collections::VecDeque<Vec<u8>>>> = Default::default();
+        let host_link = Box::new(Inject { inner: a, queue: q.clone() });
+        let proto = Noise::chacha();
+        let (host, guest) = tokio::join!(proto.connect_host(host_link), proto.connect_guest(b));
+        let (host, guest) = (host.expect("хост"), guest.expect("гость"));
+
+        {
+            let mut qq = q.lock().unwrap();
+            for n in 0..=8usize {
+                qq.push_back(vec![0xAA; n]); // короче шапки и ровно шапка
+            }
+            qq.push_back(vec![0u8; 9]);           // шапка есть, шифротекста 1 байт
+            qq.push_back(vec![0xFF; 1500]);       // «полный» кадр из мусора
+            qq.push_back(b"GET / HTTP/1.1\r\n\r\n".to_vec()); // чужой протокол
+            qq.push_back(Vec::new());             // пустой кадр
+        }
+        guest.send("я настоящий".as_bytes()).await.unwrap();
+        let got = tokio::time::timeout(Duration::from_secs(2), host.recv())
+            .await
+            .expect("приёмник завис на мусоре")
+            .unwrap();
+        assert_eq!(got, "я настоящий".as_bytes(), "мусор вытеснил настоящий пакет");
+    }
+
+    /// Мусор ВМЕСТО рукопожатия. Хост обязан вернуть ошибку и отпустить слот, а
+    /// не упасть и не зависнуть: иначе сканер портов кладёт хосту одну сессию
+    /// за другой.
+    #[tokio::test]
+    async fn garbage_instead_of_handshake_fails_cleanly() {
+        for junk in [vec![0u8; 1], vec![0xFF; 31], vec![0x41; 200], vec![0u8; 1500]] {
+            let (a, b) = bmv_common::wire::memory_pair(8);
+            let host = tokio::spawn(async move { Noise::chacha().connect_host(a).await.map(|_| ()) });
+            b.send(&junk).await.unwrap();
+            let r = tokio::time::timeout(Duration::from_secs(9), host).await;
+            let r = r.expect("рукопожатие зависло на мусоре").expect("задача упала (паника)");
+            assert!(r.is_err(), "мусор длиной {} принят за рукопожатие", junk.len());
+        }
+    }
+
+    /// В режиме маскировки первые 32 байта — Elligator2-representative. Слишком
+    /// короткое сообщение и невалидная точка обязаны давать ОШИБКУ, а не панику
+    /// на срезе `msg[..32]`.
+    #[tokio::test]
+    async fn obfs_rejects_short_and_invalid_representative() {
+        for junk in [vec![0u8; 4], vec![0xAB; 31]] {
+            let (a, b) = bmv_common::wire::memory_pair(8);
+            let host = tokio::spawn(async move { Noise::obfs().connect_host(a).await.map(|_| ()) });
+            b.send(&junk).await.unwrap();
+            let r = tokio::time::timeout(Duration::from_secs(9), host).await;
+            assert!(r.expect("зависло").expect("паника").is_err(), "короткий эфемерный принят");
+        }
+    }
+
+    /// Байт длины паддинга — единственное, чем «управляет» отправитель внутри
+    /// расшифрованного. Проверяем инвариант его вычисления на всех размерах:
+    /// он обязан влезать в один байт, иначе приёмник отрежет не то.
+    #[test]
+    fn padding_length_always_fits_one_byte() {
+        for floor in [0usize, 64, 92, 120] {
+            for len in [0usize, 1, 20, 100, 500, 1400, 65000] {
+                let pad = obfs_pad_len(len, floor);
+                assert!(pad <= u8::MAX as usize, "паддинг {pad} не влезает в байт (len={len}, floor={floor})");
+                assert!(len + pad + 1 >= len, "переполнение при len={len}");
+            }
+        }
+    }
+
     /// Канал, который ГЛОТАЕТ первые `n` отправок — так выглядит потеря пакета
     /// в UDP. Нужен, чтобы проверить повторы рукопожатия.
     struct Lossy {

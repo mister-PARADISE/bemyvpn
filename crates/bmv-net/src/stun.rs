@@ -236,3 +236,103 @@ fn parse_mapped(val: &[u8]) -> Option<SocketAddr> {
     let ip = [val[4], val[5], val[6], val[7]];
     Some(SocketAddr::from((ip, port)))
 }
+
+// ── КАТЕГОРИЯ Ж: враждебный ответ STUN ────────────────────────────────────────
+//
+// STUN-серверы — ЧУЖИЕ машины (Google, Cloudflare), и ответ приходит по UDP,
+// то есть подделать его может кто угодно, кто угадает наш порт. Разбор этого
+// ответа — первый чужой байт, который трогает программа при запуске. Он обязан
+// пережить любой мусор: не упасть по срезу, не зациклиться, не выдать мусорный
+// адрес за наш внешний.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Собрать ответ STUN: заголовок + произвольные байты тела.
+    fn resp(txid: &[u8; 12], body: &[u8]) -> Vec<u8> {
+        let mut v = Vec::new();
+        v.extend_from_slice(&BINDING_SUCCESS.to_be_bytes());
+        v.extend_from_slice(&(body.len() as u16).to_be_bytes());
+        v.extend_from_slice(&MAGIC_COOKIE.to_be_bytes());
+        v.extend_from_slice(txid);
+        v.extend_from_slice(body);
+        v
+    }
+
+    /// Атрибут с длиной больше, чем осталось байт. Классика: разбор верит полю
+    /// длины и режет срез за концом буфера — это паника, то есть падение
+    /// приложения от одного чужого пакета.
+    #[test]
+    fn oversized_attribute_length_does_not_panic() {
+        let txid = [7u8; 12];
+        for claimed in [0xFFFFu16, 0x8000, 64, 21] {
+            let mut body = Vec::new();
+            body.extend_from_slice(&ATTR_XOR_MAPPED_ADDRESS.to_be_bytes());
+            body.extend_from_slice(&claimed.to_be_bytes());
+            body.extend_from_slice(&[0u8; 4]); // тела заведомо меньше заявленного
+            assert_eq!(parse_response(&resp(&txid, &body), &txid), None,
+                "заявленная длина {claimed} принята за настоящую");
+        }
+    }
+
+    /// Атрибуты нулевой длины подряд. Если разбор не сдвигает позицию хотя бы на
+    /// заголовок атрибута, цикл крутится вечно и поток встаёт навсегда — а тест
+    /// на зависание выглядит как «тест не закончился».
+    #[test]
+    fn zero_length_attributes_terminate() {
+        let txid = [9u8; 12];
+        let mut body = Vec::new();
+        for _ in 0..500 {
+            body.extend_from_slice(&0xDEADu16.to_be_bytes()); // неизвестный тип
+            body.extend_from_slice(&0u16.to_be_bytes());      // длина 0
+        }
+        assert_eq!(parse_response(&resp(&txid, &body), &txid), None);
+    }
+
+    /// Ответ с ЧУЖИМ идентификатором транзакции. Иначе поддельный пакет от
+    /// постороннего выдал бы нам не наш внешний адрес — а он идёт в каталог, и
+    /// гости пошли бы пробивать NAT к указанной жертве.
+    #[test]
+    fn foreign_transaction_id_is_rejected() {
+        let mine = [1u8; 12];
+        let theirs = [2u8; 12];
+        let mut body = Vec::new();
+        body.extend_from_slice(&ATTR_XOR_MAPPED_ADDRESS.to_be_bytes());
+        body.extend_from_slice(&8u16.to_be_bytes());
+        body.push(0);
+        body.push(0x01); // IPv4
+        body.extend_from_slice(&[0x11, 0x22]);
+        body.extend_from_slice(&[0x33, 0x44, 0x55, 0x66]);
+        assert!(parse_response(&resp(&mine, &body), &mine).is_some(), "свой ответ обязан разбираться");
+        assert_eq!(parse_response(&resp(&theirs, &body), &mine), None, "чужой ответ принят за свой");
+    }
+
+    /// Обрезки и мусор: пустой пакет, половина заголовка, ответ не того типа,
+    /// подделанный magic cookie. Ни один не должен ронять разбор.
+    #[test]
+    fn truncated_and_bogus_responses_are_rejected() {
+        let txid = [3u8; 12];
+        assert_eq!(parse_response(&[], &txid), None);
+        for n in 1..20 {
+            assert_eq!(parse_response(&vec![0u8; n], &txid), None, "обрезка {n} байт");
+        }
+        // Правильный размер, но не тот тип сообщения.
+        let mut wrong = resp(&txid, &[]);
+        wrong[0..2].copy_from_slice(&0x0111u16.to_be_bytes()); // binding error
+        assert_eq!(parse_response(&wrong, &txid), None);
+        // Правильный тип, но чужой magic cookie.
+        let mut bad_cookie = resp(&txid, &[]);
+        bad_cookie[4..8].copy_from_slice(&0xDEADBEEFu32.to_be_bytes());
+        assert_eq!(parse_response(&bad_cookie, &txid), None);
+    }
+
+    /// Поле длины тела врёт в БОЛЬШУЮ сторону (тела столько нет). Разбор обязан
+    /// смотреть на реальный размер буфера, а не на слова отправителя.
+    #[test]
+    fn body_length_larger_than_packet_is_clamped() {
+        let txid = [5u8; 12];
+        let mut v = resp(&txid, &[0u8; 4]);
+        v[2..4].copy_from_slice(&4096u16.to_be_bytes()); // «тела 4 КБ», а его 4 байта
+        assert_eq!(parse_response(&v, &txid), None);
+    }
+}

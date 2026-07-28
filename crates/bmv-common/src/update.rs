@@ -320,6 +320,78 @@ mod tests {
         }
     }
 
+    // ── КАТЕГОРИЯ З: враждебный ответ на проверку обновления ──────────────────
+    //
+    // Номер версии приходит СНАРУЖИ и без разговоров подставляется в адрес
+    // загрузки. Если аккаунт на GitHub когда-нибудь угонят (единственное, от
+    // чего нас не защищает HTTPS), тег станет строкой под контролем чужого —
+    // и он не должен уводить загрузку с github.com или ронять программу.
+
+    /// Тег из ответа не должен уводить адрес на ЧУЖОЙ хост. Проверяем не глазами,
+    /// а разбором получившегося адреса: у него обязан остаться github.com.
+    #[test]
+    fn hostile_tag_cannot_move_download_off_github() {
+        let hostile = [
+            "../../../../evil",
+            "//evil.com/x",
+            "v1.7@evil.com",
+            "v1.7#@evil.com",
+            "..%2f..%2fevil",
+            "v1.7?x=https://evil.com",
+            "https://evil.com/v1.7",
+        ];
+        for tag in hostile {
+            let url = asset_url("owner/repo", tag, "bemyvpn-linux-x86_64-terminal");
+            let uri: hyper::Uri = match url.parse() {
+                Ok(u) => u,
+                Err(_) => continue, // не разобрался — загрузка и не начнётся
+            };
+            assert_eq!(uri.host(), Some("github.com"), "тег {tag:?} увёл загрузку: {url}");
+            assert_eq!(uri.scheme_str(), Some("https"), "тег {tag:?} сменил схему: {url}");
+        }
+    }
+
+    /// Тег с пробелами и управляющими символами обязан ЛОМАТЬ построение запроса,
+    /// а не молча превращаться во что-то другое. Проверяем, что такой адрес не
+    /// разбирается — то есть загрузка не стартует вовсе.
+    #[test]
+    fn tag_with_whitespace_yields_unusable_url() {
+        for tag in ["v1.7 evil", "v1.7\nHost: evil.com", "v1.7\r\n", "v1 .7"] {
+            let url = asset_url("owner/repo", tag, "asset");
+            assert!(url.parse::<hyper::Uri>().is_err(), "адрес с {tag:?} разобрался: {url}");
+        }
+    }
+
+    /// Сравнение версий на мусоре: ни паники, ни «новее» там, где новизны нет.
+    /// Иначе угнанный тег вида «99999999999999999999» или «v1.7; rm -rf» либо
+    /// ронял бы программу, либо вечно предлагал обновление.
+    #[test]
+    fn version_compare_survives_hostile_input() {
+        let cur = "1.7";
+        assert!(!crate::version::is_newer("", cur));
+        assert!(!crate::version::is_newer("не версия", cur));
+        assert!(!crate::version::is_newer("1.7", cur), "та же версия — не новее");
+        assert!(!crate::version::is_newer("1.6.9", cur));
+        assert!(!crate::version::is_newer("../../1.9", cur), "мусор перед номером не считается версией");
+        // Переполнение: числа заведомо больше u64 не должны ронять разбор.
+        assert!(!crate::version::is_newer(&"9".repeat(40), cur), "40-значное число уронило сравнение");
+        assert!(crate::version::is_newer("1.8", cur), "настоящее обновление обязано определяться");
+        assert!(crate::version::is_newer("1.10", cur), "1.10 новее 1.7 — сравнение по числам");
+    }
+
+    /// Имя файла для платформы обязано быть из ЗАКРЫТОГО списка. Иначе ответ
+    /// сервера мог бы задать, какой файл скачать и чем себя подменить.
+    #[test]
+    fn asset_name_is_from_fixed_list_only() {
+        for gui in [true, false] {
+            if let Some(name) = current_asset_name(gui) {
+                assert!(!name.contains('/') && !name.contains(".."),
+                    "имя файла содержит путь: {name}");
+                assert!(name.starts_with("bemyvpn-"), "имя не по шаблону: {name}");
+            }
+        }
+    }
+
     #[test]
     fn parses_tag_from_github_answer() {
         // Ответ API большой; нам нужно ровно одно поле, и разбор не должен

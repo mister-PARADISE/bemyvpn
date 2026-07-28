@@ -107,6 +107,10 @@ const HOST_TTL: Duration = Duration::from_secs(30);
 
 /// Потолок числа хостов в каталоге (защита памяти от Sybil-флуда новых id).
 const MAX_HOSTS: usize = 5000;
+/// Как часто ОДНОМУ хосту разрешено будить всех подписчиков каталога мгновенно.
+/// Реальные события (зашёл гость, сменилось имя) случаются раз в минуты, так что
+/// секунда никого не задерживает; всё, что чаще, уходит в общий дебаунс.
+const INSTANT_BUMP_GAP: Duration = Duration::from_secs(1);
 /// Потолок объявленной вместимости хоста. Реальный лимит подбирается по ОЗУ и
 /// упирается в 128 (см. `bmv_config::suggested_max_guests`); 256 оставляет запас
 /// тому, кто сознательно поднял планку руками на мощной машине, но отсекает
@@ -204,8 +208,54 @@ fn authorize_endpoints(endpoints: &[String], observed: &str) -> Vec<String> {
     out
 }
 
-/// Обрезать/проверить строку по длине (пустую оставляем пустой).
+/// Разбудить подписчиков каталога после анонса хоста: сейчас или через дебаунс.
+///
+/// Раньше это правило («новый хост или видимое изменение → будим всех мгновенно»)
+/// стояло строкой внутри обработчика сокета, и проверить его было нечем. А оно
+/// даёт УСИЛЕНИЕ: одно сообщение хоста превращается в дельту каждому гостю. Хост,
+/// дёргающий `guests` 0↔1 в цикле, гонял бы этим весь исходящий канал сервера.
+///
+/// Поэтому мгновенная рассылка — не чаще `INSTANT_BUMP_GAP` НА ХОСТА. Честное
+/// одиночное изменение доезжает сразу (у него прошлой отметки нет или она
+/// старая), а поток изменений сваливается в общий 300мс-дебаунс, который их
+/// схлопывает. Ограничение пер-хостовое: соседей флудер не задерживает.
+async fn announce_bump(state: &Db, id: &str, first_claim: bool, visible_changed: bool) {
+    if !(first_claim || visible_changed) {
+        state.bump();
+        return;
+    }
+    let now = Instant::now();
+    let instant_ok = {
+        let mut db = state.db.lock().await;
+        match db.get_mut(id) {
+            Some(e) => {
+                let ok = e.last_instant_bump.is_none_or(|t| now.duration_since(t) >= INSTANT_BUMP_GAP);
+                if ok {
+                    e.last_instant_bump = Some(now);
+                }
+                ok
+            }
+            // Записи уже нет (успела уйти) — будить некого, но и врать незачем.
+            None => true,
+        }
+    };
+    if instant_ok {
+        state.bump_now();
+    } else {
+        state.bump();
+    }
+}
+
+/// Привести чужую строку к безопасному виду: выкинуть управляющие символы и
+/// обрезать по длине (пустую оставляем пустой).
+///
+/// Управляющие символы убираются потому, что строка идёт в ДВА чужих места: в
+/// список хостов у каждого гостя и в журнал сервера. Перевод строки в журнале
+/// подделывает соседние записи, а `\x1b[…` в терминальном интерфейсе
+/// перерисовывает уже нарисованные чужие строки. В названии сети их не бывает.
 fn clamp(s: &str, max: usize) -> String {
+    let s: String = s.chars().filter(|c| !c.is_control()).collect();
+    let s = s.as_str();
     if s.len() <= max {
         return s.to_string();
     }
@@ -282,6 +332,10 @@ struct HostEntry {
     /// (завис/пропал сигнал) — WS-пингом. Закрылся сокет → запись сразу убирается.
     /// Это ЕДИНСТВЕННЫЙ сигнал живости: живой в каталоге == держит сокет.
     ws_live: bool,
+    /// Когда этому хосту в последний раз разрешили МГНОВЕННУЮ рассылку каталога.
+    /// `None` — ещё ни разу. См. `announce_bump`: без этой отметки хост, дёргающий
+    /// видимое поле в цикле, рассылал бы дельту всем гостям на каждое сообщение.
+    last_instant_bump: Option<Instant>,
 }
 
 impl HostEntry {
@@ -469,6 +523,7 @@ async fn register_host(state: &Db, mut ann: HostAnnounce, observed_ip: String) -
             observed_ip: observed_ip.clone(),
             seq: state.next_seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             ws_live: false,
+            last_instant_bump: None,
         });
         entry.ann = ann;
         entry.observed_ip = observed_ip;
@@ -814,7 +869,7 @@ async fn ws_conn(socket: WebSocket, state: Db, ip: IpAddr, _guard: WsConnGuard) 
                         None => false,
                     }
                 };
-                if first_claim || visible_changed { state.bump_now() } else { state.bump() }
+                announce_bump(&state, &id, first_claim, visible_changed).await;
                 let _ = out_tx.send(WsServerMsg::HostOk).await;
             }
             WsClientMsg::Watch(q) => {
@@ -1366,6 +1421,152 @@ mod tests {
         a.max_guests = 0;
         assert_eq!(reg(&st, a).await, StatusCode::UNPROCESSABLE_ENTITY);
         assert!(st.db.lock().await.is_empty(), "пустышка не попала в каталог");
+    }
+
+    // ── КАТЕГОРИЯ Г: усиление и наводнение со стороны ЗЛОГО ХОСТА ─────────────
+    //
+    // Хост держит один сокет и шлёт в него что хочет. Опасно не то, что он
+    // испортит СВОЮ запись, а то, что одним своим сообщением заставит сервер
+    // сделать много работы или разослать много чужих сообщений.
+
+    /// МИГАЮЩИЙ СЧЁТЧИК ГОСТЕЙ. Смена видимого поля будит ВСЕХ подписчиков
+    /// каталога мгновенно (bump_now, без дебаунса). Значит хост, дёргающий
+    /// `guests` 0↔1 в цикле, превращает одно своё сообщение в рассылку по всем
+    /// гостям сразу — усиление тем больше, чем популярнее сервис.
+    ///
+    /// Тест считает, сколько раз подскочила версия каталога на 20 таких анонсов.
+    #[tokio::test]
+    async fn flapping_guest_count_cannot_spam_every_watcher() {
+        let st = mk_state();
+        let mut a = ann("FLAP0001", "tok", "Мигалка");
+        a.guests = 0;
+        assert_eq!(reg(&st, a.clone()).await, StatusCode::OK);
+
+        let before = *st.version.borrow();
+        for i in 0..20 {
+            let mut m = a.clone();
+            m.guests = (i % 2) as u32; // 0,1,0,1,…
+            let (_, changed) = register_host(&st, m, test_peer().ip().to_string()).await;
+            announce_bump(&st, "FLAP0001", false, changed).await;
+        }
+        let bumps = *st.version.borrow() - before;
+        assert!(
+            bumps <= 2,
+            "20 анонсов дали {bumps} рассылок по всем подписчикам — \
+             хост усиливает свой трафик в число гостей раз"
+        );
+    }
+
+    /// Смена ИМЕНИ — такое же видимое поле, тот же приём. Проверяем отдельно,
+    /// чтобы «починка» одного поля не оставила лазейку в соседнем.
+    #[tokio::test]
+    async fn flapping_name_cannot_spam_every_watcher() {
+        let st = mk_state();
+        let a = ann("FLAP0002", "tok", "Имя");
+        assert_eq!(reg(&st, a.clone()).await, StatusCode::OK);
+
+        let before = *st.version.borrow();
+        for i in 0..20 {
+            let mut m = a.clone();
+            m.name = format!("Имя-{i}");
+            let (_, changed) = register_host(&st, m, test_peer().ip().to_string()).await;
+            announce_bump(&st, "FLAP0002", false, changed).await;
+        }
+        let bumps = *st.version.borrow() - before;
+        assert!(bumps <= 2, "20 переименований дали {bumps} рассылок");
+    }
+
+    /// Честное ОДИНОЧНОЕ изменение обязано доезжать до гостей быстро — иначе
+    /// защита выше превратилась бы в «счётчик гостей обновляется через минуту».
+    #[tokio::test]
+    async fn single_real_change_still_reaches_watchers() {
+        let st = mk_state();
+        let mut a = ann("HONEST01", "tok", "Честный");
+        a.guests = 0;
+        assert_eq!(reg(&st, a.clone()).await, StatusCode::OK);
+        let before = *st.version.borrow();
+        a.guests = 1;
+        let (_, changed) = register_host(&st, a, test_peer().ip().to_string()).await;
+        assert!(changed, "смена числа гостей обязана считаться видимым изменением");
+        announce_bump(&st, "HONEST01", false, changed).await;
+        assert!(*st.version.borrow() > before, "настоящее изменение не дошло до гостей");
+    }
+
+    // ── КАТЕГОРИЯ Д: чем ЗЛОЙ ХОСТ может испортить каталог остальным ──────────
+
+    /// Управляющие символы в имени. Имя показывается в списке хостов и уходит в
+    /// логи сервера. Перевод строки в логе — это подделка соседних записей
+    /// («log injection»), а возврат каретки и escape-последовательности в
+    /// терминальном UI перерисовывают чужие строки. Ни один из них в имени
+    /// сети смысла не имеет.
+    #[tokio::test]
+    async fn control_characters_are_stripped_from_name() {
+        let st = mk_state();
+        let mut a = ann("CTRL0001", "tok", "");
+        a.name = "Обычный\n2026-01-01 ПОДДЕЛЬНАЯ СТРОКА ЛОГА\r\x1b[2Jчисто".into();
+        assert_eq!(reg(&st, a).await, StatusCode::OK);
+        let db = st.db.lock().await;
+        let name = &db.get("CTRL0001").unwrap().ann.name;
+        for bad in ['\n', '\r', '\t', '\x1b', '\0'] {
+            assert!(!name.contains(bad), "в имени остался управляющий символ {bad:?}: {name:?}");
+        }
+    }
+
+    /// Хост объявляет протокол, которого не существует. Гость возьмёт эту строку
+    /// из каталога и пойдёт с ней подключаться — она не должна ни ронять его, ни
+    /// заставлять молча падать на неизвестное имя.
+    #[tokio::test]
+    async fn unknown_protocol_name_does_not_break_catalog() {
+        let st = mk_state();
+        let mut a = ann("PROTO001", "tok", "Выдумщик");
+        a.protocol = "noise-🎭-выдуманный".into();
+        assert_eq!(reg(&st, a).await, StatusCode::OK);
+        let db = st.db.lock().await;
+        let p = &db.get("PROTO001").unwrap().ann.protocol;
+        assert!(p.len() <= MAX_NAME, "строка протокола не обрезана: {} байт", p.len());
+    }
+
+    /// Заклеймленную запись НЕЛЬЗЯ отобрать, прикинувшись «старым клиентом без
+    /// токена». Иначе весь смысл владения пропадал бы: достаточно не прислать
+    /// поле token, чтобы перехватить чужой код хоста.
+    #[tokio::test]
+    async fn empty_token_cannot_steal_claimed_entry() {
+        let st = mk_state();
+        assert_eq!(reg(&st, ann("OWNED001", "секрет-владельца", "Мой")).await, StatusCode::OK);
+
+        let mut thief = ann("OWNED001", "", "Угонщик");
+        thief.endpoints = vec!["1.1.1.1:40000".into()];
+        assert_ne!(reg(&st, thief).await, StatusCode::OK, "запись угнали пустым токеном");
+
+        let db = st.db.lock().await;
+        assert_eq!(db.get("OWNED001").unwrap().ann.name, "Мой", "имя подменили");
+    }
+
+    /// Сосед по каталогу не должен уметь снять чужой хост, прислав за него `bye`
+    /// или анонс с чужим id и своим токеном.
+    #[tokio::test]
+    async fn foreign_token_cannot_modify_entry() {
+        let st = mk_state();
+        assert_eq!(reg(&st, ann("OWNED002", "правильный", "Мой")).await, StatusCode::OK);
+        let mut a = ann("OWNED002", "чужой-токен", "Подмена");
+        a.max_guests = 1;
+        assert_ne!(reg(&st, a).await, StatusCode::OK);
+        let db = st.db.lock().await;
+        let e = db.get("OWNED002").unwrap();
+        assert_eq!(e.ann.name, "Мой");
+        assert_eq!(e.ann.max_guests, 8, "чужой изменил вместимость");
+    }
+
+    /// Гость может прислать сколько угодно своих адресов — в хост уедет не больше
+    /// потолка, иначе один запрос превращался бы в мешок работы для чужой машины.
+    #[test]
+    fn guest_candidate_list_is_capped_and_filtered() {
+        let mut many: Vec<String> = (0..500).map(|i| format!("8.8.{}.{}:40000", i / 256, i % 256)).collect();
+        many.push("192.168.1.1:40000".into()); // приватный — отсеять
+        many.push("не адрес".into());          // мусор — отсеять
+        let out: Vec<String> = many.iter().filter_map(|s| sane_addr(s)).take(MAX_CANDIDATES).collect();
+        assert_eq!(out.len(), MAX_CANDIDATES, "потолок кандидатов не соблюдён");
+        assert!(out.iter().all(|s| !s.starts_with("192.168")), "приватный адрес пролез в кандидаты");
     }
 
     /// Хост не должен покупать себе первое место в каталоге враньём о вместимости:

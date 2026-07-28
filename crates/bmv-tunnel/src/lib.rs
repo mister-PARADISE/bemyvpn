@@ -183,4 +183,65 @@ mod tests {
         v6[0] = 0x60;
         assert!(!from_host_allowed(&v6), "IPv6 в туннеле не бывает — только маскировка чужого пакета");
     }
+
+    /// КАЖДЫЙ байт адреса обязан проверяться. Сдвинься срез на единицу — и через
+    /// туннель прошло бы всё подсемейство 10.7.0.x, включая широковещательный
+    /// 10.7.0.255, а тест выше этого бы не заметил.
+    #[test]
+    fn every_octet_of_destination_is_checked() {
+        let pkt = |dst: [u8; 4]| {
+            let mut p = vec![0u8; 20];
+            p[0] = 0x45;
+            p[16..20].copy_from_slice(&dst);
+            p
+        };
+        let ok = [10u8, 7, 0, 2];
+        assert!(from_host_allowed(&pkt(ok)));
+        for i in 0..4 {
+            let mut near = ok;
+            near[i] = near[i].wrapping_add(1);
+            assert!(!from_host_allowed(&pkt(near)), "сосед по байту {i} ({near:?}) прошёл фильтр");
+            let mut near = ok;
+            near[i] = near[i].wrapping_sub(1);
+            assert!(!from_host_allowed(&pkt(near)), "сосед по байту {i} ({near:?}) прошёл фильтр");
+        }
+        assert!(!from_host_allowed(&pkt([10, 7, 0, 255])), "широковещательный внутри туннеля прошёл");
+        assert!(!from_host_allowed(&pkt([10, 7, 0, 0])), "адрес сети прошёл");
+    }
+
+    /// Заголовок IPv4 бывает ДЛИННЕЕ 20 байт (опции, IHL до 15). Адрес получателя
+    /// при этом остаётся на том же месте — фильтр обязан работать и с опциями,
+    /// иначе хост обходил бы его, просто добавив к пакету опцию.
+    #[test]
+    fn header_options_do_not_bypass_the_filter() {
+        for ihl in 5u8..=15 {
+            let len = ihl as usize * 4;
+            let mut p = vec![0u8; len];
+            p[0] = 0x40 | ihl;
+            p[16..20].copy_from_slice(&[10, 7, 0, 2]);
+            assert!(from_host_allowed(&p), "IHL={ihl}: наш ответ зря отклонён");
+
+            let mut bad = p.clone();
+            bad[16..20].copy_from_slice(&[192, 168, 1, 1]);
+            assert!(!from_host_allowed(&bad), "IHL={ihl}: чужой адрес прошёл");
+        }
+    }
+
+    /// Граница длины: 19 байт разбирать нечем, 20 — ровно заголовок без данных.
+    /// Проверяем обе стороны, потому что ошибка на единицу здесь — это паника
+    /// по срезу от пакета, присланного чужой машиной.
+    #[test]
+    fn length_boundary_is_exact_and_never_panics() {
+        for n in 0..64usize {
+            let mut p = vec![0u8; n];
+            if n > 0 {
+                p[0] = 0x45;
+            }
+            if n >= 20 {
+                p[16..20].copy_from_slice(&[10, 7, 0, 2]);
+            }
+            let allowed = from_host_allowed(&p); // главное — не паникует
+            assert_eq!(allowed, n >= 20, "длина {n}: решение {allowed}, а ожидалось {}", n >= 20);
+        }
+    }
 }
