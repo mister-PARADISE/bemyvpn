@@ -20,7 +20,7 @@
 //! «тихую смерть». Никакого HTTP-API и никаких опросов больше нет.
 
 use std::collections::HashMap;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -107,6 +107,11 @@ const HOST_TTL: Duration = Duration::from_secs(30);
 
 /// Потолок числа хостов в каталоге (защита памяти от Sybil-флуда новых id).
 const MAX_HOSTS: usize = 5000;
+/// Потолок объявленной вместимости хоста. Реальный лимит подбирается по ОЗУ и
+/// упирается в 128 (см. `bmv_config::suggested_max_guests`); 256 оставляет запас
+/// тому, кто сознательно поднял планку руками на мощной машине, но отсекает
+/// заведомую ложь ради первого места в списке.
+const MAX_ANNOUNCED_GUESTS: u32 = 256;
 
 // Потолки полей анонса/коннекта — режем мусор и амплификацию в каталоге.
 const MAX_ID: usize = 64;
@@ -145,6 +150,13 @@ fn sane_addr(s: &str) -> Option<String> {
             let s0 = a.segments()[0];
             let unique_local = (s0 & 0xfe00) == 0xfc00; // fc00::/7
             let link_local = (s0 & 0xffc0) == 0xfe80; // fe80::/10
+            // IPv4, записанный как IPv6 (`::ffff:10.0.0.1`), проходил ВСЕ проверки
+            // выше: is_loopback у Ipv6Addr — это только `::1`. Так в каталог
+            // попадал бы адрес вроде `[::ffff:127.0.0.1]`, и гости били бы в свой
+            // же localhost или LAN. Разворачиваем и судим по правилам IPv4.
+            if let Some(v4) = a.to_ipv4_mapped() {
+                return sane_addr(&SocketAddr::new(IpAddr::V4(v4), sa.port()).to_string());
+            }
             a.is_loopback() || a.is_unspecified() || a.is_multicast() || unique_local || link_local
         }
     };
@@ -159,16 +171,31 @@ fn sane_addr(s: &str) -> Option<String> {
 /// пришёл (наблюдаемый HTTP-источник), а не что он о себе написал. Иначе можно
 /// «сделать сеть» с чужим/красивым IP (спуфинг 8.8.8.8): гость бы ломился в никуда.
 /// Порт доверяем (его координатор со стороны HTTP не видит — это рефлексивный порт
-/// NAT), но IP ставим свой, наблюдаемый. IPv6-эндпоинты (когда HTTP пришёл по IPv4)
-/// не трогаем — их источник не наблюдаем этим соединением.
+/// NAT), но IP ставим свой, наблюдаемый.
+///
+/// Адрес ДРУГОГО СЕМЕЙСТВА, чем наблюдаемый, теперь ОТБРАСЫВАЕМ, а не пропускаем
+/// как раньше. Пропуск и был дырой: соединившись по IPv6, хост объявлял любой
+/// чужой IPv4 — и все гости шли пробивать NAT к жертве. Проверить этот адрес нам
+/// нечем, а «не проверили, но пропустили» — это и есть подпись под чужой ложью.
+/// Ничего рабочего при этом не теряется: сокеты хоста и STUN у нас IPv4-only
+/// (`0.0.0.0:0`, см. `bmv_net::local_ip`), так что честный хост адресов другого
+/// семейства не объявляет вовсе.
 fn authorize_endpoints(endpoints: &[String], observed: &str) -> Vec<String> {
-    let obs: Option<Ipv4Addr> = observed.parse().ok();
+    let obs: Option<IpAddr> = observed.parse().ok();
     let mut out: Vec<String> = Vec::new();
     for ep in endpoints {
         let Ok(sa) = ep.parse::<SocketAddr>() else { continue };
         let fixed = match (sa.ip(), obs) {
-            (IpAddr::V4(_), Some(o)) => SocketAddr::new(IpAddr::V4(o), sa.port()).to_string(),
-            _ => ep.clone(),
+            // Семейство совпало с наблюдаемым → ставим НАШ адрес, а не заявленный.
+            (IpAddr::V4(_), Some(o @ IpAddr::V4(_))) | (IpAddr::V6(_), Some(o @ IpAddr::V6(_))) => {
+                SocketAddr::new(o, sa.port()).to_string()
+            }
+            // Семейства разошлись (клиент пришёл по IPv6, а объявляет IPv4 — или
+            // наоборот): подтвердить такой адрес нечем. РАНЬШЕ он принимался на
+            // веру, и хост мог объявить чужой публичный IP — гости слали бы
+            // пробивающие пакеты жертве, то есть чужими руками получалась
+            // отражённая атака. Теперь неподтверждаемый адрес просто выбрасываем.
+            _ => continue,
         };
         if !out.contains(&fixed) {
             out.push(fixed);
@@ -180,10 +207,20 @@ fn authorize_endpoints(endpoints: &[String], observed: &str) -> Vec<String> {
 /// Обрезать/проверить строку по длине (пустую оставляем пустой).
 fn clamp(s: &str, max: usize) -> String {
     if s.len() <= max {
-        s.to_string()
-    } else {
-        s.chars().take(max).collect()
+        return s.to_string();
     }
+    // Режем по БАЙТАМ, а не по символам: предел задан в байтах, а `chars().take`
+    // на кириллице возвращал вдвое, на эмодзи вчетверо больше предела — то есть
+    // ограничение размера не работало. Границу ищем по символам, чтобы не
+    // разрубить многобайтный символ пополам.
+    let mut end = 0;
+    for (i, c) in s.char_indices() {
+        if i + c.len_utf8() > max {
+            break;
+        }
+        end = i + c.len_utf8();
+    }
+    s[..end].to_string()
 }
 
 // ── модель ───────────────────────────────────────────────────────────────────
@@ -380,6 +417,16 @@ async fn register_host(state: &Db, mut ann: HostAnnounce, observed_ip: String) -
     if ann.max_guests == 0 {
         return (StatusCode::UNPROCESSABLE_ENTITY, false);
     }
+    // Вместимость — со слов хоста, и раньше её никто не проверял. Объявив
+    // max_guests = 4 000 000 000 при нуле гостей, хост оказывался САМЫМ СВОБОДНЫМ
+    // в каталоге — а «Быстрый старт» у всех сортирует именно по свободным местам.
+    // То есть одной строкой в объявлении злоумышленник становился выходной нодой
+    // по умолчанию для всех и видел их трафик. Врать всё ещё можно, но не больше
+    // потолка — и обгонять честные хосты этим уже не выйдет.
+    ann.max_guests = ann.max_guests.min(MAX_ANNOUNCED_GUESTS);
+    // Гостей «сейчас» больше вместимости не бывает: такая пара — либо ошибка
+    // хоста, либо попытка нарисовать себе красивую загрузку. Приводим к правде.
+    ann.guests = ann.guests.min(ann.max_guests);
     ann.params = ann
         .params
         .into_iter()
@@ -551,10 +598,10 @@ async fn reaper(state: Db) {
             state.bump();
         }
         ticks += 1;
-        if ticks % 60 == 0 {
+        if ticks.is_multiple_of(60) {
             let hosts = state.db.lock().await.len();
             let (ips, conns) = {
-                let m = state.ws_conns.lock().unwrap();
+                let m = state.ws_conns.lock().unwrap_or_else(|e| e.into_inner());
                 (m.len(), m.values().sum::<u32>())
             };
             tracing::info!(hosts, ws_conns = conns, uniq_ips = ips, "сводка координатора");
@@ -653,7 +700,7 @@ struct WsConnGuard {
 }
 impl Drop for WsConnGuard {
     fn drop(&mut self) {
-        let mut m = self.state.ws_conns.lock().unwrap();
+        let mut m = self.state.ws_conns.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(c) = m.get_mut(&self.ip) {
             *c = c.saturating_sub(1);
             if *c == 0 {
@@ -664,7 +711,7 @@ impl Drop for WsConnGuard {
 }
 /// Впустить новый WS-коннект с IP (или None при переполнении квоты).
 fn ws_admit(state: &Db, ip: IpAddr) -> Option<WsConnGuard> {
-    let mut m = state.ws_conns.lock().unwrap();
+    let mut m = state.ws_conns.lock().unwrap_or_else(|e| e.into_inner());
     let c = m.entry(ip).or_insert(0);
     if *c >= MAX_WS_PER_IP {
         return None;
@@ -1045,6 +1092,58 @@ pub async fn serve(
 
 #[cfg(test)]
 mod tests {
+
+    /// IPv4, записанный в форме IPv6, ОБЯЗАН отсекаться наравне с обычным.
+    /// Раньше `[::ffff:127.0.0.1]` проходил как «глобальный»: is_loopback у
+    /// Ipv6Addr — это только `::1`. Такой адрес попадал в каталог, и гости
+    /// били бы в собственный localhost или свою LAN.
+    #[test]
+    fn ipv4_mapped_addresses_are_filtered() {
+        for s in ["[::ffff:127.0.0.1]:443", "[::ffff:10.0.0.1]:443", "[::ffff:192.168.1.1]:443", "[::ffff:169.254.169.254]:80"] {
+            assert!(sane_addr(s).is_none(), "должен быть отсечён: {s}");
+        }
+        // Настоящий публичный адрес в той же форме — проходит.
+        assert!(sane_addr("[::ffff:8.8.8.8]:443").is_some(), "публичный не должен отсекаться");
+    }
+
+    /// Хост не может объявить ЧУЖОЙ адрес: координатор ставит наблюдаемый.
+    /// А если семейства не совпали (пришёл по IPv6, объявляет IPv4), подтвердить
+    /// адрес нечем — раньше он брался на веру, и через каталог получалась
+    /// отражённая атака: гости слали пробивающие пакеты на указанный чужой IP.
+    #[test]
+    fn endpoints_cannot_claim_foreign_ip() {
+        // Обычный случай: IP переписывается на наблюдаемый, порт сохраняется.
+        let got = authorize_endpoints(&["1.2.3.4:5555".into()], "9.9.9.9");
+        assert_eq!(got, vec!["9.9.9.9:5555".to_string()]);
+
+        // Клиент пришёл по IPv6, объявляет чужой IPv4 — подтвердить нечем.
+        let got = authorize_endpoints(&["8.8.8.8:443".into()], "2001:db8::1");
+        assert!(got.is_empty(), "неподтверждаемый адрес обязан выбрасываться, получено: {got:?}");
+
+        // Наблюдаемый адрес не разобрался — тоже ничего не подтверждаем.
+        assert!(authorize_endpoints(&["8.8.8.8:443".into()], "мусор").is_empty());
+    }
+
+    /// Предел полей задан в БАЙТАХ, и обрезка обязана его соблюдать.
+    /// Раньше `chars().take(max)` возвращала на кириллице вдвое больше предела,
+    /// на эмодзи вчетверо — ограничение размера фактически не работало.
+    #[test]
+    fn clamp_respects_byte_limit() {
+        let cyrillic = "я".repeat(100); // 200 байт
+        let out = clamp(&cyrillic, MAX_NAME);
+        assert!(out.len() <= MAX_NAME, "получилось {} байт при пределе {MAX_NAME}", out.len());
+        assert!(!out.is_empty());
+
+        let emoji = "🎭".repeat(100); // 400 байт
+        let out = clamp(&emoji, MAX_NAME);
+        assert!(out.len() <= MAX_NAME, "получилось {} байт", out.len());
+
+        // Символ не должен быть разрублен пополам — строка обязана остаться валидной.
+        assert!(std::str::from_utf8(out.as_bytes()).is_ok());
+        // Короткая строка не трогается.
+        assert_eq!(clamp("привет", MAX_NAME), "привет");
+    }
+
     use super::*;
 
     const TEST_SECRET: &[u8] = b"test-secret-key-0123456789abcdef";
@@ -1267,6 +1366,22 @@ mod tests {
         a.max_guests = 0;
         assert_eq!(reg(&st, a).await, StatusCode::UNPROCESSABLE_ENTITY);
         assert!(st.db.lock().await.is_empty(), "пустышка не попала в каталог");
+    }
+
+    /// Хост не должен покупать себе первое место в каталоге враньём о вместимости:
+    /// «Быстрый старт» сортирует по свободным местам, поэтому max_guests в миллиард
+    /// сделал бы объявившего выходной нодой по умолчанию для всех.
+    #[tokio::test]
+    async fn announced_capacity_is_capped() {
+        let st = mk_state();
+        let mut a = ann("GREEDY01", "tok", "Жадный");
+        a.max_guests = u32::MAX;
+        a.guests = 999_999; // и «занято» тоже нарисовано
+        assert_eq!(reg(&st, a).await, StatusCode::OK);
+        let db = st.db.lock().await;
+        let e = db.get("GREEDY01").expect("хост в каталоге");
+        assert_eq!(e.ann.max_guests, MAX_ANNOUNCED_GUESTS, "вместимость не обрезана до потолка");
+        assert!(e.ann.guests <= e.ann.max_guests, "занято больше вместимости — такого не бывает");
     }
 
     #[tokio::test]
