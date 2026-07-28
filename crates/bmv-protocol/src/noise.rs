@@ -22,6 +22,17 @@ use tokio::time::timeout;
 use crate::Protocol;
 
 const HS_TIMEOUT: Duration = Duration::from_secs(6);
+/// Сколько ждать ответа, прежде чем ПОСЛАТЬ СВОЁ СООБЩЕНИЕ ЗАНОВО.
+///
+/// Рукопожатие Noise — ровно три сообщения, и собственных повторов у него нет.
+/// А идут они по UDP: один потерянный пакет = сорванное подключение и «не удалось
+/// подключиться» на ровном месте. На обычной линии это единицы процентов попыток,
+/// на мобильной — куда больше. Пробитие NAT перед этим уже доказало, что путь
+/// рабочий, поэтому 500мс — щедрая оценка круга.
+const HS_RETRY: Duration = Duration::from_millis(500);
+/// Сколько раз повторяем. 4 × 500мс = 2с сверху в худшем случае — укладывается
+/// в бюджет подключения и делает потерю пакета почти безобидной.
+const HS_TRIES: usize = 4;
 
 /// Шифрующий протокол на Noise (ChaCha20-Poly1305, тот же примитив, что в
 /// WireGuard). Два режима:
@@ -162,21 +173,56 @@ async fn handshake(inner: Box<dyn Link>, pattern: &str, initiator: bool, pad: bo
     if initiator {
         let n = hs.write_message(&hs_payload(pad), &mut out).map_err(noe)?;
         cloak_ephemeral(&mut out[..n], &my_repr);
-        inner.send(&out[..n]).await?;
-        let mut msg = recv_hs(&*inner).await?;
+        // Шлём msg1 и ждём msg2, повторяя msg1 при тишине (потерю не отличить от
+        // задумчивости — но повтор безвреден: хост узнаёт его побайтово).
+        let mut msg = send_and_await(&*inner, &out[..n]).await?;
         uncloak_ephemeral(&mut msg, pad)?;
         hs.read_message(&msg, &mut scratch).map_err(noe)?;
         let n = hs.write_message(&hs_payload(pad), &mut out).map_err(noe)?;
-        inner.send(&out[..n]).await?; // msg3 — эфемерного нет, не трогаем
+        // msg3 — эфемерного нет, не трогаем. Ответа на него не будет, поэтому
+        // ждать нечего; шлём ДВАЖДЫ. Потеря именно msg3 — худший случай: мы уже
+        // считаем себя подключёнными, а хост ещё ждёт и через таймаут уходит.
+        // Второй экземпляр стоит один пакет, а хост отбросит его как мусор.
+        inner.send(&out[..n]).await?;
+        let _ = inner.send(&out[..n]).await;
     } else {
-        let mut msg = recv_hs(&*inner).await?;
-        uncloak_ephemeral(&mut msg, pad)?;
-        hs.read_message(&msg, &mut scratch).map_err(noe)?;
+        let mut msg1 = recv_hs(&*inner).await?;
+        let msg1_raw = msg1.clone(); // для опознания повтора (см. ниже)
+        uncloak_ephemeral(&mut msg1, pad)?;
+        hs.read_message(&msg1, &mut scratch).map_err(noe)?;
         let n = hs.write_message(&hs_payload(pad), &mut out).map_err(noe)?;
         cloak_ephemeral(&mut out[..n], &my_repr);
-        inner.send(&out[..n]).await?;
-        let msg = recv_hs(&*inner).await?;
-        hs.read_message(&msg, &mut scratch).map_err(noe)?; // msg3 — эфемерного нет
+        let msg2 = out[..n].to_vec();
+        inner.send(&msg2).await?;
+
+        // Ждём msg3. Пришёл ПОВТОР msg1 — значит гость не увидел нашего msg2:
+        // шлём msg2 ещё раз. Тишина — тоже шлём ещё раз (мог потеряться он сам).
+        //
+        // Повтор msg1 обязательно опознать ПОБАЙТОВО и не отдавать в snow:
+        // `read_message` подмешивает данные в хэш ДО проверки пломбы, поэтому
+        // «попробовать и не получилось» ломает состояние рукопожатия навсегда —
+        // после такого не примется уже и правильный msg3.
+        let mut done = false;
+        for _ in 0..HS_TRIES {
+            match timeout(HS_RETRY, inner.recv()).await {
+                Ok(Ok(m)) if m.is_empty() => {
+                    return Err(Error::Protocol("канал закрыт во время рукопожатия".into()))
+                }
+                Ok(Ok(m)) if m == msg1_raw => {
+                    inner.send(&msg2).await?; // гость не получил msg2 — повторяем
+                }
+                Ok(Ok(m)) => {
+                    hs.read_message(&m, &mut scratch).map_err(noe)?;
+                    done = true;
+                    break;
+                }
+                Ok(Err(e)) => return Err(e),
+                Err(_) => inner.send(&msg2).await?, // тишина — msg2 мог не дойти
+            }
+        }
+        if !done {
+            return Err(Error::Protocol("таймаут рукопожатия Noise".into()));
+        }
     }
 
     // Ключ маскировки nonce = хэш рукопожатия (одинаков у обеих сторон, снаружи
@@ -198,6 +244,7 @@ async fn handshake(inner: Box<dyn Link>, pattern: &str, initiator: bool, pad: bo
         send_frame: std::sync::Mutex::new(Vec::new()),
         send_plain: std::sync::Mutex::new(Vec::new()),
         recv_scratch: std::sync::Mutex::new(Vec::new()),
+        replay: std::sync::Mutex::new((0, 0)),
     }))
 }
 
@@ -241,6 +288,27 @@ fn hs_payload(pad: bool) -> Vec<u8> {
     v
 }
 
+/// Послать сообщение рукопожатия и дождаться ответа, ПОВТОРЯЯ при тишине.
+///
+/// Повтор безопасен: получатель сравнивает байты и узнаёт дубликат, а в snow его
+/// не отдаёт (см. ветку хоста в `handshake`). Общий потолок ожидания тот же
+/// HS_TIMEOUT — повторы его не удлиняют, а лишь заполняют полезной работой.
+async fn send_and_await(link: &dyn Link, msg: &[u8]) -> Result<Vec<u8>> {
+    let deadline = tokio::time::Instant::now() + HS_TIMEOUT;
+    for _ in 0..HS_TRIES {
+        link.send(msg).await?;
+        let wait = HS_RETRY.min(deadline.saturating_duration_since(tokio::time::Instant::now()));
+        match timeout(wait, link.recv()).await {
+            Ok(Ok(m)) if !m.is_empty() => return Ok(m),
+            Ok(Ok(_)) => return Err(Error::Protocol("канал закрыт во время рукопожатия".into())),
+            Ok(Err(e)) => return Err(e),
+            Err(_) if tokio::time::Instant::now() < deadline => continue, // тишина — шлём заново
+            Err(_) => break,
+        }
+    }
+    Err(Error::Protocol("таймаут рукопожатия Noise".into()))
+}
+
 async fn recv_hs(link: &dyn Link) -> Result<Vec<u8>> {
     match timeout(HS_TIMEOUT, link.recv()).await {
         Ok(Ok(m)) if !m.is_empty() => Ok(m),
@@ -273,6 +341,42 @@ struct NoiseLink {
     send_frame: std::sync::Mutex<Vec<u8>>,
     send_plain: std::sync::Mutex<Vec<u8>>,
     recv_scratch: std::sync::Mutex<Vec<u8>>,
+    /// Анти-повтор: (наибольший принятый nonce, маска 64 предыдущих). См. `replay_ok`.
+    replay: std::sync::Mutex<(u64, u64)>,
+}
+
+/// Ширина окна анти-повтора (как в IPsec) — сколько перестановок в сети терпим.
+const REPLAY_WINDOW: u64 = 64;
+
+/// Учесть nonce УЖЕ РАСШИФРОВАННОГО пакета; `false` — это повтор, пакет дропаем.
+///
+/// Зачем: stateless-режим Noise берёт nonce из провода и сам повторы не ловит.
+/// Значит перехваченный пакет можно послать заново — и это не теория: `BYE`
+/// (прощание) тоже шифрованный пакет, его повтор РВЁТ живую сессию. Плюс
+/// дублированные TCP-сегменты внутри туннеля бьют по стеку гостя.
+///
+/// Схема стандартная (RFC 4303 anti-replay): помним наибольший принятый nonce и
+/// битовую маску 64 предыдущих. Окно нужно потому, что UDP переставляет пакеты, и
+/// требовать строгого возрастания значило бы терять законный трафик.
+fn replay_ok(state: &mut (u64, u64), nonce: u64) -> bool {
+    let (last, mask) = *state;
+    if nonce > last {
+        // Свежий: сдвигаем окно вперёд, младший бит = только что принятый.
+        let shift = nonce - last;
+        *state = (nonce, if shift >= REPLAY_WINDOW { 1 } else { (mask << shift) | 1 });
+        return true;
+    }
+    let back = last - nonce;
+    // Старше окна — судить не можем, поэтому отвергаем (иначе повтор пролезал бы).
+    if back >= REPLAY_WINDOW {
+        return false;
+    }
+    let bit = 1u64 << back;
+    if mask & bit != 0 {
+        return false; // такой nonce уже принимали
+    }
+    *state = (last, mask | bit);
+    true
 }
 
 #[async_trait]
@@ -342,6 +446,12 @@ impl Link for NoiseLink {
                     out.resize(frame.len(), 0); // ≥ длины plaintext
                     match self.transport.read_message(nonce, &frame[8..], out) {
                         Ok(n) => {
+                            // Окно двигаем ТОЛЬКО после успешной расшифровки: иначе
+                            // подделанным nonce можно было бы «состарить» окно и
+                            // выбить из него законные пакеты.
+                            if !replay_ok(&mut self.replay.lock().unwrap(), nonce) {
+                                continue; // повтор — молча дропаем
+                            }
                             out.truncate(n);
                             if self.pad {
                                 // Последний байт — длина паддинга; отрезаем паддинг+байт.
@@ -393,6 +503,33 @@ mod tests {
     use super::*;
     use crate::Protocol;
     use std::sync::atomic::Ordering;
+    use std::sync::Arc;
+
+    /// Перехваченный пакет не должен приниматься повторно: иначе повтор `BYE`
+    /// рвёт чужую сессию, а повтор данных дублирует TCP-сегменты у гостя.
+    /// При этом обычная перестановка пакетов в UDP обязана проходить.
+    #[test]
+    fn replay_window_rejects_repeats_but_allows_reorder() {
+        let mut s = (0u64, 0u64);
+        assert!(replay_ok(&mut s, 0), "первый пакет");
+        assert!(!replay_ok(&mut s, 0), "тот же nonce принят дважды — повтор пролезает");
+
+        assert!(replay_ok(&mut s, 5), "скачок вперёд (потери) — нормально");
+        assert!(replay_ok(&mut s, 3), "пришёл с опозданием, но в окне — принять");
+        assert!(!replay_ok(&mut s, 3), "а вот его повтор — отвергнуть");
+        assert!(!replay_ok(&mut s, 5), "повтор текущего максимума — отвергнуть");
+        assert!(replay_ok(&mut s, 4), "дыра между 3 и 5 закрывается законным пакетом");
+
+        // Ушли далеко вперёд: старьё за пределами окна судить нечем — отвергаем.
+        assert!(replay_ok(&mut s, 5 + REPLAY_WINDOW + 10));
+        assert!(!replay_ok(&mut s, 5), "пакет старше окна обязан отвергаться");
+
+        // Сдвиг ровно на ширину окна не должен паниковать (u64 << 64 = UB в release).
+        let mut s2 = (0u64, 0u64);
+        assert!(replay_ok(&mut s2, 0));
+        assert!(replay_ok(&mut s2, REPLAY_WINDOW));
+        assert!(!replay_ok(&mut s2, 0), "после полного сдвига окна старьё не принимаем");
+    }
 
     /// РЕГРЕССИЯ рефактора буферов: шифрослой НЕ аллоцирует буферы данных на пакет.
     ///
@@ -442,6 +579,120 @@ mod tests {
         assert_eq!(got, b"secret-payload");
         host.send(b"reply").await.unwrap();
         assert_eq!(guest.recv().await.unwrap(), b"reply");
+    }
+
+    /// Канал, который после взвода флага шлёт каждый пакет ДВАЖДЫ — так выглядит
+    /// перехватчик, повторяющий чужую датаграмму. До взвода честный: рукопожатие
+    /// повтора не переживает и проверять надо не его.
+    struct Dup {
+        inner: Box<dyn Link>,
+        on: Arc<std::sync::atomic::AtomicBool>,
+    }
+    #[async_trait]
+    impl Link for Dup {
+        async fn send(&self, p: &[u8]) -> Result<()> {
+            self.inner.send(p).await?;
+            if self.on.load(Ordering::Relaxed) {
+                self.inner.send(p).await?;
+            }
+            Ok(())
+        }
+        async fn recv_into(&self, b: &mut Vec<u8>) -> Result<bool> {
+            self.inner.recv_into(b).await
+        }
+    }
+
+    /// Канал, который ГЛОТАЕТ первые `n` отправок — так выглядит потеря пакета
+    /// в UDP. Нужен, чтобы проверить повторы рукопожатия.
+    struct Lossy {
+        inner: Box<dyn Link>,
+        drop_left: std::sync::Mutex<usize>,
+    }
+    #[async_trait]
+    impl Link for Lossy {
+        async fn send(&self, p: &[u8]) -> Result<()> {
+            {
+                let mut left = self.drop_left.lock().unwrap();
+                if *left > 0 {
+                    *left -= 1;
+                    return Ok(()); // «потерялся» — отправитель об этом не узнаёт
+                }
+            }
+            self.inner.send(p).await
+        }
+        async fn recv_into(&self, b: &mut Vec<u8>) -> Result<bool> {
+            self.inner.recv_into(b).await
+        }
+    }
+    fn lossy(inner: Box<dyn Link>, drop_first: usize) -> Box<dyn Link> {
+        Box::new(Lossy { inner, drop_left: std::sync::Mutex::new(drop_first) })
+    }
+
+    /// Потерян ПЕРВЫЙ пакет гостя (msg1). Без повторов рукопожатие сорвалось бы,
+    /// и человек увидел бы «не удалось подключиться» на ровном месте.
+    #[tokio::test]
+    async fn handshake_survives_lost_first_message() {
+        let (a, b) = bmv_common::wire::memory_pair(32);
+        let proto = Noise::chacha();
+        let (host, guest) = tokio::join!(proto.connect_host(a), proto.connect_guest(lossy(b, 1)));
+        let (host, guest) = (host.expect("хост"), guest.expect("гость"));
+        guest.send(b"payload").await.unwrap();
+        assert_eq!(host.recv().await.unwrap(), b"payload");
+    }
+
+    /// Потерян ОТВЕТ хоста (msg2). Гость повторит msg1 — и хост обязан УЗНАТЬ
+    /// повтор побайтово и переслать msg2. Если вместо этого он отдаст дубликат
+    /// в snow, состояние рукопожатия сломается и правильный msg3 уже не примется.
+    #[tokio::test]
+    async fn handshake_survives_lost_reply() {
+        let (a, b) = bmv_common::wire::memory_pair(32);
+        let proto = Noise::chacha();
+        let (host, guest) = tokio::join!(proto.connect_host(lossy(a, 1)), proto.connect_guest(b));
+        let (host, guest) = (host.expect("хост"), guest.expect("гость"));
+        host.send(b"payload").await.unwrap();
+        assert_eq!(guest.recv().await.unwrap(), b"payload");
+    }
+
+    /// То же в режиме маскировки: там msg1 ещё и подменяется Elligator2, поэтому
+    /// «узнать повтор» обязано работать по байтам ПРОВОДА, а не по расшифрованному.
+    #[tokio::test]
+    async fn handshake_survives_loss_in_obfs_mode() {
+        let (a, b) = bmv_common::wire::memory_pair(32);
+        let proto = Noise::obfs();
+        let (host, guest) = tokio::join!(proto.connect_host(lossy(a, 1)), proto.connect_guest(b));
+        let (host, guest) = (host.expect("хост"), guest.expect("гость"));
+        guest.send(b"payload").await.unwrap();
+        assert_eq!(host.recv().await.unwrap(), b"payload");
+    }
+
+    /// СКВОЗНАЯ проверка анти-повтора: повторённый пакет не должен доехать до
+    /// приложения. Без этого повтор перехваченного `BYE` рвал бы живую сессию,
+    /// а повтор данных дублировал бы TCP-сегменты у гостя.
+    #[tokio::test]
+    async fn replayed_frame_is_dropped_end_to_end() {
+        let (a, b) = bmv_common::wire::memory_pair(32);
+        let on = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let dup = Box::new(Dup { inner: b, on: on.clone() });
+        let proto = Noise::chacha();
+        let (host, guest) = tokio::join!(proto.connect_host(a), proto.connect_guest(dup));
+        let (host, guest) = (host.expect("host handshake"), guest.expect("guest handshake"));
+
+        on.store(true, Ordering::Relaxed); // с этого момента всё уходит дважды
+        guest.send(b"once").await.unwrap();
+        assert_eq!(host.recv().await.unwrap(), b"once", "оригинал обязан дойти");
+
+        // Второй экземпляр того же кадра лежит в канале. Приёмник должен его съесть
+        // и НЕ отдать наверх — то есть recv замирает в ожидании нового пакета.
+        let leaked = tokio::time::timeout(Duration::from_millis(200), host.recv()).await;
+        assert!(leaked.is_err(), "повтор пакета доехал до приложения — анти-повтора нет");
+
+        // И канал при этом не залип: следующий настоящий пакет проходит.
+        guest.send(b"next").await.unwrap();
+        let got = tokio::time::timeout(Duration::from_secs(1), host.recv())
+            .await
+            .expect("после дропа повтора канал встал")
+            .unwrap();
+        assert_eq!(got, b"next");
     }
 
     #[tokio::test]
