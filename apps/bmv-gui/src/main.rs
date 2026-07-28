@@ -673,7 +673,13 @@ fn wire_vpn(
                 return;
             };
             begin(&u, &first.id, &display_name(first));
-            let list: Vec<(String, String)> = cands.iter().map(|h| (h.id.clone(), h.protocol.clone())).collect();
+            // Берём только несколько лучших по сортировке выше. Раньше в хелпер
+            // уходил ВЕСЬ каталог: при сотне свободных хостов перебор шёл бы
+            // минутами, а человек всё это время смотрел бы на «подключаюсь».
+            // Если не подошёл никто из первой пятёрки — проблема не в хостах.
+            const QUICK_MAX: usize = 5;
+            let list: Vec<(String, String)> = cands.iter().take(QUICK_MAX)
+                .map(|h| (h.id.clone(), h.protocol.clone())).collect();
             hlp.quick(u.get_coord_url().as_ref(), &list);
         });
     }

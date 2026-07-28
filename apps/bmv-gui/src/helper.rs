@@ -136,8 +136,21 @@ async fn stop_current(current: &mut Option<Arc<tokio::sync::Notify>>) {
     }
 }
 
-/// Перебрать кандидатов: первый, к кому удалось подключиться за 8с, — запускаем
-/// туннель. Умный «Старт» на iOS так же перебирает; порядок задаёт GUI.
+/// Поводок для кандидата, ПОСЛЕ которого есть кого попробовать ещё. Внутри
+/// `guest_establish` на пробивание NAT отведено 12с — щедро, потому что двум
+/// мобильным NAT столько и нужно. Но когда в очереди ждут живые хосты, сидеть
+/// эти 12с у молчащего смысла нет: дешевле взять следующего. 5с покрывают
+/// запрос к координатору (доли секунды по уже открытому сокету) плюс несколько
+/// раундов пробивания — обычная пара NAT укладывается за секунду-две.
+const TRY_NEXT_AFTER: Duration = Duration::from_secs(5);
+/// Поводок для ПОСЛЕДНЕЙ попытки — запасных больше нет, поэтому даём пробиванию
+/// доработать полностью (12с) с запасом на подготовку. Без этого у человека за
+/// строгим NAT умная кнопка не срабатывала бы НИКОГДА, сколько ни жми.
+const LAST_CHANCE: Duration = Duration::from_secs(15);
+
+/// Перебрать кандидатов: первый, к кому удалось подключиться, — запускаем туннель.
+/// Порядок задаёт GUI (лучшие первыми), поводок — константы выше. Умный «Старт»
+/// на iOS перебирает так же.
 async fn run_candidates(
     coord: String,
     cands: Vec<(String, String, String)>, // (host, pw, proto)
@@ -147,11 +160,13 @@ async fn run_candidates(
     let cfg = Config { coordinators: vec![coord], ..Default::default() };
     let eng = Arc::new(BmvEngine::from_config(cfg));
 
-    for (host, pw, proto) in cands {
+    let total = cands.len();
+    for (i, (host, pw, proto)) in cands.into_iter().enumerate() {
         let _ = tx.send(format!("STATE\t1\t{host}\t"));
         let pw_opt = (!pw.is_empty()).then_some(pw.clone());
         let proto_opt = (!proto.is_empty()).then_some(proto.clone());
-        let est_fut = tokio::time::timeout(Duration::from_secs(8), eng.guest_establish(&host, pw_opt.as_deref(), proto_opt.as_deref()));
+        let budget = if i + 1 == total { LAST_CHANCE } else { TRY_NEXT_AFTER };
+        let est_fut = tokio::time::timeout(budget, eng.guest_establish(&host, pw_opt.as_deref(), proto_opt.as_deref()));
         tokio::pin!(est_fut);
         let est = tokio::select! {
             _ = stop.notified() => {
@@ -380,7 +395,16 @@ fn spawn_and_connect(on_state: Arc<dyn Fn(i32, String, String) + Send + Sync>, u
     let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
     let port_file = dir.join(format!("bemyvpn-port-{stamp}"));
     let token_file = dir.join(format!("bemyvpn-tok-{stamp}"));
-    let token = format!("{stamp:x}{:x}", std::process::id());
+    // Токен — из криптостойкого генератора, а НЕ из времени и pid, как было.
+    // По этому токену root-хелпер принимает команду CONNECT с ЛЮБЫМ адресом
+    // координатора, то есть угадавший его сосед по машине уводит весь трафик
+    // пользователя через себя. Время с точностью до наносекунды и pid — это
+    // десятки битов угадываемого, а не 128 случайных.
+    let token: String = {
+        use rand::Rng;
+        let b: [u8; 16] = rand::thread_rng().gen();
+        b.iter().map(|x| format!("{x:02x}")).collect()
+    };
     write_private(&token_file, &token)?;
     let _ = std::fs::remove_file(&port_file);
     let _ = std::fs::remove_file(up_file); // свежий старт: старый маркер не путает GUI
@@ -445,13 +469,23 @@ fn write_private(path: &std::path::Path, data: &str) -> Result<(), String> {
 
 // ── Запуск root-процесса с системным запросом пароля ─────────────────────────
 
+/// Путь → безопасный аргумент для `/bin/sh`. Одинарные кавычки закрывают пробелы,
+/// но НЕ закрывают саму одинарную кавычку: путь вида `/Users/o'brien/Моё.app`
+/// разрывал команду — а команда эта выполняется С ПРАВАМИ АДМИНИСТРАТОРА, то есть
+/// апостроф в имени папки был готовой подстановкой чужого кода под root.
+/// Приём стандартный: закрыть строку, вставить экранированную кавычку, открыть снова.
+#[cfg(target_os = "macos")]
+fn sh_quote(p: &std::path::Path) -> String {
+    format!("'{}'", p.display().to_string().replace('\'', r"'\''"))
+}
+
 #[cfg(target_os = "macos")]
 fn elevate_launch(exe: &std::path::Path, port_file: &std::path::Path, token_file: &std::path::Path, up_file: &std::path::Path) -> Result<(), String> {
     // Шелл-команда в одинарных кавычках (пути с пробелами ок), фоном (&) —
     // osascript вернётся сразу после ввода пароля. AppleScript-строка в двойных.
     let sh = format!(
-        "'{}' --tunnel-helper '{}' '{}' '{}' >/dev/null 2>&1 &",
-        exe.display(), port_file.display(), token_file.display(), up_file.display()
+        "{} --tunnel-helper {} {} {} >/dev/null 2>&1 &",
+        sh_quote(exe), sh_quote(port_file), sh_quote(token_file), sh_quote(up_file)
     );
     let script = format!("do shell script \"{}\" with administrator privileges", sh.replace('\\', "\\\\").replace('"', "\\\""));
     let status = std::process::Command::new("osascript").arg("-e").arg(script).status().map_err(|e| e.to_string())?;

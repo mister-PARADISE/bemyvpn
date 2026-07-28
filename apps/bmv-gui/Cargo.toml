@@ -38,6 +38,8 @@ flate2 = "1"
 # Папка конфигурации ОС — стабильный id хоста между запусками (чтобы не плодить
 # клоны в каталоге), как device_host_id в prefs на Android.
 directories = "5"
+# Токен для root-хелпера — из криптостойкого генератора (см. helper.rs).
+rand = { workspace = true }
 
 [build-dependencies]
 slint-build = "1.8"
