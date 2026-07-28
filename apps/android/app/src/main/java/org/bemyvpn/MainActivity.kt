@@ -48,6 +48,7 @@ class MainActivity : ComponentActivity() {
         }
 
         app = AppState.get(this)
+        app.checkUpdate()   // спросить у GitHub, есть ли релиз новее
         app.onStartVpn = { host, pw -> requestVpn(host, pw) }
         app.start()
 
