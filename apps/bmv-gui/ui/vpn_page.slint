@@ -140,6 +140,10 @@ export component VpnPage inherits Rectangle {
     in property <string> vpn-country;
     in property <string> vpn-elapsed;
     in property <int> host-count;
+    /// Версия свежего релиза («1.6») или "" — плашки нет. Приходит от
+    /// координатора уже с проверенной подписью, здесь только показ.
+    in property <string> update-version;
+    property <bool> update-dismissed: false;
     in-out property <string> code;
     in-out property <string> guest-password;
     property <int> expanded: -1;
@@ -150,6 +154,7 @@ export component VpnPage inherits Rectangle {
     callback paste();
     callback copy-text(string);
     callback open-invite();
+    callback open-notes();
 
     property <color> tint: vpn-state == 1 ? Theme.amber : vpn-state == 2 ? Theme.green : Theme.accent;
 
@@ -167,6 +172,58 @@ export component VpnPage inherits Rectangle {
             padding: Theme.pad;
             padding-bottom: 108px;   // не под плавающим нав-баром (iOS navPadding 96)
             spacing: Theme.gap;
+
+            // ── Свежий релиз ──
+            // Тонкая полоса над героем: заметно, но не перекрывает работу и не
+            // требует реакции. Крестик убирает её до следующего запуска —
+            // навязываться обновлением неправильно, решает человек.
+            if root.update-version != "" && !root.update-dismissed: Rectangle {
+                border-radius: 14px;
+                background: Theme.accent.with-alpha(0.12);
+                border-width: 1px;
+                border-color: Theme.accent.with-alpha(0.35);
+                height: 46px;
+                HorizontalLayout {
+                    padding-left: 14px; padding-right: 10px;
+                    spacing: 10px;
+                    VerticalLayout {
+                        alignment: center;
+                        horizontal-stretch: 1;
+                        Text {
+                            text: "Доступна версия " + root.update-version;
+                            color: Theme.accent; font-size: 13px; font-weight: 700;
+                        }
+                    }
+                    VerticalLayout {
+                        alignment: center;
+                        Rectangle {
+                            width: 96px; height: 30px;
+                            border-radius: 10px;
+                            background: notes-ta.pressed ? Theme.accent2 : Theme.accent;
+                            Text {
+                                text: "Что нового"; color: white; font-size: 12px; font-weight: 700;
+                                horizontal-alignment: center; vertical-alignment: center;
+                                width: 100%; height: 100%;
+                            }
+                            notes-ta := TouchArea { clicked => { root.open-notes(); } }
+                        }
+                    }
+                    VerticalLayout {
+                        alignment: center;
+                        Rectangle {
+                            width: 28px; height: 28px;
+                            border-radius: 8px;
+                            background: close-ta.has-hover ? Theme.card-sel : transparent;
+                            Text {
+                                text: "✕"; color: Theme.dim; font-size: 13px;
+                                horizontal-alignment: center; vertical-alignment: center;
+                                width: 100%; height: 100%;
+                            }
+                            close-ta := TouchArea { clicked => { root.update-dismissed = true; } }
+                        }
+                    }
+                }
+            }
 
             // ── Герой-статус ──
             Rectangle {

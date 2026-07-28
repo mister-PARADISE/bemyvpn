@@ -164,6 +164,10 @@ struct Shared {
     /// Для восстановления после реконнекта.
     last_announce: Mutex<Option<HostAnnounce>>,
     watching: Mutex<bool>,
+    /// Сведения о свежем релизе от координатора: ПРОВЕРЕННЫЙ манифест.
+    /// Храним уже разобранным — значит подпись сошлась; непроверенное сюда не
+    /// попадает вовсе, чтобы выше по стеку не было соблазна ему поверить.
+    update: Mutex<Option<bmv_common::update::Manifest>>,
     /// true, когда сокет установлен (для health).
     connected: watch::Sender<bool>,
     /// true → все клоны Coordinator уронены, супервизору пора выйти (сокет закрыть).
@@ -238,6 +242,7 @@ impl Coordinator {
                 guest_rx: tokio::sync::Mutex::new(guest_rx),
                 dir: Mutex::new(DirState::default()),
                 dir_ver,
+                update: Mutex::new(None),
                 last_announce: Mutex::new(None),
                 watching: Mutex::new(false),
                 connected,
@@ -335,6 +340,12 @@ impl Coordinator {
     }
 
     /// Хост координатора (без схемы/порта/пути).
+    /// Свежий релиз, если координатор о нём сообщил И подпись сошлась.
+    /// None — обновлять нечего, либо манифест не проверен (в том числе подделан).
+    pub fn latest_update(&self) -> Option<bmv_common::update::Manifest> {
+        self.shared.update.lock().unwrap().clone()
+    }
+
     pub fn coord_host(&self) -> String {
         self.shared.host.clone()
     }
@@ -626,6 +637,20 @@ fn handle_incoming(sh: &Arc<Shared>, txt: &str) {
                 }
                 d.version += 1;
                 let _ = sh.dir_ver.send_replace(d.version);
+            }
+        }
+        // Манифест обновления. Подпись проверяем ЗДЕСЬ, до сохранения:
+        // координатор — обычный посредник, доверия ему нет, и подделать
+        // манифест он не может именно потому, что проверка идёт вшитым ключом.
+        "update" => {
+            let (Some(m), Some(s)) = (
+                v.get("manifest").and_then(|x| x.as_str()),
+                v.get("sig").and_then(|x| x.as_str()),
+            ) else { return };
+            // Не сошлось — молча игнорируем: это либо клиент с другим ключом,
+            // либо попытка подмены. В обоих случаях делать нечего.
+            if let Ok(man) = bmv_common::update::verify_manifest(m.as_bytes(), s) {
+                *sh.update.lock().unwrap() = Some(man);
             }
         }
         "dirremove" => {

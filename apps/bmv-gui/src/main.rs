@@ -57,6 +57,17 @@ fn host_cc(h: &HostInfo) -> Option<String> {
     })
 }
 
+/// Открыть ссылку в браузере пользователя. Команда своя на каждой ОС.
+fn open_url(url: &str) {
+    #[cfg(target_os = "macos")]
+    let (cmd, args): (&str, &[&str]) = ("open", &[]);
+    #[cfg(target_os = "windows")]
+    let (cmd, args): (&str, &[&str]) = ("cmd", &["/C", "start", ""]);
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let (cmd, args): (&str, &[&str]) = ("xdg-open", &[]);
+    let _ = std::process::Command::new(cmd).args(args).arg(url).spawn();
+}
+
 /// Заполнить карточку активного подключения по записи хоста. Зовётся В МОМЕНТ
 /// подключения (данные уже на руках — гость выбрал этот хост) и потом на каждом
 /// обновлении каталога, чтобы живые цифры (гости) не отставали.
@@ -124,6 +135,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     });
+
+    // «Что нового» — открыть страницу релиза в браузере. Скачивание и установка
+    // появятся отдельной кнопкой; здесь только показать, что изменилось.
+    {
+        let weak = ui.as_weak();
+        ui.on_open_notes(move || {
+            let Some(ui) = weak.upgrade() else { return };
+            let url = ui.get_update_notes().to_string();
+            if url.starts_with("https://") {
+                open_url(&url);
+            }
+        });
+    }
 
     // QR-оверлей: Rust рисует картинку по коду и открывает оверлей.
     {
@@ -399,6 +423,7 @@ fn spawn_refresh(
             // жив, пока снапшот каталога ещё в пути (хост уже анонсирован).
             let t0 = std::time::Instant::now();
             let alive = eng.coordinator_health().await.is_ok();
+            let upd = eng.latest_update();
             let ping = t0.elapsed().as_millis() as i32;
             if alive && my_ip.is_empty() {
                 if let Ok(ip) = eng.my_ip().await {
@@ -420,6 +445,15 @@ fn spawn_refresh(
             let _ = slint::invoke_from_event_loop(move || {
                 let Some(ui) = weak.upgrade() else { return };
                 ui.set_coord_state(if alive { 1 } else { 2 });
+                // Свежий релиз: показываем ТОЛЬКО если он новее нашей сборки.
+                // Манифест сюда попадает уже с проверенной подписью (bmv-signal),
+                // локальные сборки (0.0-dev) исключены внутри is_newer_than_current.
+                if let Some(u) = &upd {
+                    if u.is_newer_than_current() {
+                        ui.set_update_version(u.version.clone().into());
+                        ui.set_update_notes(u.notes.clone().into());
+                    }
+                }
                 ui.set_coord_ping(if alive { ping } else { 0 });
                 ui.set_coord_ip(ip.into());
                 if let Some(h) = hist { ui.set_server_history(str_model(&h)); }
