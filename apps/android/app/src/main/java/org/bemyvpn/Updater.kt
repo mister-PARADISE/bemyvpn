@@ -27,10 +27,17 @@ object Updater {
     /** Потолок размера: APK у нас ~4.5 МБ, 64 МБ с запасом и без риска съесть память. */
     private const val MAX_BYTES = 64L * 1024 * 1024
 
-    /** Тег последнего релиза («v1.6») или null, если не удалось узнать. */
+    /**
+     * Тег последнего релиза («v1.6») или null, если не удалось узнать.
+     *
+     * Разбор — настоящим JSON-парсером (`org.json` входит в саму систему, лишней
+     * зависимости нет). Регулярка по телу ответа, которая была здесь раньше,
+     * цеплялась за ПЕРВОЕ совпадение: хватило бы файла релиза с именем
+     * `tag_name`, чтобы в адрес загрузки молча уехал мусор.
+     */
     fun latestTag(): String? = try {
         val body = httpGet(URL("https://api.github.com/repos/$REPO/releases/latest"), 256 * 1024)
-        Regex("\"tag_name\"\\s*:\\s*\"([^\"]+)\"").find(String(body))?.groupValues?.get(1)
+        org.json.JSONObject(String(body)).optString("tag_name").ifEmpty { null }
     } catch (_: Throwable) {
         null
     }

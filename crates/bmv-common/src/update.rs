@@ -266,16 +266,17 @@ pub async fn github_latest_tag(repo: &str) -> Result<String> {
     tag_from_release_json(&text).ok_or_else(|| Error::Net("GitHub не вернул номер релиза".into()))
 }
 
-/// Достать `tag_name` из ответа API. Разбираем вручную: тянуть json-парсер ради
-/// одного поля незачем, а формат тут стабильный и простой.
+/// Достать `tag_name` из ответа API — настоящим разбором JSON.
+///
+/// Раньше здесь был поиск подстроки `"tag_name"` с ручным отсчётом кавычек, и
+/// оправдание «тянуть парсер ради одного поля незачем» было просто НЕВЕРНЫМ:
+/// `serde_json` и так лежит в зависимостях этого крейта. А цена самоделки
+/// реальная — она берёт ПЕРВОЕ вхождение строки во всём теле ответа. Сегодня
+/// `tag_name` идёт у GitHub раньше списка файлов, но стоит полю переехать или
+/// появиться файлу с таким именем — и в адрес загрузки молча уедет мусор.
 fn tag_from_release_json(json: &str) -> Option<String> {
-    let key = "\"tag_name\"";
-    let start = json.find(key)? + key.len();
-    let rest = json.get(start..)?;
-    let q1 = rest.find('"')? + 1;
-    let after = rest.get(q1..)?;
-    let q2 = after.find('"')?;
-    let tag = after.get(..q2)?;
+    let v: serde_json::Value = serde_json::from_str(json).ok()?;
+    let tag = v.get("tag_name")?.as_str()?;
     (!tag.is_empty()).then(|| tag.to_string())
 }
 
@@ -331,5 +332,13 @@ mod tests {
 
         assert_eq!(tag_from_release_json(r#"{"message":"Not Found"}"#), None);
         assert_eq!(tag_from_release_json("не json"), None);
+
+        // Ровно то, на чём ломалась самоделка с поиском подстроки: имя файла
+        // совпадает с именем поля, и «первое вхождение» уводило в мусор.
+        let trap = r#"{"assets":[{"name":"tag_name","label":"v9.9"}],"tag_name":"v1.7"}"#;
+        assert_eq!(tag_from_release_json(trap).as_deref(), Some("v1.7"));
+
+        // Обрезанный ответ (оборвалась загрузка) — не «почти разобрали», а отказ.
+        assert_eq!(tag_from_release_json(r#"{"tag_name":"v1."#), None);
     }
 }
