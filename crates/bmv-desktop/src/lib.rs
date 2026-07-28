@@ -159,6 +159,68 @@ fn ensure_wintun() -> Result<(), String> {
     Ok(())
 }
 
+/// «Хлебная крошка» — что вернуть, если процесс УМЕР, не отработав `Drop`.
+///
+/// Маршруты чинятся сами: они привязаны к tun-интерфейсу, а тот исчезает вместе
+/// с процессом, и ядро убирает их следом. А вот DNS — нет. Ctrl-C, `kill`,
+/// падение — и настройка «резолвер = 8.8.8.8» остаётся НАВСЕГДА: интернет
+/// работает, поэтому никто не замечает, что все запросы имён с этого момента
+/// молча уходят в Google. Для VPN, который делают ради приватности, это худший
+/// вид поломки — тихий. Обработчиком сигнала это не лечится (после него `Drop`
+/// всё равно не выполняется), поэтому пишем состояние на диск и доедаем крошку
+/// при следующем `install`.
+///
+/// Путь ТОЛЬКО root-овый: положи мы файл в /tmp — любой пользователь машины
+/// подсунул бы туда своё содержимое, и root покорно записал бы его в
+/// /etc/resolv.conf.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+const DNS_CRUMB: &str = "/etc/bemyvpn-dns.bak";
+
+/// Вернуть DNS, если прошлый запуск умер, не откатившись. Тихо, без ошибок:
+/// нет крошки — нечего чинить; нет прав — мы и туннель поднять не сможем.
+#[cfg(target_os = "linux")]
+fn recover_dns_after_crash() {
+    if let Ok(old) = std::fs::read(DNS_CRUMB) {
+        let _ = std::fs::write("/etc/resolv.conf", old);
+        let _ = std::fs::remove_file(DNS_CRUMB);
+    }
+}
+
+/// macOS: в крошке строки «сервис», затем прежние серверы (пусто = было «авто»).
+#[cfg(target_os = "macos")]
+fn recover_dns_after_crash() {
+    let Ok(txt) = std::fs::read_to_string(DNS_CRUMB) else { return };
+    let mut lines = txt.lines();
+    if let Some(svc) = lines.next().filter(|s| !s.is_empty()) {
+        let old: Vec<&str> = lines.filter(|s| !s.is_empty()).collect();
+        let mut a = vec!["-setdnsservers", svc];
+        if old.is_empty() {
+            a.push("empty");
+        } else {
+            a.extend(old);
+        }
+        let _ = networksetup(&a);
+    }
+    let _ = std::fs::remove_file(DNS_CRUMB);
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn write_dns_crumb(data: &str) {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    // 0600 задаём В МОМЕНТ создания, а не chmod'ом после: иначе между созданием
+    // и правкой прав есть окно, в котором файл открыт всем.
+    let f = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(DNS_CRUMB);
+    if let Ok(mut f) = f {
+        let _ = f.write_all(data.as_bytes());
+    }
+}
+
 /// Разворачивает маршруты так, что ВЕСЬ трафик идёт в туннель, а на Drop —
 /// откатывает (в т.ч. если задачу прервут или туннель оборвётся).
 pub struct RouteGuard {
@@ -182,12 +244,18 @@ impl RouteGuard {
     // ── Linux ──
     #[cfg(target_os = "linux")]
     pub fn install(host_ip: IpAddr, tun: &str) -> Result<Self, String> {
+        // ПЕРВЫМ делом — доесть крошку прошлого запуска, иначе снимком «текущего»
+        // DNS окажется наш же 8.8.8.8, и настоящий резолвер потеряется навсегда.
+        recover_dns_after_crash();
         let (gw, dev) = default_route_linux().ok_or("не найден шлюз по умолчанию")?;
         let hip = host_ip.to_string();
         let _ = ip(&["route", "add", &format!("{hip}/32"), "via", &gw, "dev", &dev]);
         ip(&["route", "add", "0.0.0.0/1", "dev", tun])?;
         ip(&["route", "add", "128.0.0.0/1", "dev", tun])?;
         let resolv = std::fs::read("/etc/resolv.conf").ok();
+        if let Some(r) = &resolv {
+            write_dns_crumb(&String::from_utf8_lossy(r));
+        }
         let _ = std::fs::write("/etc/resolv.conf", "nameserver 8.8.8.8\n");
         Ok(Self { host_ip: hip, resolv })
     }
@@ -198,6 +266,9 @@ impl RouteGuard {
     // бы к LAN-DNS мимо туннеля). Всё откатывается в Drop.
     #[cfg(target_os = "macos")]
     pub fn install(host_ip: IpAddr, tun: &str) -> Result<Self, String> {
+        // Первым делом — доесть крошку прошлого запуска (см. DNS_CRUMB): иначе
+        // «прежними» серверами запомнится наш же 8.8.8.8.
+        recover_dns_after_crash();
         let (gw, dev) = default_route_macos().ok_or("не найден шлюз по умолчанию")?;
         let hip = host_ip.to_string();
         // Хост-пин через реальный шлюз, чтобы шифрованные UDP не зациклились в туннель.
@@ -209,6 +280,7 @@ impl RouteGuard {
         let (dns_service, dns_old) = match dns_service_for_dev(&dev) {
             Some(svc) => {
                 let old = current_dns(&svc);
+                write_dns_crumb(&format!("{svc}\n{}", old.join("\n")));
                 let _ = networksetup(&["-setdnsservers", &svc, "8.8.8.8"]);
                 (Some(svc), old)
             }
@@ -253,6 +325,7 @@ impl Drop for RouteGuard {
             if let Some(r) = &self.resolv {
                 let _ = std::fs::write("/etc/resolv.conf", r);
             }
+            let _ = std::fs::remove_file(DNS_CRUMB); // откатились штатно — чинить нечего
         }
         #[cfg(target_os = "macos")]
         {
@@ -268,6 +341,7 @@ impl Drop for RouteGuard {
                     let _ = networksetup(&a);
                 }
             }
+            let _ = std::fs::remove_file(DNS_CRUMB); // откатились штатно — чинить нечего
         }
         #[cfg(target_os = "windows")]
         {
