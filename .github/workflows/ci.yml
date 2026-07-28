@@ -1,0 +1,48 @@
+name: CI
+
+# Тесты и линтер на каждый пуш и PR.
+#
+# Зачем отдельно от release.yml: там ТОЛЬКО сборка. До этого прогона тесты не
+# гонял никто, кроме разработчика на своей машине, — то есть сломанный крейт
+# спокойно доезжал до тега и выпускался. Теперь красный CI виден до релиза.
+#
+# Только ubuntu: сборки под macOS/Windows и так делает release.yml, а логика,
+# которую проверяют тесты, платформенно-независима. Раннеры Linux дешёвые
+# (и бесплатные для публичного репозитория) — гонять то же самое на трёх ОС
+# значит платить втрое за один и тот же результат.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch: {}
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      # Слинт-GUI входит в workspace, поэтому его системные зависимости нужны
+      # даже для `cargo test` (сборка build.rs и линковка).
+      # Список ОДИН В ОДИН с job'ом gui-linux в release.yml — он заведомо рабочий,
+      # и расхождение означало бы, что CI зелёный, а релиз не собирается.
+      - name: Системные зависимости (Slint femtovg/GL + rsvg)
+        run: sudo apt-get update && sudo apt-get install -y libfontconfig-dev libxkbcommon-dev libxkbcommon-x11-0 libwayland-dev libxcb1-dev libx11-dev libgl1-mesa-dev libegl1-mesa-dev librsvg2-bin
+
+      - name: Тесты (workspace)
+        run: cargo test --workspace
+
+      # Координатор НАМЕРЕННО вне workspace (свои зависимости, axum), поэтому
+      # `--workspace` его не видит и его тесты не запускались ВООБЩЕ. А это
+      # ровно тот код, что смотрит в интернет и фильтрует чужие адреса.
+      - name: Тесты (координатор)
+        run: cargo test --manifest-path server/coordinator/Cargo.toml
+
+      - name: Линтер
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Линтер (координатор)
+        run: cargo clippy --manifest-path server/coordinator/Cargo.toml --all-targets -- -D warnings
