@@ -9,6 +9,7 @@ name = "bemyvpn"
 path = "src/main.rs"
 
 [dependencies]
+bmv-common.workspace = true
 bmv-config.workspace = true
 bmv-core.workspace = true
 bmv-tunnel.workspace = true

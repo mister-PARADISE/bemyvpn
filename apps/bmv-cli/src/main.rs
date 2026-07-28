@@ -31,6 +31,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
+    /// Показать версию сборки.
+    Version,
     /// Показать итоговый конфиг (с учётом дефолтов).
     Config,
     /// Список протоколов и их статус.
@@ -238,6 +240,8 @@ async fn main() {
     let engine = std::sync::Arc::new(BmvEngine::from_config(config));
 
     match cmd {
+        Cmd::Version => println!("{}", bmv_common::version::VERSION),
+
         Cmd::Config => println!("{}", engine.config().to_toml()),
 
         Cmd::Protocols => {

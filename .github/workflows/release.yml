@@ -173,7 +173,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - name: Build
-        run: cargo build --release -p bmv-cli
+        shell: bash
+        run: BMV_VERSION="${GITHUB_REF_NAME#v}" cargo build --release -p bmv-cli
       - name: Rename asset
         shell: bash
         run: cp "target/release/${{ matrix.bin }}" "${{ matrix.asset }}"
@@ -196,9 +197,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       # build-app.sh только упаковывает — бинарь должен уже лежать в target/release.
       - name: Build GUI
-        run: cargo build --release -p bmv-gui
+        shell: bash
+        run: BMV_VERSION="${GITHUB_REF_NAME#v}" cargo build --release -p bmv-gui
       - name: Package dmg
-        run: VERSION="${GITHUB_REF_NAME#v}" bash packaging/macos/build-app.sh
+        run: VERSION="${GITHUB_REF_NAME#v}" BMV_VERSION="${GITHUB_REF_NAME#v}" bash packaging/macos/build-app.sh
       - name: Publish to Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
@@ -286,7 +288,8 @@ jobs:
       - name: Build deps (Slint femtovg/GL + rsvg)
         run: sudo apt-get update && sudo apt-get install -y libfontconfig-dev libxkbcommon-dev libxkbcommon-x11-0 libwayland-dev libxcb1-dev libx11-dev libgl1-mesa-dev libegl1-mesa-dev librsvg2-bin
       - name: Build GUI
-        run: cargo build --release -p bmv-gui
+        shell: bash
+        run: BMV_VERSION="${GITHUB_REF_NAME#v}" cargo build --release -p bmv-gui
       - name: Package AppImage
         run: VERSION="${GITHUB_REF_NAME#v}" bash packaging/linux/build-appimage.sh dist
       - name: Upload artifact
@@ -311,7 +314,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - name: Build GUI
-        run: cargo build --release -p bmv-gui
+        shell: bash
+        run: BMV_VERSION="${GITHUB_REF_NAME#v}" cargo build --release -p bmv-gui
       - name: Rename exe
         shell: bash
         run: cp target/release/bemyvpn-gui.exe bemyvpn-windows-x86_64.exe

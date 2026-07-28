@@ -6,6 +6,7 @@
 
 pub mod error;
 pub mod ids;
+pub mod version;
 pub mod wire;
 
 pub use error::{Error, Result};

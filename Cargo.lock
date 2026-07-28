@@ -887,6 +887,7 @@ dependencies = [
 name = "bmv-cli"
 version = "1.0.0"
 dependencies = [
+ "bmv-common",
  "bmv-config",
  "bmv-coordinator",
  "bmv-core",
