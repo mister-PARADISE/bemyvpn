@@ -1,23 +1,67 @@
 import SwiftUI
+import UIKit
 import AVFoundation
 
 /// Экран сканера QR (камера) — по коду вызывает onCode и закрывается.
 struct ScannerSheet: View {
     @Environment(\.dismiss) var dismiss
     let onCode: (String) -> Void
+    /// Разрешена ли камера. nil — ещё спрашиваем систему.
+    @State private var allowed: Bool? = nil
+
     var body: some View {
         NavigationStack {
             ZStack {
-                QRScannerView { code in onCode(code); dismiss() }.ignoresSafeArea()
-                RoundedRectangle(cornerRadius: 20).stroke(Color.white.opacity(0.9), lineWidth: 3)
-                    .frame(width: 230, height: 230)
-                VStack { Spacer(); Text("Наведите камеру на QR приглашения")
-                    .foregroundColor(.white).font(.system(size: 14, weight: .medium))
-                    .padding(10).background(.black.opacity(0.5)).cornerRadius(10).padding(.bottom, 60) }
+                switch allowed {
+                case true:
+                    QRScannerView { code in onCode(code); dismiss() }.ignoresSafeArea()
+                    RoundedRectangle(cornerRadius: 20).stroke(Color.white.opacity(0.9), lineWidth: 3)
+                        .frame(width: 230, height: 230)
+                    VStack { Spacer(); Text("Наведите камеру на QR приглашения")
+                        .foregroundColor(.white).font(.system(size: 14, weight: .medium))
+                        .padding(10).background(.black.opacity(0.5)).cornerRadius(10).padding(.bottom, 60) }
+                case false:
+                    denied
+                case nil:
+                    ProgressView().tint(.white)
+                }
             }
             .background(Color.black)
             .navigationTitle("Сканировать QR").navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Отмена") { dismiss() } } }
+        }
+        .task { allowed = await CameraAccess.request() }
+    }
+
+    /// Отказ в доступе к камере. Раньше здесь просто оставался ЧЁРНЫЙ ЭКРАН с
+    /// подписью «наведите камеру» — человек считал, что приложение сломалось.
+    /// На Android этот случай подписан, и здесь тоже должен быть: объясняем, что
+    /// произошло, и ведём прямо в нужный экран настроек — искать его руками в
+    /// длинном списке не дело.
+    private var denied: some View {
+        VStack(spacing: 14) {
+            Image(systemName: "camera.fill").font(.system(size: 44)).foregroundColor(.white.opacity(0.5))
+            Text("Нет доступа к камере").foregroundColor(.white).font(.system(size: 18, weight: .bold))
+            Text("Сканировать QR без камеры нельзя. Разрешение можно включить в настройках — или ввести код сети вручную.")
+                .foregroundColor(.white.opacity(0.7)).font(.system(size: 14))
+                .multilineTextAlignment(.center).padding(.horizontal, 32)
+            if let url = URL(string: UIApplication.openSettingsURLString) {
+                Button("Открыть настройки") { UIApplication.shared.open(url) }
+                    .font(.system(size: 15, weight: .semibold))
+                    .padding(.horizontal, 20).padding(.vertical, 10)
+                    .background(Color.white.opacity(0.15)).foregroundColor(.white).cornerRadius(12)
+            }
+        }
+    }
+}
+
+/// Спросить разрешение на камеру и дождаться ответа.
+enum CameraAccess {
+    static func request() async -> Bool {
+        switch AVCaptureDevice.authorizationStatus(for: .video) {
+        case .authorized: return true
+        case .notDetermined: return await AVCaptureDevice.requestAccess(for: .video)
+        default: return false   // denied / restricted — переспрашивать система не даст
         }
     }
 }
