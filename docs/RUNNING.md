@@ -60,13 +60,41 @@
 
 ---
 
+## ⬇️ Установка (терминальная версия)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/mister-PARADISE/bemyvpn/main/install.sh | sh
+```
+
+Скрипт подбирает файл под систему, кладёт его в `PATH` и **проверяет запуском**,
+прежде чем установить — подсунуть в систему нерабочий файл он не может. Ставит
+в `/usr/local/bin` (спросит `sudo`, если нужно) либо в `~/.local/bin`. Свою
+папку задаёт `BMV_INSTALL_DIR=~/bin`.
+
+После этого программа зовётся просто `bemyvpn` из любой папки, а обновляется
+командой `bemyvpn update`.
+
+**Уже скачали файл руками?** Не нужно возиться с `./` и путями:
+
+```bash
+chmod +x bemyvpn-linux-x86_64-terminal
+sudo ./bemyvpn-linux-x86_64-terminal install
+```
+
+Программа скопирует себя в `PATH` сама и скажет, что делать дальше.
+
+**Обновить старый сервер, где ещё нет `bemyvpn update`:** тот же однострочник
+установки — он просто перезапишет файл свежим. Если хост крутится службой,
+после этого `systemctl restart bemyvpn-host` (раздача) или
+`systemctl restart bemyvpn-coord` (свой координатор).
+
 ## 📡 Хост — раздать интернет (без конфига)
 
 **Проще всего — через меню.** Запусти под root и нажми одну кнопку:
 
 ```bash
-chmod +x bemyvpn-linux-x86_64-terminal
-sudo ./bemyvpn-linux-x86_64-terminal
+curl -fsSL https://raw.githubusercontent.com/mister-PARADISE/bemyvpn/main/install.sh | sh
+sudo bemyvpn
 ```
 
 Вкладка **📡 Хост** → **«Стать хостом»**. Служба заведётся сама: раздача

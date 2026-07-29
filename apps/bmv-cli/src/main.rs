@@ -39,6 +39,14 @@ enum Cmd {
         #[arg(long)]
         check: bool,
     },
+    /// Установить себя в систему: скопировать в PATH, чтобы работала команда
+    /// `bemyvpn` из любой папки (а не только `./bemyvpn` из своей).
+    Install {
+        /// Куда ставить. По умолчанию: под root — /usr/local/bin,
+        /// под обычным пользователем — ~/.local/bin.
+        #[arg(long)]
+        dir: Option<std::path::PathBuf>,
+    },
     /// Показать итоговый конфиг (с учётом дефолтов).
     Config,
     /// Список протоколов и их статус.
@@ -249,6 +257,8 @@ async fn main() {
         Cmd::Version => println!("{}", bmv_common::version::VERSION),
 
         Cmd::Update { check } => run_update(check).await,
+
+        Cmd::Install { dir } => run_install(dir),
 
         Cmd::Config => println!("{}", engine.config().to_toml()),
 
@@ -510,6 +520,106 @@ fn fail(msg: String) -> ! {
 /// версия новее → sha256 файла. Рабочий бинарь трогается только после всех трёх,
 /// поэтому оборванная загрузка или подменённый файл не могут оставить систему
 /// без работающей программы.
+/// Поставить себя в систему, чтобы работала команда `bemyvpn` из любой папки.
+///
+/// Скачанный файл лежит там, куда его положил браузер, и запускать его
+/// приходится как `./bemyvpn` — а все инструкции, юниты systemd и подсказки
+/// написаны про `bemyvpn`. Эта команда убирает расхождение.
+///
+/// КОПИРУЕМ, а не переносим: файл прямо сейчас выполняется, и переносить его
+/// из-под себя — напрашиваться на неприятности. Копия идёт через временный файл
+/// рядом с целью и `rename` — так на месте назначения никогда не окажется
+/// наполовину записанного бинаря, даже если оборвётся питание.
+fn run_install(dir: Option<std::path::PathBuf>) {
+    let me = match std::env::current_exe() {
+        Ok(p) => p,
+        Err(e) => fail(format!("не удалось определить свой путь: {e}")),
+    };
+    let dir = dir.unwrap_or_else(default_bin_dir);
+    let target = dir.join(BIN_NAME);
+
+    if target == me {
+        println!("Уже установлено: {}", target.display());
+        return;
+    }
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        fail(format!("{}: {e}\n  подсказка: под обычным пользователем попробуйте `bemyvpn install --dir ~/.local/bin`", dir.display()));
+    }
+
+    let tmp = dir.join(format!(".{BIN_NAME}.new"));
+    let _ = std::fs::remove_file(&tmp);
+    if let Err(e) = std::fs::copy(&me, &tmp) {
+        let hint = if e.kind() == std::io::ErrorKind::PermissionDenied {
+            "\n  подсказка: нужны права — `sudo bemyvpn install` или `--dir ~/.local/bin`"
+        } else {
+            ""
+        };
+        fail(format!("копирование в {}: {e}{hint}", dir.display()));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755));
+    }
+    if let Err(e) = std::fs::rename(&tmp, &target) {
+        let _ = std::fs::remove_file(&tmp);
+        fail(format!("установка в {}: {e}", target.display()));
+    }
+
+    println!("Установлено: {}", target.display());
+    if in_path(&dir) {
+        println!("Теперь работает команда: bemyvpn");
+    } else {
+        // Молча положить файл в папку, которой нет в PATH, — значит соврать:
+        // человек напечатает `bemyvpn` и получит «command not found».
+        println!("ВНИМАНИЕ: {} не в PATH — команда `bemyvpn` пока не найдётся.", dir.display());
+        println!("  добавьте строку в ~/.profile (или ~/.zshrc):");
+        println!("    export PATH=\"{}:$PATH\"", dir.display());
+    }
+    println!("Дальше: `bemyvpn` — меню, `bemyvpn host` — раздавать, `bemyvpn update` — обновиться.");
+}
+
+/// Имя, под которым программа живёт в системе (и которое ждут все инструкции).
+const BIN_NAME: &str = "bemyvpn";
+
+/// Куда ставить по умолчанию: общесистемно, если туда пускают, иначе к себе.
+///
+/// Проверяем именно ПРАВО ЗАПИСИ, а не «я root»: на macOS `/usr/local/bin`
+/// обычно принадлежит пользователю (так делает Homebrew), и требовать там sudo
+/// значит зря просить пароль. А на сервере под root проверка пройдёт сама.
+fn default_bin_dir() -> std::path::PathBuf {
+    let system = std::path::Path::new("/usr/local/bin");
+    if writable(system) {
+        return system.to_path_buf();
+    }
+    std::env::var_os("HOME")
+        .map(|h| std::path::PathBuf::from(h).join(".local/bin"))
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+}
+
+/// Можно ли писать в папку — пробуем на деле, а не гадаем по правам и владельцу
+/// (иначе промахнёшься на ACL, на монтировании только для чтения и на root_squash).
+fn writable(dir: &std::path::Path) -> bool {
+    if !dir.is_dir() {
+        return false;
+    }
+    let probe = dir.join(format!(".bemyvpn-probe-{}", std::process::id()));
+    match std::fs::File::create(&probe) {
+        Ok(_) => {
+            let _ = std::fs::remove_file(&probe);
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+/// Есть ли папка в PATH — чтобы не обещать работающую команду там, где её нет.
+fn in_path(dir: &std::path::Path) -> bool {
+    std::env::var_os("PATH")
+        .map(|p| std::env::split_paths(&p).any(|d| d == dir))
+        .unwrap_or(false)
+}
+
 async fn run_update(check_only: bool) {
     if !bmv_common::version::is_release_build() {
         println!("Это локальная сборка ({}) — обновлять нечего.", bmv_common::version::VERSION);

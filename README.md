@@ -87,13 +87,15 @@
 
 ## 🖥 Хочу помочь: хост на сервере (24/7)
 
-Есть VPS или сервер? Скачай один файл и открой меню:
+Есть VPS или сервер? Одна команда — и открывай меню:
 
 ```bash
-curl -LO https://github.com/mister-PARADISE/bemyvpn/releases/latest/download/bemyvpn-linux-x86_64-terminal
-chmod +x bemyvpn-linux-x86_64-terminal
-sudo ./bemyvpn-linux-x86_64-terminal
+curl -fsSL https://raw.githubusercontent.com/mister-PARADISE/bemyvpn/main/install.sh | sh
+sudo bemyvpn
 ```
+
+Установщик сам подберёт файл под систему, положит его в `PATH` и проверит, что
+запускается. Дальше программа зовётся просто `bemyvpn` — из любой папки.
 
 Вкладка **📡 Хост** → **«Стать хостом»**. Всё — ты в каталоге, к тебе могут
 подключаться. 🎉
@@ -156,11 +158,8 @@ HTTPS-сертификат он получит и будет продлеват�
 Понадобится: домен, **A-запись** на IP сервера и свободный порт **443**.
 
 ```bash
-mkdir -p /opt/bemyvpn && cd /opt/bemyvpn
-curl -LO https://github.com/mister-PARADISE/bemyvpn/releases/latest/download/bemyvpn-linux-x86_64-terminal
-mv bemyvpn-linux-x86_64-terminal bemyvpn && chmod +x bemyvpn
-
-sudo ./bemyvpn
+curl -fsSL https://raw.githubusercontent.com/mister-PARADISE/bemyvpn/main/install.sh | sh
+sudo bemyvpn
 ```
 
 Вкладка **🌐 Сервер** → вписать свой домен → **«Запустить свой сервер»**.
