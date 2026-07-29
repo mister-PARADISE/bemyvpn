@@ -348,9 +348,15 @@ pub extern "C" fn bmv_nudge_reconnect() {
 
 // ── хост-режим ───────────────────────────────────────────────────────────────
 
-/// Стать хостом: раздать интернет (userspace). Возвращает id хоста, либо
-/// сентинел "!NAT" (нет публичного адреса) / "!SIG" (код без валидной подписи) /
-/// "" (иная ошибка). Аргументы — как в Android nativeHostStart.
+/// Стать хостом: раздать интернет (userspace).
+///
+/// Возвращает "КОД|ПОДПИСЬ" — пару, а не один код: при протухшей подписи ядро
+/// САМО берёт свежий код у сервера и повторяет анонс, и тогда меняются обе части.
+/// Приложение обязано сохранить обе, иначе при следующем запуске уйдёт новый код
+/// со старой подписью и координатор снова ответит отказом.
+///
+/// Либо сентинел: "!NAT" (нет публичного адреса) / "!SIG" (взять свежий код тоже
+/// не вышло) / "" (иная ошибка). Чёрточки в сентинелах нет — их не спутать.
 #[no_mangle]
 pub extern "C" fn bmv_host_start(
     coordinator: *const c_char,
@@ -378,11 +384,48 @@ pub extern "C" fn bmv_host_start(
     if !proto.is_empty() {
         cfg.default_protocol = proto;
     }
-    let engine = bmv_core::BmvEngine::from_config(cfg);
-    let host_id = engine.host_id().to_string();
+    let mut engine = bmv_core::BmvEngine::from_config(cfg.clone());
+    let mut host_id = engine.host_id().to_string();
+    // Подпись возвращаем ВМЕСТЕ с кодом: при самолечении меняются обе, и если
+    // отдать только код, приложение сохранит новый код со старой подписью —
+    // при следующем запуске координатор снова ответит 403.
+    let mut host_sig = cfg.host.code_sig.clone();
     *HOST_ENGINE.lock().unwrap() = Some(engine.clone());
 
-    let hub = match RUNTIME.block_on(engine.host_bind_announce()) {
+    let mut announce = RUNTIME.block_on(engine.host_bind_announce());
+
+    // ПРОТУХШАЯ ПОДПИСЬ ЛЕЧИТСЯ САМА. Координатор отвечает 403, если подпись кода
+    // не сходится — так бывает после смены координатора или его секрета. Раньше
+    // мобилки на это отдавали «!SIG», а человек читал «Код устарел, обновите и
+    // повторите» и должен был сам нажать «Новый код»: то есть раздача не
+    // включалась с первого раза без всякой его вины. Десктоп уже давно берёт
+    // свежий код молча и повторяет анонс — делаем то же здесь, и правило
+    // становится общим для Android и iOS сразу.
+    if announce.as_ref().err().map(|e| e.to_string().contains("403")).unwrap_or(false) {
+        log::warn!("хост-режим: подпись кода не принята — беру свежий код");
+        let fresh = RUNTIME.block_on(async {
+            bmv_core::BmvEngine::from_config(bmv_config::Config {
+                coordinators: cfg.coordinators.clone(),
+                ..Default::default()
+            })
+            .host_new_code()
+            .await
+        });
+        if let Ok((c, sg)) = fresh {
+            if !c.is_empty() && !sg.is_empty() {
+                let mut cfg2 = cfg.clone();
+                cfg2.host.id = c;
+                cfg2.host.code_sig = sg.clone();
+                engine = bmv_core::BmvEngine::from_config(cfg2);
+                host_id = engine.host_id().to_string();
+                host_sig = sg;
+                *HOST_ENGINE.lock().unwrap() = Some(engine.clone());
+                announce = RUNTIME.block_on(engine.host_bind_announce());
+            }
+        }
+    }
+
+    let hub = match announce {
         Ok((hub, _, eps)) => {
             log::info!("хост-режим: анонсирован #{host_id} ({eps:?})");
             hub
@@ -435,7 +478,8 @@ pub extern "C" fn bmv_host_start(
         puncher.abort();
     });
     *HOST_SESSION.lock().unwrap() = Some(handle);
-    to_c(host_id)
+    // «код|подпись» — сентинелы (!NAT/!SIG/пусто) чёрточки не содержат.
+    to_c(format!("{host_id}|{host_sig}"))
 }
 
 /// Перестать быть хостом (снимает запись из каталога, глушит фоновые задачи).

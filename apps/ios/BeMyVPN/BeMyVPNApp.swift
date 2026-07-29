@@ -473,9 +473,21 @@ final class AppState: ObservableObject {
                 withAnimation { self.starting = false }
                 switch res {
                 case "!NAT": self.hostError = "Нет публичного адреса (вы за NAT) — раздача отсюда невозможна"
-                case "!SIG": self.setHostCode("", ""); self.hostError = "Код устарел, обновите и повторите"
+                // Свежий код ядро берёт САМО; сюда доходит, только если и это не
+                // удалось (нет связи с сервером).
+                case "!SIG": self.setHostCode("", ""); self.hostError = "Сервер не подтвердил код — проверьте связь и повторите"
                 case "":     self.hostError = "Не удалось включить раздачу"
-                default:     withAnimation { self.hosting = true }; self.hostStartedAt = Date(); self.startHostInfo()
+                default:
+                    // Ответ — пара «код|подпись». Ядро могло вылечить протухшую
+                    // подпись, взяв у сервера свежий код: сохраняем ОБЕ части,
+                    // иначе в следующий раз уйдёт новый код со старой подписью.
+                    let parts = res.split(separator: "|", maxSplits: 1).map(String.init)
+                    if parts.count == 2, !parts[0].isEmpty, parts[0] != self.hostCode {
+                        self.setHostCode(parts[0], parts[1])
+                    }
+                    withAnimation { self.hosting = true }
+                    self.hostStartedAt = Date()
+                    self.startHostInfo()
                 }
             }
         }

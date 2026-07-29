@@ -94,7 +94,10 @@ class HostService : Service() {
                 stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
             } else {
-                HostState.hostId = id
+                // Ядро отдаёт «код|подпись». В hostId кладём только КОД — его
+                // показывают в уведомлении и в интерфейсе; подпись едет дальше в
+                // result, её сохраняет AppState.
+                HostState.hostId = id.substringBefore('|')
                 HostState.running = true
                 HostState.result = id
                 // Время старта раздачи — для «РАЗДАЮ …» на вкладке Хост.

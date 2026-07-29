@@ -497,15 +497,21 @@ class AppState private constructor(val ctx: Context) {
                 var waited = 0L
                 while (HostState.result == null && waited < 60_000) { delay(200); waited += 200 }
                 val res = HostState.result ?: ""
-                // Сервис мог самоисцелиться свежим кодом (!SIG) — подхватываем его.
-                val freshCode = prefs.getString("host_code", null) ?: ""
-                if (freshCode.isNotEmpty() && freshCode != hostCode) { hostCode = freshCode; hostSig = prefs.getString("host_sig", null) ?: "" }
                 starting = false
                 when {
                     res == "!NAT" -> hostError = "Нет публичного адреса (вы за NAT) — раздача отсюда невозможна"
-                    res == "!SIG" -> { setHostCode("", ""); hostError = "Код устарел, обновите и повторите" }
+                    // Свежий код ядро берёт САМО; сюда доходит, только если и это
+                    // не удалось (нет связи с сервером).
+                    res == "!SIG" -> { setHostCode("", ""); hostError = "Сервер не подтвердил код — проверьте связь и повторите" }
                     res.isEmpty() || res.startsWith("!") -> hostError = "Не удалось включить раздачу"
                     else -> {
+                        // Ответ — пара «код|подпись». Ядро могло вылечить протухшую
+                        // подпись, взяв у сервера свежий код: сохраняем ОБЕ части,
+                        // иначе в следующий раз уйдёт новый код со старой подписью.
+                        val parts = res.split("|")
+                        if (parts.size == 2 && parts[0].isNotEmpty() && parts[0] != hostCode) {
+                            setHostCode(parts[0], parts[1])
+                        }
                         hosting = true
                         hostStartedAt = System.currentTimeMillis()
                         startHostInfo()
