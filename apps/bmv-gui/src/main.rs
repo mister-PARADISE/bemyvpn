@@ -126,7 +126,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ui.set_coord_is_default(coord == DEFAULT_COORD);
     ui.set_vpn_status("VPN выключен".into());
     ui.set_host_status("Раздача выключена".into());
-    ui.set_host_name(default_host_name().into());
     ui.set_server_history(str_model(&store::load_server_history()));
 
     // Недавние (для текущего координатора) — id хранятся, имена берём из каталога.
@@ -271,8 +270,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     spawn_refresh(engine.clone(), hosts.clone(), ui.as_weak(), &handle,
                   host_started.clone(), vpn_since.clone(), recent_ids.clone(), my_ip.clone(), up_file.clone());
+    // Копия для имени хоста по умолчанию: сам my_ip уходит в wire_vpn.
+    let my_ip_for_host = my_ip.clone();
     wire_vpn(&ui, hosts, hlp, my_ip);
-    wire_host(&ui, engine.clone(), host_task, handle.clone(), host_started);
+    wire_host(&ui, engine.clone(), host_task, handle.clone(), host_started, my_ip_for_host);
     wire_coord(&ui, engine, &handle);
 
     ui.run()?;
@@ -316,27 +317,14 @@ fn str_model(v: &[String]) -> ModelRc<SharedString> {
     ModelRc::new(VecModel::from(v.iter().map(|s| s.clone().into()).collect::<Vec<SharedString>>()))
 }
 
-/// Имя этого ПК по умолчанию для хоста. macOS — «ComputerName», иначе hostname.
-fn default_host_name() -> String {
-    #[cfg(target_os = "macos")]
-    if let Ok(o) = std::process::Command::new("scutil").args(["--get", "ComputerName"]).output() {
-        let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
-        if !s.is_empty() {
-            return s.chars().take(24).collect();
-        }
-    }
-    // На Windows НЕ зовём `hostname` — спавн консольного процесса мигает окном cmd
-    // при каждом запуске. Имя ПК и так есть в переменной COMPUTERNAME (ниже).
-    #[cfg(not(windows))]
-    if let Ok(o) = std::process::Command::new("hostname").output() {
-        let s = String::from_utf8_lossy(&o.stdout).trim().trim_end_matches(".local").to_string();
-        if !s.is_empty() {
-            return s.chars().take(24).collect();
-        }
-    }
-    std::env::var("COMPUTERNAME").ok().filter(|s| !s.is_empty())
-        .map(|s| s.chars().take(24).collect())
-        .unwrap_or_else(|| "Мой ПК".into())
+/// Имя хоста по умолчанию — СТРАНА по своему IP, а не имя компьютера.
+///
+/// Раньше здесь был `scutil --get ComputerName` (macOS) или `hostname`, и у людей
+/// это обычно «MacBook Air — Armen»: настоящее имя владельца уезжало в ПУБЛИЧНЫЙ
+/// каталог, который видят все. Проверено на живой машине — именно так и было.
+/// Страна берётся офлайн из встроенной базы, наружу ничего не спрашиваем.
+fn default_host_name(my_ip: &str) -> String {
+    bmv_common::default_host_name(geo::country_of(my_ip).as_deref())
 }
 
 /// Строка каталога → карточка (host_row на iOS): подпись, полоса, значок протокола.
@@ -707,6 +695,8 @@ fn wire_host(
     host_task: Rc<RefCell<Option<tokio::task::JoinHandle<()>>>>,
     handle: tokio::runtime::Handle,
     host_started: Ts,
+    // Свой внешний IP — из него берётся страна для имени хоста по умолчанию.
+    my_ip: Arc<Mutex<String>>,
 ) {
     let host_engine: Arc<Mutex<Option<Arc<BmvEngine>>>> = Arc::new(Mutex::new(None));
     let engine_nc = engine.clone(); // для «Новый код» (engine уходит в toggle-замыкание)
@@ -855,14 +845,17 @@ fn wire_host(
     {
         let weak = ui.as_weak();
         let (heng2, hap) = (host_engine, handle_nc);
+        let my_ip2 = my_ip;
         ui.on_apply_host(move || {
             let Some(eng) = heng2.lock().unwrap().clone() else { return };
             let Some(u) = weak.upgrade() else { return };
             let (name, public, max, password, protocol) = (
                 u.get_host_name().to_string(), u.get_host_public(), u.get_host_max().max(1) as u32,
                 u.get_host_password().to_string(), u.get_host_protocol().to_string());
+            // Имя по умолчанию считаем ДО задачи: гард мьютекса через await не живёт.
+            let fallback_name = default_host_name(&my_ip2.lock().unwrap().clone());
             hap.spawn(async move {
-                let name = if name.trim().is_empty() { default_host_name() } else { name };
+                let name = if name.trim().is_empty() { fallback_name } else { name };
                 let _ = eng.host_set_name(&name).await;
                 let _ = eng.host_set_max_guests(max).await;
                 let _ = eng.host_set_password(&password).await;

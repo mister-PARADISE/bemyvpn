@@ -120,7 +120,12 @@ final class AppState: ObservableObject {
     @Published var starting = false
     @Published var hostCode = UserDefaults.standard.string(forKey: "host_code") ?? ""
     @Published var hostSig = UserDefaults.standard.string(forKey: "host_sig") ?? ""
-    @Published var hostName = UserDefaults.standard.string(forKey: "host_name") ?? UIDevice.current.name
+    // Имя хоста уходит в ПУБЛИЧНЫЙ каталог, который видят все. Раньше по умолчанию
+    // подставлялось имя устройства, а оно у людей сплошь и рядом вида «iPhone
+    // Армена» — то есть в открытый список уезжало настоящее имя владельца. Для
+    // проекта про приватность это худший из возможных дефолтов. Берём страну по
+    // своему IP (офлайн, из встроенной базы), а до её появления — нейтральное имя.
+    @Published var hostName = UserDefaults.standard.string(forKey: "host_name") ?? "Хост"
     @Published var hostMax = UserDefaults.standard.object(forKey: "host_max") as? Int ?? 8
     @Published var hostPassword = UserDefaults.standard.string(forKey: "host_pw") ?? ""
     @Published var hostProtocol = UserDefaults.standard.string(forKey: "host_proto") ?? "noise-obfs"
@@ -150,6 +155,16 @@ final class AppState: ObservableObject {
 
     // недавние серверы (история координаторов)
     @Published var serverHistory: [String] = UserDefaults.standard.stringArray(forKey: "server_history") ?? []
+
+    /// Подставить страну в имя хоста, если человек его ещё не менял.
+    /// Зовётся, когда стал известен свой внешний IP: раньше страны просто нет.
+    func fillDefaultHostNameIfNeeded() {
+        guard UserDefaults.standard.string(forKey: "host_name") == nil else { return }
+        guard let cc = GeoFlags.countryOf(myIp),
+              let name = Locale.current.localizedString(forRegionCode: cc), !name.isEmpty
+        else { return }
+        hostName = name
+    }
 
     func start() {
         Task.detached { GeoFlags.load() }   // база IP→страна в фоне
@@ -251,6 +266,7 @@ final class AppState: ObservableObject {
             // не слышит, отменяется лишь ожидание.
             guard !Task.isCancelled, coord == coordinator else { return }
             serverOnline = ok; ping = ms; myIp = ip; checking = false
+            fillDefaultHostNameIfNeeded()   // страна известна — можно назвать хост
             if ok { addServerHistory(coord) }
         }
     }

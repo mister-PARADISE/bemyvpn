@@ -140,7 +140,12 @@ class AppState private constructor(val ctx: Context) {
     var starting by mutableStateOf(false)
     var hostCode by mutableStateOf(prefs.getString("host_code", null) ?: "")
     var hostSig by mutableStateOf(prefs.getString("host_sig", null) ?: "")
-    var hostName by mutableStateOf(prefs.getString("host_name", null) ?: (Build.MODEL ?: "Телефон"))
+    // Имя хоста уходит в ПУБЛИЧНЫЙ каталог, который видят все. Модель устройства
+    // («Pixel 7») хотя бы не выдаёт владельца, но и не говорит ничего полезного —
+    // а на других платформах сюда попадало имя машины вида «MacBook Air — Armen»,
+    // то есть настоящее имя. Единое правило: страна по своему IP (офлайн, из
+    // встроенной базы), до её появления — нейтральное имя.
+    var hostName by mutableStateOf(prefs.getString("host_name", null) ?: "Хост")
     var hostMax by mutableStateOf(prefs.getInt("host_max", 8))
     var hostPassword by mutableStateOf(prefs.getString("host_pw", null) ?: "")
     // «noise-obfs» (Маскировка) — как на iOS и в ядре. Android оставался на голом
@@ -174,6 +179,15 @@ class AppState private constructor(val ctx: Context) {
         }
 
     private var started = false
+
+    /** Подставить страну в имя хоста, если человек его ещё не менял.
+     *  Зовётся, когда стал известен свой внешний IP: раньше страны просто нет. */
+    private fun fillDefaultHostNameIfNeeded() {
+        if (prefs.getString("host_name", null) != null) return
+        val cc = GeoFlags.countryOf(myIp) ?: return
+        val name = Locale("", cc).getDisplayCountry(Locale.getDefault())
+        if (name.isNotEmpty() && name != cc) hostName = name
+    }
 
     fun start() {
         if (started) return
@@ -287,6 +301,7 @@ class AppState private constructor(val ctx: Context) {
             // когда пользователь уже переключился обратно на живой сервер.
             if (!isActive || coord != coordinator) return@launch
             serverOnline = ok; ping = ms; myIp = ip; checking = false
+            fillDefaultHostNameIfNeeded()   // страна известна — можно назвать хост
             if (ok) addServerHistory(coord)
         }
     }

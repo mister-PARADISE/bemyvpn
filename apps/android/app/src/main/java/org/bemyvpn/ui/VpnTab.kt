@@ -126,6 +126,24 @@ fun VpnTab(app: AppState, bottomPad: Dp, openScanner: () -> Unit) {
 
         SectionLabel("Хосты")
         val shown = app.displayedHosts()
+        // Связь с сервером потеряна, а список НЕ пуст: цифры и состав хостов ниже —
+        // последние известные, то есть могут врать. Молчать нельзя, иначе
+        // устаревший список выглядит как живой. Руками делать ничего не нужно —
+        // клиент переподключается сам, об этом и говорим.
+        if (app.serverOnline == false && shown.isNotEmpty()) {
+            Row(
+                Modifier.fillMaxWidth()
+                    .background(Color(0xFF3A2A15), RoundedCornerShape(10.dp))
+                    .border(1.dp, Theme.amber, RoundedCornerShape(10.dp))
+                    .padding(10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    "Нет связи с сервером — список ниже может устареть. Восстанавливаю связь…",
+                    color = Theme.amber, fontSize = 12.sp,
+                )
+            }
+        }
         if (shown.isEmpty()) {
             Text(
                 if (app.serverOnline == false) "Нет связи с сервером.\nПроверьте адрес во вкладке «Сервер»."

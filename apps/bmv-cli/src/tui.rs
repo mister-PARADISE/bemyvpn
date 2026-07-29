@@ -1484,27 +1484,15 @@ fn uptime(since: Instant) -> String {
     }
 }
 
-/// Имя этого ПК по умолчанию для хоста. macOS — «ComputerName», иначе hostname.
+/// Имя хоста по умолчанию. НЕ имя машины: оно уходит в публичный каталог,
+/// который видят все, а у людей это обычно «MacBook Air — Armen», то есть
+/// настоящее имя владельца — проверено на живой машине.
+///
+/// Страну (как в приложениях) здесь не подставляем: базы IP→страна в терминале
+/// нет, а тащить ради имени 3.4 МБ в серверный бинарь не стоит. На сервере имя
+/// всё равно задают руками — меню предложит нейтральное.
 fn default_host_name() -> String {
-    #[cfg(target_os = "macos")]
-    if let Ok(o) = std::process::Command::new("scutil").args(["--get", "ComputerName"]).output() {
-        let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
-        if !s.is_empty() {
-            return s.chars().take(24).collect();
-        }
-    }
-    #[cfg(not(windows))]
-    if let Ok(o) = std::process::Command::new("hostname").output() {
-        let s = String::from_utf8_lossy(&o.stdout).trim().trim_end_matches(".local").to_string();
-        if !s.is_empty() {
-            return s.chars().take(24).collect();
-        }
-    }
-    std::env::var("COMPUTERNAME")
-        .ok()
-        .filter(|s| !s.is_empty())
-        .map(|s| s.chars().take(24).collect())
-        .unwrap_or_else(|| "Мой ПК".into())
+    bmv_common::default_host_name(None)
 }
 
 // Значки — эмодзи-презентации (ширина 2 в любом Unicode), чтобы терминал не

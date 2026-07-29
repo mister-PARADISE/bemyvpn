@@ -578,6 +578,17 @@ struct VPNTab: View {
 
                 sectionLabel("Хосты")
                 let shown = app.displayedHosts()
+                // Связь с сервером потеряна, а список НЕ пуст: цифры и состав хостов
+                // ниже — последние известные, то есть могут врать. Молчать нельзя,
+                // иначе устаревший список выглядит как живой. Руками делать ничего
+                // не нужно — клиент переподключается сам, об этом и говорим.
+                if app.serverOnline == false && !shown.isEmpty {
+                    Text("Нет связи с сервером — список ниже может устареть. Восстанавливаю связь…")
+                        .foregroundColor(Theme.amber).font(.system(size: 12))
+                        .frame(maxWidth: .infinity, alignment: .leading).padding(10)
+                        .background(RoundedRectangle(cornerRadius: 10).fill(Color(hex: 0x3A2A15)))
+                        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Theme.amber, lineWidth: 1))
+                }
                 if shown.isEmpty {
                     Text(app.serverOnline == false ? "Нет связи с сервером.\nПроверьте адрес во вкладке «Сервер»." : "Хостов пока нет.\nВведите код сети или поднимите свой во вкладке «Хост».")
                         .foregroundColor(Theme.dim).font(.system(size: 14)).multilineTextAlignment(.center).frame(maxWidth: .infinity).padding(.vertical, 40)
