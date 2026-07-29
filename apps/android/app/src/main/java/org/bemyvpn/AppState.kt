@@ -141,7 +141,11 @@ class AppState private constructor(val ctx: Context) {
     var hostName by mutableStateOf(prefs.getString("host_name", null) ?: (Build.MODEL ?: "Телефон"))
     var hostMax by mutableStateOf(prefs.getInt("host_max", 8))
     var hostPassword by mutableStateOf(prefs.getString("host_pw", null) ?: "")
-    var hostProtocol by mutableStateOf(prefs.getString("host_proto", null) ?: "noise")
+    // «noise-obfs» (Маскировка) — как на iOS и в ядре. Android оставался на голом
+    // «noise»: правку от 26.07 сюда не перенесли, и поднятая с телефона сеть была
+    // заметнее для DPI, чем ровно такая же с iPhone. Ради этого проект и делается,
+    // так что расхождение здесь дороже, чем разница в скорости.
+    var hostProtocol by mutableStateOf(prefs.getString("host_proto", null) ?: "noise-obfs")
     var hostPublic by mutableStateOf(prefs.getBoolean("host_public", true))
     var hostError by mutableStateOf<String?>(null)
     var myHostInfo by mutableStateOf<Host?>(null) // своя запись в каталоге (гости/IP/…)
@@ -300,9 +304,19 @@ class AppState private constructor(val ctx: Context) {
         hosts.firstOrNull { it.id == id } ?: resolvedHost?.takeIf { it.id == id }
 
     // ── Умный «Старт»: очередь кандидатов с фолбэком по таймауту ──
-    /** Таймаут одной попытки: меньше окна пробития ядра (12с) — быстрые хосты
-     *  успевают, на «мёртвом» не залипаем. */
-    private val quickAttemptMs = 8000L
+    /** Поводок для кандидата, ПОСЛЕ которого есть кого попробовать ещё. Внутри
+     *  ядра на пробитие NAT отведено 12с — щедро, потому что двум мобильным NAT
+     *  столько и нужно. Но пока в очереди ждут живые хосты, сидеть эти 12с у
+     *  молчащего незачем: дешевле взять следующего. */
+    private val quickAttemptMs = 5_000L
+    /** Поводок для ПОСЛЕДНЕЙ попытки: запасных больше нет, поэтому даём пробитию
+     *  доработать полностью. Прежние общие 8с были МЕНЬШЕ окна пробития, и у
+     *  человека за строгим NAT «Старт» не срабатывал в принципе, сколько ни жми. */
+    private val quickLastMs = 15_000L
+    /** Сколько лучших кандидатов вообще пробуем. Без потолка перебор шёл бы по
+     *  всему каталогу — при сотне свободных хостов это минуты ожидания. Не подошёл
+     *  никто из первой пятёрки — проблема не в хостах. */
+    private val quickMax = 5
     private var qcQueue = mutableListOf<Host>()   // оставшиеся кандидаты текущего «Старта»
     private var qcGen = 0                          // поколение попытки (инвалидирует старые таймеры)
 
@@ -326,6 +340,7 @@ class AppState private constructor(val ctx: Context) {
                 }
                 (b.max - b.guests) - (a.max - a.guests)                 // больше свободных слотов
             })
+            .take(quickMax)
     }
 
     /** «Старт»: пробуем кандидатов по очереди, пока один не подключится. */
@@ -343,14 +358,17 @@ class AppState private constructor(val ctx: Context) {
             return
         }
         val host = qcQueue.removeFirst()
+        val isLast = qcQueue.isEmpty()
         qcGen += 1
         val gen = qcGen
         connect(host)
-        // Не подключились за quickAttempt → гасим и берём следующего. Проверка
-        // поколения: успех/стоп/ручное подключение увеличивают qcGen и глушат
-        // этот таймер, чтобы он не оборвал уже живое соединение.
+        // Не подключились за отведённое → гасим и берём следующего. Последнему
+        // даём полный бюджет: запасных за ним нет, обрывать пробитие на полпути
+        // уже незачем. Проверка поколения: успех/стоп/ручное подключение
+        // увеличивают qcGen и глушат этот таймер, чтобы он не оборвал живое
+        // соединение.
         scope.launch {
-            delay(quickAttemptMs)
+            delay(if (isLast) quickLastMs else quickAttemptMs)
             if (qcGen != gen || vpnState == 2) return@launch
             stopVpnService()
             tryNextQuick()

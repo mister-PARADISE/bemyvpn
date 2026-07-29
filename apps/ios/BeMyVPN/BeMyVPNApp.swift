@@ -269,10 +269,19 @@ final class AppState: ObservableObject {
     }
 
     // ── Умный «Старт»: очередь кандидатов с фолбэком по таймауту ──
-    /// Таймаут одной попытки. Не подключились за это время — берём следующего.
-    /// Меньше, чем окно пробития ядра (12с): быстрые хосты успевают, а на
-    /// «мёртвый» не залипаем — сразу к следующему.
-    private static let quickAttempt: TimeInterval = 8
+    /// Поводок для кандидата, ПОСЛЕ которого есть кого попробовать ещё. Внутри
+    /// ядра на пробитие NAT отведено 12с — щедро, потому что двум мобильным NAT
+    /// столько и нужно. Но пока в очереди ждут живые хосты, сидеть эти 12с у
+    /// молчащего незачем: дешевле взять следующего.
+    private static let quickAttempt: TimeInterval = 5
+    /// Поводок для ПОСЛЕДНЕЙ попытки: запасных больше нет, поэтому даём пробитию
+    /// доработать полностью. Прежние общие 8с были МЕНЬШЕ окна пробития, и у
+    /// человека за строгим NAT «Старт» не срабатывал в принципе, сколько ни жми.
+    private static let quickLast: TimeInterval = 15
+    /// Сколько лучших кандидатов вообще пробуем. Без потолка перебор шёл бы по
+    /// всему каталогу — при сотне свободных хостов это минуты ожидания. Не подошёл
+    /// никто из первой пятёрки — проблема не в хостах.
+    private static let quickMax = 5
     private var qcQueue: [Host] = []   // оставшиеся кандидаты текущего «Старта»
     private var qcGen = 0              // поколение попытки (инвалидирует старые таймеры)
 
@@ -295,6 +304,8 @@ final class AppState: ObservableObject {
                 }
                 return (a.max - a.guests) > (b.max - b.guests)  // больше свободных слотов
             }
+            .prefix(Self.quickMax)
+            .map { $0 }
     }
 
     /// «Старт»: пробуем кандидатов по очереди, пока один не подключится.
@@ -312,13 +323,17 @@ final class AppState: ObservableObject {
             return
         }
         let host = qcQueue.removeFirst()
+        let isLast = qcQueue.isEmpty
         qcGen += 1
         let gen = qcGen
         connect(host)
-        // Не подключились за quickAttempt → гасим и берём следующего. Проверка
-        // поколения: успех/стоп/ручное подключение увеличивают qcGen и глушат
-        // этот таймер, чтобы он не оборвал уже живое соединение.
-        DispatchQueue.main.asyncAfter(deadline: .now() + Self.quickAttempt) { [weak self] in
+        // Не подключились за отведённое → гасим и берём следующего. Последнему
+        // даём полный бюджет: запасных за ним нет, обрывать пробитие на полпути
+        // уже незачем. Проверка поколения: успех/стоп/ручное подключение
+        // увеличивают qcGen и глушат этот таймер, чтобы он не оборвал живое
+        // соединение.
+        let budget = isLast ? Self.quickLast : Self.quickAttempt
+        DispatchQueue.main.asyncAfter(deadline: .now() + budget) { [weak self] in
             guard let self, self.qcGen == gen, self.vpnState != 2 else { return }
             if TunnelManager.available { self.tunnel.stop() } else { Core.stop() }
             self.tryNextQuick()
