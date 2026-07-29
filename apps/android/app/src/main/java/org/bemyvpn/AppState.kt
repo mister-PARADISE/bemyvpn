@@ -131,6 +131,8 @@ class AppState private constructor(val ctx: Context) {
     var connectedTo by mutableStateOf<String?>(null)
     var connectedSince by mutableStateOf<Long?>(null)
     var resolvedHost by mutableStateOf<Host?>(null)
+    /** Текст ошибки подключения для карточки VPN (null — ошибки нет). */
+    var vpnError by mutableStateOf<String?>(null)
     var expandedId by mutableStateOf<String?>(null)
 
     // хост
@@ -379,6 +381,16 @@ class AppState private constructor(val ctx: Context) {
     fun cancelQuick() { qcGen += 1; qcQueue.clear() }
 
     fun connect(host: Host, password: String = "") {
+        // Свой же хост подключением не возьмёшь: пробитие пошло бы к самому себе,
+        // и человек смотрел бы на «подключаюсь» до таймаута, не понимая почему.
+        // На десктопе это подписано давно — здесь молчало.
+        if (hosting && host.id == hostCode) {
+            vpnState = 3; connectedTo = null
+            hostError = null
+            vpnError = "Это ваш собственный хост"
+            return
+        }
+        vpnError = null
         connectedTo = host.id; vpnState = 1; expandedId = null
         lastConnectTapAt = System.currentTimeMillis()
         // Согласие системы на VPN + запуск сервиса — в Activity (нужен её контекст).
@@ -395,6 +407,10 @@ class AppState private constructor(val ctx: Context) {
         cancelQuick()   // ручной выбор перебивает авто-перебор «Старта»
         val code = raw.uppercase().trim()
         if (code.isEmpty()) return
+        if (hosting && code == hostCode) {
+            vpnState = 3; vpnError = "Это код вашего же хоста"
+            return
+        }
         hostById(code)?.let { h ->
             expandedId = code
             if (!h.hasPassword && h.usable) connect(h)

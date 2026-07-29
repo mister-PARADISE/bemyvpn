@@ -520,10 +520,17 @@ fn host_key(
                     persist(engine, app);
                 }
                 4 => {
-                    let val = !app.lock().unwrap().hset.public;
-                    app.lock().unwrap().hset.public = val;
-                    apply_host(host_engine, move |e| async move { let _ = e.host_set_public(val).await; });
-                    persist(engine, app);
+                    // С паролем выбора нет — сеть всегда скрыта. Молча переключать
+                    // флаг, который ничего не изменит, значит врать: человек жмёт
+                    // Enter, надпись прыгает, а в каталоге по-прежнему пусто.
+                    if !app.lock().unwrap().hset.password.is_empty() {
+                        app.lock().unwrap().toast("С паролем сеть всегда скрыта");
+                    } else {
+                        let val = !app.lock().unwrap().hset.public;
+                        app.lock().unwrap().hset.public = val;
+                        apply_host(host_engine, move |e| async move { let _ = e.host_set_public(val).await; });
+                        persist(engine, app);
+                    }
                 }
                 // ЕДИНЫЙ тумблер «Стать хостом»: на Linux-сервере (root+systemd) это
                 // демон 24/7 (живёт после q/выхода из SSH); иначе — раздача в окне.
@@ -1360,7 +1367,17 @@ fn host_tab(f: &mut Frame, area: Rect, a: &App) {
     f.render_widget(Paragraph::new(head).wrap(Wrap { trim: true }).block(card(" Раздача ")), rows[0]);
 
     // ── Список настроек с фоновой подсветкой выбранной строки (курсор ↑↓).
-    let vis = if a.hset.public { "🌐 Публичный" } else { "🙈 Скрытый" };
+    // ПАРОЛЬ ⇒ СЕТЬ ВСЕГДА СКРЫТАЯ. Правило соблюдает ядро (build_announce), но
+    // строка показывала сохранённое ЖЕЛАНИЕ, а не факт: с паролем здесь горело
+    // «Публичный», хотя в каталоге сети нет. Показываем то, что есть на самом
+    // деле, и говорим почему.
+    let vis = if !a.hset.password.is_empty() {
+        "🙈 Скрытый (пароль)"
+    } else if a.hset.public {
+        "🌐 Публичный"
+    } else {
+        "🙈 Скрытый"
+    };
     let pw = if a.hset.password.is_empty() { "🔓 без пароля".to_string() } else { format!("🔒 {}", "•".repeat(a.hset.password.chars().count())) };
     let name = if a.hset.name.is_empty() { "(не задано)".to_string() } else { a.hset.name.clone() };
     let frow = |label: &str, val: String| {

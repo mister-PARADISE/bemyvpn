@@ -34,6 +34,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -101,18 +102,30 @@ fun HostTab(app: AppState, bottomPad: Dp) {
         SectionLabel("Имя хоста (видно в каталоге)")
         BmvTextField(app.hostName, { app.hostName = it; app.applyHostDebounced() }, "Имя")
 
+        // ПАРОЛЬ ⇒ СЕТЬ ВСЕГДА СКРЫТАЯ. Правило соблюдает ядро (см. build_announce),
+        // но интерфейс об этом молчал: человек ставил пароль, переключатель
+        // продолжал гореть «Публичный», и он был уверен, что сеть в списке, — а её
+        // там нет. Показываем ФАКТ, а не сохранённое желание.
+        val locked = app.hostPassword.isNotEmpty()
+        val publicNow = app.hostPublic && !locked
         SectionLabel("Видимость")
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            BigChip(Icons.Filled.Public, "Публичный", on = app.hostPublic, Modifier.weight(1f)) {
-                app.hostPublic = true; app.applyHostNow()
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier.alpha(if (locked) 0.55f else 1f),   // выбор сейчас недоступен
+        ) {
+            BigChip(Icons.Filled.Public, "Публичный", on = publicNow, Modifier.weight(1f)) {
+                if (!locked) { app.hostPublic = true; app.applyHostNow() }
             }
-            BigChip(Icons.Filled.VisibilityOff, "Скрытый", on = !app.hostPublic, Modifier.weight(1f)) {
-                app.hostPublic = false; app.applyHostNow()
+            BigChip(Icons.Filled.VisibilityOff, "Скрытый", on = !publicNow, Modifier.weight(1f)) {
+                if (!locked) { app.hostPublic = false; app.applyHostNow() }
             }
         }
         Hint(
-            if (app.hostPublic) "Виден всем в списке хостов — подключиться сможет любой."
-            else "В списке не виден — подключиться можно только по коду выше.",
+            when {
+                locked -> "С паролем сеть всегда скрыта: публичная карточка светит её существование, страну и адрес — как раз тем, от кого вы закрылись."
+                publicNow -> "Виден всем в списке хостов — подключиться сможет любой."
+                else -> "В списке не виден — подключиться можно только по коду выше."
+            },
         )
 
         Row(Modifier.padding(top = 6.dp), verticalAlignment = Alignment.CenterVertically) {

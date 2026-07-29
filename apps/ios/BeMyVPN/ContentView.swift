@@ -617,6 +617,7 @@ struct VPNHero: View {
         // сеть), а не первый коннект. Показываем это честно.
         case 1: return app.connectedSince != nil ? "Переподключение…" : "Подключаюсь…"
         case 2: return host?.name ?? app.connectedTo ?? "Подключено"
+        case 3: return "Не подключились"
         default: return "VPN выключен"
         }
     }
@@ -627,6 +628,10 @@ struct VPNHero: View {
         case 2:
             guard let h = host else { return Text("Канал поднят") }
             return Text(countryLabel(h)) + Text("  ·  ") + symbolText(protoIcon(h.proto), protoName(h.proto))
+        case 3:
+            // Причина отказа, а не общая надпись: «Это ваш собственный хост»
+            // объясняет ровно то, что произошло.
+            return Text(app.vpnError ?? "Не удалось подключиться")
         default:
             let n = app.displayedHosts().count
             return Text(n == 0 ? "Введите код сети или поднимите свой хост"
@@ -872,12 +877,28 @@ struct HostTab: View {
                     .foregroundColor(Theme.fg).padding(14).background(Theme.card).cornerRadius(14)
                     .onChange(of: app.hostName) { _ in app.applyHostDebounced() }
 
+                // ПАРОЛЬ ⇒ СЕТЬ ВСЕГДА СКРЫТАЯ. Правило соблюдает ядро (см.
+                // build_announce), но интерфейс об этом молчал: человек ставил
+                // пароль, переключатель продолжал гореть «Публичный», и он был
+                // уверен, что сеть в списке, — а её там нет. Показываем ФАКТ,
+                // а не сохранённое желание.
+                let locked = !app.hostPassword.isEmpty
+                let publicNow = app.hostPublic && !locked
                 sectionLabel("Видимость")
                 HStack(spacing: 8) {
-                    bigChip("globe", "Публичный", on: app.hostPublic) { app.hostPublic = true; app.applyHostNow() }
-                    bigChip("eye.slash.fill", "Скрытый", on: !app.hostPublic) { app.hostPublic = false; app.applyHostNow() }
+                    bigChip("globe", "Публичный", on: publicNow) {
+                        guard !locked else { return }   // с паролем выбора нет
+                        app.hostPublic = true; app.applyHostNow()
+                    }
+                    bigChip("eye.slash.fill", "Скрытый", on: !publicNow) {
+                        guard !locked else { return }
+                        app.hostPublic = false; app.applyHostNow()
+                    }
                 }
-                hint(app.hostPublic
+                .opacity(locked ? 0.55 : 1)            // видно, что выбор сейчас недоступен
+                hint(locked
+                     ? "С паролем сеть всегда скрыта: публичная карточка светит её существование, страну и адрес — как раз тем, от кого вы закрылись."
+                     : publicNow
                      ? "Виден всем в списке хостов — подключиться сможет любой."
                      : "В списке не виден — подключиться можно только по коду выше.")
 

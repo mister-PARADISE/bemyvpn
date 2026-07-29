@@ -111,6 +111,8 @@ final class AppState: ObservableObject {
     @Published var connectedTo: String? = nil
     @Published var connectedSince: Date? = nil
     @Published var resolvedHost: Host? = nil
+    /// Текст ошибки подключения для карточки VPN (nil — ошибки нет).
+    @Published var vpnError: String? = nil
     @Published var expandedId: String? = nil
 
     // хост
@@ -344,6 +346,15 @@ final class AppState: ObservableObject {
     func cancelQuick() { qcGen += 1; qcQueue = [] }
 
     func connect(_ host: Host, password: String = "") {
+        // Свой же хост подключением не возьмёшь: пробитие пошло бы к самому себе,
+        // и человек смотрел бы на «подключаюсь» до таймаута, не понимая почему.
+        // На десктопе это подписано давно — здесь молчало.
+        if hosting && host.id == hostCode {
+            withAnimation { vpnState = 3; connectedTo = nil }
+            vpnError = "Это ваш собственный хост"
+            return
+        }
+        vpnError = nil
         let coord = coordinator
         withAnimation { connectedTo = host.id; vpnState = 1; expandedId = nil }
         let proto = host.proto, id = host.id
@@ -381,6 +392,11 @@ final class AppState: ObservableObject {
         cancelQuick()   // ручной выбор перебивает авто-перебор «Старта»
         let code = raw.uppercased().trimmingCharacters(in: .whitespaces)
         guard !code.isEmpty else { return }
+        if hosting && code == hostCode {
+            withAnimation { vpnState = 3 }
+            vpnError = "Это код вашего же хоста"
+            return
+        }
         if let h = hostById(code) { withAnimation { expandedId = code }; if !h.hasPassword && h.usable { connect(h) }; return }
         let coord = coordinator
         Task {
