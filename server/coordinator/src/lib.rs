@@ -171,38 +171,50 @@ fn sane_addr(s: &str) -> Option<String> {
     }
 }
 
-/// СЕРВЕР-АВТОРИТЕТ НАД IP: адрес хоста в каталоге = тот, с которого он РЕАЛЬНО
-/// пришёл (наблюдаемый HTTP-источник), а не что он о себе написал. Иначе можно
-/// «сделать сеть» с чужим/красивым IP (спуфинг 8.8.8.8): гость бы ломился в никуда.
-/// Порт доверяем (его координатор со стороны HTTP не видит — это рефлексивный порт
-/// NAT), но IP ставим свой, наблюдаемый.
+/// СЕРВЕР СТРОИТ АДРЕС САМ: наблюдаемый IP + порт, который назвал участник.
 ///
-/// Адрес ДРУГОГО СЕМЕЙСТВА, чем наблюдаемый, теперь ОТБРАСЫВАЕМ, а не пропускаем
-/// как раньше. Пропуск и был дырой: соединившись по IPv6, хост объявлял любой
-/// чужой IPv4 — и все гости шли пробивать NAT к жертве. Проверить этот адрес нам
-/// нечем, а «не проверили, но пропустили» — это и есть подпись под чужой ложью.
-/// Ничего рабочего при этом не теряется: сокеты хоста и STUN у нас IPv4-only
-/// (`0.0.0.0:0`, см. `bmv_net::local_ip`), так что честный хост адресов другого
-/// семейства не объявляет вовсе.
-fn authorize_endpoints(endpoints: &[String], observed: &str) -> Vec<String> {
-    let obs: Option<IpAddr> = observed.parse().ok();
+/// Заявленный участником адрес не проверяется, а ИГНОРИРУЕТСЯ ЦЕЛИКОМ — от него
+/// берётся только номер порта. Раньше поле принимали и потом «авторизовали», и
+/// обе дыры с подменой адреса жили ровно там: у хоста адрес чужого семейства
+/// проходил на веру, а кандидаты гостя не переписывались вовсе, из-за чего в
+/// сторону любой названной жертвы летело 12 секунд пробивающих пакетов с чужих
+/// хостов. Поля, которого нет, подделать нельзя — поэтому его больше и нет.
+///
+/// Почему порт всё-таки со слов клиента: координатор говорит с ним по TCP и его
+/// UDP-порт не наблюдает. Без порта пробитие NAT невозможно вовсе, а вред от
+/// вранья ограничен собственным адресом врущего.
+///
+/// Результат ещё раз проходит `sane_addr`: если сам координатор видит участника
+/// с приватного адреса (свой сервер в локальной сети), публиковать такое в
+/// каталоге нельзя — снаружи туда всё равно не достучаться.
+fn endpoints_for(claimed: &[String], observed: IpAddr, max: usize) -> Vec<String> {
+    // Данные ходят только по IPv4 (сокеты и STUN бьются в `0.0.0.0:0`, см.
+    // `bmv_net::local_ip`). Значит участник, которого мы видим по IPv6, снаружи
+    // по нашей схеме недостижим, и честнее не публиковать ничего, чем выдать
+    // адрес, в который никто не сможет попасть. КОГДА появится IPv6 в данных —
+    // менять здесь.
+    if !observed.is_ipv4() {
+        return Vec::new();
+    }
     let mut out: Vec<String> = Vec::new();
-    for ep in endpoints {
+    for ep in claimed {
         let Ok(sa) = ep.parse::<SocketAddr>() else { continue };
-        let fixed = match (sa.ip(), obs) {
-            // Семейство совпало с наблюдаемым → ставим НАШ адрес, а не заявленный.
-            (IpAddr::V4(_), Some(o @ IpAddr::V4(_))) | (IpAddr::V6(_), Some(o @ IpAddr::V6(_))) => {
-                SocketAddr::new(o, sa.port()).to_string()
-            }
-            // Семейства разошлись (клиент пришёл по IPv6, а объявляет IPv4 — или
-            // наоборот): подтвердить такой адрес нечем. РАНЬШЕ он принимался на
-            // веру, и хост мог объявить чужой публичный IP — гости слали бы
-            // пробивающие пакеты жертве, то есть чужими руками получалась
-            // отражённая атака. Теперь неподтверждаемый адрес просто выбрасываем.
-            _ => continue,
+        // Заявленный адрес нужен РОВНО для одного: подтвердить, что участник
+        // нашёл своё ПУБЛИЧНОЕ отображение (STUN отработал). Домашний адрес
+        // сюда не годится — хост за NAT раздавать не может, и лучше отказать
+        // сразу, чем показать его в каталоге и заставить гостей биться впустую.
+        // Сам адрес дальше не используется: берём из него только номер порта.
+        if sane_addr(ep).is_none() {
+            continue;
+        }
+        let Some(fixed) = sane_addr(&SocketAddr::new(observed, sa.port()).to_string()) else {
+            continue;
         };
         if !out.contains(&fixed) {
             out.push(fixed);
+        }
+        if out.len() >= max {
+            break;
         }
     }
     out
@@ -460,9 +472,13 @@ async fn register_host(state: &Db, mut ann: HostAnnounce, observed_ip: String) -
         ann.public = false;
     }
     ann.protocol = clamp(&ann.protocol, MAX_PROTOCOL);
-    ann.endpoints = ann.endpoints.iter().filter_map(|s| sane_addr(s)).take(MAX_ENDPOINTS).collect();
-    // СЕРВЕР ставит IP хоста сам (наблюдаемый), а не берёт на веру — анти-спуфинг.
-    ann.endpoints = authorize_endpoints(&ann.endpoints, &observed_ip);
+    // СЕРВЕР СТРОИТ адреса хоста сам: наблюдаемый IP + названные порты.
+    // Заявленный хостом адрес не рассматривается вовсе (см. endpoints_for).
+    let obs: Option<IpAddr> = observed_ip.parse().ok();
+    ann.endpoints = match obs {
+        Some(o) => endpoints_for(&ann.endpoints, o, MAX_ENDPOINTS),
+        None => Vec::new(), // наблюдаемый адрес не разобрался — публиковать нечего
+    };
     // Нет ни одного публичного адреса (за NAT / STUN не удался) → недостижим снаружи.
     if ann.endpoints.is_empty() {
         return (StatusCode::UNPROCESSABLE_ENTITY, false);
@@ -958,8 +974,7 @@ async fn ws_conn(socket: WebSocket, state: Db, ip: IpAddr, _guard: WsConnGuard) 
                 // Порт по-прежнему на веру (его координатор не наблюдает), но
                 // адрес теперь только свой: направить пробитие на чужую машину
                 // больше нельзя.
-                let filtered: Vec<String> = candidates.iter().filter_map(|s| sane_addr(s)).take(MAX_CANDIDATES).collect();
-                let cands = authorize_endpoints(&filtered, &ip.to_string());
+                let cands = endpoints_for(&candidates, ip, MAX_CANDIDATES);
                 if !cands.is_empty() {
                     // Хост держит WS (иначе его не было бы в каталоге) → кандидаты
                     // гостя летят прямо в его сокет для встречного пробития NAT.
@@ -1183,15 +1198,15 @@ mod tests {
     #[test]
     fn endpoints_cannot_claim_foreign_ip() {
         // Обычный случай: IP переписывается на наблюдаемый, порт сохраняется.
-        let got = authorize_endpoints(&["1.2.3.4:5555".into()], "9.9.9.9");
+        let got = endpoints_for(&["1.2.3.4:5555".into()], ip("9.9.9.9"), MAX_ENDPOINTS);
         assert_eq!(got, vec!["9.9.9.9:5555".to_string()]);
 
         // Клиент пришёл по IPv6, объявляет чужой IPv4 — подтвердить нечем.
-        let got = authorize_endpoints(&["8.8.8.8:443".into()], "2001:db8::1");
+        let got = endpoints_for(&["8.8.8.8:443".into()], ip("2001:db8::1"), MAX_ENDPOINTS);
         assert!(got.is_empty(), "неподтверждаемый адрес обязан выбрасываться, получено: {got:?}");
 
         // Наблюдаемый адрес не разобрался — тоже ничего не подтверждаем.
-        assert!(authorize_endpoints(&["8.8.8.8:443".into()], "мусор").is_empty());
+        // «мусорный» наблюдаемый адрес теперь отсекается ещё до вызова (см. register_host).
     }
 
     /// Предел полей задан в БАЙТАХ, и обрезка обязана его соблюдать.
@@ -1230,6 +1245,9 @@ mod tests {
         // прямое подключение (не loopback, без env) — XFF игнорим, берём peer.
         assert_eq!(client_ip(&h, "8.8.8.8:5000".parse().unwrap()), IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)));
     }
+
+    /// Разобрать адрес в тестах (в бою он приходит уже разобранным от сокета).
+    fn ip(s: &str) -> IpAddr { s.parse().unwrap() }
 
     fn mk_state() -> Db {
         let (v, _) = tokio::sync::watch::channel(1u64);
@@ -1526,20 +1544,85 @@ mod tests {
         let claimed = vec![
             "8.8.8.8:53".to_string(),          // чужой публичный
             "1.1.1.1:443".to_string(),         // чужой публичный
-            "203.0.113.7:40000".to_string(),   // чужой публичный
+            "9.9.9.9:40000".to_string(),       // чужой публичный
         ];
-        let out = authorize_endpoints(&claimed, guest_ip);
+        let out = endpoints_for(&claimed, ip(guest_ip), MAX_CANDIDATES);
         for a in &out {
             assert!(a.starts_with(guest_ip), "в хост уехал чужой адрес: {a}");
         }
         assert!(!out.is_empty(), "свои порты обязаны сохраниться, иначе пробитие не заработает");
     }
 
+    /// ГЛАВНОЕ СВОЙСТВО новой схемы: заявленный адрес не попадает в результат.
+    /// Какой бы ПУБЛИЧНЫЙ адрес участник ни назвал, при одном наблюдаемом адресе
+    /// и одинаковых портах результат обязан совпадать. Значит подделывать нечего:
+    /// это не «проверка», которую можно обойти, а отсутствие самой возможности.
+    /// (Публичность заявленного всё же смотрится — но лишь как признак «STUN
+    /// отработал», см. `only_private_claims_yield_nothing`.)
+    #[test]
+    fn claimed_address_does_not_influence_the_result() {
+        let obs = ip("45.11.22.33");
+        let a = endpoints_for(&["8.8.8.8:40000".into()], obs, MAX_ENDPOINTS);
+        let b = endpoints_for(&["1.1.1.1:40000".into()], obs, MAX_ENDPOINTS);
+        let c = endpoints_for(&["9.9.9.9:40000".into()], obs, MAX_ENDPOINTS);
+        assert_eq!(a, b, "результат зависит от заявленного адреса");
+        assert_eq!(b, c, "результат зависит от заявленного адреса");
+        assert_eq!(a, vec!["45.11.22.33:40000".to_string()]);
+    }
+
+    /// Заявленный адрес нужен ровно для одного — подтвердить, что участник нашёл
+    /// своё публичное отображение. Только домашние адреса = хост за NAT, раздавать
+    /// он не может, и координатор обязан отказать сразу, а не пускать его в
+    /// каталог гонять гостей впустую.
+    #[test]
+    fn only_private_claims_yield_nothing() {
+        let obs = ip("45.11.22.33");
+        let private = vec!["192.168.1.5:40000".to_string(), "10.0.0.7:40001".to_string(), "127.0.0.1:40002".to_string()];
+        assert!(endpoints_for(&private, obs, MAX_ENDPOINTS).is_empty(),
+            "хост без публичного отображения попал в каталог");
+        // А смесь «домашний + публичный» оставляет порт от публичного.
+        let mixed = vec!["192.168.1.5:40000".to_string(), "45.11.22.33:54321".to_string()];
+        assert_eq!(endpoints_for(&mixed, obs, MAX_ENDPOINTS), vec!["45.11.22.33:54321".to_string()]);
+    }
+
+    /// Участник, которого мы видим по IPv6, недостижим: данные у нас ходят только
+    /// по IPv4. Публиковать адрес, в который никто не попадёт, — хуже, чем
+    /// отказать. Тест фиксирует это как ОСОЗНАННЫЙ предел, а не случайность.
+    #[test]
+    fn ipv6_observed_yields_nothing_while_data_plane_is_v4_only() {
+        let out = endpoints_for(&["8.8.8.8:40000".into()], ip("2001:db8::1"), MAX_ENDPOINTS);
+        assert!(out.is_empty(), "опубликован IPv6-адрес, до которого не дотянется UDP-слой: {out:?}");
+    }
+
+    /// Мусор и нулевые порты не должны ни падать, ни доезжать до хоста.
+    #[test]
+    fn malformed_claims_are_dropped_without_panic() {
+        let obs = ip("45.11.22.33");
+        let junk = vec![
+            "".to_string(), "не адрес".into(), ":::".into(), "8.8.8.8".into(),
+            "8.8.8.8:0".into(),        // нулевой порт
+            "8.8.8.8:99999".into(),    // порт за границей u16
+            "8.8.8.8:-1".into(),
+            "[::ffff:8.8.8.8]:40000".into(), // публичный в форме IPv6 — порт годится
+        ];
+        let out = endpoints_for(&junk, obs, MAX_ENDPOINTS);
+        assert_eq!(out, vec!["45.11.22.33:40000".to_string()], "пролез мусор: {out:?}");
+    }
+
+    /// Потолок числа адресов соблюдается — иначе один запрос заставлял бы хост
+    /// пробивать в сколько угодно точек.
+    #[test]
+    fn endpoint_count_is_capped() {
+        let obs = ip("45.11.22.33");
+        let many: Vec<String> = (1..100u16).map(|p| format!("8.8.8.8:{}", 40000 + p)).collect();
+        assert_eq!(endpoints_for(&many, obs, MAX_CANDIDATES).len(), MAX_CANDIDATES);
+    }
+
     /// Порты гость выбирает сам (координатор их не наблюдает) — они обязаны
     /// доехать без изменений, иначе пробитие NAT перестанет работать вовсе.
     #[test]
     fn guest_ports_are_preserved_while_ip_is_replaced() {
-        let out = authorize_endpoints(&["8.8.8.8:12345".into(), "9.9.9.9:54321".into()], "45.11.22.33");
+        let out = endpoints_for(&["8.8.8.8:12345".into(), "9.9.9.9:54321".into()], ip("45.11.22.33"), MAX_CANDIDATES);
         assert!(out.contains(&"45.11.22.33:12345".to_string()), "порт 12345 потерян: {out:?}");
         assert!(out.contains(&"45.11.22.33:54321".to_string()), "порт 54321 потерян: {out:?}");
     }
@@ -1560,7 +1643,7 @@ mod tests {
             "45.11.22.33:40001".into(),        // свой
         ];
         let filtered: Vec<String> = claimed.iter().filter_map(|s| sane_addr(s)).take(MAX_CANDIDATES).collect();
-        let out = authorize_endpoints(&filtered, guest_ip);
+        let out = endpoints_for(&filtered, ip(guest_ip), MAX_CANDIDATES);
         assert!(!out.is_empty(), "у гостя не осталось ни одного адреса — пробитие не начнётся");
         for a in &out {
             assert!(a.starts_with(guest_ip), "до хоста доехал не адрес гостя: {a}");
@@ -1592,9 +1675,9 @@ mod tests {
     #[test]
     fn host_cannot_publish_a_stranger_address() {
         let mut a = ann("SPOOF001", "tok", "Подменщик");
-        a.endpoints = vec!["8.8.8.8:443".into(), "203.0.113.9:40000".into()];
+        a.endpoints = vec!["8.8.8.8:443".into(), "9.9.9.9:40000".into()];
         let filtered: Vec<String> = a.endpoints.iter().filter_map(|s| sane_addr(s)).take(MAX_ENDPOINTS).collect();
-        let out = authorize_endpoints(&filtered, "45.11.22.33");
+        let out = endpoints_for(&filtered, ip("45.11.22.33"), MAX_ENDPOINTS);
         for e in &out {
             assert!(e.starts_with("45.11.22.33"), "в каталог попал чужой адрес: {e}");
         }
