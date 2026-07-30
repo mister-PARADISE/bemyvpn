@@ -104,6 +104,7 @@ component HostCard inherits Rectangle {
                     spacing: 8px;
                     StatTile { label: "СТРАНА"; value: h.country; horizontal-stretch: 1; }
                     StatTile { label: "ГОСТЕЙ"; value: h.guests; horizontal-stretch: 1; }
+                    StatTile { label: "ОТКЛИК"; value: h.ping; horizontal-stretch: 1; }
                 }
                 HorizontalLayout {
                     spacing: 8px;
@@ -152,6 +153,8 @@ export component VpnPage inherits Rectangle {
     property <int> expanded: -1;
     property <bool> copied-invite: false;
     callback connect(int);
+    // Карточку раскрыли — можно замерить отклик до этого хоста.
+    callback expanded-host(int);
     callback connect-code();
     callback disconnect();
     callback paste();
@@ -443,7 +446,10 @@ export component VpnPage inherits Rectangle {
                 index: i;
                 expanded: root.expanded == i;
                 guest-password <=> root.guest-password;
-                toggle() => { root.expanded = (root.expanded == i) ? -1 : i; }
+                toggle() => {
+                    root.expanded = (root.expanded == i) ? -1 : i;
+                    if (root.expanded == i) { root.expanded-host(i); }
+                }
                 connect(idx) => { root.connect(idx); }
                 copy-text(t) => { root.copy-text(t); }
             }

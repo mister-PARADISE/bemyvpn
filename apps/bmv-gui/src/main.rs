@@ -16,7 +16,7 @@ use std::time::Duration;
 use bmv_config::Config;
 use bmv_core::BmvEngine;
 use bmv_signal::HostInfo;
-use slint::{ModelRc, SharedString, VecModel, Weak};
+use slint::{Model, ModelRc, SharedString, VecModel, Weak};
 
 mod flags;
 mod geo;
@@ -29,6 +29,10 @@ const DEFAULT_COORD: &str = "https://bemyvpn.net";
 
 type EngineSlot = Arc<Mutex<Arc<BmvEngine>>>;
 type Ts = Arc<Mutex<Option<std::time::Instant>>>;
+/// Замеры отклика: id хоста → готовая строка для плитки («24 мс» / «—» / «…»).
+/// Живёт рядом с каталогом, потому что строки каталога пересобираются на каждом
+/// обновлении, а измерение переживать это обязано — иначе цифра мигала бы.
+type Pings = Arc<Mutex<std::collections::HashMap<String, String>>>;
 
 /// Часы сессии: MM:SS, после часа H:MM:SS (как uptimeText на iOS).
 fn uptime_text(sec: u64) -> String {
@@ -132,6 +136,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let recent_ids: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(store::load_recent(&coord)));
     // Последний известный свой IP — для «умного Старта» (сначала чужая страна).
     let my_ip: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
+
+    // Замеры отклика до хостов (заполняются по раскрытию карточки).
+    let pings: Pings = Arc::new(Mutex::new(std::collections::HashMap::new()));
 
     let host_started: Ts = Arc::new(Mutex::new(None));
     let vpn_since: Ts = Arc::new(Mutex::new(None));
@@ -269,10 +276,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ensure_host_code(&ui, &engine, &handle);
 
     spawn_refresh(engine.clone(), hosts.clone(), ui.as_weak(), &handle,
-                  host_started.clone(), vpn_since.clone(), recent_ids.clone(), my_ip.clone(), up_file.clone());
+                  host_started.clone(), vpn_since.clone(), recent_ids.clone(), my_ip.clone(), up_file.clone(), pings.clone());
+    let hosts_for_probe = hosts.clone();
     // Копия для имени хоста по умолчанию: сам my_ip уходит в wire_vpn.
     let my_ip_for_host = my_ip.clone();
     wire_vpn(&ui, hosts, hlp, my_ip);
+    wire_expand_probe(&ui, hosts_for_probe, engine.clone(), &handle, pings);
     wire_host(&ui, engine.clone(), host_task, handle.clone(), host_started, my_ip_for_host);
     wire_coord(&ui, engine, &handle);
 
@@ -327,8 +336,62 @@ fn default_host_name(my_ip: &str) -> String {
     bmv_common::default_host_name(geo::country_of(my_ip).as_deref())
 }
 
+
+/// Замер отклика до хоста при РАСКРЫТИИ его карточки.
+///
+/// Почему по раскрытию, а не для всего списка: проба — настоящий сетевой запрос
+/// к чужой машине. Гонять их пачкой ради строк, на которые никто не смотрит,
+/// значит без нужды дёргать десятки хостов при каждом обновлении каталога.
+/// Раскрыл карточку — значит этот хост рассматривают всерьёз.
+fn wire_expand_probe(
+    ui: &AppWindow,
+    hosts: Arc<Mutex<Vec<HostInfo>>>,
+    engine: EngineSlot,
+    handle: &tokio::runtime::Handle,
+    pings: Pings,
+) {
+    let weak = ui.as_weak();
+    let handle = handle.clone();
+    ui.on_expanded_host(move |idx| {
+        let Some(h) = hosts.lock().unwrap().get(idx as usize).cloned() else { return };
+        // Уже мерили — не мерим снова: цифра не устаревает за секунды, а лишний
+        // запрос виден чужой машине.
+        if pings.lock().unwrap().contains_key(&h.id) {
+            return;
+        }
+        pings.lock().unwrap().insert(h.id.clone(), "…".into());
+        let eng = engine.lock().unwrap().clone();
+        let (weak2, pings2) = (weak.clone(), pings.clone());
+        handle.spawn(async move {
+            let ms = eng.probe_host_rtt(&h.id, &h.endpoints).await;
+            let text = match ms {
+                Some(ms) => format!("{ms} мс"),
+                // Честное «не ответил»: хост может быть за таким NAT, что без
+                // пробивания до него не достучаться. Выдумывать число нельзя.
+                None => "—".to_string(),
+            };
+            pings2.lock().unwrap().insert(h.id.clone(), text.clone());
+            let _ = slint::invoke_from_event_loop(move || {
+                let Some(ui) = weak2.upgrade() else { return };
+                // Обновляем ТУ САМУЮ строку, а не весь список: перестроение
+                // списка на живом экране схлопнуло бы раскрытую карточку.
+                let rows = ui.get_hosts();
+                for i in 0..rows.row_count() {
+                    if let Some(mut r) = rows.row_data(i) {
+                        if r.id == h.id.as_str() {
+                            r.ping = text.clone().into();
+                            rows.set_row_data(i, r);
+                            break;
+                        }
+                    }
+                }
+            });
+        });
+    });
+}
+
 /// Строка каталога → карточка (host_row на iOS): подпись, полоса, значок протокола.
-fn host_row(h: &HostInfo) -> HostRow {
+fn host_row(h: &HostInfo, pings: &Pings) -> HostRow {
     let usable = h.online && h.guests < h.max_guests;
     let cc = host_cc(h);
     let flag_img = cc.as_deref().and_then(flags::flag);
@@ -356,6 +419,9 @@ fn host_row(h: &HostInfo) -> HostRow {
         access: if h.has_password { "по паролю".into() } else { "открытый".into() },
         proto: proto_name(&h.protocol).into(),
         proto_id: h.protocol.clone().into(),
+        // Пусто до раскрытия карточки: мерить отклик для строк, на которые никто
+        // не смотрит, — зря дёргать чужие машины.
+        ping: pings.lock().unwrap().get(&h.id).cloned().unwrap_or_default().into(),
     }
 }
 
@@ -371,7 +437,9 @@ fn spawn_refresh(
     recent_ids: Arc<Mutex<Vec<String>>>,
     my_ip_slot: Arc<Mutex<String>>,
     up_file: std::path::PathBuf,
+    pings: Pings,
 ) {
+    let pings = pings.clone();
     // ── Тик 1с: часы сессии + примирение статуса по файл-маркеру хелпера.
     // Отдельно от каталога: watch может тихо ждать до 25с, а часы должны идти.
     {
@@ -485,6 +553,7 @@ fn spawn_refresh(
             let recent = recent_ids.lock().unwrap().clone();
             let weak = weak.clone();
             let hosts2 = hosts.clone();
+            let pings = pings.clone();   // клон на КАЖДУЮ итерацию: замыкание его забирает
             let _ = slint::invoke_from_event_loop(move || {
                 let Some(ui) = weak.upgrade() else { return };
                 ui.set_coord_state(if alive { 1 } else { 2 });
@@ -506,7 +575,7 @@ fn spawn_refresh(
                     .filter(|h| (h.online || h.id == connected_to || (hosting && h.id == my_code))
                         && !(!hosting && !my_code.is_empty() && h.id == my_code))
                     .cloned().collect();
-                let rows: Vec<HostRow> = visible.iter().map(host_row).collect();
+                let rows: Vec<HostRow> = visible.iter().map(|h| host_row(h, &pings)).collect();
                 *hosts2.lock().unwrap() = visible;
                 ui.set_hosts(ModelRc::new(VecModel::from(rows)));
 

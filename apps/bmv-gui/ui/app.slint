@@ -104,6 +104,8 @@ export component AppWindow inherits Window {
     in property <image> qr-overlay-img;
 
     callback connect(int);
+    // Карточку хоста раскрыли — Rust замерит отклик до него.
+    callback expanded-host(int);
     callback connect-code();
     callback quick-connect();
     callback disconnect();
@@ -156,6 +158,7 @@ export component AppWindow inherits Window {
                 code <=> root.code;
                 guest-password <=> root.guest-password;
                 connect(i) => { root.connect(i); }
+                expanded-host(i) => { root.expanded-host(i); }
                 connect-code() => { root.connect-code(); }
                 disconnect() => { root.disconnect(); }
                 paste() => { root.paste(); }

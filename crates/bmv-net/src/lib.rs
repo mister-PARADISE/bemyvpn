@@ -10,4 +10,4 @@ pub mod stun;
 pub mod udp;
 
 pub use stun::{classify_mapping, reflexive_addr, reflexive_addr_on, DEFAULT_STUN};
-pub use udp::{local_ip, punch_tokens, UdpEndpoint, UdpHub, UdpLink};
+pub use udp::{local_ip, ping_tokens, probe_rtt, punch_tokens, UdpEndpoint, UdpHub, UdpLink};

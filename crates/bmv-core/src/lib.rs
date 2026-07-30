@@ -72,6 +72,11 @@ pub struct BmvEngine {
 /// Потолок одновременных рукопожатий гостей (анти-флуд, см. handshake_gate).
 const HANDSHAKE_CONCURRENCY: usize = 64;
 
+/// Сколько ждём ответа на пробу задержки. Полторы секунды: дальний хост через
+/// половину планеты укладывается в ~300мс, поэтому всё, что дольше, — это уже
+/// «не отвечает», а не «далеко». Ждать больше значит подвесить список.
+const PROBE_TIMEOUT: Duration = Duration::from_millis(1500);
+
 /// Пауза перед отказом на неверном пароле — тормоз перебора.
 /// Секунда незаметна тому, кто просто опечатался, но подбор из миллиона
 /// вариантов растягивает с часов на годы даже при полной загрузке ворот.
@@ -295,6 +300,17 @@ impl BmvEngine {
 
     // ── реальный UDP-путь хоста/гостя (сквозное соединение) ──────────────────
 
+    /// Задержка до хоста БЕЗ подключения к нему — чтобы выбирать из списка не
+    /// вслепую. `None` = не ответил за отведённое время (недостижим отсюда).
+    ///
+    /// Проба не создаёт на хосте ни сессии, ни записи (см. `bmv_net::probe_rtt`),
+    /// поэтому её можно звать для нескольких хостов подряд.
+    pub async fn probe_host_rtt(&self, host_id: &str, endpoints: &[String]) -> Option<u32> {
+        bmv_net::probe_rtt(host_id, endpoints, PROBE_TIMEOUT)
+            .await
+            .map(|d| d.as_millis().min(u32::MAX as u128) as u32)
+    }
+
     /// ХОСТ: поднять хаб-сокет (мультигость), собрать кандидаты, анонсировать.
     /// Возвращает хаб (держать!), id и список анонсированных адресов.
     pub async fn host_bind_announce(
@@ -305,9 +321,12 @@ impl BmvEngine {
         let servers = self.config.stun.resolve();
         // Токены встречного пробивания — из СВОЕГО host_id (гость выведет те же).
         let (pt, pk) = bmv_net::punch_tokens(&self.host_id);
-        let (hub, reflexive) =
-            bmv_net::UdpHub::bind_reflexive("0.0.0.0:0".parse().unwrap(), &servers, Duration::from_secs(4), pt, pk)
-                .await?;
+        // Токены пробы задержки — по ним гость узнаёт, далеко ли мы, ДО подключения.
+        let (pi, po) = bmv_net::ping_tokens(&self.host_id);
+        let (hub, reflexive) = bmv_net::UdpHub::bind_reflexive(
+            "0.0.0.0:0".parse().unwrap(), &servers, Duration::from_secs(4), pt, pk, pi, po,
+        )
+        .await?;
         let port = hub.local_addr()?.port();
 
         let mut endpoints: Vec<String> = Vec::new();

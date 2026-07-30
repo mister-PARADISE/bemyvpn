@@ -93,6 +93,70 @@ pub fn punch_tokens(host_id: &str) -> (Vec<u8>, Vec<u8>) {
     (punch, pack)
 }
 
+/// Токены ПРОБЫ ЗАДЕРЖКИ (ping, pong) — чтобы гость мог узнать, далеко ли хост,
+/// ДО подключения к нему.
+///
+/// Зачем отдельные, а не те же punch/pack: `PUNCH` на хосте заводит СЕССИЮ —
+/// создаёт запись пира, канал и отдаёт «гостя» в accept-цикл. Такой «гость»
+/// никогда не пожмёт руку, провисит до таймаута рукопожатия (6с) и всё это время
+/// будет держать слот в воротах анти-флуда. Если каждый гость станет так мерить
+/// задержку до всех хостов в списке, хосты захлебнутся ничем.
+///
+/// Ответ на `ping` НЕ СОЗДАЁТ НИЧЕГО: восемь байт пришло — восемь ушло. Усиления
+/// нет (ответ ровно того же размера), состояния нет, поэтому злоупотребить этим
+/// сложнее, чем уже существующим `PUNCH`.
+pub fn ping_tokens(host_id: &str) -> (Vec<u8>, Vec<u8>) {
+    let ping = fnv1a(format!("bmv-ping:{host_id}").as_bytes()).to_le_bytes().to_vec();
+    let pong = fnv1a(format!("bmv-pong:{host_id}").as_bytes()).to_le_bytes().to_vec();
+    (ping, pong)
+}
+
+
+/// Измерить задержку до хоста, НЕ подключаясь к нему.
+///
+/// Гость выбирает хост из списка вслепую: хост в 20мс и хост в 300мс выглядят
+/// одинаково, а разница между ними — это разница между «работает» и «мучение».
+///
+/// Шлём пробу на ВСЕ известные адреса хоста разом и берём первый ответ: адресов
+/// у него обычно два (домашний и внешний), заранее неизвестно, какой рабочий, а
+/// последовательный перебор удвоил бы ожидание. Ответ подтверждает и живость, и
+/// достижимость — то есть меряется ровно тот путь, по которому пойдёт туннель.
+///
+/// `None` — ответа нет за отведённое время: хост либо недостижим отсюда, либо
+/// за таким NAT, что без пробивания к нему не достучаться. Это ЧЕСТНЫЙ ответ,
+/// а не ошибка: показать «нет ответа» полезнее, чем нарисовать выдуманное число.
+pub async fn probe_rtt(host_id: &str, endpoints: &[String], timeout: Duration) -> Option<Duration> {
+    let addrs: Vec<SocketAddr> = endpoints.iter().filter_map(|s| s.parse().ok()).collect();
+    if addrs.is_empty() {
+        return None;
+    }
+    let (ping, pong) = ping_tokens(host_id);
+    // Свой одноразовый сокет: чужой (хаб хоста или туннель) трогать нельзя —
+    // ответы на пробу смешались бы с рабочим трафиком.
+    let sock = bind_udp("0.0.0.0:0".parse().ok()?).await.ok()?;
+    let started = std::time::Instant::now();
+    for a in &addrs {
+        let _ = sock.send_to(&ping, a).await;
+    }
+    let mut buf = [0u8; 64];
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if left.is_zero() {
+            return None;
+        }
+        match tokio::time::timeout(left, sock.recv_from(&mut buf)).await {
+            Ok(Ok((n, from))) => {
+                // Чужие датаграммы (сканеры, поздние ответы) не считаем за ответ.
+                if buf[..n] == pong[..] && addrs.contains(&from) {
+                    return Some(started.elapsed());
+                }
+            }
+            _ => return None,
+        }
+    }
+}
+
 /// Забинженный UDP-эндпоинт. Один сокет — источник и STUN, и данных.
 pub struct UdpEndpoint {
     sock: Arc<UdpSocket>,
@@ -341,13 +405,17 @@ impl UdpHub {
     /// Критично: если STUN'ить после старта demux, тот съест STUN-ответ и хост за
     /// NAT анонсирует только LAN-адрес → гости к нему не пробьются. Поэтому STUN —
     /// на «чистом» сокете, и лишь потом включаем демукс.
-    /// `punch`/`pack` — пер-хостовые токены фазы пробивания (см. `punch_tokens`).
+    /// `punch`/`pack` — пер-хостовые токены фазы пробивания (см. `punch_tokens`),
+    /// `ping`/`pong` — токены пробы задержки (см. `ping_tokens`).
+    #[allow(clippy::too_many_arguments)]
     pub async fn bind_reflexive(
         addr: SocketAddr,
         servers: &[String],
         wait: Duration,
         punch: Vec<u8>,
         pack: Vec<u8>,
+        ping: Vec<u8>,
+        pong: Vec<u8>,
     ) -> Result<(Arc<Self>, Option<SocketAddr>)> {
         let sock = Arc::new(bind_udp(addr).await?);
         let reflexive = if wait.is_zero() {
@@ -358,7 +426,7 @@ impl UdpHub {
         let peers: Peers = Arc::new(Mutex::new(HashMap::new()));
         let pool: BufPool = Arc::new(Mutex::new(Vec::new()));
         let (accept_tx, accept_rx) = mpsc::channel(32);
-        tokio::spawn(demux(sock.clone(), peers, pool, accept_tx, punch.clone(), pack));
+        tokio::spawn(demux(sock.clone(), peers, pool, accept_tx, punch.clone(), pack, ping, pong));
         let hub = Arc::new(UdpHub {
             sock,
             accept_rx: tokio::sync::Mutex::new(accept_rx),
@@ -420,6 +488,7 @@ impl UdpHub {
 }
 
 /// Фоновый демультиплексор: раскидывает датаграммы по персональным очередям.
+#[allow(clippy::too_many_arguments)]
 async fn demux(
     sock: Arc<UdpSocket>,
     peers: Peers,
@@ -427,6 +496,8 @@ async fn demux(
     accept_tx: mpsc::Sender<(SocketAddr, Box<dyn Link>)>,
     punch: Vec<u8>,
     pack: Vec<u8>,
+    ping: Vec<u8>,
+    pong: Vec<u8>,
 ) {
     let mut buf = vec![0u8; MAX_DATAGRAM];
     loop {
@@ -445,6 +516,10 @@ async fn demux(
                     pool_return(&pool, b);
                 }
             }
+        } else if data == ping.as_slice() {
+            // Проба задержки: отвечаем и НЕ заводим ни пира, ни канала, ни сессии
+            // (см. ping_tokens). Ровно поэтому её можно звать для всего списка.
+            let _ = sock.send_to(&pong, from).await;
         } else if data == punch.as_slice() && peers.lock().len() < MAX_HUB_PEERS {
             // новый гость: подтверждаем и заводим персональный канал (пока не
             // упёрлись в потолок пиров — иначе флуд PUNCH раздул бы карту).
@@ -577,13 +652,64 @@ mod tests {
         let _ = b_task.await;
     }
 
+
+    /// Проба задержки обязана: (1) вернуть измеренное время, (2) НЕ ЗАВЕСТИ на
+    /// хосте сессию. Второе — главное: если бы проба вела себя как PUNCH, каждый
+    /// «пинг» вешал бы на хост мёртвого гостя на 6 секунд, и список из десятка
+    /// хостов превращался бы в атаку на всех сразу.
+    #[tokio::test]
+    async fn probe_measures_rtt_without_creating_a_session() {
+        let (pt, pk) = punch_tokens("probe-test");
+        let (pi, po) = ping_tokens("probe-test");
+        let (hub, _refl) = UdpHub::bind_reflexive(
+            "127.0.0.1:0".parse().unwrap(), &[], Duration::ZERO, pt, pk, pi, po,
+        ).await.unwrap();
+        let addr = hub.local_addr().unwrap().to_string();
+
+        let rtt = probe_rtt("probe-test", std::slice::from_ref(&addr), Duration::from_secs(2)).await;
+        assert!(rtt.is_some(), "хост не ответил на пробу");
+        assert!(rtt.unwrap() < Duration::from_secs(1), "по петле должно быть мгновенно");
+
+        // Никакого «гостя» появиться не должно: accept обязан молчать.
+        let accepted = tokio::time::timeout(Duration::from_millis(300), hub.accept()).await;
+        assert!(accepted.is_err(), "проба завела на хосте сессию — так делать нельзя");
+    }
+
+    /// Чужой host_id — чужие токены: ответа быть не должно. Иначе пробой можно
+    /// было бы «нащупать» хост, кода которого не знаешь.
+    #[tokio::test]
+    async fn probe_with_wrong_host_id_gets_no_answer() {
+        let (pt, pk) = punch_tokens("real-host");
+        let (pi, po) = ping_tokens("real-host");
+        let (hub, _refl) = UdpHub::bind_reflexive(
+            "127.0.0.1:0".parse().unwrap(), &[], Duration::ZERO, pt, pk, pi, po,
+        ).await.unwrap();
+        let addr = hub.local_addr().unwrap().to_string();
+        let rtt = probe_rtt("НЕ-тот-хост", &[addr], Duration::from_millis(400)).await;
+        assert!(rtt.is_none(), "ответили на пробу с чужим идентификатором");
+    }
+
+    /// Мёртвый адрес и мусор на входе не должны ни падать, ни ждать дольше срока.
+    #[tokio::test]
+    async fn probe_on_dead_address_returns_none_in_time() {
+        let started = std::time::Instant::now();
+        // 127.0.0.1 со заведомо свободным портом — ответить некому.
+        let rtt = probe_rtt("nobody", &["127.0.0.1:1".into()], Duration::from_millis(300)).await;
+        assert!(rtt.is_none());
+        assert!(started.elapsed() < Duration::from_secs(2), "проба не уложилась в свой срок");
+        // Пустой и мусорный список адресов — сразу None, без сети.
+        assert!(probe_rtt("x", &[], Duration::from_secs(5)).await.is_none());
+        assert!(probe_rtt("x", &["не адрес".into()], Duration::from_secs(5)).await.is_none());
+    }
+
     /// Хаб принимает гостя по PUNCH и доставляет его данные через пул буферов.
     /// Проверяет мультигость-путь end-to-end + переиспользование буферов demux.
     #[tokio::test]
     async fn hub_accepts_guest_and_delivers_via_pool() {
         let (pt, pk) = punch_tokens("hub-test");
+        let (pi, po) = ping_tokens("hub-test");
         let (hub, _refl) = UdpHub::bind_reflexive(
-            "127.0.0.1:0".parse().unwrap(), &[], Duration::ZERO, pt.clone(), pk.clone(),
+            "127.0.0.1:0".parse().unwrap(), &[], Duration::ZERO, pt.clone(), pk.clone(), pi, po,
         ).await.unwrap();
         let hub_addr = hub.local_addr().unwrap();
 
