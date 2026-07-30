@@ -24,7 +24,15 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       # Кеш cargo-реестра и target — повторные сборки идут ещё быстрее.
       - uses: Swatinem/rust-cache@v2
-      - name: Сборка bemyvpn (release)
+      # ВНИМАНИЕ: версия здесь НЕ ставится, поэтому бинарь помечен «0.0-dev» и
+      # `bemyvpn update` на нём откажется работать («локальная сборка»). Это
+      # сборка ДЛЯ ОТЛАДКИ: проверить, что main собирается, и погонять на тесте.
+      #
+      # СЕРВЕР так обновлять НЕ НАДО — иначе он навсегда останется без
+      # самообновления. На сервере ставится релиз одной командой:
+      #   curl -fsSL https://raw.githubusercontent.com/mister-PARADISE/bemyvpn/main/install.sh | sh
+      # после чего работает `bemyvpn update`. См. docs/RUNNING.md.
+      - name: Сборка bemyvpn (release, БЕЗ версии — только для отладки)
         run: cargo build --release -p bmv-cli
       - name: Выложить бинарь артефактом
         uses: actions/upload-artifact@v4

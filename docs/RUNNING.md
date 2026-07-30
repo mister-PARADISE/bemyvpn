@@ -88,6 +88,41 @@ sudo ./bemyvpn-linux-x86_64-terminal install
 после этого `systemctl restart bemyvpn-host` (раздача) или
 `systemctl restart bemyvpn-coord` (свой координатор).
 
+## 🔄 Обновить сервер (координатор или хост 24/7)
+
+**Первый раз — переустановить релизом**, потом навсегда одной командой.
+
+Зачем переустанавливать: если бинарь на сервере собирали из исходников или через
+`host-binary.yml`, в нём нет номера версии (помечен `0.0-dev`), и встроенное
+обновление откажется работать — «это локальная сборка, обновлять нечего». Релиз
+помечен правильно, и с него `bemyvpn update` работает.
+
+```bash
+# 1. поставить релиз ТУДА, откуда его запускает служба
+curl -fsSL https://raw.githubusercontent.com/mister-PARADISE/bemyvpn/main/install.sh \
+  | BMV_INSTALL_DIR=/opt/bemyvpn sh
+
+# 2. перезапустить службу (имя своё — посмотреть: systemctl list-units 'bemyvpn*' 'bmv*')
+systemctl restart bmv-coordinator
+
+# 3. убедиться
+/opt/bemyvpn/bemyvpn version && systemctl is-active bmv-coordinator
+```
+
+`BMV_INSTALL_DIR` обязателен: без него установщик положит файл в `/usr/local/bin`,
+а служба продолжит запускать старый из `/opt/bemyvpn`. Рядом с бинарём лежат
+`bmv-coordinator.secret` и `acme-cache/` — установщик их не трогает, и трогать их
+нельзя: от секрета зависят коды ВСЕХ существующих хостов, от кэша — сертификат.
+
+**Дальше обновление — одна команда:**
+
+```bash
+bemyvpn update && systemctl restart bmv-coordinator
+```
+
+Она сохраняет прежний бинарь рядом как `.bak`, так что откат — переименовать его
+обратно и перезапустить службу.
+
 ## 📡 Хост — раздать интернет (без конфига)
 
 **Проще всего — через меню.** Запусти под root и нажми одну кнопку:
