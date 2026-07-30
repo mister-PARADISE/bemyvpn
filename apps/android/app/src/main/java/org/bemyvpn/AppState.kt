@@ -133,6 +133,22 @@ class AppState private constructor(val ctx: Context) {
     var resolvedHost by mutableStateOf<Host?>(null)
     /** Текст ошибки подключения для карточки VPN (null — ошибки нет). */
     var vpnError by mutableStateOf<String?>(null)
+    private var vpnErrorJob: Job? = null
+
+    /**
+     * Показать разовое сообщение об отказе — и убрать его само через несколько секунд.
+     *
+     * ЧЕРЕЗ vpnState=3 это делать НЕЛЬЗЯ: фоновый опрос статуса ядра каждую секунду
+     * приводит vpnState к тому, что говорит ядро. А ядро тут в состоянии 0 (мы же не
+     * подключались), поэтому «ошибка» либо мигала меньше секунды и человек её не
+     * замечал, либо, наоборот, залипала навсегда. Сообщение живёт отдельно от
+     * состояния — со своим таймером и без драки с опросом.
+     */
+    private fun showVpnError(text: String) {
+        vpnError = text
+        vpnErrorJob?.cancel()
+        vpnErrorJob = scope.launch { delay(5000); vpnError = null }
+    }
     var expandedId by mutableStateOf<String?>(null)
 
     // хост
@@ -400,9 +416,7 @@ class AppState private constructor(val ctx: Context) {
         // и человек смотрел бы на «подключаюсь» до таймаута, не понимая почему.
         // На десктопе это подписано давно — здесь молчало.
         if (hosting && host.id == hostCode) {
-            vpnState = 3; connectedTo = null
-            hostError = null
-            vpnError = "Это ваш собственный хост"
+            showVpnError("Это ваш собственный хост")
             return
         }
         vpnError = null
@@ -423,7 +437,7 @@ class AppState private constructor(val ctx: Context) {
         val code = raw.uppercase().trim()
         if (code.isEmpty()) return
         if (hosting && code == hostCode) {
-            vpnState = 3; vpnError = "Это код вашего же хоста"
+            showVpnError("Это код вашего же хоста")
             return
         }
         hostById(code)?.let { h ->

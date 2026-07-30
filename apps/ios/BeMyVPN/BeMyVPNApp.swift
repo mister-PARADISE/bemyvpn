@@ -113,6 +113,24 @@ final class AppState: ObservableObject {
     @Published var resolvedHost: Host? = nil
     /// Текст ошибки подключения для карточки VPN (nil — ошибки нет).
     @Published var vpnError: String? = nil
+    private var vpnErrorTask: Task<Void, Never>?
+
+    /// Показать разовое сообщение об отказе — и убрать его само через несколько секунд.
+    ///
+    /// ЧЕРЕЗ vpnState = 3 это делать НЕЛЬЗЯ: фоновый опрос статуса ядра приводит
+    /// vpnState к тому, что говорит ядро. А ядро тут в состоянии 0 (мы же не
+    /// подключались), поэтому на iOS «ошибка» залипала навсегда, а на Android
+    /// мигала меньше секунды. Сообщение живёт отдельно от состояния — со своим
+    /// таймером и без драки с опросом.
+    private func showVpnError(_ text: String) {
+        vpnError = text
+        vpnErrorTask?.cancel()
+        vpnErrorTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 5_000_000_000)
+            guard !Task.isCancelled else { return }
+            self?.vpnError = nil
+        }
+    }
     @Published var expandedId: String? = nil
 
     // хост
@@ -366,8 +384,7 @@ final class AppState: ObservableObject {
         // и человек смотрел бы на «подключаюсь» до таймаута, не понимая почему.
         // На десктопе это подписано давно — здесь молчало.
         if hosting && host.id == hostCode {
-            withAnimation { vpnState = 3; connectedTo = nil }
-            vpnError = "Это ваш собственный хост"
+            showVpnError("Это ваш собственный хост")
             return
         }
         vpnError = nil
@@ -409,8 +426,7 @@ final class AppState: ObservableObject {
         let code = raw.uppercased().trimmingCharacters(in: .whitespaces)
         guard !code.isEmpty else { return }
         if hosting && code == hostCode {
-            withAnimation { vpnState = 3 }
-            vpnError = "Это код вашего же хоста"
+            showVpnError("Это код вашего же хоста")
             return
         }
         if let h = hostById(code) { withAnimation { expandedId = code }; if !h.hasPassword && h.usable { connect(h) }; return }

@@ -237,7 +237,6 @@ private fun VpnHero(app: AppState, showInvite: (String) -> Unit) {
         // сеть), а не первый коннект. Показываем это честно.
         1 -> if (app.connectedSince != null) "Переподключение…" else "Подключаюсь…"
         2 -> host?.name ?: app.connectedTo ?: "Подключено"
-        3 -> "Не подключились"
         else -> "VPN выключен"
     }
 
@@ -270,12 +269,6 @@ private fun VpnHero(app: AppState, showInvite: (String) -> Unit) {
                     }
                 } else Text("Канал поднят", color = Theme.dim, fontSize = 13.sp)
             }
-            // Причина отказа, а не общая надпись: «Это ваш собственный хост»
-            // объясняет ровно то, что произошло.
-            3 -> Text(
-                app.vpnError ?: "Не удалось подключиться",
-                color = Theme.red, fontSize = 13.sp, textAlign = TextAlign.Center,
-            )
             else -> {
                 val n = app.displayedHosts().size
                 Text(
@@ -284,6 +277,12 @@ private fun VpnHero(app: AppState, showInvite: (String) -> Unit) {
                     color = Theme.dim, fontSize = 13.sp, textAlign = TextAlign.Center,
                 )
             }
+        }
+
+        // Разовое сообщение об отказе: отдельно от vpnState, иначе фоновый опрос
+        // статуса ядра его затирает (или, наоборот, оставляет навсегда).
+        app.vpnError?.let { err ->
+            Text(err, color = Theme.red, fontSize = 13.sp, textAlign = TextAlign.Center)
         }
 
         if (app.vpnState == 2) ConnectedExtras(app, showInvite)

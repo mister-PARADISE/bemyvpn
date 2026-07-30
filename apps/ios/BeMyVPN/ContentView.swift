@@ -628,7 +628,6 @@ struct VPNHero: View {
         // сеть), а не первый коннект. Показываем это честно.
         case 1: return app.connectedSince != nil ? "Переподключение…" : "Подключаюсь…"
         case 2: return host?.name ?? app.connectedTo ?? "Подключено"
-        case 3: return "Не подключились"
         default: return "VPN выключен"
         }
     }
@@ -639,10 +638,6 @@ struct VPNHero: View {
         case 2:
             guard let h = host else { return Text("Канал поднят") }
             return Text(countryLabel(h)) + Text("  ·  ") + symbolText(protoIcon(h.proto), protoName(h.proto))
-        case 3:
-            // Причина отказа, а не общая надпись: «Это ваш собственный хост»
-            // объясняет ровно то, что произошло.
-            return Text(app.vpnError ?? "Не удалось подключиться")
         default:
             let n = app.displayedHosts().count
             return Text(n == 0 ? "Введите код сети или поднимите свой хост"
@@ -669,6 +664,13 @@ struct VPNHero: View {
                 .lineLimit(1).minimumScaleFactor(0.6)
             subtitle.foregroundColor(Theme.dim).font(.system(size: 13))
                 .multilineTextAlignment(.center)
+
+            // Разовое сообщение об отказе: отдельно от vpnState, иначе фоновый опрос
+            // статуса ядра его затирает (или, наоборот, оставляет навсегда).
+            if let err = app.vpnError {
+                Text(err).foregroundColor(Theme.red).font(.system(size: 13))
+                    .multilineTextAlignment(.center)
+            }
 
             if app.vpnState == 2 { connected }
         }
