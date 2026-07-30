@@ -132,6 +132,27 @@ final class AppState: ObservableObject {
         }
     }
     @Published var expandedId: String? = nil
+    /// Замеры отклика: id хоста → «24 мс» / «—» (не ответил) / «…» (меряем).
+    /// Меряем ПО РАСКРЫТИЮ карточки, а не для всего списка: проба — сетевой
+    /// запрос к чужой машине, и делать их пачкой ради строк, на которые никто
+    /// не смотрит, значит зря дёргать десятки хостов на каждом обновлении.
+    @Published var pings: [String: String] = [:]
+
+    /// Замерить отклик до хоста, если ещё не мерили. Повторно не дёргаем:
+    /// за секунды цифра не устаревает, а лишний запрос виден чужой машине.
+    func probePing(_ h: Host) {
+        guard pings[h.id] == nil else { return }
+        let eps = h.endpoints ?? ""
+        guard !eps.isEmpty else { pings[h.id] = "—"; return }
+        pings[h.id] = "…"
+        let coord = coordinator
+        Task {
+            let ms = await bg { Core.probeRtt(coord, id: h.id, endpoints: eps) }
+            // Честное «не ответил»: хост может быть за таким NAT, что без
+            // пробивания до него не достучаться. Выдумывать число нельзя.
+            pings[h.id] = ms.map { "\($0) мс" } ?? "—"
+        }
+    }
 
     // хост
     @Published var hosting = false

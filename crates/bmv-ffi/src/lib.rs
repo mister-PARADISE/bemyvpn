@@ -176,6 +176,34 @@ pub extern "C" fn bmv_new_code(coordinator: *const c_char) -> *mut c_char {
     to_c(if code.is_empty() { String::new() } else { format!("{code}|{sig}") })
 }
 
+/// Отклик до хоста в миллисекундах, БЕЗ подключения к нему. -1 = не ответил.
+///
+/// `endpoints` — адреса хоста из каталога, разделённые запятой. Зовётся, когда
+/// человек раскрыл карточку хоста: проба это сетевой запрос к чужой машине, и
+/// делать её для всего списка сразу незачем. Сессию на хосте НЕ создаёт
+/// (см. bmv_net::ping_tokens).
+#[no_mangle]
+pub extern "C" fn bmv_probe_rtt(
+    coordinator: *const c_char,
+    host_id: *const c_char,
+    endpoints: *const c_char,
+) -> i32 {
+    let eps: Vec<String> = cstr(endpoints)
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if eps.is_empty() {
+        return -1;
+    }
+    let engine = sig_engine(&cstr(coordinator));
+    let id = cstr(host_id);
+    RUNTIME
+        .block_on(async { engine.probe_host_rtt(&id, &eps).await })
+        .map(|ms| ms.min(i32::MAX as u32) as i32)
+        .unwrap_or(-1)
+}
+
 /// Свой внешний IP через координатор ("" при ошибке).
 #[no_mangle]
 pub extern "C" fn bmv_my_ip(coordinator: *const c_char) -> *mut c_char {
@@ -547,6 +575,10 @@ fn hosts_to_json(list: &[bmv_signal::HostInfo]) -> String {
                 "online": h.online,
                 "public": h.public,
                 "protocol": h.protocol,
+                // Адреса нужны приложению, чтобы замерить отклик до хоста ДО
+                // подключения (bmv_probe_rtt). Одной строкой через запятую —
+                // разбирать массив на каждой платформе ради этого незачем.
+                "endpoints": h.endpoints.join(","),
             })
         })
         .collect();

@@ -80,6 +80,17 @@ pub extern "system" fn Java_org_bemyvpn_Native_nativeMyIp(
     take(&mut env, r)
 }
 
+/// Отклик до хоста в мс, -1 = не ответил. Сессию на хосте не создаёт.
+#[no_mangle]
+pub extern "system" fn Java_org_bemyvpn_Native_nativeProbeRtt(
+    mut env: JNIEnv, _c: JClass, coordinator: JString, hostId: JString, endpoints: JString,
+) -> i32 {
+    let coord = c_arg(&mut env, &coordinator);
+    let id = c_arg(&mut env, &hostId);
+    let eps = c_arg(&mut env, &endpoints);
+    bmv_ffi::bmv_probe_rtt(coord.as_ptr(), id.as_ptr(), eps.as_ptr())
+}
+
 #[no_mangle]
 pub extern "system" fn Java_org_bemyvpn_Native_nativeHealth(
     mut env: JNIEnv, _c: JClass, coordinator: JString,

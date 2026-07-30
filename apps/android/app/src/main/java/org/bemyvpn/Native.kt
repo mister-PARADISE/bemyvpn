@@ -42,6 +42,9 @@ object Native {
     /** Смена сети (WiFi↔сотовая/вышка) — форсировать реконнект без падения TUN. */
     external fun nativeNudge()
 
+    /** Отклик до хоста в мс, -1 = не ответил. Сессию на хосте не создаёт. */
+    external fun nativeProbeRtt(coordinator: String, hostId: String, endpoints: String): Int
+
     // ── Хост-режим ───────────────────────────────────────────────────────────
     /** Стать хостом. Возвращает id, либо "!NAT" / "!SIG" / "". */
     external fun nativeHostStart(

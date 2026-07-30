@@ -15,6 +15,7 @@ data class Host(
     val online: Boolean,
     val isPublic: Boolean,
     val proto: String,
+    val endpoints: String = "",
 ) {
     val usable: Boolean get() = online && guests < max
 }
@@ -30,6 +31,8 @@ private fun hostOf(o: JSONObject) = Host(
     online = o.optBoolean("online"),
     isPublic = o.optBoolean("public"),
     proto = o.optString("protocol"),
+    // Адреса для пробы отклика (через запятую) — до подключения их взять больше неоткуда.
+    endpoints = o.optString("endpoints"),
 )
 
 /** {"version":N,"hosts":[...]} → (version, hosts); при ошибке (0, []). */

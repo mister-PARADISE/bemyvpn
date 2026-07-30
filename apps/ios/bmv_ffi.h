@@ -21,6 +21,10 @@ char *bmv_resolve(const char *coordinator, const char *code);
 char *bmv_new_code(const char *coordinator);
 /* Свой внешний IP через координатор ("" при ошибке). */
 char *bmv_my_ip(const char *coordinator);
+
+/* Отклик до хоста в мс, -1 = не ответил. endpoints — адреса через запятую.
+   Сессию на хосте НЕ создаёт, поэтому звать можно по раскрытию карточки. */
+int32_t bmv_probe_rtt(const char *coordinator, const char *host_id, const char *endpoints);
 /* Быстрая проверка связи: true = сервер жив. */
 bool  bmv_health(const char *coordinator);
 

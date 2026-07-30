@@ -746,7 +746,10 @@ struct HostCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Button { withAnimation(.easeInOut(duration: 0.2)) { app.expandedId = expanded ? nil : host.id } } label: {
+            Button {
+                withAnimation(.easeInOut(duration: 0.2)) { app.expandedId = expanded ? nil : host.id }
+                if app.expandedId == host.id { app.probePing(host) }   // раскрыли — меряем отклик
+            } label: {
                 HStack(spacing: 12) {
                     flagAvatar
                     VStack(alignment: .leading, spacing: 5) {
@@ -772,6 +775,7 @@ struct HostCard: View {
                     HStack(spacing: 8) {
                         StatTile(label: "СТРАНА", value: countryLabel(host))
                         StatTile(label: "ГОСТЕЙ", value: "\(host.guests) / \(host.max)")
+                        StatTile(label: "ОТКЛИК", value: app.pings[host.id] ?? "…")
                     }
                     HStack(spacing: 8) {
                         StatTile(label: "ДОСТУП", value: host.hasPassword ? "по паролю" : "открытый",

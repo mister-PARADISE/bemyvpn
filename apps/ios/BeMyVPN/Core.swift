@@ -13,9 +13,12 @@ struct Host: Identifiable, Codable, Equatable {
     let online: Bool
     let isPublic: Bool
     let proto: String
+    /// Адреса хоста через запятую — для пробы отклика ДО подключения.
+    /// Необязательное: старые сборки ядра это поле не отдавали.
+    let endpoints: String?
 
     enum CodingKeys: String, CodingKey {
-        case id, name, ip, country, guests, max, hasPassword, online
+        case id, name, ip, country, guests, max, hasPassword, online, endpoints
         case isPublic = "public"
         case proto = "protocol"
     }
@@ -37,6 +40,13 @@ enum Core {
     // ── сигналинг ──
     static func health(_ coord: String) -> Bool { bmv_health(coord) }
     static func myIp(_ coord: String) -> String { take(bmv_my_ip(coord)) }
+
+    /// Отклик до хоста в мс, nil = не ответил. Сессию на хосте не создаёт,
+    /// поэтому звать можно по раскрытию карточки.
+    static func probeRtt(_ coord: String, id: String, endpoints: String) -> Int? {
+        let ms = bmv_probe_rtt(coord, id, endpoints)
+        return ms >= 0 ? Int(ms) : nil
+    }
 
     /// Новый код от сервера: "CODE|SIG" → (code, sig).
     static func newCode(_ coord: String) -> (code: String, sig: String) {

@@ -366,7 +366,10 @@ fun HostCard(app: AppState, host: Host) {
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         Row(
-            Modifier.fillMaxWidth().tappable { app.expandedId = if (expanded) null else host.id },
+            Modifier.fillMaxWidth().tappable {
+                app.expandedId = if (expanded) null else host.id
+                if (app.expandedId == host.id) app.probePing(host)   // раскрыли — меряем отклик
+            },
             horizontalArrangement = Arrangement.spacedBy(12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -419,6 +422,7 @@ fun HostCard(app: AppState, host: Host) {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     StatTile("СТРАНА", countryLabel(host), Modifier.weight(1f))
                     StatTile("ГОСТЕЙ", "${host.guests} / ${host.max}", Modifier.weight(1f))
+                    StatTile("ОТКЛИК", app.pings[host.id] ?: "…", Modifier.weight(1f))
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     StatTile(

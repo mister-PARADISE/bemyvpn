@@ -150,6 +150,28 @@ class AppState private constructor(val ctx: Context) {
         vpnErrorJob = scope.launch { delay(5000); vpnError = null }
     }
     var expandedId by mutableStateOf<String?>(null)
+    /** Замеры отклика: id хоста → «24 мс» / «—» (не ответил) / «…» (меряем).
+     *  Меряем ПО РАСКРЫТИЮ карточки, а не для всего списка: проба — сетевой
+     *  запрос к чужой машине, и делать их пачкой ради строк, на которые никто
+     *  не смотрит, значит зря дёргать десятки хостов на каждом обновлении. */
+    var pings by mutableStateOf<Map<String, String>>(emptyMap())
+
+    /** Замерить отклик до хоста, если ещё не мерили. Повторно не дёргаем:
+     *  за секунды цифра не устаревает, а лишний запрос виден чужой машине. */
+    fun probePing(h: Host) {
+        if (pings.containsKey(h.id)) return
+        if (h.endpoints.isEmpty()) { pings = pings + (h.id to "—"); return }
+        pings = pings + (h.id to "…")
+        val coord = coordinator
+        scope.launch {
+            val ms = withContext(Dispatchers.IO) {
+                try { Native.nativeProbeRtt(coord, h.id, h.endpoints) } catch (_: Throwable) { -1 }
+            }
+            // Честное «не ответил»: хост может быть за таким NAT, что без
+            // пробивания до него не достучаться. Выдумывать число нельзя.
+            pings = pings + (h.id to if (ms >= 0) "$ms мс" else "—")
+        }
+    }
 
     // хост
     var hosting by mutableStateOf(false)
