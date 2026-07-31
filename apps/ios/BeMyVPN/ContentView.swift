@@ -525,9 +525,9 @@ struct ServerTab: View {
             }
             .padding(20).navPadding()
         }
-        // Пинг живой, пока смотрим на вкладку; ушли — прекращаем (см. watchServer).
-        .onAppear { coordField = app.coordinator; app.checkServer(); app.watchServer(true) }
-        .onDisappear { app.watchServer(false) }
+        // Открыли вкладку — сразу свежая цифра, не дожидаясь очередного круга.
+        // Сам цикл живёт всегда (см. watchServer), как на десктопе.
+        .onAppear { coordField = app.coordinator; app.checkServer() }
     }
 
     /// Тот же герой, что на вкладках VPN и «Хост» — единый язык статуса.

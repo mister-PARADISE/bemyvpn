@@ -29,7 +29,6 @@ import androidx.compose.material.icons.filled.SettingsInputAntenna
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -55,13 +54,9 @@ fun ServerTab(app: AppState, bottomPad: androidx.compose.ui.unit.Dp) {
     var coordField by remember { mutableStateOf(app.coordinator) }
     LaunchedEffect(app.coordinator) { coordField = app.coordinator }
 
-    // Пинг живой, пока смотрим на вкладку; ушли с неё — цикл отменяется вместе
-    // с уходом из композиции (см. watchServer).
-    DisposableEffect(Unit) {
-        app.checkServer()
-        app.watchServer(true)
-        onDispose { app.watchServer(false) }
-    }
+    // Открыли вкладку — сразу свежая цифра, не дожидаясь очередного круга.
+    // Сам цикл живёт всегда (см. watchServer), как на десктопе и iOS.
+    LaunchedEffect(Unit) { app.checkServer() }
 
     Column(
         Modifier

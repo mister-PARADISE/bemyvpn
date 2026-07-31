@@ -240,7 +240,7 @@ final class AppState: ObservableObject {
 
     func start() {
         Task.detached { GeoFlags.load() }   // база IP→страна в фоне
-        loadRecent(); startWatch(); startStatus(); checkServer()
+        loadRecent(); startWatch(); startStatus(); checkServer(); watchServer()
         if TunnelManager.available {
             tunnel.onStatus = { [weak self] in self?.applyTunnelStatus($0) }
             Task { await tunnel.prime() }
@@ -322,23 +322,25 @@ final class AppState: ObservableObject {
 
     private var serverWatchTask: Task<Void, Never>?
 
-    /// Держать пинг координатора живым, ПОКА ОТКРЫТА вкладка «Сервер».
+    /// Держать пинг координатора живым — ВСЕГДА, как на десктопе.
     ///
-    /// Раньше он замерялся только при запуске и по кнопке — то есть человек
-    /// смотрел на цифру, снятую неизвестно когда, и не видел, что связь уже
-    /// пропала (или наоборот вернулась). Обновляем раз в 5 секунд: это один
-    /// короткий запрос, а не поток, и только пока на вкладку смотрят — гонять
-    /// его в фоне ради экрана, который не открыт, незачем.
+    /// Раньше он замерялся только при запуске и по кнопке: человек смотрел на
+    /// цифру, снятую неизвестно когда, и не видел ни что связь пропала, ни что
+    /// вернулась. Особенно заметно после возврата из фона.
     ///
-    /// `false` останавливает (ушли с вкладки).
-    func watchServer(_ on: Bool) {
+    /// Интервал ОДИН на все оболочки (`Self.serverPoll`): на десктопе это давно
+    /// работало фоновым циклом, и делать на телефоне «то же, но по-другому»
+    /// значит плодить разное поведение там, где смысл один.
+    ///
+    /// Пауза берётся ПОСЛЕ проверки: на мёртвом сервере health висит до
+    /// таймаута, и запуск новой поверх незавершённой копил бы их.
+    static let serverPoll: UInt64 = 3_000_000_000
+
+    func watchServer() {
         serverWatchTask?.cancel()
-        guard on else { return }
         serverWatchTask = Task { [weak self] in
             while !Task.isCancelled {
-                // Пауза ПОСЛЕ проверки: первую делает сама вкладка при открытии,
-                // а запуск новой поверх незавершённой копил бы их на мёртвом сервере.
-                try? await Task.sleep(nanoseconds: 5_000_000_000)
+                try? await Task.sleep(nanoseconds: Self.serverPoll)
                 guard !Task.isCancelled else { return }
                 self?.checkServer()
             }

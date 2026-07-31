@@ -263,7 +263,7 @@ class AppState private constructor(val ctx: Context) {
         if (started) return
         started = true
         scope.launch(Dispatchers.IO) { GeoFlags.load(ctx) }   // база IP→страна в фоне
-        loadRecent(); startWatch(); startStatus(); checkServer()
+        loadRecent(); startWatch(); startStatus(); checkServer(); watchServer()
         // Хост-режим мог пережить пересоздание процесса (foreground-сервис).
         if (HostState.running) {
             hosting = true
@@ -358,25 +358,27 @@ class AppState private constructor(val ctx: Context) {
     }
 
     private var serverWatchJob: Job? = null
+    private val SERVER_POLL_MS = 3_000L
 
     /**
-     * Держать пинг координатора живым, ПОКА ОТКРЫТА вкладка «Сервер».
+     * Держать пинг координатора живым — ВСЕГДА, как на десктопе и iOS.
      *
-     * Раньше он замерялся только при запуске и по кнопке — то есть человек
-     * смотрел на цифру, снятую неизвестно когда, и не видел, что связь уже
-     * пропала (или наоборот вернулась). Обновляем раз в 5 секунд: это один
-     * короткий запрос, а не поток, и только пока на вкладку смотрят.
+     * Раньше он замерялся только при запуске и по кнопке: человек смотрел на
+     * цифру, снятую неизвестно когда, и не видел ни что связь пропала, ни что
+     * вернулась. Особенно заметно после возврата из фона.
      *
-     * false останавливает (ушли с вкладки).
+     * Интервал ОДИН на все оболочки (SERVER_POLL_MS): на десктопе это давно
+     * работало фоновым циклом, и делать на телефоне «то же, но по-другому»
+     * значит плодить разное поведение там, где смысл один.
+     *
+     * Пауза берётся ПОСЛЕ проверки: на мёртвом сервере health висит до
+     * таймаута, и запуск новой поверх незавершённой копил бы их.
      */
-    fun watchServer(on: Boolean) {
+    fun watchServer() {
         serverWatchJob?.cancel()
-        if (!on) return
         serverWatchJob = scope.launch {
             while (isActive) {
-                // Пауза ПОСЛЕ проверки: первую делает сама вкладка при открытии,
-                // а запуск новой поверх незавершённой копил бы их на мёртвом сервере.
-                delay(5000)
+                delay(SERVER_POLL_MS)
                 if (!isActive) return@launch
                 checkServer()
             }
