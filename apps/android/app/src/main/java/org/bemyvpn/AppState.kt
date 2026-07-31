@@ -357,6 +357,32 @@ class AppState private constructor(val ctx: Context) {
         }
     }
 
+    private var serverWatchJob: Job? = null
+
+    /**
+     * Держать пинг координатора живым, ПОКА ОТКРЫТА вкладка «Сервер».
+     *
+     * Раньше он замерялся только при запуске и по кнопке — то есть человек
+     * смотрел на цифру, снятую неизвестно когда, и не видел, что связь уже
+     * пропала (или наоборот вернулась). Обновляем раз в 5 секунд: это один
+     * короткий запрос, а не поток, и только пока на вкладку смотрят.
+     *
+     * false останавливает (ушли с вкладки).
+     */
+    fun watchServer(on: Boolean) {
+        serverWatchJob?.cancel()
+        if (!on) return
+        serverWatchJob = scope.launch {
+            while (isActive) {
+                // Пауза ПОСЛЕ проверки: первую делает сама вкладка при открытии,
+                // а запуск новой поверх незавершённой копил бы их на мёртвом сервере.
+                delay(5000)
+                if (!isActive) return@launch
+                checkServer()
+            }
+        }
+    }
+
     fun checkServer() {
         checkJob?.cancel()
         val coord = coordinator

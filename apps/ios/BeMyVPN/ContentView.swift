@@ -525,7 +525,9 @@ struct ServerTab: View {
             }
             .padding(20).navPadding()
         }
-        .onAppear { coordField = app.coordinator }
+        // Пинг живой, пока смотрим на вкладку; ушли — прекращаем (см. watchServer).
+        .onAppear { coordField = app.coordinator; app.checkServer(); app.watchServer(true) }
+        .onDisappear { app.watchServer(false) }
     }
 
     /// Тот же герой, что на вкладках VPN и «Хост» — единый язык статуса.
