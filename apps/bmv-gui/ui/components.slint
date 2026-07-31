@@ -168,6 +168,8 @@ export component PingTile inherits StatTile {
         animate opacity { duration: 450ms; easing: ease-in-out; }
         Timer {
             interval: 450ms;
+            // Живёт только пока идёт замер: сам элемент существует лишь под
+            // `if root.waiting`, так что лишних таймеров не остаётся.
             running: true;
             triggered => { root.dim = !root.dim; }
         }

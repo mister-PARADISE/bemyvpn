@@ -410,6 +410,28 @@ fn wire_expand_probe(
 
 /// Строка каталога → карточка (host_row на iOS): подпись, полоса, значок протокола.
 fn host_row(h: &HostInfo, pings: &Pings) -> HostRow {
+    // ЛОК БЕРЁТСЯ ОДИН РАЗ И СРЕЗАЕТСЯ В ЛОКАЛЬНЫЕ.
+    //
+    // Раньше здесь было два `pings.lock()` — прямо в литерале структуры, по
+    // одному на поле. Временные значения в выражении живут до конца ВСЕГО
+    // оператора, поэтому первый guard был ещё жив, когда брался второй, а
+    // `std::sync::Mutex` не реентрантный — самодедлок. И не где-нибудь, а на
+    // потоке интерфейса: окно вставало намертво, ничего нельзя нажать, каталог
+    // не наполнялся, и это читалось как «не подключается к серверу».
+    //
+    // Не воспроизводилось при ПУСТОМ каталоге: нет строк — нет вызова. Именно
+    // поэтому сборка и запуск «у себя» ничего не показали.
+    let (ping_text, ping_ms) = {
+        let map = pings.lock().unwrap();
+        match map.get(&h.id) {
+            Some(Some(ms)) => (
+                SharedString::from(format!("{ms} мс")),
+                (*ms).min(i32::MAX as u32) as i32,
+            ),
+            Some(None) => (SharedString::from("—"), -1),
+            None => (SharedString::new(), -1),
+        }
+    };
     let usable = h.online && h.guests < h.max_guests;
     let cc = host_cc(h);
     let flag_img = cc.as_deref().and_then(flags::flag);
@@ -439,15 +461,8 @@ fn host_row(h: &HostInfo, pings: &Pings) -> HostRow {
         proto_id: h.protocol.clone().into(),
         // Пусто до раскрытия карточки: мерить отклик для строк, на которые никто
         // не смотрит, — зря дёргать чужие машины.
-        ping: match pings.lock().unwrap().get(&h.id) {
-            Some(Some(ms)) => format!("{ms} мс").into(),
-            Some(None) => "—".into(),
-            None => SharedString::new(),
-        },
-        ping_ms: match pings.lock().unwrap().get(&h.id) {
-            Some(Some(ms)) => (*ms).min(i32::MAX as u32) as i32,
-            _ => -1,
-        },
+        ping: ping_text,
+        ping_ms,
     }
 }
 
@@ -1041,4 +1056,51 @@ fn qr_image(text: &str) -> Option<slint::Image> {
         }
     }
     Some(slint::Image::from_rgba8(buf))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Строка каталога собирается, когда замер отклика УЖЕ ЕСТЬ.
+    ///
+    /// Ловит самодедлок: раньше `host_row` брала `pings.lock()` дважды в одном
+    /// литерале структуры. Временные значения живут до конца оператора, поэтому
+    /// первый guard был жив при взятии второго, а `std::sync::Mutex` не
+    /// реентрантный — поток вставал навсегда. И вставал он на потоке событий:
+    /// окно замирало целиком.
+    ///
+    /// Пустой каталог этого НЕ ловил — строк нет, вызова нет. Поэтому тест
+    /// обязан класть значение в карту и обязан ограничивать время: дедлок не
+    /// падает, он висит.
+    #[test]
+    fn building_a_row_with_a_known_ping_does_not_deadlock() {
+        let pings: Pings = Arc::new(Mutex::new(std::collections::HashMap::new()));
+        pings.lock().unwrap().insert("h1".into(), Some(42));
+        pings.lock().unwrap().insert("h2".into(), None);
+
+        // `HostRow` содержит slint::Image и потому не Send — через канал едут
+        // уже снятые с неё значения.
+        let (tx, rx) = std::sync::mpsc::channel();
+        let p = pings.clone();
+        std::thread::spawn(move || {
+            let seen: Vec<(String, i32)> = ["h1", "h2", "h3"]
+                .iter()
+                .map(|id| {
+                    let h = HostInfo { id: (*id).into(), ..HostInfo::default() };
+                    let r = host_row(&h, &p);
+                    (r.ping.to_string(), r.ping_ms)
+                })
+                .collect();
+            let _ = tx.send(seen);
+        });
+
+        let seen = rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("host_row зависла — снова двойной lock в одном выражении");
+
+        assert_eq!(seen[0], ("42 мс".to_string(), 42));
+        assert_eq!(seen[1], ("—".to_string(), -1));
+        assert_eq!(seen[2], (String::new(), -1));
+    }
 }
