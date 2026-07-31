@@ -620,6 +620,102 @@ fn in_path(dir: &std::path::Path) -> bool {
         .unwrap_or(false)
 }
 
+
+/// Перезапустить службу systemd, которая запускает ИМЕННО ЭТОТ файл.
+///
+/// Имя юнита не угадываем: приложение ставит `bemyvpn-host`/`bemyvpn-coord`, но
+/// сервер мог быть поднят руками под любым именем. Ищем по тому, что юнит
+/// РЕАЛЬНО запускает, — это единственный надёжный признак «эта служба про нас».
+///
+/// Перезапускаем ТОЛЬКО при однозначном совпадении. Нашлось несколько (хост и
+/// координатор на одной машине) — трогать наугад нельзя: перезапуск обрывает
+/// живых гостей. В таком случае просто говорим, что сделать.
+#[cfg(target_os = "linux")]
+fn restart_owning_service() {
+    use std::process::Command;
+
+    // Не systemd (контейнер, WSL, обычный запуск из терминала) — перезапускать нечего.
+    if !std::path::Path::new("/run/systemd/system").exists() {
+        println!("  запустите программу заново");
+        return;
+    }
+    let Ok(me) = std::env::current_exe() else {
+        println!("  запустите программу заново");
+        return;
+    };
+    let me = me.to_string_lossy().to_string();
+
+    let Ok(out) = Command::new("systemctl")
+        .args(["list-units", "--type=service", "--state=active", "--no-legend", "--plain", "--no-pager"])
+        .output()
+    else {
+        println!("  запустите программу заново");
+        return;
+    };
+    let names: Vec<String> = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|l| l.split_whitespace().next())
+        .map(|s| s.to_string())
+        .collect();
+
+    let mut units: Vec<(String, String)> = Vec::new();
+    for n in names {
+        if let Ok(o) = Command::new("systemctl").args(["show", "-p", "ExecStart", "--value", &n]).output() {
+            units.push((n, String::from_utf8_lossy(&o.stdout).to_string()));
+        }
+    }
+    match unit_for_exe(&units, &me) {
+        Some(unit) => {
+            let ok = Command::new("systemctl").args(["restart", &unit]).status().map(|s| s.success()).unwrap_or(false);
+            if ok {
+                println!("  служба {unit} перезапущена — новая версия уже работает");
+            } else {
+                // Чаще всего это «не root»: обновиться из своей папки можно, а
+                // управлять службой — нет.
+                println!("  перезапустите службу: sudo systemctl restart {unit}");
+            }
+        }
+        None => println!("  запустите программу заново (службы, запускающей этот файл, не нашлось)"),
+    }
+}
+
+#[cfg(all(unix, not(target_os = "linux")))]
+fn restart_owning_service() {
+    // launchd на macOS: наши службы там не ставятся, перезапускать нечего.
+    println!("  запустите программу заново");
+}
+
+/// Единственный юнит, чей ExecStart запускает `exe`. Несколько или ни одного —
+/// None: перезапускать наугад нельзя, это обрывает живых гостей.
+///
+/// Вынесено отдельно от вызова systemctl, чтобы правило можно было проверить.
+/// На не-Linux собирается только для тестов: перезапускать там нечего.
+#[cfg(any(target_os = "linux", test))]
+fn unit_for_exe(units: &[(String, String)], exe: &str) -> Option<String> {
+    let hits: Vec<&String> = units
+        .iter()
+        .filter(|(_, exec)| exec_paths(exec).any(|p| p == exe))
+        .map(|(n, _)| n)
+        .collect();
+    (hits.len() == 1).then(|| hits[0].clone())
+}
+
+/// Пути запускаемых файлов из вывода `systemctl show -p ExecStart --value`.
+///
+/// Формат такой: `{ path=/opt/bemyvpn/bemyvpn ; argv[]=... ; ... }`, строк может
+/// быть несколько (у юнита бывает несколько ExecStart).
+///
+/// Берём именно поле `path=` и сравниваем ЦЕЛИКОМ. Сравнение подстрокой здесь
+/// ошибается: `/usr/local/bin/bemyvpn-helper` содержит `/usr/local/bin/bemyvpn`
+/// как начало, и служба чужой программы сошла бы за нашу — а мы её перезапустим.
+#[cfg(any(target_os = "linux", test))]
+fn exec_paths(exec_start: &str) -> impl Iterator<Item = &str> {
+    exec_start.lines().filter_map(|l| {
+        let after = l.split("path=").nth(1)?;
+        Some(after.split([' ', ';', '}']).next().unwrap_or("").trim())
+    })
+}
+
 async fn run_update(check_only: bool) {
     if !bmv_common::version::is_release_build() {
         println!("Это локальная сборка ({}) — обновлять нечего.", bmv_common::version::VERSION);
@@ -666,7 +762,11 @@ async fn run_update(check_only: bool) {
         Ok(bak) => {
             println!("Готово. Версия {latest} установлена.");
             println!("  старая сохранена: {}", bak.display());
-            println!("  запустите программу заново");
+            // Служба продолжает крутить СТАРЫЙ файл: на Unix запущенный процесс
+            // держит прежний inode и живёт им до перезапуска. Человек, который
+            // обновился и ушёл, об этом не знает — а сервер месяцами работает на
+            // старой версии, думая, что обновлён. Поэтому перезапускаем сами.
+            restart_owning_service();
         }
         Err(e) => fail(format!("замена не удалась: {e}")),
     }
@@ -677,5 +777,54 @@ async fn run_update(check_only: bool) {
             println!("  закройте программу — обновление применится само");
         }
         Err(e) => fail(format!("замена не удалась: {e}")),
+    }
+}
+
+#[cfg(test)]
+mod update_tests {
+    use super::unit_for_exe;
+
+    fn u(n: &str, e: &str) -> (String, String) { (n.to_string(), e.to_string()) }
+
+    /// Юнит ищется по тому, какой файл он РЕАЛЬНО запускает, а не по имени:
+    /// приложение ставит `bemyvpn-host`, а поднятый руками сервер может
+    /// называться как угодно (у боевого координатора это `bmv-coordinator`).
+    #[test]
+    fn finds_unit_by_executable_not_by_name() {
+        let units = vec![
+            u("ssh.service", "{ path=/usr/sbin/sshd ; argv[]=/usr/sbin/sshd -D }"),
+            u("bmv-coordinator.service", "{ path=/opt/bemyvpn/bemyvpn ; argv[]=/opt/bemyvpn/bemyvpn server }"),
+        ];
+        assert_eq!(unit_for_exe(&units, "/opt/bemyvpn/bemyvpn").as_deref(), Some("bmv-coordinator.service"));
+    }
+
+    /// НЕОДНОЗНАЧНОСТЬ — не перезапускаем. Хост и координатор на одной машине
+    /// запускаются одним и тем же файлом; дёрнуть наугад значит оборвать живых
+    /// гостей у той службы, которую человек не трогал.
+    #[test]
+    fn refuses_when_several_units_run_the_same_binary() {
+        let units = vec![
+            u("bemyvpn-host.service", "{ path=/usr/local/bin/bemyvpn ; argv[]=/usr/local/bin/bemyvpn host }"),
+            u("bemyvpn-coord.service", "{ path=/usr/local/bin/bemyvpn ; argv[]=/usr/local/bin/bemyvpn server }"),
+        ];
+        assert_eq!(unit_for_exe(&units, "/usr/local/bin/bemyvpn"), None);
+    }
+
+    /// Ничего нашего не запущено — перезапускать нечего.
+    #[test]
+    fn no_match_yields_none() {
+        let units = vec![u("nginx.service", "{ path=/usr/sbin/nginx ; argv[]=/usr/sbin/nginx }")];
+        assert_eq!(unit_for_exe(&units, "/usr/local/bin/bemyvpn"), None);
+        assert_eq!(unit_for_exe(&[], "/usr/local/bin/bemyvpn"), None);
+    }
+
+    /// Чужой файл с похожим путём не должен считаться нашим по совпадению
+    /// куска строки: сравниваем полный путь, который дал systemd.
+    #[test]
+    fn similar_path_of_another_binary_does_not_match() {
+        let units = vec![u("other.service", "{ path=/usr/local/bin/bemyvpn-helper ; argv[]=/usr/local/bin/bemyvpn-helper }")];
+        // Наш путь — /usr/local/bin/bemyvpn, а в юните ДРУГОЙ файл. Он содержит
+        // наш путь как префикс, поэтому проверка «подстрокой» тут ошиблась бы.
+        assert_eq!(unit_for_exe(&units, "/usr/local/bin/bemyvpn"), None);
     }
 }
