@@ -6,6 +6,7 @@ import BmvFFI
 @main
 struct BeMyVPNApp: App {
     @StateObject private var app = AppState()
+    @Environment(\.scenePhase) private var scenePhase
     var body: some Scene {
         WindowGroup {
             ContentView()
@@ -13,6 +14,10 @@ struct BeMyVPNApp: App {
                 .preferredColorScheme(.dark)
                 .onAppear { app.start(); fixCatalystWindow() }
                 .onOpenURL { app.openDeepLink($0) }
+                // Вернулись из фона — переспросить связь (см. resumedFromBackground).
+                .onChange(of: scenePhase) { phase in
+                    if phase == .active { app.resumedFromBackground() }
+                }
         }
     }
 }
@@ -216,6 +221,21 @@ final class AppState: ObservableObject {
               let name = Locale.current.localizedString(forRegionCode: cc), !name.isEmpty
         else { return }
         hostName = name
+    }
+
+    /// Приложение вернулось на экран после фона.
+    ///
+    /// Пока оно спало, система заморозила наши задачи, а сокет к координатору за
+    /// это время наверняка умер. Само по себе приложение об этом НЕ УЗНАЁТ:
+    /// `serverOnline` остаётся прежним, список выглядит живым, и полоса
+    /// «восстанавливаю связь» не появляется — хотя данные давно не актуальны.
+    /// Поэтому на возврате переспрашиваем связь и переустанавливаем подписку на
+    /// каталог: если связи нет, состояние честно станет «нет связи», и человек
+    /// увидит и приглушённый список, и дышащую полосу.
+    func resumedFromBackground() {
+        checkServer()
+        startWatch()
+        if TunnelManager.available { Task { await tunnel.prime() } }
     }
 
     func start() {

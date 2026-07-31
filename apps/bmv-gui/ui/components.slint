@@ -1,7 +1,7 @@
 // Переиспользуемые блоки — построчный перенос iOS ContentView.swift:
 // плитки (Stat/Copy/Action), кнопки, карточка, герой-круг с пульсом, поле ввода.
 import { Theme } from "theme.slint";
-import { IconCopy, IconCheck, IconRefresh } from "icons.slint";
+import { IconCopy, IconCheck, IconRefresh, IconAntennaOff } from "icons.slint";
 
 // Модель карточки хоста (заполняет Rust).
 export struct HostRow {
@@ -119,6 +119,42 @@ export component StatTile inherits TileFrame {
             VerticalLayout { alignment: center; @children }
         }
     }
+}
+
+/// Плитка отклика до хоста.
+///
+///   • идёт первый замер — КРУГОВАЯ СТРЕЛКА ВРАЩАЕТСЯ: движение честно говорит
+///     «сейчас меряю», в отличие от многоточия, которое просто стоит и молчит;
+///   • ответа нет — перечёркнутая антенна: у «нет отклика» отдельный знак, а не
+///     прочерк, который легко принять за «данных нет»;
+///   • число есть — просто цифра, без анимации.
+export component PingTile inherits StatTile {
+    in property <string> ping;
+    property <bool> waiting: root.ping == "…" || root.ping == "";
+    property <bool> no-answer: root.ping == "—";
+    property <bool> dim: false;
+
+    label: "ОТКЛИК";
+    value: root.waiting ? "" : (root.no-answer ? "нет" : root.ping);
+    tint: root.no-answer ? Theme.dim : Theme.fg;
+
+    // На мобилках эта стрелка ВРАЩАЕТСЯ. Здесь — пульсирует: значки у нас
+    // векторные (Path), а Slint не умеет ни `rotation-angle` на них, ни
+    // отдельного элемента поворота. Смысл сохранён — движение говорит «идёт
+    // замер», — а изображать вращение подменой команд пути было бы трюком
+    // ради трюка.
+    if root.waiting: IconRefresh {
+        width: 13px; height: 13px; tint: Theme.accent;
+        opacity: root.dim ? 0.35 : 1.0;
+        animate opacity { duration: 450ms; easing: ease-in-out; }
+        Timer {
+            interval: 450ms;
+            running: true;
+            triggered => { root.dim = !root.dim; }
+        }
+    }
+    if root.no-answer: IconAntennaOff { width: 13px; height: 13px; tint: Theme.dim; }
+
 }
 
 // Плитка со значением, которое копируется тапом (код, IP).

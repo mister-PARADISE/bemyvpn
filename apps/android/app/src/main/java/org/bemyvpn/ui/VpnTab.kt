@@ -1,9 +1,12 @@
 package org.bemyvpn.ui
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.material.icons.filled.Autorenew
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.SignalWifiOff
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
@@ -59,6 +62,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -555,17 +559,39 @@ private fun StaleBanner() {
     }
 }
 
-/// Плитка отклика: пока ждём первый ответ — мягко пульсирует, дальше просто
-/// меняет цифру. Пульс ТОЛЬКО на ожидании: крутить его постоянно значит намекать,
-/// что что-то грузится, хотя число уже есть и живёт своей жизнью.
+/**
+ * Плитка отклика.
+ *
+ *   • идёт первый замер — КРУГОВАЯ СТРЕЛКА ВРАЩАЕТСЯ: движение честно говорит
+ *     «сейчас меряю», в отличие от многоточия, которое просто стоит и молчит;
+ *   • ответа нет — перечёркнутая антенна: у «нет отклика» отдельный знак, а не
+ *     прочерк, который легко принять за «данных нет»;
+ *   • число есть — просто цифра, без анимации: крутить что-то поверх готового
+ *     значения значит намекать, что оно ещё не готово.
+ */
 @Composable
 private fun PingTile(value: String, modifier: Modifier = Modifier) {
-    val waiting = value == "…"
-    val t = rememberInfiniteTransition(label = "ping")
-    val pulse by t.animateFloat(
-        1f, 0.45f,
-        infiniteRepeatable(tween(700), RepeatMode.Reverse),
-        label = "pingPulse",
-    )
-    StatTile("ОТКЛИК", value, modifier.alpha(if (waiting) pulse else 1f))
+    when (value) {
+        "…" -> {
+            val t = rememberInfiniteTransition(label = "ping")
+            val angle by t.animateFloat(
+                0f, 360f,
+                infiniteRepeatable(tween(900, easing = LinearEasing), RepeatMode.Restart),
+                label = "pingSpin",
+            )
+            // Через trailing у TileBody, чтобы не менять общий StatTile ради
+            // одного случая: вращение нужно только здесь.
+            Box(modifier.tileBackground()) {
+                TileBody("ОТКЛИК", "") {
+                    Icon(
+                        Icons.Filled.Autorenew, null,
+                        Modifier.size(14.dp).rotate(angle),
+                        tint = Theme.accent,
+                    )
+                }
+            }
+        }
+        "—" -> StatTile("ОТКЛИК", "нет", modifier, symbol = Icons.Filled.SignalWifiOff, tint = Theme.dim)
+        else -> StatTile("ОТКЛИК", value, modifier)
+    }
 }

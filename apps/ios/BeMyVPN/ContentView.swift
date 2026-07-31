@@ -285,11 +285,8 @@ struct BigCopyButton: View {
 }
 
 /// Плитка-факт.
-/// Плитка отклика: пока ждём первый ответ — мягко пульсирует, дальше просто
-/// меняет цифру. Пульс ТОЛЬКО на ожидании: крутить его постоянно значит намекать,
-/// что что-то грузится, хотя число уже есть и живёт своей жизнью.
 /// Полоса «связь потеряна, восстанавливаю». Мягко ДЫШИТ — это и есть весь
-/// индикатор процесса: отдельного «крутилки» не нужно, движение само говорит,
+/// индикатор процесса: отдельной «крутилки» не нужно, движение само говорит,
 /// что работа идёт и руками ничего делать не надо.
 struct StaleBanner: View {
     @State private var breathe = false
@@ -305,21 +302,41 @@ struct StaleBanner: View {
     }
 }
 
+/// Плитка отклика.
+///
+///   • идёт первый замер — КРУГОВАЯ СТРЕЛКА ВРАЩАЕТСЯ: движение честно говорит
+///     «сейчас меряю», в отличие от многоточия, которое просто стоит и молчит;
+///   • ответа нет — перечёркнутая антенна: у «нет отклика» отдельный знак, а не
+///     прочерк, который легко принять за «данных нет»;
+///   • число есть — просто цифра, без всякой анимации: крутить что-то поверх
+///     готового значения значит намекать, что оно ещё не готово.
 struct PingTile: View {
     let value: String
-    /// Идёт первый замер — числа ещё нет.
     private var waiting: Bool { value == "…" }
-    @State private var pulse = false
+    private var noAnswer: Bool { value == "—" }
+    @State private var spin = false
 
     var body: some View {
-        StatTile(label: "ОТКЛИК", value: value)
-            .opacity(waiting && pulse ? 0.45 : 1)
-            .animation(waiting ? .easeInOut(duration: 0.7).repeatForever(autoreverses: true)
-                               : .easeOut(duration: 0.25), value: pulse)
-            // Смена цифры — короткое проявление, чтобы глаз заметил обновление,
-            // но без дёрганья: значение меняется раз в секунду.
-            .animation(.easeOut(duration: 0.25), value: value)
-            .onAppear { pulse = true }
+        Group {
+            if waiting {
+                TileBody(label: "ОТКЛИК", value: "", symbol: nil, valueColor: Theme.fg) {
+                    Image(systemName: "arrow.triangle.2.circlepath")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(Theme.accent)
+                        .rotationEffect(.degrees(spin ? 360 : 0))
+                        .animation(.linear(duration: 0.9).repeatForever(autoreverses: false), value: spin)
+                        .onAppear { spin = true }
+                }
+                .background(tileBackground(nil))
+            } else if noAnswer {
+                StatTile(label: "ОТКЛИК", value: "нет", symbol: "antenna.radiowaves.left.and.right.slash", tint: Theme.dim)
+            } else {
+                StatTile(label: "ОТКЛИК", value: value)
+            }
+        }
+        // Смена значения — короткое проявление, чтобы глаз заметил обновление,
+        // но без дёрганья: цифра меняется раз в секунду.
+        .animation(.easeOut(duration: 0.25), value: value)
     }
 }
 

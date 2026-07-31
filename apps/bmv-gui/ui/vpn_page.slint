@@ -2,7 +2,7 @@
 // коду» (поле + вставить + стрелка), «Сканировать QR», недавние, список хостов
 // карточками с раскрытием.
 import { Theme } from "theme.slint";
-import { HostRow, Card, StatTile, CopyTile, GradientButton, SectionLabel, Field, HeroCircle } from "components.slint";
+import { HostRow, Card, StatTile, PingTile, CopyTile, GradientButton, SectionLabel, Field, HeroCircle } from "components.slint";
 import { IconShield, IconShieldCheck, IconShieldSlash, IconShieldLock, IconMask, IconLock, IconLockOpen,
          IconPeople, IconCopy, IconCheck, IconClose, IconQr, IconScan, IconPaste, IconArrowRight, IconChevronRight, IconChevronUp } from "icons.slint";
 import { ScrollView } from "std-widgets.slint";
@@ -104,7 +104,7 @@ component HostCard inherits Rectangle {
                     spacing: 8px;
                     StatTile { label: "СТРАНА"; value: h.country; horizontal-stretch: 1; }
                     StatTile { label: "ГОСТЕЙ"; value: h.guests; horizontal-stretch: 1; }
-                    StatTile { label: "ОТКЛИК"; value: h.ping; horizontal-stretch: 1; }
+                    PingTile { ping: h.ping; horizontal-stretch: 1; }
                 }
                 HorizontalLayout {
                     spacing: 8px;

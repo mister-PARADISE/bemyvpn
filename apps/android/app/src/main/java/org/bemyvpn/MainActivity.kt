@@ -36,6 +36,12 @@ class MainActivity : ComponentActivity() {
         if (!text.isNullOrBlank()) handleScanned(text)
     }
 
+    /** Вернулись на экран после фона — переспросить связь (см. resumedFromBackground). */
+    override fun onResume() {
+        super.onResume()
+        app.resumedFromBackground()
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         // Edge-to-edge: тёмный фон уходит под системные панели, иконки светлые.
