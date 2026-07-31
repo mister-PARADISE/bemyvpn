@@ -419,12 +419,23 @@ export component VpnPage inherits Rectangle {
             // Связь с сервером потеряна, а список НЕ пуст: цифры и состав хостов
             // ниже — последние известные, то есть могут врать. Молчать нельзя,
             // иначе устаревший список выглядит как живой.
+            // Связь потеряна: полоса мягко ДЫШИТ — это и есть весь индикатор
+            // процесса. Отдельной «крутилки» не нужно, движение само говорит,
+            // что работа идёт и руками ничего делать не надо.
             if root.coord-state == 2 && root.hosts.length > 0: Rectangle {
                 background: #3A2A15;
                 border-radius: 10px;
                 border-width: 1px;
                 border-color: Theme.amber;
                 height: txt.preferred-height + 20px;
+                property <bool> dim: false;
+                opacity: dim ? 0.72 : 1.0;
+                animate opacity { duration: 1100ms; easing: ease-in-out; }
+                Timer {
+                    interval: 1100ms;
+                    running: true;
+                    triggered => { parent.dim = !parent.dim; }
+                }
                 HorizontalLayout {
                     padding: 10px;
                     txt := Text {
@@ -444,6 +455,11 @@ export component VpnPage inherits Rectangle {
             for h[i] in root.hosts: HostCard {
                 h: h;
                 index: i;
+                // Данные не живые — показываем это САМИМ СПИСКОМ, а не ещё одним
+                // элементом: приглушённое читается как «неактуально» мгновенно
+                // и без слов.
+                opacity: root.coord-state == 2 ? 0.55 : 1.0;
+                animate opacity { duration: 400ms; easing: ease-in-out; }
                 expanded: root.expanded == i;
                 guest-password <=> root.guest-password;
                 toggle() => {

@@ -285,6 +285,44 @@ struct BigCopyButton: View {
 }
 
 /// Плитка-факт.
+/// Плитка отклика: пока ждём первый ответ — мягко пульсирует, дальше просто
+/// меняет цифру. Пульс ТОЛЬКО на ожидании: крутить его постоянно значит намекать,
+/// что что-то грузится, хотя число уже есть и живёт своей жизнью.
+/// Полоса «связь потеряна, восстанавливаю». Мягко ДЫШИТ — это и есть весь
+/// индикатор процесса: отдельного «крутилки» не нужно, движение само говорит,
+/// что работа идёт и руками ничего делать не надо.
+struct StaleBanner: View {
+    @State private var breathe = false
+    var body: some View {
+        Text("Нет связи с сервером — список ниже может устареть. Восстанавливаю связь…")
+            .foregroundColor(Theme.amber).font(.system(size: 12))
+            .frame(maxWidth: .infinity, alignment: .leading).padding(10)
+            .background(RoundedRectangle(cornerRadius: 10).fill(Color(hex: 0x3A2A15)))
+            .overlay(RoundedRectangle(cornerRadius: 10).stroke(Theme.amber.opacity(breathe ? 0.35 : 1), lineWidth: 1))
+            .opacity(breathe ? 0.72 : 1)
+            .animation(.easeInOut(duration: 1.1).repeatForever(autoreverses: true), value: breathe)
+            .onAppear { breathe = true }
+    }
+}
+
+struct PingTile: View {
+    let value: String
+    /// Идёт первый замер — числа ещё нет.
+    private var waiting: Bool { value == "…" }
+    @State private var pulse = false
+
+    var body: some View {
+        StatTile(label: "ОТКЛИК", value: value)
+            .opacity(waiting && pulse ? 0.45 : 1)
+            .animation(waiting ? .easeInOut(duration: 0.7).repeatForever(autoreverses: true)
+                               : .easeOut(duration: 0.25), value: pulse)
+            // Смена цифры — короткое проявление, чтобы глаз заметил обновление,
+            // но без дёрганья: значение меняется раз в секунду.
+            .animation(.easeOut(duration: 0.25), value: value)
+            .onAppear { pulse = true }
+    }
+}
+
 struct StatTile: View {
     let label: String; let value: String
     var symbol: String? = nil
@@ -582,18 +620,18 @@ struct VPNTab: View {
                 // ниже — последние известные, то есть могут врать. Молчать нельзя,
                 // иначе устаревший список выглядит как живой. Руками делать ничего
                 // не нужно — клиент переподключается сам, об этом и говорим.
-                if app.serverOnline == false && !shown.isEmpty {
-                    Text("Нет связи с сервером — список ниже может устареть. Восстанавливаю связь…")
-                        .foregroundColor(Theme.amber).font(.system(size: 12))
-                        .frame(maxWidth: .infinity, alignment: .leading).padding(10)
-                        .background(RoundedRectangle(cornerRadius: 10).fill(Color(hex: 0x3A2A15)))
-                        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Theme.amber, lineWidth: 1))
-                }
+                let stale = app.serverOnline == false && !shown.isEmpty
+                if stale { StaleBanner() }
                 if shown.isEmpty {
                     Text(app.serverOnline == false ? "Нет связи с сервером.\nПроверьте адрес во вкладке «Сервер»." : "Хостов пока нет.\nВведите код сети или поднимите свой во вкладке «Хост».")
                         .foregroundColor(Theme.dim).font(.system(size: 14)).multilineTextAlignment(.center).frame(maxWidth: .infinity).padding(.vertical, 40)
                 } else {
+                    // Данные не живые — показываем это САМИМ СПИСКОМ, а не ещё
+                    // одним элементом: приглушённое читается как «неактуально»
+                    // мгновенно и без слов.
                     ForEach(shown) { HostCard(host: $0) }
+                        .opacity(stale ? 0.55 : 1)
+                        .animation(.easeInOut(duration: 0.4), value: stale)
                 }
             }
             .padding(20).navPadding()
@@ -748,7 +786,8 @@ struct HostCard: View {
         VStack(alignment: .leading, spacing: 12) {
             Button {
                 withAnimation(.easeInOut(duration: 0.2)) { app.expandedId = expanded ? nil : host.id }
-                if app.expandedId == host.id { app.probePing(host) }   // раскрыли — меряем отклик
+                // Раскрыли — меряем ПОКА открыто; закрыли — прекращаем.
+                app.watchPing(app.expandedId == host.id ? host : nil)
             } label: {
                 HStack(spacing: 12) {
                     flagAvatar
@@ -775,7 +814,7 @@ struct HostCard: View {
                     HStack(spacing: 8) {
                         StatTile(label: "СТРАНА", value: countryLabel(host))
                         StatTile(label: "ГОСТЕЙ", value: "\(host.guests) / \(host.max)")
-                        StatTile(label: "ОТКЛИК", value: app.pings[host.id] ?? "…")
+                        PingTile(value: app.pings[host.id] ?? "…")
                     }
                     HStack(spacing: 8) {
                         StatTile(label: "ДОСТУП", value: host.hasPassword ? "по паролю" : "открытый",

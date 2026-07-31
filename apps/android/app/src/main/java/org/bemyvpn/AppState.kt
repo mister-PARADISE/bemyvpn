@@ -150,26 +150,41 @@ class AppState private constructor(val ctx: Context) {
         vpnErrorJob = scope.launch { delay(5000); vpnError = null }
     }
     var expandedId by mutableStateOf<String?>(null)
-    /** Замеры отклика: id хоста → «24 мс» / «—» (не ответил) / «…» (меряем).
-     *  Меряем ПО РАСКРЫТИЮ карточки, а не для всего списка: проба — сетевой
-     *  запрос к чужой машине, и делать их пачкой ради строк, на которые никто
-     *  не смотрит, значит зря дёргать десятки хостов на каждом обновлении. */
+    /** Отклик до раскрытого хоста: «24 мс» / «—» (не ответил) / «…» (первый замер).
+     *  Держим ТОЛЬКО для раскрытой карточки — закрыли, значит больше не интересно. */
     var pings by mutableStateOf<Map<String, String>>(emptyMap())
+    private var pingJob: Job? = null
 
-    /** Замерить отклик до хоста, если ещё не мерили. Повторно не дёргаем:
-     *  за секунды цифра не устаревает, а лишний запрос виден чужой машине. */
-    fun probePing(h: Host) {
-        if (pings.containsKey(h.id)) return
+    /**
+     * Мерить отклик до хоста ПОКА ОТКРЫТА его карточка — раз в секунду.
+     *
+     * Не один замер с кэшем: одиночная цифра может оказаться случайной (потеря
+     * пакета, всплеск очереди), а живая показывает ещё и стабильность канала —
+     * для выбора это важнее среднего. Нагрузка ничтожная: восемь байт раз в
+     * секунду и только для ОДНОЙ карточки; keepalive внутри рабочей сессии
+     * ходит чаще.
+     *
+     * null останавливает замеры (карточку закрыли).
+     */
+    fun watchPing(h: Host?) {
+        pingJob?.cancel()
+        if (h == null) return
         if (h.endpoints.isEmpty()) { pings = pings + (h.id to "—"); return }
-        pings = pings + (h.id to "…")
+        if (pings[h.id] == null) pings = pings + (h.id to "…")
         val coord = coordinator
-        scope.launch {
-            val ms = withContext(Dispatchers.IO) {
-                try { Native.nativeProbeRtt(coord, h.id, h.endpoints) } catch (_: Throwable) { -1 }
+        pingJob = scope.launch {
+            while (isActive) {
+                val ms = withContext(Dispatchers.IO) {
+                    try { Native.nativeProbeRtt(coord, h.id, h.endpoints) } catch (_: Throwable) { -1 }
+                }
+                if (!isActive) return@launch
+                // Честное «не ответил»: хост может быть за таким NAT, что без
+                // пробивания до него не достучаться. Выдумывать число нельзя.
+                pings = pings + (h.id to if (ms >= 0) "$ms мс" else "—")
+                // Пауза ПОСЛЕ замера, а не параллельно: у пробы свой срок (1.5с),
+                // и запуск нового замера поверх незакрытого копил бы их.
+                delay(1000)
             }
-            // Честное «не ответил»: хост может быть за таким NAT, что без
-            // пробивания до него не достучаться. Выдумывать число нельзя.
-            pings = pings + (h.id to if (ms >= 0) "$ms мс" else "—")
         }
     }
 

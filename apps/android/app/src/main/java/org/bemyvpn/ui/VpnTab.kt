@@ -4,6 +4,11 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
@@ -53,6 +58,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -130,20 +136,8 @@ fun VpnTab(app: AppState, bottomPad: Dp, openScanner: () -> Unit) {
         // последние известные, то есть могут врать. Молчать нельзя, иначе
         // устаревший список выглядит как живой. Руками делать ничего не нужно —
         // клиент переподключается сам, об этом и говорим.
-        if (app.serverOnline == false && shown.isNotEmpty()) {
-            Row(
-                Modifier.fillMaxWidth()
-                    .background(Color(0xFF3A2A15), RoundedCornerShape(10.dp))
-                    .border(1.dp, Theme.amber, RoundedCornerShape(10.dp))
-                    .padding(10.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    "Нет связи с сервером — список ниже может устареть. Восстанавливаю связь…",
-                    color = Theme.amber, fontSize = 12.sp,
-                )
-            }
-        }
+        val stale = app.serverOnline == false && shown.isNotEmpty()
+        if (stale) StaleBanner()
         if (shown.isEmpty()) {
             Text(
                 if (app.serverOnline == false) "Нет связи с сервером.\nПроверьте адрес во вкладке «Сервер»."
@@ -152,7 +146,13 @@ fun VpnTab(app: AppState, bottomPad: Dp, openScanner: () -> Unit) {
                 modifier = Modifier.fillMaxWidth().padding(vertical = 40.dp),
             )
         } else {
-            shown.forEach { h -> HostCard(app, h) }
+            // Данные не живые — показываем это САМИМ СПИСКОМ, а не ещё одним
+            // элементом: приглушённое читается как «неактуально» мгновенно.
+            val dim by animateFloatAsState(if (stale) 0.55f else 1f, tween(400), label = "staleDim")
+            Column(
+                Modifier.alpha(dim),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) { shown.forEach { h -> HostCard(app, h) } }
         }
     }
 
@@ -368,7 +368,8 @@ fun HostCard(app: AppState, host: Host) {
         Row(
             Modifier.fillMaxWidth().tappable {
                 app.expandedId = if (expanded) null else host.id
-                if (app.expandedId == host.id) app.probePing(host)   // раскрыли — меряем отклик
+                // Раскрыли — меряем ПОКА открыто; закрыли — прекращаем.
+                app.watchPing(if (app.expandedId == host.id) host else null)
             },
             horizontalArrangement = Arrangement.spacedBy(12.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -422,7 +423,7 @@ fun HostCard(app: AppState, host: Host) {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     StatTile("СТРАНА", countryLabel(host), Modifier.weight(1f))
                     StatTile("ГОСТЕЙ", "${host.guests} / ${host.max}", Modifier.weight(1f))
-                    StatTile("ОТКЛИК", app.pings[host.id] ?: "…", Modifier.weight(1f))
+                    PingTile(app.pings[host.id] ?: "…", Modifier.weight(1f))
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     StatTile(
@@ -527,4 +528,44 @@ private fun UpdateBanner(app: AppState) {
             }
         }
     }
+}
+
+/// Полоса «связь потеряна, восстанавливаю». Мягко ДЫШИТ — это и есть весь
+/// индикатор процесса: отдельной «крутилки» не нужно, движение само говорит,
+/// что работа идёт и руками ничего делать не надо.
+@Composable
+private fun StaleBanner() {
+    val t = rememberInfiniteTransition(label = "stale")
+    val a by t.animateFloat(
+        1f, 0.72f,
+        infiniteRepeatable(tween(1100), RepeatMode.Reverse),
+        label = "staleBreath",
+    )
+    Row(
+        Modifier.fillMaxWidth().alpha(a)
+            .background(Color(0xFF3A2A15), RoundedCornerShape(10.dp))
+            .border(1.dp, Theme.amber, RoundedCornerShape(10.dp))
+            .padding(10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            "Нет связи с сервером — список ниже может устареть. Восстанавливаю связь…",
+            color = Theme.amber, fontSize = 12.sp,
+        )
+    }
+}
+
+/// Плитка отклика: пока ждём первый ответ — мягко пульсирует, дальше просто
+/// меняет цифру. Пульс ТОЛЬКО на ожидании: крутить его постоянно значит намекать,
+/// что что-то грузится, хотя число уже есть и живёт своей жизнью.
+@Composable
+private fun PingTile(value: String, modifier: Modifier = Modifier) {
+    val waiting = value == "…"
+    val t = rememberInfiniteTransition(label = "ping")
+    val pulse by t.animateFloat(
+        1f, 0.45f,
+        infiniteRepeatable(tween(700), RepeatMode.Reverse),
+        label = "pingPulse",
+    )
+    StatTile("ОТКЛИК", value, modifier.alpha(if (waiting) pulse else 1f))
 }
