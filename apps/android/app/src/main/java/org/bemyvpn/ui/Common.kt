@@ -159,15 +159,23 @@ fun TileBody(
 ) {
     Column(Modifier.fillMaxWidth().padding(horizontal = 11.dp, vertical = 9.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Text(label, color = Theme.dim, fontSize = 10.sp, fontWeight = FontWeight.Black, letterSpacing = 0.7.sp)
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+        // Значение и значок — ПО ЦЕНТРУ ячейки. Раньше symbol вставал слева от
+        // текста, а trailing уезжал вправо за weight(1f), и значки в соседних
+        // плитках оказывались по разные стороны — взгляд цеплялся за разнобой.
+        // Заголовок остаётся слева: он подпись к ячейке, а не содержимое.
+        Row(
+            Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(5.dp, Alignment.CenterHorizontally),
+        ) {
             if (symbol != null) Icon(symbol, null, Modifier.size(14.dp), tint = valueColor)
-            // weight(1f): значение занимает всё свободное место (Spacer на iOS),
-            // прижимая trailing-иконку к правому краю плитки.
-            Text(
-                value, color = valueColor, fontSize = 13.5.sp, fontWeight = FontWeight.SemiBold,
-                fontFamily = if (mono) FontFamily.Monospace else null,
-                maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f),
-            )
+            if (value.isNotEmpty()) {
+                Text(
+                    value, color = valueColor, fontSize = 13.5.sp, fontWeight = FontWeight.SemiBold,
+                    fontFamily = if (mono) FontFamily.Monospace else null,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis,
+                )
+            }
             trailing()
         }
     }

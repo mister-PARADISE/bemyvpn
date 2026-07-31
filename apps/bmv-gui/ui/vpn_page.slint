@@ -104,7 +104,7 @@ component HostCard inherits Rectangle {
                     spacing: 8px;
                     StatTile { label: "СТРАНА"; value: h.country; horizontal-stretch: 1; }
                     StatTile { label: "ГОСТЕЙ"; value: h.guests; horizontal-stretch: 1; }
-                    PingTile { ping: h.ping; horizontal-stretch: 1; }
+                    PingTile { ping: h.ping; ms: h.ping-ms; horizontal-stretch: 1; }
                 }
                 HorizontalLayout {
                     spacing: 8px;

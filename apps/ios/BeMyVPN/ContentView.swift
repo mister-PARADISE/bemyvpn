@@ -184,16 +184,23 @@ private struct TileBody<Trailing: View>: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(label).foregroundColor(Theme.dim).font(.system(size: 10, weight: .heavy)).kerning(0.7)
+            // Значение и значок — ПО ЦЕНТРУ ячейки. Раньше `symbol` вставал слева
+            // от текста, а `trailing` уезжал вправо за распоркой, и значки в
+            // соседних плитках оказывались по разные стороны — взглядцеплялся за
+            // разнобой. Заголовок остаётся слева: он подпись к ячейке, а не
+            // содержимое.
             HStack(spacing: 5) {
                 if let symbol {
                     Image(systemName: symbol).font(.system(size: 12, weight: .semibold)).foregroundColor(valueColor)
                 }
-                Text(value).foregroundColor(valueColor)
-                    .font(.system(size: 13.5, weight: .semibold, design: mono ? .monospaced : .default))
-                    .lineLimit(1).minimumScaleFactor(0.6)
-                Spacer(minLength: 0)
+                if !value.isEmpty {
+                    Text(value).foregroundColor(valueColor)
+                        .font(.system(size: 13.5, weight: .semibold, design: mono ? .monospaced : .default))
+                        .lineLimit(1).minimumScaleFactor(0.6)
+                }
                 trailing
             }
+            .frame(maxWidth: .infinity, alignment: .center)
         }
         .padding(.horizontal, 11).padding(.vertical, 9)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -316,6 +323,15 @@ struct PingTile: View {
     private var noAnswer: Bool { value == "—" }
     @State private var spin = false
 
+    /// Цвет по величине задержки — чтобы годность хоста читалась без чтения цифр.
+    /// Пороги под VPN: до 60мс разницы не чувствуешь, после 150мс уже мешает.
+    private var tint: Color {
+        guard let ms = Int(value.split(separator: " ").first.map(String.init) ?? "") else { return Theme.fg }
+        if ms < 60 { return Theme.green }
+        if ms <= 150 { return Theme.amber }
+        return Theme.red
+    }
+
     var body: some View {
         Group {
             if waiting {
@@ -329,13 +345,13 @@ struct PingTile: View {
                 }
                 .background(tileBackground(nil))
             } else if noAnswer {
-                StatTile(label: "ОТКЛИК", value: "нет", symbol: "antenna.radiowaves.left.and.right.slash", tint: Theme.dim)
+                // Только знак, без слова: перечёркнутая антенна говорит сама,
+                // а «нет» рядом с ней — это то же самое ещё раз.
+                StatTile(label: "ОТКЛИК", value: "", symbol: "antenna.radiowaves.left.and.right.slash", tint: Theme.dim)
             } else {
-                StatTile(label: "ОТКЛИК", value: value)
+                StatTile(label: "ОТКЛИК", value: value, tint: tint)
             }
         }
-        // Смена значения — короткое проявление, чтобы глаз заметил обновление,
-        // но без дёрганья: цифра меняется раз в секунду.
         .animation(.easeOut(duration: 0.25), value: value)
     }
 }

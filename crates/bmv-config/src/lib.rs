@@ -30,6 +30,17 @@ pub struct Config {
     /// Настройки режима СЕРВЕРА (свой координатор). Тот же бинарь `bemyvpn`
     /// поднимает координатор командой `server` или из меню — отдельного бинаря нет.
     pub server: ServerConfig,
+    /// Файл, ИЗ КОТОРОГО прочитан этот конфиг. Сохраняем обратно ТУДА ЖЕ.
+    ///
+    /// Без этого правки терялись: читали по приоритету (--config, env,
+    /// ./bemyvpn.toml, ~/.config/…), а писали ВСЕГДА в ~/.config. На сервере
+    /// рядом с бинарём лежит bemyvpn.toml, он приоритетнее — поэтому меню
+    /// сохраняло в один файл, а при следующем запуске читало другой, и человек
+    /// видел, что настройки «не меняются».
+    ///
+    /// В сам TOML не пишется (skip): путь — свойство загрузки, а не настройка.
+    #[serde(skip)]
+    pub source: Option<PathBuf>,
 }
 
 /// Режим «Сервер» (координатор): где слушать и пути к TLS-сертификату. Всё здесь —
@@ -186,6 +197,7 @@ impl Default for Config {
             default_protocol: "noise-obfs".into(),
             guest: GuestConfig::default(),
             host: HostConfig::default(),
+            source: None,
             protocols: ProtocolsConfig::default(),
             stun: StunConfig::default(),
             log: LogConfig::default(),
@@ -245,7 +257,11 @@ impl Config {
     /// Загрузить конфиг, разрешая путь по правилам поиска.
     pub fn load(explicit: Option<&Path>) -> Result<Config> {
         match resolve_path(explicit) {
-            Some(path) => Self::from_file(&path),
+            Some(path) => {
+                let mut c = Self::from_file(&path)?;
+                c.source = Some(path); // сохранять будем СЮДА ЖЕ
+                Ok(c)
+            }
             None => Ok(Config::default()),
         }
     }
@@ -279,7 +295,8 @@ impl Config {
     /// Сохранить конфиг в пользовательский путь (создаёт папку). Меню зовёт это
     /// при каждом изменении — руками .toml править не нужно.
     pub fn save(&self) -> Result<()> {
-        let path = Self::user_path();
+        // Туда, откуда прочитали. Нового конфига ещё нет — в пользовательский путь.
+        let path = self.source.clone().unwrap_or_else(Self::user_path);
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir).map_err(|e| Error::Config(format!("{}: {e}", dir.display())))?;
         }
@@ -440,6 +457,38 @@ mod tests {
         }
         std::env::remove_var("XDG_CONFIG_HOME");
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+
+    /// Конфиг сохраняется ТУДА, ОТКУДА прочитан.
+    ///
+    /// Раньше читали по приоритету, а писали всегда в ~/.config — и если рядом
+    /// лежал bemyvpn.toml (на сервере он именно так и лежит), правки из меню
+    /// уходили в другой файл, а при следующем запуске читался прежний. Человек
+    /// менял настройку и видел, что «ничего не меняется».
+    #[test]
+    fn saves_back_to_the_file_it_was_loaded_from() {
+        let dir = std::env::temp_dir().join(format!("bmv-src-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("bemyvpn.toml");
+        std::fs::write(&path, "default_protocol = \"plain\"\n").unwrap();
+
+        let mut c = Config::load(Some(&path)).unwrap();
+        assert_eq!(c.source.as_deref(), Some(path.as_path()), "источник не запомнен");
+        c.default_protocol = "noise-obfs".into();
+        c.save().unwrap();
+
+        // Изменение обязано оказаться В ТОМ ЖЕ файле, а не в пользовательском.
+        let again = Config::load(Some(&path)).unwrap();
+        assert_eq!(again.default_protocol, "noise-obfs", "правка не вернулась из своего файла");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Нового конфига ещё нет — сохраняем в пользовательский путь, как раньше.
+    #[test]
+    fn without_source_saves_to_user_path() {
+        let c = Config::default();
+        assert!(c.source.is_none());
     }
 
     #[test]

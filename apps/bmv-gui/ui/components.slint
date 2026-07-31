@@ -26,6 +26,10 @@ export struct HostRow {
     // это сетевой запрос, и делать их пачкой ради строк, на которые никто не
     // смотрит, значит зря дёргать чужие машины.
     ping: string,
+    /// Задержка в мс для ЦВЕТА: -1 — неизвестна/нет ответа. Отдельным числом,
+    /// а не разбором строки «24 мс»: to-float об суффикс спотыкается, а цвет
+    /// не должен зависеть от того, как мы решили подписать значение.
+    ping-ms: int,
 }
 
 // ── Точка статуса (с пульсом) ────────────────────────────────────────────────
@@ -110,11 +114,16 @@ export component StatTile inherits TileFrame {
         padding-left: 11px; padding-right: 11px; padding-top: 9px; padding-bottom: 9px;
         spacing: 4px;
         Text { text: root.label; color: Theme.dim; font-size: 10px; font-weight: 900; letter-spacing: 0.7px; }
+        // Значение и значок — ПО ЦЕНТРУ ячейки. Раньше текст растягивался
+        // (horizontal-stretch), прижимая значок к правому краю, и в соседних
+        // плитках значки оказывались по разные стороны — взгляд цеплялся за
+        // разнобой. Заголовок остаётся слева: он подпись к ячейке, а не содержимое.
         HorizontalLayout {
             spacing: 5px;
+            alignment: center;
             Text {
                 text: root.value; color: root.tint; font-size: 13.5px; font-weight: 600;
-                overflow: elide; horizontal-stretch: 1; min-width: 0px; vertical-alignment: center;
+                overflow: elide; min-width: 0px; vertical-alignment: center;
             }
             VerticalLayout { alignment: center; @children }
         }
@@ -134,9 +143,19 @@ export component PingTile inherits StatTile {
     property <bool> no-answer: root.ping == "—";
     property <bool> dim: false;
 
+    in property <int> ms: -1;
+    // Цвет по величине задержки — чтобы годность хоста читалась без чтения цифр.
+    // Пороги под VPN: до 60мс разницы не чувствуешь, после 150мс уже мешает.
+    property <color> ping-tint:
+        root.ms < 0 ? Theme.fg
+        : root.ms < 60 ? Theme.green
+        : root.ms <= 150 ? Theme.amber
+        : Theme.red;
+
     label: "ОТКЛИК";
-    value: root.waiting ? "" : (root.no-answer ? "нет" : root.ping);
-    tint: root.no-answer ? Theme.dim : Theme.fg;
+    // Без слова «нет»: перечёркнутая антенна говорит сама.
+    value: (root.waiting || root.no-answer) ? "" : root.ping;
+    tint: root.no-answer ? Theme.dim : root.ping-tint;
 
     // На мобилках эта стрелка ВРАЩАЕТСЯ. Здесь — пульсирует: значки у нас
     // векторные (Path), а Slint не умеет ни `rotation-angle` на них, ни

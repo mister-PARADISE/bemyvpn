@@ -591,7 +591,20 @@ private fun PingTile(value: String, modifier: Modifier = Modifier) {
                 }
             }
         }
-        "—" -> StatTile("ОТКЛИК", "нет", modifier, symbol = Icons.Filled.SignalWifiOff, tint = Theme.dim)
-        else -> StatTile("ОТКЛИК", value, modifier)
+        // Только знак, без слова: перечёркнутая антенна говорит сама, а «нет»
+        // рядом с ней — это то же самое ещё раз.
+        "—" -> StatTile("ОТКЛИК", "", modifier, symbol = Icons.Filled.SignalWifiOff, tint = Theme.dim)
+        else -> StatTile("ОТКЛИК", value, modifier, tint = pingTint(value))
+    }
+}
+
+/// Цвет по величине задержки — чтобы годность хоста читалась без чтения цифр.
+/// Пороги под VPN: до 60мс разницы не чувствуешь, после 150мс уже мешает.
+private fun pingTint(value: String): Color {
+    val ms = value.substringBefore(' ').toIntOrNull() ?: return Theme.fg
+    return when {
+        ms < 60 -> Theme.green
+        ms <= 150 -> Theme.amber
+        else -> Theme.red
     }
 }

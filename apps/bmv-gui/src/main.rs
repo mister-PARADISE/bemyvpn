@@ -32,7 +32,10 @@ type Ts = Arc<Mutex<Option<std::time::Instant>>>;
 /// Замеры отклика: id хоста → готовая строка для плитки («24 мс» / «—» / «…»).
 /// Живёт рядом с каталогом, потому что строки каталога пересобираются на каждом
 /// обновлении, а измерение переживать это обязано — иначе цифра мигала бы.
-type Pings = Arc<Mutex<std::collections::HashMap<String, String>>>;
+/// Замеры отклика: id хоста → Some(мс) / None (не ответил). Отсутствие ключа =
+/// ещё не мерили. Храним ЧИСЛО, а текст и цвет строятся из него — иначе цвет
+/// зависел бы от того, как мы подписали значение.
+type Pings = Arc<Mutex<std::collections::HashMap<String, Option<u32>>>>;
 
 /// Часы сессии: MM:SS, после часа H:MM:SS (как uptimeText на iOS).
 fn uptime_text(sec: u64) -> String {
@@ -359,18 +362,16 @@ fn wire_expand_probe(
         if pings.lock().unwrap().contains_key(&h.id) {
             return;
         }
-        pings.lock().unwrap().insert(h.id.clone(), "…".into());
+        // Пока меряем — ключа нет: пустая строка в плитке включает вращение.
+
         let eng = engine.lock().unwrap().clone();
         let (weak2, pings2) = (weak.clone(), pings.clone());
         handle.spawn(async move {
+            // Честное «не ответил» (None): хост может быть за таким NAT, что без
+            // пробивания до него не достучаться. Выдумывать число нельзя.
             let ms = eng.probe_host_rtt(&h.id, &h.endpoints).await;
-            let text = match ms {
-                Some(ms) => format!("{ms} мс"),
-                // Честное «не ответил»: хост может быть за таким NAT, что без
-                // пробивания до него не достучаться. Выдумывать число нельзя.
-                None => "—".to_string(),
-            };
-            pings2.lock().unwrap().insert(h.id.clone(), text.clone());
+            let text = ms.map(|v| format!("{v} мс")).unwrap_or_else(|| "—".into());
+            pings2.lock().unwrap().insert(h.id.clone(), ms);
             let _ = slint::invoke_from_event_loop(move || {
                 let Some(ui) = weak2.upgrade() else { return };
                 // Обновляем ТУ САМУЮ строку, а не весь список: перестроение
@@ -380,6 +381,7 @@ fn wire_expand_probe(
                     if let Some(mut r) = rows.row_data(i) {
                         if r.id == h.id.as_str() {
                             r.ping = text.clone().into();
+                            r.ping_ms = ms.map(|v| v.min(i32::MAX as u32) as i32).unwrap_or(-1);
                             rows.set_row_data(i, r);
                             break;
                         }
@@ -421,7 +423,15 @@ fn host_row(h: &HostInfo, pings: &Pings) -> HostRow {
         proto_id: h.protocol.clone().into(),
         // Пусто до раскрытия карточки: мерить отклик для строк, на которые никто
         // не смотрит, — зря дёргать чужие машины.
-        ping: pings.lock().unwrap().get(&h.id).cloned().unwrap_or_default().into(),
+        ping: match pings.lock().unwrap().get(&h.id) {
+            Some(Some(ms)) => format!("{ms} мс").into(),
+            Some(None) => "—".into(),
+            None => SharedString::new(),
+        },
+        ping_ms: match pings.lock().unwrap().get(&h.id) {
+            Some(Some(ms)) => (*ms).min(i32::MAX as u32) as i32,
+            _ => -1,
+        },
     }
 }
 
