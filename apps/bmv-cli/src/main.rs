@@ -342,6 +342,42 @@ async fn run_host(engine: std::sync::Arc<BmvEngine>, tunnel: bool) {
         });
     }
 
+    // Правки конфига подхватываются НА ЛЕТУ — без перезапуска.
+    //
+    // В меню настройки и так применяются мгновенно, а вот на сервере хост живёт
+    // службой, и единственным способом что-то изменить был перезапуск — который
+    // РВЁТ ВСЕХ подключённых гостей ради смены одного имени. Теперь следим за
+    // временем правки файла и применяем то, что можно менять на ходу.
+    //
+    // Опрос раз в 3 секунды, а не inotify: зависимость ради одного файла не
+    // нужна, а задержка в пару секунд для правки конфига руками незаметна.
+    {
+        let e = engine.clone();
+        let path = engine.config().source.clone();
+        tokio::spawn(async move {
+            let Some(path) = path else { return }; // конфига нет — следить не за чем
+            let stamp = |p: &std::path::Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
+            let mut last = stamp(&path);
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                let now = stamp(&path);
+                if now == last {
+                    continue;
+                }
+                last = now;
+                // Битый после правки TOML не должен ронять живую раздачу:
+                // просто ждём, пока его допишут.
+                let Ok(c) = Config::from_file(&path) else { continue };
+                let _ = e.host_set_name(&c.host.name).await;
+                let _ = e.host_set_max_guests(c.host.max_guests.max(1)).await;
+                let _ = e.host_set_password(&c.host.password).await;
+                let _ = e.host_set_public(c.host.public).await;
+                let _ = e.host_set_protocol(&c.default_protocol).await;
+                println!("Конфиг изменился — настройки применены без перезапуска.");
+            }
+        });
+    }
+
     // Встречное пробитие NAT — хост шлёт PUNCH ждущим гостям (иначе за NAT недостать).
     {
         let e = engine.clone();
