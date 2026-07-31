@@ -144,10 +144,13 @@ private fun ServerHero(app: AppState) {
 
         Column(Modifier.padding(top = 4.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                ActionTile(
+                // Обычная плитка, а не кнопка: проверка идёт сама каждые 3
+                // секунды, и нажатие экономило бы в лучшем случае их же.
+                // Акцентный значок при этом обещал действие, которого нет.
+                StatTile(
                     "ПИНГ", if (app.serverOnline == true) "${app.ping} мс" else "—",
-                    Modifier.weight(1f), tint = pingColor, icon = Icons.Filled.Refresh, busy = app.checking,
-                ) { app.checkServer() }
+                    Modifier.weight(1f), tint = pingColor,
+                )
                 StatTile("ХОСТОВ", "${app.hosts.size}", Modifier.weight(1f))
             }
             CopyTile("ВАШ IP", app.myIp.ifEmpty { "—" }, Modifier.fillMaxWidth())

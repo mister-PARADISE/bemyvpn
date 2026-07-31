@@ -550,8 +550,11 @@ struct ServerTab: View {
 
             VStack(spacing: 8) {
                 HStack(spacing: 8) {
-                    ActionTile(label: "ПИНГ", value: app.serverOnline == true ? "\(app.ping) мс" : "—",
-                               tint: pingColor, icon: "arrow.clockwise", busy: app.checking) { app.checkServer() }
+                    // Обычная плитка, а не кнопка: проверка идёт сама каждые 3
+                    // секунды, и нажатие экономило бы в лучшем случае их же.
+                    // Акцентный значок при этом обещал действие, которого нет.
+                    StatTile(label: "ПИНГ", value: app.serverOnline == true ? "\(app.ping) мс" : "—",
+                             tint: pingColor)
                     StatTile(label: "ХОСТОВ", value: "\(app.hosts.count)")
                 }
                 CopyTile(label: "ВАШ IP", value: app.myIp.isEmpty ? "—" : app.myIp)

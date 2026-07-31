@@ -17,7 +17,6 @@ export component ServerPage inherits Rectangle {
     in-out property <string> coord-field;
     callback set-coord(string);
     callback reset-coord();
-    callback recheck();
     callback copy-text(string);
 
     property <color> tint: coord-state == 1 ? Theme.green : coord-state == 2 ? Theme.red : Theme.amber;
@@ -66,13 +65,15 @@ export component ServerPage inherits Rectangle {
                         spacing: 8px;
                         HorizontalLayout {
                             spacing: 8px;
-                            ActionTile {
+                            StatTile {
+                                // Обычная плитка, а не кнопка: проверка идёт сама
+                                // каждые 3 секунды, и нажатие экономило бы в лучшем
+                                // случае их же. Акцентный значок при этом обещал
+                                // действие, которого нет.
                                 label: "ПИНГ";
                                 value: root.coord-state == 1 ? (root.coord-ping + " мс") : "—";
                                 tint: root.ping-color;
-                                busy: root.coord-state == 0;
                                 horizontal-stretch: 1;
-                                action => { root.recheck(); }
                             }
                             StatTile { label: "ХОСТОВ"; value: root.coord-hosts; horizontal-stretch: 1; }
                         }

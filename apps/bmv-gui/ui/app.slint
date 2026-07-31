@@ -112,7 +112,6 @@ export component AppWindow inherits Window {
     callback toggle-host();
     callback set-coord(string);
     callback reset-coord();
-    callback recheck();
     callback paste();
     callback copy-code();
     callback copy-text(string);
@@ -196,7 +195,6 @@ export component AppWindow inherits Window {
                 coord-field <=> root.coord-field;
                 set-coord(t) => { root.set-coord(t); }
                 reset-coord() => { root.reset-coord(); }
-                recheck() => { root.recheck(); }
                 copy-text(t) => { root.copy-text(t); }
             }
         }
