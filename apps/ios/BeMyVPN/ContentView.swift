@@ -805,6 +805,14 @@ struct HostCard: View {
                 }
             }
             if expanded {
+                // Содержимое ПОЯВЛЯЕТСЯ, а не возникает: на Android это делают
+                // expandVertically + fadeIn, здесь — тот же смысл. Вход чуть
+                // задержан, чтобы карточка успела начать расти и содержимое не
+                // «обгоняло» её край; выход быстрый — закрытие должно быть резче
+                // открытия, иначе кажется, что карточка залипает.
+                // Группируем в один вью: переход вешается на НЕГО, а на `if`
+                // его повесить нельзя — это не вью, а ветка сборщика.
+                VStack(alignment: .leading, spacing: 12) {
                 VStack(spacing: 8) {
                     // Код и IP — тап копирует.
                     HStack(spacing: 8) {
@@ -829,6 +837,11 @@ struct HostCard: View {
                 }
                 Button { app.connect(host, password: password) } label: { gradientButton("Подключить") }
                     .disabled(!host.usable).opacity(host.usable ? 1 : 0.5)
+                }
+                .transition(.asymmetric(
+                    insertion: .opacity.animation(.easeOut(duration: 0.22).delay(0.06)),
+                    removal: .opacity.animation(.easeIn(duration: 0.12))
+                ))
             }
         }
         .padding(14)
@@ -838,6 +851,13 @@ struct HostCard: View {
                 .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous)
                     .stroke(expanded ? Theme.accent.opacity(0.28) : Color.white.opacity(0.05), lineWidth: 1))
         )
+        // Фон и рамка ПЕРЕТЕКАЮТ, а не переключаются рывком (на Android это
+        // animateColorAsState). Без этого подсветка раскрытой карточки
+        // «щёлкает», и вся плавность роста высоты пропадает даром.
+        .animation(.easeInOut(duration: 0.2), value: expanded)
+        // Обрезка по скруглению: пока карточка растёт, содержимое не должно
+        // вылезать за её край.
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
     }
 
     /// Флаг страны крупно слева — как аватарка, на всю высоту строки.
