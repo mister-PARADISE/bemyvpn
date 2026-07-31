@@ -179,7 +179,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let _ = slint::invoke_from_event_loop(move || {
                     let Some(ui) = weak2.upgrade() else { return };
                     match res {
-                        Ok(()) => ui.set_update_state(2),
+                        Ok(()) => {
+                            ui.set_update_state(2);
+                            // ВЫХОДИМ САМИ. Помощник ждёт смерти этого процесса,
+                            // чтобы подменить бандл (на Windows — файл .exe);
+                            // пока мы живы, подменять нечего. Раньше приложение
+                            // писало «перезапустите» и продолжало работать —
+                            // человек окно не закрывал, помощник ждал полминуты
+                            // и лез двигать бандл ПОД РАБОТАЮЩИМ приложением.
+                            // На Linux этой беды не было: там AppImage меняется
+                            // на месте, помощник не нужен.
+                            //
+                            // Секунда паузы — чтобы надпись «Готово» успели
+                            // прочесть и закрытие окна не выглядело сбоем.
+                            slint::Timer::single_shot(Duration::from_millis(1200), || {
+                                let _ = slint::quit_event_loop();
+                            });
+                        }
                         Err(e) => {
                             ui.set_update_state(3);
                             ui.set_update_error(e.into());

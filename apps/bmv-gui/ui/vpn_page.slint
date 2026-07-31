@@ -197,7 +197,7 @@ export component VpnPage inherits Rectangle {
                         horizontal-stretch: 1;
                         Text {
                                 text: root.update-state == 1 ? "Скачиваю " + root.update-version + "…"
-                                    : root.update-state == 2 ? "Готово — перезапустите"
+                                    : root.update-state == 2 ? "Готово — закрываю и обновляю"
                                     : root.update-state == 3 ? root.update-error
                                     : "Версия " + root.update-version + " доступна";
                             color: root.update-state == 3 ? Theme.red : Theme.accent;
