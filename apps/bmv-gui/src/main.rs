@@ -142,6 +142,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Последний известный свой IP — для «умного Старта» (сначала чужая страна).
     let my_ip: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
 
+    // ПОЛНЫЙ адрес координатора — со схемой. Отдельно от `coord-url`, который
+    // теперь показывается доменом: тот годится только для экрана. Полный нужен
+    // и для сетевых запросов, и как ключ хранилища (недавние привязаны к
+    // координатору). Смешивать их нельзя: «bemyvpn.net» и «https://bemyvpn.net»
+    // — разные ключи и неразбираемый URL.
+    let coord_full: Arc<Mutex<String>> = Arc::new(Mutex::new(coord.clone()));
+
     // Замеры отклика до хостов (заполняются по раскрытию карточки).
     let pings: Pings = Arc::new(Mutex::new(std::collections::HashMap::new()));
 
@@ -252,6 +259,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let on_state: Arc<dyn Fn(i32, String, String) + Send + Sync> = {
         let (hosts, recent, weak) = (hosts.clone(), recent_ids.clone(), ui.as_weak());
         let vpn_since = vpn_since.clone();
+        let coord_full = coord_full.clone();
         Arc::new(move |n: i32, id: String, err: String| {
             // Часы сессии: тикают с момента реального поднятия туннеля.
             {
@@ -263,6 +271,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             let (hosts, recent, weak) = (hosts.clone(), recent.clone(), weak.clone());
+            let coord_full = coord_full.clone();
             let _ = slint::invoke_from_event_loop(move || {
                 let Some(ui) = weak.upgrade() else { return };
                 let name = hosts.lock().unwrap().iter().find(|h| h.id == id).map(display_name).unwrap_or_else(|| id.clone());
@@ -278,7 +287,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             fill_vpn_card(&ui, h);
                         }
                         { let mut r = recent.lock().unwrap(); r.retain(|x| x != &id); r.insert(0, id.clone()); r.truncate(6); }
-                        let _ = store::add_recent(ui.get_coord_url().as_ref(), &id);
+                        let _ = store::add_recent(&coord_full.lock().unwrap(), &id);
                     }
                     3 => { ui.set_vpn_state(3); ui.set_vpn_status(if err.is_empty() { "не удалось подключиться".into() } else { err.clone().into() }); ui.set_vpn_sub(err.into()); }
                     _ => { ui.set_vpn_state(0); ui.set_vpn_host_id("".into()); ui.set_vpn_status("VPN выключен".into()); ui.set_vpn_sub("".into()); }
@@ -301,10 +310,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let hosts_for_probe = hosts.clone();
     // Копия для имени хоста по умолчанию: сам my_ip уходит в wire_vpn.
     let my_ip_for_host = my_ip.clone();
-    wire_vpn(&ui, hosts, hlp, my_ip);
+    wire_vpn(&ui, hosts, hlp, my_ip, coord_full.clone());
     wire_expand_probe(&ui, hosts_for_probe, engine.clone(), &handle, pings);
     wire_host(&ui, engine.clone(), host_task, handle.clone(), host_started, my_ip_for_host);
-    wire_coord(&ui, engine);
+    wire_coord(&ui, engine, coord_full.clone());
 
     ui.run()?;
     let _ = std::fs::remove_file(&up_file); // убрать маркер (хелпер тоже уберёт при выходе)
@@ -537,8 +546,9 @@ fn spawn_refresh(
                 // На macOS TCP-STATE до окна мог не дойти; файл читаем стабильно.
                 let helper_up: Option<String> = std::fs::read_to_string(&up_file).ok()
                     .map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
-                // На Unix файл — авторитет: часы сессии идут РОВНО пока туннель поднят.
-                #[cfg(not(windows))]
+                // Файл — авторитет: часы сессии идут РОВНО пока туннель поднят.
+                // Так на ВСЕХ платформах: Windows раньше маркер не писала, и
+                // потерянный STATE было нечем догнать.
                 {
                     let mut vs = vpn_since.lock().unwrap();
                     if helper_up.is_some() {
@@ -577,7 +587,6 @@ fn spawn_refresh(
                     // (часы при этом уже стояли — vpn_since гасится симметрично).
                     // Маркер пишется ДО отправки STATE 2, так что «подключились, но
                     // файла ещё нет» не бывает — ложного сброса не будет.
-                    #[cfg(not(windows))]
                     if helper_up.is_none() && ui.get_vpn_state() == 2 {
                         ui.set_vpn_state(0);
                         ui.set_vpn_host_id("".into());
@@ -712,6 +721,7 @@ fn wire_vpn(
     hosts: Arc<Mutex<Vec<HostInfo>>>,
     hlp: Rc<helper::Helper>,
     my_ip: Arc<Mutex<String>>,
+    coord_full: Arc<Mutex<String>>,
 ) {
     // Оптимистичный статус до ответа хелпера (как iOS connect()).
     fn begin(ui: &AppWindow, id: &str, name: &str) {
@@ -736,6 +746,7 @@ fn wire_vpn(
     {
         let weak = ui.as_weak();
         let (hosts, hlp) = (hosts.clone(), hlp.clone());
+        let coord_full = coord_full.clone();
         ui.on_connect(move |idx| {
             let Some(u) = weak.upgrade() else { return };
             if busy(&u) { return; }
@@ -749,7 +760,7 @@ fn wire_vpn(
             u.set_guest_password("".into());
             begin(&u, &host.id, &display_name(&host));
             fill_vpn_card(&u, &host); // данные уже на руках — не ждём ответа каталога
-            hlp.connect(u.get_coord_url().as_ref(), &host.id, &pw, &host.protocol);
+            hlp.connect(&coord_full.lock().unwrap(), &host.id, &pw, &host.protocol);
         });
     }
 
@@ -757,6 +768,7 @@ fn wire_vpn(
     {
         let weak = ui.as_weak();
         let (hosts, hlp) = (hosts.clone(), hlp.clone());
+        let coord_full = coord_full.clone();
         ui.on_connect_code(move || {
             let Some(u) = weak.upgrade() else { return };
             if busy(&u) { return; }
@@ -774,7 +786,7 @@ fn wire_vpn(
             if let Some(h) = hosts.lock().unwrap().iter().find(|h| h.id == code) {
                 fill_vpn_card(&u, h);
             }
-            hlp.connect(u.get_coord_url().as_ref(), &code, "", "");
+            hlp.connect(&coord_full.lock().unwrap(), &code, "", "");
         });
     }
 
@@ -796,6 +808,7 @@ fn wire_vpn(
     {
         let weak = ui.as_weak();
         let (hosts, hlp, my_ip) = (hosts, hlp.clone(), my_ip);
+        let coord_full = coord_full.clone();
         ui.on_quick_connect(move || {
             let Some(u) = weak.upgrade() else { return };
             if busy(&u) { return; }
@@ -825,7 +838,7 @@ fn wire_vpn(
             const QUICK_MAX: usize = 5;
             let list: Vec<(String, String)> = cands.iter().take(QUICK_MAX)
                 .map(|h| (h.id.clone(), h.protocol.clone())).collect();
-            hlp.quick(u.get_coord_url().as_ref(), &list);
+            hlp.quick(&coord_full.lock().unwrap(), &list);
         });
     }
 
@@ -1070,13 +1083,14 @@ fn full_url(input: &str) -> String {
     if t.starts_with("http://") || t.starts_with("https://") { t.to_string() } else { format!("https://{t}") }
 }
 
-fn wire_coord(ui: &AppWindow, engine: EngineSlot) {
+fn wire_coord(ui: &AppWindow, engine: EngineSlot, coord_full: Arc<Mutex<String>>) {
     let apply = {
         let engine = engine.clone();
         let weak = ui.as_weak();
         move |url: String| {
             let url = full_url(&url);
             if url.len() <= "https://".len() { return; }
+            *coord_full.lock().unwrap() = url.clone();
             let mut cfg = engine.lock().unwrap().config().clone();
             cfg.coordinators = vec![url.clone()];
             *engine.lock().unwrap() = Arc::new(BmvEngine::from_config(cfg));
@@ -1161,6 +1175,24 @@ mod tests {
             let back = full_url(&shown);
             assert_eq!(back.trim_start_matches("https://").trim_start_matches("http://"), shown);
         }
+    }
+
+    /// Показ и работа используют РАЗНЫЕ формы адреса — и путать их нельзя.
+    ///
+    /// На экране адрес идёт доменом. Но тем же значением подключаются и по нему
+    /// же ключуются «Недавние». Подставь туда домен — запрос не соберётся, а
+    /// недавние запишутся под один ключ и прочитаются под другой, то есть тихо
+    /// исчезнут.
+    #[test]
+    fn display_address_is_never_the_one_used_for_work() {
+        let full = "https://bemyvpn.net";
+        let shown = pretty_url(full);
+        assert_ne!(shown, full, "показ и работа обязаны различаться");
+        // Полный адрес разбирается как URL, домен — нет.
+        assert!(full.starts_with("https://"));
+        assert!(!shown.contains("://"));
+        // Из показанного всегда восстанавливается рабочий.
+        assert_eq!(full_url(&shown), full);
     }
 
     #[test]

@@ -48,10 +48,15 @@ pub fn run_helper(port_file: &str, token_file: &str, up_file: &str) -> ! {
     std::process::exit(0);
 }
 
-/// Зеркалим состояние туннеля в файл — НАДЁЖНЫЙ канal для UI в обход TCP-STATE,
-/// который на «спящем» event-loop macOS до окна мог не дойти. При «подключено» (2)
-/// пишем id хоста, при выкл/ошибке (0/3) — удаляем. GUI-цикл читает файл.
-#[cfg(not(windows))]
+/// Зеркалим состояние туннеля в файл — НАДЁЖНЫЙ канал для UI в обход разового
+/// сигнала STATE, который до окна может не дойти. При «подключено» (2) пишем id
+/// хоста, при выкл/ошибке (0/3) — удаляем. GUI-цикл читает файл и догоняет.
+///
+/// Маркер пишут ВСЕ платформы. Раньше Windows его не писала: считалось, что там
+/// «нет спящего event-loop, как на macOS», и разовый STATE дойдёт всегда. Не
+/// дошёл — статус навсегда застревал на «Подключаюсь…», хотя туннель уже качал
+/// трафик. Догонять было нечем: единственный канал и потерялся. Одинаковый
+/// механизм на всех платформах надёжнее двух расходящихся.
 fn mirror_state(up_file: &str, msg: &str) {
     let f: Vec<&str> = msg.trim().split('\t').collect();
     if f.first() == Some(&"STATE") {
@@ -271,13 +276,12 @@ pub struct Helper {
 
 #[cfg(windows)]
 impl Helper {
-    // _up_file не нужен на Windows: туннель в этом же процессе, on_state зовётся
-    // напрямую (нет «спящего» event-loop как на macOS). Приняли для общей сигнатуры.
-    pub fn new(on_state: Arc<dyn Fn(i32, String, String) + Send + Sync>, _up_file: std::path::PathBuf) -> Self {
+    pub fn new(on_state: Arc<dyn Fn(i32, String, String) + Send + Sync>, up_file: std::path::PathBuf) -> Self {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        let up = up_file.to_string_lossy().to_string();
         std::thread::spawn(move || {
             let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().expect("rt");
-            rt.block_on(inproc_serve(rx, on_state));
+            rt.block_on(inproc_serve(rx, on_state, up));
         });
         Self { tx }
     }
@@ -307,6 +311,7 @@ impl Helper {
 async fn inproc_serve(
     mut cmd_rx: tokio::sync::mpsc::UnboundedReceiver<String>,
     on_state: Arc<dyn Fn(i32, String, String) + Send + Sync>,
+    up_file: String,
 ) {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
     let mut current: Option<Arc<tokio::sync::Notify>> = None;
@@ -337,12 +342,16 @@ async fn inproc_serve(
                     }
                     Some("STOP") => {
                         stop_current(&mut current).await;
+                        mirror_state(&up_file, "STATE\t0\t\t");
                         on_state(0, String::new(), String::new());
                     }
                     _ => {}
                 }
             }
             Some(msg) = rx.recv() => {
+                // Зеркалим ДО отправки в UI: иначе «подключились, но файла ещё
+                // нет» — и догоняющий цикл сбросил бы состояние обратно.
+                mirror_state(&up_file, &msg);
                 let f: Vec<&str> = msg.trim_end().split('\t').collect();
                 if f.first() == Some(&"STATE") && f.len() >= 4 {
                     let n: i32 = f[1].parse().unwrap_or(0);
@@ -352,6 +361,7 @@ async fn inproc_serve(
         }
     }
     stop_current(&mut current).await; // откат маршрутов при закрытии GUI
+    let _ = std::fs::remove_file(&up_file);
     tokio::time::sleep(Duration::from_millis(250)).await;
 }
 
