@@ -356,12 +356,15 @@ fn default_host_name(my_ip: &str) -> String {
 }
 
 
-/// Замер отклика до хоста при РАСКРЫТИИ его карточки.
+/// Живой замер отклика: пока карточка раскрыта, проба идёт РАЗ В СЕКУНДУ.
 ///
-/// Почему по раскрытию, а не для всего списка: проба — настоящий сетевой запрос
-/// к чужой машине. Гонять их пачкой ради строк, на которые никто не смотрит,
-/// значит без нужды дёргать десятки хостов при каждом обновлении каталога.
-/// Раскрыл карточку — значит этот хост рассматривают всерьёз.
+/// Ровно как watchPing на iOS и Android — цифра должна дышать, а не застывать на
+/// первом значении. Отклик меняется вместе с сетью, и застывшее число врёт тем
+/// хуже, чем дольше на него смотрят.
+///
+/// Почему только у раскрытой карточки, а не у всего списка: проба — настоящий
+/// сетевой запрос к чужой машине. Гонять их пачкой ради строк, на которые никто
+/// не смотрит, значит без нужды дёргать десятки хостов каждую секунду.
 fn wire_expand_probe(
     ui: &AppWindow,
     hosts: Arc<Mutex<Vec<HostInfo>>>,
@@ -371,41 +374,81 @@ fn wire_expand_probe(
 ) {
     let weak = ui.as_weak();
     let handle = handle.clone();
+    // Номер живого замера. Каждое раскрытие/сворачивание его увеличивает, и цикл,
+    // увидев чужой номер, выходит сам. Так на телефонах работает отмена задачи
+    // (pingTask?.cancel() / pingJob?.cancel()) — здесь тот же смысл без лишних
+    // сущностей: свернули карточку или открыли другую — прошлый цикл умер.
+    let gen = Arc::new(std::sync::atomic::AtomicU64::new(0));
+
     ui.on_expanded_host(move |idx| {
-        let Some(h) = hosts.lock().unwrap().get(idx as usize).cloned() else { return };
-        // Уже мерили — не мерим снова: цифра не устаревает за секунды, а лишний
-        // запрос виден чужой машине.
-        if pings.lock().unwrap().contains_key(&h.id) {
+        use std::sync::atomic::Ordering;
+        // Увеличиваем ВСЕГДА — это и есть отмена предыдущего цикла.
+        let mine = gen.fetch_add(1, Ordering::SeqCst) + 1;
+
+        // -1 приходит при сворачивании: мерить больше нечего.
+        if idx < 0 {
             return;
         }
-        // Пока меряем — ключа нет: пустая строка в плитке включает вращение.
+        let Some(h) = hosts.lock().unwrap().get(idx as usize).cloned() else { return };
 
-        let eng = engine.lock().unwrap().clone();
-        let (weak2, pings2) = (weak.clone(), pings.clone());
-        handle.spawn(async move {
-            // Честное «не ответил» (None): хост может быть за таким NAT, что без
-            // пробивания до него не достучаться. Выдумывать число нельзя.
-            let ms = eng.probe_host_rtt(&h.id, &h.endpoints).await;
-            let text = ms.map(|v| format!("{v} мс")).unwrap_or_else(|| "—".into());
-            pings2.lock().unwrap().insert(h.id.clone(), ms);
+        // Без адресов пробить некуда — честное «не ответил» сразу, без цикла
+        // вхолостую (тот же ранний выход, что на iOS и Android).
+        if h.endpoints.is_empty() {
+            pings.lock().unwrap().insert(h.id.clone(), None);
+            let (weak2, id) = (weak.clone(), h.id.clone());
             let _ = slint::invoke_from_event_loop(move || {
-                let Some(ui) = weak2.upgrade() else { return };
-                // Обновляем ТУ САМУЮ строку, а не весь список: перестроение
-                // списка на живом экране схлопнуло бы раскрытую карточку.
-                let rows = ui.get_hosts();
-                for i in 0..rows.row_count() {
-                    if let Some(mut r) = rows.row_data(i) {
-                        if r.id == h.id.as_str() {
-                            r.ping = text.clone().into();
-                            r.ping_ms = ms.map(|v| v.min(i32::MAX as u32) as i32).unwrap_or(-1);
-                            rows.set_row_data(i, r);
-                            break;
-                        }
-                    }
+                if let Some(ui) = weak2.upgrade() {
+                    set_row_ping(&ui, &id, None);
                 }
             });
+            return;
+        }
+        // Пока ключа нет, плитка показывает пульсацию «идёт замер».
+
+        let eng = engine.lock().unwrap().clone();
+        let (weak2, pings2, gen2) = (weak.clone(), pings.clone(), gen.clone());
+        handle.spawn(async move {
+            // Цикл, а не один замер. Раньше здесь стояла проверка «уже мерили —
+            // выходим», и цифра застывала на первом значении до конца сессии,
+            // хотя на телефонах она обновляется каждую секунду.
+            while gen2.load(Ordering::SeqCst) == mine {
+                // Честное «не ответил» (None): хост может быть за таким NAT, что
+                // без пробивания до него не достучаться. Выдумывать число нельзя.
+                let ms = eng.probe_host_rtt(&h.id, &h.endpoints).await;
+                if gen2.load(Ordering::SeqCst) != mine {
+                    return;
+                }
+                pings2.lock().unwrap().insert(h.id.clone(), ms);
+                let (weak3, id) = (weak2.clone(), h.id.clone());
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(ui) = weak3.upgrade() {
+                        set_row_ping(&ui, &id, ms);
+                    }
+                });
+                // Пауза ПОСЛЕ замера, а не параллельно: у пробы свой срок, и запуск
+                // нового замера поверх незакрытого копил бы их.
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
         });
     });
+}
+
+/// Вписать отклик в ОДНУ строку списка, не трогая остальные.
+///
+/// Перестроение всего списка схлопнуло бы раскрытую карточку прямо под руками —
+/// а замер идёт как раз пока она открыта.
+fn set_row_ping(ui: &AppWindow, id: &str, ms: Option<u32>) {
+    let rows = ui.get_hosts();
+    for i in 0..rows.row_count() {
+        if let Some(mut r) = rows.row_data(i) {
+            if r.id == id {
+                r.ping = ms.map(|v| format!("{v} мс")).unwrap_or_else(|| "—".into()).into();
+                r.ping_ms = ms.map(|v| v.min(i32::MAX as u32) as i32).unwrap_or(-1);
+                rows.set_row_data(i, r);
+                break;
+            }
+        }
+    }
 }
 
 /// Строка каталога → карточка (host_row на iOS): подпись, полоса, значок протокола.

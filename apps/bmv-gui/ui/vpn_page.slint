@@ -464,7 +464,10 @@ export component VpnPage inherits Rectangle {
                 guest-password <=> root.guest-password;
                 toggle() => {
                     root.expanded = (root.expanded == i) ? -1 : i;
-                    if (root.expanded == i) { root.expanded-host(i); }
+                    // Шлём ВСЕГДА, в том числе -1 при сворачивании: замер отклика
+                    // идёт циклом, пока карточка открыта, и без сигнала о закрытии
+                    // его нечем было бы остановить.
+                    root.expanded-host(root.expanded);
                 }
                 connect(idx) => { root.connect(idx); }
                 copy-text(t) => { root.copy-text(t); }
