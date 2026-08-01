@@ -3,27 +3,49 @@
 // центральной ячейкой (Старт/Стоп). Всё состояние — входные свойства, действия —
 // колбэки; заполняет их Rust (main.rs).
 import { Theme } from "theme.slint";
-import { HostRow } from "components.slint";
-import { IconServer, IconRouter, IconShield, IconBolt, IconX, IconQr } from "icons.slint";
+import { HostRow, DockButton } from "components.slint";
+import { IconServer, IconRouter, IconShield, IconBolt, IconX, IconQr, IconCopy, IconRenew, IconPower } from "icons.slint";
 import { VpnPage } from "vpn_page.slint";
 import { HostPage } from "host_page.slint";
 import { ServerPage } from "server_page.slint";
 
-// Ячейка нав-бара: значок + подпись; пилюля активной/центральной.
+// Ячейка нав-бара: значок + подпись.
+//
+// ПРАВИЛО БАРА: ячейка ведёт на свою вкладку, а когда ты УЖЕ на ней —
+// становится включателем этой вкладки. Так центр работал и раньше («VPN» →
+// «Старт»/«Стоп»), теперь то же самое умеет «Хост». Тупика с возвратом при
+// этом не возникает: с любой вкладки видно, куда уйти.
+//
+// Подсветка спокойная — подкраска и рамка. Раньше действующая ячейка была
+// залита градиентом во всю яркость и перетягивала на себя весь экран.
+//
 // min-width: 0 — чтобы ячейки были РОВНО по трети ширины независимо от длины
-// подписи («Сервер» vs «Хост», центр «VPN»/«Старт»/«Стоп»). Иначе разная
-// min-width текста перекашивала распределение → бар «менял размер по бокам».
+// подписи. Иначе разная min-width текста перекашивала распределение → бар
+// «менял размер по бокам».
 component NavCell inherits Rectangle {
     in property <string> label;
-    in property <brush> pill: transparent;
+    /// Ячейка сейчас работает включателем (мы на её вкладке).
+    in property <bool> acting: false;
+    /// Мы на этой вкладке, но действия у неё нет (вкладка «Сервер»).
+    in property <bool> current: false;
     in property <color> tint: Theme.dim;
+    /// Цвет состояния: зелёный «включить», красный «выключить».
+    in property <color> hue: Theme.accent;
+    /// Точка «работает» — только на ячейках, ведущих на ДРУГУЮ вкладку: на своей
+    /// состояние и так написано словом на кнопке.
+    in property <bool> live: false;
+    in property <color> live-tint: Theme.green;
     callback clicked;
     min-width: 0px;
     Rectangle {
         x: 2px; y: 3px;
         width: parent.width - 4px; height: parent.height - 6px;
         border-radius: 22px;
-        background: root.pill;
+        background: root.acting ? root.hue.with-alpha(0.14)
+                  : root.current ? Theme.accent.with-alpha(0.16)
+                  : transparent;
+        border-width: root.acting ? 1px : 0px;
+        border-color: root.hue.with-alpha(0.37);
         animate background { duration: 160ms; easing: ease-in-out; }
     }
     VerticalLayout {
@@ -34,6 +56,15 @@ component NavCell inherits Rectangle {
             text: root.label; font-size: 11px; font-weight: 700;
             horizontal-alignment: center; color: root.tint; overflow: elide;
         }
+    }
+    if root.live: Rectangle {
+        x: parent.width / 2 + 12px;
+        y: 11px;
+        width: 7px; height: 7px;
+        border-radius: 3.5px;
+        background: root.live-tint;
+        border-width: 2px;
+        border-color: #161C2B;
     }
     TouchArea { clicked => { root.clicked(); } }
 }
@@ -162,7 +193,6 @@ export component AppWindow inherits Window {
                 disconnect() => { root.disconnect(); }
                 paste() => { root.paste(); }
                 copy-text(t) => { root.copy-text(t); }
-                open-invite() => { root.show-qr(root.vpn-host-id); }
             }
             if tab == 1: HostPage {
                 host-state: root.host-state;
@@ -200,54 +230,112 @@ export component AppWindow inherits Window {
         }
     }
 
+    // ── Нижняя полка действий ────────────────────────────────────────────
+    // «Скопировать» и «QR» жмут чаще всего — им место под большим пальцем, а не
+    // у верхнего края, куда руку надо тянуть через весь экран. Полка висит прямо
+    // над нав-баром и появляется, только когда есть чем делиться: на вкладке
+    // VPN при живом подключении и на «Хосте» при работающей раздаче.
+    property <string> share-code:
+        (tab == 0 && vpn-state == 2) ? vpn-host-id
+        : (tab == 1 && host-state == 2) ? host-code
+        : "";
+    if root.share-code != "": HorizontalLayout {
+        x: 18px;
+        y: parent.height - 96px - self.preferred-height;
+        width: parent.width - 36px;
+        spacing: 8px;
+        DockButton {
+            title: "Скопировать"; feedback: true; horizontal-stretch: 1;
+            clicked => { root.copy-text(root.share-code); }
+            IconCopy { width: 17px; height: 17px; tint: Theme.accent; }
+        }
+        DockButton {
+            title: "QR-код"; horizontal-stretch: 1;
+            clicked => { root.show-qr(root.share-code); }
+            IconQr { width: 17px; height: 17px; tint: Theme.accent; }
+        }
+    }
+
     // ── Плавающий нав-бар (поверх страницы, как ZStack .bottom на iOS) ──
+    // Тень в два слоя: ближняя даёт край, дальняя мягко отрывает бар от
+    // страницы. Одна широкая размывалась в грязь, и бар «лежал» на списке.
     Rectangle {
         x: 18px;
         y: parent.height - self.height - 22px;
         width: parent.width - 36px;
         height: 66px;
         border-radius: 28px;
-        background: #161C2B.with-alpha(0.98);
-        border-width: 1px;
-        border-color: #FFFFFF10;
-        drop-shadow-blur: 14px;
-        drop-shadow-color: #00000099;
-        drop-shadow-offset-y: 6px;
-        HorizontalLayout {
-            padding: 6px;
-            spacing: 4px;
-            NavCell {
-                horizontal-stretch: 1;
-                label: "Сервер";
-                pill: tab == 2 ? Theme.accent.with-alpha(0.26) : transparent;
-                tint: tab == 2 ? Theme.accent : Theme.dim;
-                clicked => { tab = 2; }
-                IconServer { width: 21px; height: 21px; tint: tab == 2 ? Theme.accent : Theme.dim; }
-            }
-            // Центральная — контекстная: VPN / Старт / Стоп.
-            NavCell {
-                horizontal-stretch: 1;
-                label: tab != 0 ? "VPN" : (vpn-state == 0 ? "Старт" : "Стоп");
-                pill: tab != 0 ? transparent
-                    : (vpn-state == 0 ? @linear-gradient(180deg, #34E29E 0%, #12B07E 100%)
-                       : @linear-gradient(180deg, #FF6473 0%, #E23B4C 100%));
-                tint: tab != 0 ? Theme.dim : white;
-                clicked => {
-                    if (tab != 0) { tab = 0; }
-                    else if (vpn-state == 0) { root.quick-connect(); }
-                    else { root.disconnect(); }
+        background: transparent;
+        drop-shadow-blur: 30px;
+        drop-shadow-color: #000000CC;
+        drop-shadow-offset-y: 14px;
+        Rectangle {
+            border-radius: 28px;
+            background: #161C2B.with-alpha(0.98);
+            border-width: 1px;
+            border-color: #FFFFFF10;
+            drop-shadow-blur: 6px;
+            drop-shadow-color: #000000A6;
+            drop-shadow-offset-y: 2px;
+            HorizontalLayout {
+                padding: 6px;
+                spacing: 4px;
+                // «Сервер» — навигация всегда: у вкладки нет своего включателя.
+                // Зато на ней горит состояние связи, видное С ЛЮБОЙ вкладки:
+                // красная точка «нет связи», жёлтая «проверяю». Когда всё
+                // хорошо — точки нет: молчание и есть «ок». Раньше об обрыве
+                // кричала оранжевая полоса на вкладке VPN.
+                NavCell {
+                    horizontal-stretch: 1;
+                    label: "Сервер";
+                    current: tab == 2;
+                    tint: tab == 2 ? Theme.accent : Theme.dim;
+                    live: coord-state != 1;
+                    live-tint: coord-state == 2 ? Theme.red : Theme.amber;
+                    clicked => { tab = 2; }
+                    IconServer { width: 21px; height: 21px; tint: tab == 2 ? Theme.accent : Theme.dim; }
                 }
-                if tab != 0: IconShield { width: 21px; height: 21px; tint: Theme.dim; }
-                if tab == 0 && vpn-state == 0: IconBolt { width: 21px; height: 21px; tint: white; }
-                if tab == 0 && vpn-state != 0: IconX { width: 20px; height: 20px; tint: white; }
-            }
-            NavCell {
-                horizontal-stretch: 1;
-                label: "Хост";
-                pill: tab == 1 ? Theme.accent.with-alpha(0.26) : transparent;
-                tint: tab == 1 ? Theme.accent : Theme.dim;
-                clicked => { tab = 1; }
-                IconRouter { width: 21px; height: 21px; tint: tab == 1 ? Theme.accent : Theme.dim; }
+                // Центр: переход на VPN, а на самой вкладке — Старт/Стоп.
+                NavCell {
+                    horizontal-stretch: 1;
+                    label: tab != 0 ? "VPN"
+                         : (vpn-state == 0 ? "Старт" : vpn-state == 1 ? "Отмена" : vpn-state == 3 ? "Ещё раз" : "Стоп");
+                    acting: tab == 0;
+                    hue: (vpn-state == 0 || vpn-state == 3) ? Theme.green : Theme.red;
+                    tint: tab != 0 ? Theme.dim
+                        : ((vpn-state == 0 || vpn-state == 3) ? Theme.green : Theme.red);
+                    live: tab != 0 && vpn-state != 0;
+                    live-tint: vpn-state == 2 ? Theme.green : vpn-state == 3 ? Theme.red : Theme.amber;
+                    clicked => {
+                        if (tab != 0) { tab = 0; }
+                        else if (vpn-state == 0 || vpn-state == 3) { root.quick-connect(); }
+                        else { root.disconnect(); }
+                    }
+                    if tab != 0: IconShield { width: 21px; height: 21px; tint: Theme.dim; }
+                    if tab == 0 && vpn-state == 0: IconBolt { width: 21px; height: 21px; tint: Theme.green; }
+                    if tab == 0 && vpn-state == 3: IconRenew { width: 20px; height: 20px; tint: Theme.green; }
+                    if tab == 0 && (vpn-state == 1 || vpn-state == 2): IconX { width: 20px; height: 20px; tint: Theme.red; }
+                }
+                // «Хост» — по тому же правилу, что и центр.
+                NavCell {
+                    horizontal-stretch: 1;
+                    label: tab != 1 ? "Хост"
+                         : (host-state == 0 ? "Раздать" : host-state == 1 ? "Отмена" : host-state == 3 ? "Ещё раз" : "Стоп");
+                    acting: tab == 1;
+                    hue: (host-state == 0 || host-state == 3) ? Theme.green : Theme.red;
+                    tint: tab != 1 ? Theme.dim
+                        : ((host-state == 0 || host-state == 3) ? Theme.green : Theme.red);
+                    live: tab != 1 && host-state != 0;
+                    live-tint: host-state == 2 ? Theme.green : host-state == 3 ? Theme.red : Theme.amber;
+                    clicked => {
+                        if (tab != 1) { tab = 1; }
+                        else { root.toggle-host(); }
+                    }
+                    if tab != 1: IconRouter { width: 21px; height: 21px; tint: Theme.dim; }
+                    if tab == 1 && host-state == 0: IconPower { width: 21px; height: 21px; tint: Theme.green; }
+                    if tab == 1 && host-state == 3: IconRenew { width: 20px; height: 20px; tint: Theme.green; }
+                    if tab == 1 && (host-state == 1 || host-state == 2): IconX { width: 20px; height: 20px; tint: Theme.red; }
+                }
             }
         }
     }

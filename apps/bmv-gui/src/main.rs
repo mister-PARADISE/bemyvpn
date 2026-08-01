@@ -128,12 +128,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let engine: EngineSlot = Arc::new(Mutex::new(Arc::new(BmvEngine::from_config(config))));
 
     let ui = AppWindow::new()?;
-    ui.set_coord_url(coord.clone().into());
-    ui.set_coord_field(coord.clone().into());
+    ui.set_coord_url(pretty_url(&coord).into());
+    ui.set_coord_field(pretty_url(&coord).into());
     ui.set_coord_is_default(coord == DEFAULT_COORD);
     ui.set_vpn_status("VPN выключен".into());
     ui.set_host_status("Раздача выключена".into());
-    ui.set_server_history(str_model(&store::load_server_history()));
+    ui.set_server_history(str_model(
+        &store::load_server_history().iter().map(|u| pretty_url(u)).collect::<Vec<_>>(),
+    ));
 
     // Недавние (для текущего координатора) — id хранятся, имена берём из каталога.
     let recent_ids: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(store::load_recent(&coord)));
@@ -644,7 +646,9 @@ fn spawn_refresh(
 
                 ui.set_coord_ping(if alive { ping } else { 0 });
                 ui.set_coord_ip(ip.into());
-                if let Some(h) = hist { ui.set_server_history(str_model(&h)); }
+                if let Some(h) = hist {
+                    ui.set_server_history(str_model(&h.iter().map(|u| pretty_url(u)).collect::<Vec<_>>()));
+                }
                 if let Some(n) = hosts_n { ui.set_coord_hosts(n); }
 
                 // Каталог обновляем ТОЛЬКО когда пришёл (watch Ok); на Err оставляем
@@ -1047,20 +1051,39 @@ fn set_host_err(weak: &Weak<AppWindow>, msg: String) {
 
 // ── Сервер (смена координатора) ──────────────────────────────────────────────
 
+/// Адрес для ПОКАЗА — без схемы.
+///
+/// Соединение у нас всегда https, поэтому «https://» перед каждым адресом
+/// занимает место и ничего не сообщает. Хранение и запросы схему сохраняют —
+/// срезается она только на экране.
+pub fn pretty_url(url: &str) -> String {
+    url.trim_start_matches("https://").trim_start_matches("http://").trim_end_matches('/').to_string()
+}
+
+/// Обратно: то, что ввёл человек, → пригодный адрес.
+///
+/// Раз схему мы не показываем, набирать её человек тоже не станет — «bemyvpn.net»
+/// обязано работать. Голому имени приписываем https: небезопасную схему нужно
+/// указать явно, случайно на неё не свалишься.
+fn full_url(input: &str) -> String {
+    let t = input.trim().trim_end_matches('/');
+    if t.starts_with("http://") || t.starts_with("https://") { t.to_string() } else { format!("https://{t}") }
+}
+
 fn wire_coord(ui: &AppWindow, engine: EngineSlot) {
     let apply = {
         let engine = engine.clone();
         let weak = ui.as_weak();
         move |url: String| {
-            let url = url.trim().trim_end_matches('/').to_string();
-            if !url.starts_with("http") { return; }
+            let url = full_url(&url);
+            if url.len() <= "https://".len() { return; }
             let mut cfg = engine.lock().unwrap().config().clone();
             cfg.coordinators = vec![url.clone()];
             *engine.lock().unwrap() = Arc::new(BmvEngine::from_config(cfg));
             if let Some(ui) = weak.upgrade() {
                 ui.set_coord_is_default(url == DEFAULT_COORD);
-                ui.set_coord_url(url.clone().into());
-                ui.set_coord_field(url.into());
+                ui.set_coord_url(pretty_url(&url).into());
+                ui.set_coord_field(pretty_url(&url).into());
                 ui.set_coord_state(0);
             }
         }
@@ -1116,6 +1139,30 @@ mod tests {
     /// Пустой каталог этого НЕ ловил — строк нет, вызова нет. Поэтому тест
     /// обязан класть значение в карту и обязан ограничивать время: дедлок не
     /// падает, он висит.
+    /// Схема срезается для показа и возвращается при вводе.
+    ///
+    /// Раз «https://» на экране не показывается, набирать его человек тоже не
+    /// станет — «bemyvpn.net» обязано работать. А голому имени нельзя молча
+    /// приписать http: незашифрованный координатор нужно выбирать осознанно.
+    #[test]
+    fn address_loses_its_scheme_on_screen_but_keeps_it_in_use() {
+        assert_eq!(pretty_url("https://bemyvpn.net"), "bemyvpn.net");
+        assert_eq!(pretty_url("http://10.0.0.5:3330"), "10.0.0.5:3330");
+        assert_eq!(pretty_url("https://bemyvpn.net/"), "bemyvpn.net");
+
+        assert_eq!(full_url("bemyvpn.net"), "https://bemyvpn.net");
+        assert_eq!(full_url("  bemyvpn.net/ "), "https://bemyvpn.net");
+        // Явную схему не трогаем — в том числе незашифрованную.
+        assert_eq!(full_url("http://10.0.0.5:3330"), "http://10.0.0.5:3330");
+
+        // Показали → ввели обратно → адрес тот же.
+        for u in ["https://bemyvpn.net", "http://10.0.0.5:3330"] {
+            let shown = pretty_url(u);
+            let back = full_url(&shown);
+            assert_eq!(back.trim_start_matches("https://").trim_start_matches("http://"), shown);
+        }
+    }
+
     #[test]
     fn building_a_row_with_a_known_ping_does_not_deadlock() {
         let pings: Pings = Arc::new(Mutex::new(std::collections::HashMap::new()));

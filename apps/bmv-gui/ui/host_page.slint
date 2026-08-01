@@ -1,8 +1,18 @@
-// Вкладка «Хост» — построчный перенос iOS HostTab: заголовок, статус-карточка
-// раздачи, код сети (Новый код / Код / QR), имя, видимость, лимит (слайдер +
-// пресеты), пароль, протокол (чипы), кнопка «Стать хостом».
+// Вкладка «Хост» — раздача своего интернета.
+//
+// Экран разделён на ДВЕ части: прижатая к верху панель состояния (вне прокрутки)
+// и прокручиваемые настройки под ней. Панель адаптивная:
+//
+//   • раздача выключена → крупный круг, заголовок, подсказка. Показывать нечего,
+//     и круг честно занимает место — это единственный смысл экрана;
+//   • раздача идёт → круг становится компактным значком, а место занимает польза:
+//     код сети, гости, видимость, протокол, свой адрес.
+//
+// Код сети НЕ показывается, пока раздача выключена: давать его некому.
+// Копирование и QR живут на нижней полке (app.slint) — под большим пальцем.
 import { Theme } from "theme.slint";
-import { Card, StatTile, CopyTile, CardButton, GradientButton, SectionLabel, Field, BigChip, Dot } from "components.slint";
+import { Card, StatTile, CopyTile, CardButton, GradientButton, SectionLabel, Field, BigChip,
+         Badge, StatusLine, BigCode, QuietButton } from "components.slint";
 import { IconRouter, IconRenew, IconCopy, IconQr, IconGlobe, IconEyeOff, IconPeople, IconWarning,
          IconShieldLock, IconMask, IconShieldSlash } from "icons.slint";
 import { ScrollView, Slider } from "std-widgets.slint";
@@ -36,167 +46,237 @@ export component HostPage inherits Rectangle {
     callback apply-host();
     callback open-qr();
 
-    property <bool> active: host-state == 1 || host-state == 2;
+    // С паролем сеть ВСЕГДА скрытая — правило ядра и координатора.
+    property <bool> locked-hidden: root.host-password != "";
+    property <color> tint:
+        root.host-state == 1 ? Theme.amber
+        : root.host-state == 2 ? Theme.green
+        : root.host-state == 3 ? Theme.red
+        : Theme.accent;
+    property <string> proto-name:
+        root.host-protocol == "noise" ? "Обычный"
+        : root.host-protocol == "noise-obfs" ? "Маскировка"
+        : "Без шифра";
 
-    ScrollView {
-        vertical-scrollbar-policy: ScrollBarPolicy.always-off;
-        horizontal-scrollbar-policy: ScrollBarPolicy.always-off;
-        VerticalLayout {
-            alignment: start;
-            padding: Theme.pad;
-            padding-bottom: 108px;
-            spacing: Theme.gap;
+    VerticalLayout {
+        // ── ПРИЖАТАЯ ПАНЕЛЬ ──────────────────────────────────────────────────
+        // Лежит ВНЕ ScrollView, поэтому не уезжает при прокрутке. Тень снизу
+        // отделяет её от содержимого, которое уходит под неё.
+        Rectangle {
+            // Панель занимает РОВНО столько, сколько нужно содержимому: без
+            // этого Slint отдавал ей всё свободное место, и она растягивалась
+            // на пол-экрана, разгоняя строки друг от друга.
+            vertical-stretch: 0;
+            height: panel-box.preferred-height;
+            background: Theme.bg;
+            drop-shadow-blur: 14px;
+            drop-shadow-color: #000000AA;
+            drop-shadow-offset-y: 8px;
+            panel-box := VerticalLayout {
+                padding: Theme.pad;
+                padding-bottom: 12px;
+                Rectangle {
+                    border-radius: 22px;
+                    background: @linear-gradient(180deg, Theme.panel 0%, Theme.card 100%);
+                    border-width: 1px;
+                    border-color: root.tint.with-alpha(0.2);
+                    VerticalLayout {
+                        alignment: start;   // иначе строки разъезжаются по высоте
+                        padding-top: 16px; padding-bottom: 18px;
+                        padding-left: 18px; padding-right: 18px;
+                        spacing: 8px;
 
-            // Заголовок.
-            HorizontalLayout {
-                spacing: 10px;
-                VerticalLayout { alignment: center; IconRouter { width: 26px; height: 26px; tint: Theme.accent; } }
-                Text { text: "Хост-режим"; color: Theme.fg; font-size: 26px; font-weight: 800; vertical-alignment: center; }
-                Rectangle { horizontal-stretch: 1; }
+                        // ── раздача идёт: значок компактный, место отдано пользе ──
+                        if root.host-state == 2: StatusLine {
+                            name: "Раздаю";
+                            clock: root.host-elapsed;
+                            tint: root.tint;
+                            IconRouter { width: 19px; height: 19px; tint: root.tint; }
+                        }
+                        if root.host-state == 2: BigCode { text: root.host-code == "" ? "…" : root.host-code; }
+                        // «Новый код» — действие редкое, ему хватает строчки наверху.
+                        // Частое (копировать, QR) живёт на нижней полке, у пальца.
+                        if root.host-state == 2: QuietButton {
+                            title: "Новый код";
+                            feedback: true;
+                            clicked => { root.new-code(); }
+                            IconRenew { width: 13px; height: 13px; tint: Theme.dim; }
+                        }
+                        if root.host-state == 2: HorizontalLayout {
+                            spacing: 8px;
+                            StatTile {
+                                label: "ГОСТЕЙ"; value: root.host-guests; horizontal-stretch: 1;
+                                IconPeople { width: 12px; height: 12px; tint: Theme.fg; }
+                            }
+                            StatTile {
+                                label: "ВИДИМОСТЬ";
+                                value: (root.host-public && !root.locked-hidden) ? "публичный" : "по коду";
+                                horizontal-stretch: 1;
+                                if root.host-public && !root.locked-hidden: IconGlobe { width: 12px; height: 12px; tint: Theme.fg; }
+                                if !(root.host-public && !root.locked-hidden): IconEyeOff { width: 12px; height: 12px; tint: Theme.fg; }
+                            }
+                        }
+                        if root.host-state == 2: HorizontalLayout {
+                            spacing: 8px;
+                            StatTile {
+                                label: "ПРОТОКОЛ"; value: root.proto-name; horizontal-stretch: 1;
+                                ProtoChipIcon { id: root.host-protocol; width: 12px; height: 12px; }
+                            }
+                            CopyTile {
+                                label: "ВАШ IP"; value: root.host-ip == "" ? "—" : root.host-ip;
+                                horizontal-stretch: 1;
+                                copy(t) => { root.copy-text(t); }
+                            }
+                        }
+
+                        // ── не раздаём: показывать нечего, кроме статуса ──
+                        if root.host-state != 2: Rectangle {
+                            height: 74px;
+                            // Волна расходится, пока идёт запуск.
+                            if root.host-state == 1: Rectangle {
+                                property <float> t: Math.mod(animation-tick() / 1ms, 1200) / 1200;
+                                property <length> d: 72px * (1 + 0.28 * self.t);
+                                x: (parent.width - self.d) / 2;
+                                y: (74px - self.d) / 2;
+                                width: self.d; height: self.d;
+                                border-radius: self.d / 2;
+                                border-width: 2px;
+                                border-color: root.tint.with-alpha(0.5 * (1 - self.t));
+                            }
+                            Rectangle {
+                                x: (parent.width - 72px) / 2;
+                                y: 1px;
+                                width: 72px; height: 72px;
+                                border-radius: 36px;
+                                background: root.tint.with-alpha(0.13);
+                                border-width: 1px;
+                                border-color: root.tint.with-alpha(0.3);
+                                HorizontalLayout {
+                                    alignment: center;
+                                    VerticalLayout {
+                                        alignment: center;
+                                        IconRouter { width: 32px; height: 32px; tint: root.tint; }
+                                    }
+                                }
+                            }
+                        }
+                        if root.host-state != 2: Text {
+                            text: root.host-state == 1 ? "Запускаюсь…"
+                                : root.host-state == 3 ? "Не удалось начать раздачу"
+                                : "Раздача выключена";
+                            color: Theme.fg; font-size: 21px; font-weight: 800;
+                            horizontal-alignment: center; overflow: elide;
+                        }
+                        if root.host-state != 2: Text {
+                            text: root.host-state == 1 ? "Пробиваю канал наружу…"
+                                : root.host-state == 3 ? (root.host-error != "" ? root.host-error : "Попробуйте ещё раз")
+                                : "Станьте выходной точкой для друзей";
+                            color: Theme.dim; font-size: 13px;
+                            horizontal-alignment: center; wrap: word-wrap;
+                        }
+                    }
+                }
             }
-            Text { text: "Раздайте свой интернет: этот компьютер станет выходной точкой для гостей."; color: Theme.dim; font-size: 13px; wrap: word-wrap; }
+        }
 
-            // Статус-карточка (когда раздаём/запускаемся).
-            if root.active: Card {
+        // ── ПРОКРУЧИВАЕМЫЕ НАСТРОЙКИ ────────────────────────────────────────
+        ScrollView {
+            vertical-stretch: 1;
+            vertical-scrollbar-policy: ScrollBarPolicy.always-off;
+            horizontal-scrollbar-policy: ScrollBarPolicy.always-off;
+            VerticalLayout {
+                alignment: start;
+                padding: Theme.pad;
+                padding-top: 2px;
+                // Ниже плавают нав-бар и полка действий — оставляем им место.
+                padding-bottom: root.host-state == 2 ? 168px : 108px;
+                spacing: Theme.gap;
+
+                if root.host-error != "" && root.host-state != 3: HorizontalLayout {
+                    spacing: 5px;
+                    VerticalLayout { alignment: center; IconWarning { width: 15px; height: 15px; tint: Theme.red; } }
+                    Text { text: root.host-error; color: Theme.red; font-size: 13px; wrap: word-wrap; vertical-alignment: center; }
+                }
+
+                Text {
+                    text: "Раздайте свой интернет: этот компьютер станет выходной точкой для гостей.";
+                    color: Theme.dim; font-size: 13px; wrap: word-wrap;
+                }
+
+                // Имя хоста.
+                SectionLabel { text: "Имя хоста (видно в каталоге)"; }
+                Field { placeholder: "Имя"; text <=> root.host-name; edited => { root.apply-host(); } }
+
+                // Видимость. С паролем «Публичный» не просто выключен, а НЕДОСТУПЕН:
+                // иначе кнопка врала бы, ничего не меняя.
+                SectionLabel { text: "Видимость"; }
                 HorizontalLayout {
-                    spacing: 10px;
-                    VerticalLayout { alignment: center; Dot { fill: root.host-state == 1 ? Theme.amber : Theme.green; pulse: root.host-state == 2; } }
-                    Text { text: root.host-state == 1 ? "Запускаюсь…" : "Раздаю"; color: Theme.fg; font-size: 15px; font-weight: 700; vertical-alignment: center; }
+                    spacing: 8px;
+                    BigChip { name: "Публичный"; on: root.host-public && !root.locked-hidden; horizontal-stretch: 1;
+                        opacity: root.locked-hidden ? 0.4 : 1.0;
+                        clicked => { if (!root.locked-hidden) { root.host-public = true; root.apply-host(); } }
+                        IconGlobe { width: 20px; height: 20px; tint: (root.host-public && !root.locked-hidden) ? white : Theme.dim; } }
+                    BigChip { name: "Скрытый"; on: !root.host-public || root.locked-hidden; horizontal-stretch: 1;
+                        clicked => { root.host-public = false; root.apply-host(); }
+                        IconEyeOff { width: 20px; height: 20px; tint: (!root.host-public || root.locked-hidden) ? white : Theme.dim; } }
+                }
+                Text {
+                    text: root.locked-hidden
+                        ? "С паролем сеть всегда скрытая: публичная карточка выдала бы её тем, от кого вы закрылись. Подключение — по коду."
+                        : root.host-public ? "Виден всем в списке хостов — подключиться сможет любой." : "В списке не виден — подключиться можно только по коду.";
+                    color: Theme.dim; font-size: 12px; wrap: word-wrap;
+                }
+
+                // Лимит гостей.
+                HorizontalLayout {
+                    Text { text: "Лимит гостей"; color: Theme.dim; font-size: 13px; font-weight: 700; vertical-alignment: center; }
                     Rectangle { horizontal-stretch: 1; }
+                    Text { text: root.host-max; color: Theme.accent; font-size: 17px; font-weight: 800; font-family: "monospace"; }
                 }
-                if root.host-state == 2: VerticalLayout {
-                    spacing: 8px;
-                    HorizontalLayout {
-                        spacing: 8px;
-                        StatTile {
-                            label: "ГОСТЕЙ"; value: root.host-guests; horizontal-stretch: 1;
-                            IconPeople { width: 12px; height: 12px; tint: Theme.fg; }
-                        }
-                        StatTile { label: "РАЗДАЮ"; value: root.host-elapsed; tint: Theme.green; horizontal-stretch: 1; }
-                    }
-                    HorizontalLayout {
-                        spacing: 8px;
-                        StatTile {
-                            label: "ВИДИМОСТЬ"; value: root.host-public ? "публичный" : "по коду"; horizontal-stretch: 1;
-                            if root.host-public: IconGlobe { width: 12px; height: 12px; tint: Theme.fg; }
-                            if !root.host-public: IconEyeOff { width: 12px; height: 12px; tint: Theme.fg; }
-                        }
-                        StatTile {
-                            label: "ПРОТОКОЛ";
-                            value: root.host-protocol == "noise" ? "Обычный" : root.host-protocol == "noise-obfs" ? "Маскировка" : "Без шифра";
-                            horizontal-stretch: 1;
-                            ProtoChipIcon { id: root.host-protocol; width: 12px; height: 12px; }
-                        }
-                    }
-                    CopyTile { label: "ВАШ IP"; value: root.host-ip == "" ? "—" : root.host-ip; copy(t) => { root.copy-text(t); } }
+                Slider {
+                    minimum: 1; maximum: 256; value: root.host-max;
+                    changed(v) => { root.host-max = Math.round(v); }
+                    released(v) => { root.host-max = Math.round(v); root.apply-host(); }
                 }
-            }
-            if root.host-error != "": HorizontalLayout {
-                spacing: 5px;
-                VerticalLayout { alignment: center; IconWarning { width: 15px; height: 15px; tint: Theme.red; } }
-                Text { text: root.host-error; color: Theme.red; font-size: 13px; wrap: word-wrap; vertical-alignment: center; }
-            }
+                HorizontalLayout {
+                    spacing: 6px;
+                    for v in [4, 8, 16, 32, 64, 128]: Rectangle {
+                        height: 34px;
+                        horizontal-stretch: 1;
+                        border-radius: 10px;
+                        background: root.host-max == v ? Theme.accent : Theme.card-sel;
+                        Text { text: v; color: root.host-max == v ? white : Theme.dim; font-size: 13px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; }
+                        TouchArea { clicked => { root.host-max = v; root.apply-host(); } }
+                    }
+                }
 
-            // Код сети.
-            SectionLabel { text: "Код сети (поделитесь, чтобы к вам подключились)"; }
-            Card {
-                Text {
-                    text: root.host-code == "" ? "…" : root.host-code;
-                    color: Theme.accent; font-size: 28px; font-weight: 800;
-                    font-family: "monospace"; letter-spacing: 2px;
-                    horizontal-alignment: center;
-                }
-                CardButton { title: "Новый код"; clicked => { root.new-code(); } IconRenew { width: 15px; height: 15px; tint: Theme.accent; } }
+                // Пароль.
+                SectionLabel { text: "Пароль (пусто = без пароля)"; }
+                Field { placeholder: "без пароля"; text <=> root.host-password; edited => { root.apply-host(); } }
+
+                // Протокол.
+                SectionLabel { text: "Протокол"; }
                 HorizontalLayout {
                     spacing: 8px;
-                    CardButton { title: "Код"; feedback: true; horizontal-stretch: 1; clicked => { root.copy-code(); } IconCopy { width: 15px; height: 15px; tint: Theme.accent; } }
-                    CardButton { title: "QR"; horizontal-stretch: 1; clicked => { root.open-qr(); } IconQr { width: 15px; height: 15px; tint: Theme.accent; } }
+                    BigChip { name: "Обычный"; on: root.host-protocol == "noise"; horizontal-stretch: 1; clicked => { root.host-protocol = "noise"; root.apply-host(); }
+                        ProtoChipIcon { id: "noise"; on: root.host-protocol == "noise"; width: 18px; height: 18px; } }
+                    BigChip { name: "Маскировка"; on: root.host-protocol == "noise-obfs"; horizontal-stretch: 1; clicked => { root.host-protocol = "noise-obfs"; root.apply-host(); }
+                        ProtoChipIcon { id: "noise-obfs"; on: root.host-protocol == "noise-obfs"; width: 18px; height: 18px; } }
+                    BigChip { name: "Без шифра"; on: root.host-protocol == "plain"; horizontal-stretch: 1; clicked => { root.host-protocol = "plain"; root.apply-host(); }
+                        ProtoChipIcon { id: "plain"; on: root.host-protocol == "plain"; width: 18px; height: 18px; } }
                 }
-            }
-
-            // Имя хоста.
-            SectionLabel { text: "Имя хоста (видно в каталоге)"; }
-            Field { placeholder: "Имя"; text <=> root.host-name; edited => { root.apply-host(); } }
-
-            // Видимость. С паролем сеть ВСЕГДА скрытая (правило ядра и
-            // координатора) — поэтому «Публичный» тут не просто выключен,
-            // а недоступен: иначе кнопка врала бы, ничего не меняя.
-            SectionLabel { text: "Видимость"; }
-            property <bool> locked-hidden: root.host-password != "";
-            HorizontalLayout {
-                spacing: 8px;
-                BigChip { name: "Публичный"; on: root.host-public && !locked-hidden; horizontal-stretch: 1;
-                    opacity: locked-hidden ? 0.4 : 1.0;
-                    clicked => { if (!locked-hidden) { root.host-public = true; root.apply-host(); } }
-                    IconGlobe { width: 20px; height: 20px; tint: (root.host-public && !locked-hidden) ? white : Theme.dim; } }
-                BigChip { name: "Скрытый"; on: !root.host-public || locked-hidden; horizontal-stretch: 1; clicked => { root.host-public = false; root.apply-host(); }
-                    IconEyeOff { width: 20px; height: 20px; tint: (!root.host-public || locked-hidden) ? white : Theme.dim; } }
-            }
-            Text {
-                text: locked-hidden
-                    ? "С паролем сеть всегда скрытая: публичная карточка выдала бы её тем, от кого вы закрылись. Подключение — по коду."
-                    : root.host-public ? "Виден всем в списке хостов — подключиться сможет любой." : "В списке не виден — подключиться можно только по коду выше.";
-                color: Theme.dim; font-size: 12px; wrap: word-wrap;
-            }
-
-            // Лимит гостей.
-            HorizontalLayout {
-                Text { text: "Лимит гостей"; color: Theme.dim; font-size: 13px; font-weight: 700; vertical-alignment: center; }
-                Rectangle { horizontal-stretch: 1; }
-                Text { text: root.host-max; color: Theme.accent; font-size: 17px; font-weight: 800; font-family: "monospace"; }
-            }
-            Slider {
-                minimum: 1; maximum: 256; value: root.host-max;
-                changed(v) => { root.host-max = Math.round(v); }
-                released(v) => { root.host-max = Math.round(v); root.apply-host(); }
-            }
-            HorizontalLayout {
-                spacing: 6px;
-                for v in [4, 8, 16, 32, 64, 128]: Rectangle {
-                    height: 34px;
-                    horizontal-stretch: 1;
-                    border-radius: 10px;
-                    background: root.host-max == v ? Theme.accent : Theme.card-sel;
-                    Text { text: v; color: root.host-max == v ? white : Theme.dim; font-size: 13px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; }
-                    TouchArea { clicked => { root.host-max = v; root.apply-host(); } }
-                }
-            }
-
-            // Пароль.
-            SectionLabel { text: "Пароль (пусто = без пароля)"; }
-            Field { placeholder: "без пароля"; text <=> root.host-password; edited => { root.apply-host(); } }
-
-            // Протокол.
-            SectionLabel { text: "Протокол"; }
-            HorizontalLayout {
-                spacing: 8px;
-                BigChip { name: "Обычный"; on: root.host-protocol == "noise"; horizontal-stretch: 1; clicked => { root.host-protocol = "noise"; root.apply-host(); }
-                    ProtoChipIcon { id: "noise"; on: root.host-protocol == "noise"; width: 18px; height: 18px; } }
-                BigChip { name: "Маскировка"; on: root.host-protocol == "noise-obfs"; horizontal-stretch: 1; clicked => { root.host-protocol = "noise-obfs"; root.apply-host(); }
-                    ProtoChipIcon { id: "noise-obfs"; on: root.host-protocol == "noise-obfs"; width: 18px; height: 18px; } }
-                BigChip { name: "Без шифра"; on: root.host-protocol == "plain"; horizontal-stretch: 1; clicked => { root.host-protocol = "plain"; root.apply-host(); }
-                    ProtoChipIcon { id: "plain"; on: root.host-protocol == "plain"; width: 18px; height: 18px; } }
-            }
-            Text {
-                text: root.host-protocol == "noise" ? "Надёжное шифрование. Подходит почти всем — оставьте, если не уверены."
-                    : root.host-protocol == "noise-obfs" ? "Прячет сам факт VPN: провайдер видит просто случайные данные. Чуть медленнее."
-                    : "Шифрования нет — провайдер видит весь трафик. Только для сети, которой доверяете.";
-                color: root.host-protocol == "plain" ? Theme.amber : Theme.dim; font-size: 12px; wrap: word-wrap;
-            }
-
-            // Главная кнопка.
-            Rectangle {
-                height: 54px;
-                border-radius: 18px;
-                background: root.active ? Theme.red : @linear-gradient(90deg, Theme.accent 0%, Theme.accent2 100%);
                 Text {
-                    text: root.host-state == 1 ? "Запускаюсь…" : root.host-state == 2 ? "Остановить хостинг" : "Стать хостом";
-                    color: white; font-size: 16px; font-weight: 700;
-                    horizontal-alignment: center; vertical-alignment: center; width: 100%; height: 100%;
+                    text: root.host-protocol == "noise" ? "Надёжное шифрование. Подходит почти всем — оставьте, если не уверены."
+                        : root.host-protocol == "noise-obfs" ? "Прячет сам факт VPN: провайдер видит просто случайные данные. Чуть медленнее."
+                        : "Шифрования нет — провайдер видит весь трафик. Только для сети, которой доверяете.";
+                    color: root.host-protocol == "plain" ? Theme.amber : Theme.dim; font-size: 12px; wrap: word-wrap;
                 }
-                TouchArea { clicked => { root.toggle(); } }
+
+                Text {
+                    text: "Раздача работает, пока открыто приложение или ваш ПК не уснул.";
+                    color: Theme.dim; font-size: 12px; wrap: word-wrap;
+                }
             }
-            Text { text: "Раздача работает, пока открыто приложение или ваш ПК не уснул."; color: Theme.dim; font-size: 12px; wrap: word-wrap; }
         }
     }
 }

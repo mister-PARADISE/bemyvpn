@@ -1,8 +1,12 @@
-// Вкладка «VPN» — построчный перенос iOS VPNTab: герой-статус, «Подключиться по
-// коду» (поле + вставить + стрелка), «Сканировать QR», недавние, список хостов
-// карточками с раскрытием.
+// Вкладка «VPN» — герой-статус, подключение по коду, недавние, список хостов.
+//
+// Как и остальные вкладки: прижатая панель состояния вне прокрутки, всё
+// остальное под ней. Панель адаптивная — когда подключено, круг уступает место
+// цифрам (адрес хоста, гости, часы). Копирование кода сети и QR живут на нижней
+// полке (app.slint), под большим пальцем.
 import { Theme } from "theme.slint";
-import { HostRow, Card, StatTile, PingTile, CopyTile, GradientButton, SectionLabel, Field, HeroCircle } from "components.slint";
+import { HostRow, Card, StatTile, PingTile, CopyTile, GradientButton, SectionLabel, Field,
+         Badge, StatusLine, StateChip } from "components.slint";
 import { IconShield, IconShieldCheck, IconShieldSlash, IconShieldLock, IconMask, IconLock, IconLockOpen,
          IconPeople, IconCopy, IconCheck, IconClose, IconQr, IconScan, IconPaste, IconArrowRight, IconChevronRight, IconChevronUp } from "icons.slint";
 import { ScrollView } from "std-widgets.slint";
@@ -85,8 +89,8 @@ component HostCard inherits Rectangle {
             }
         }
 
-        // ── детали (раскрыто) — АНИМИРОВАННОЕ раскрытие по высоте (как iOS) ──
-        // clip + анимация height от 0 до реальной высоты содержимого (preferred-height).
+        // ── детали (раскрыто) — АНИМИРОВАННОЕ раскрытие по высоте ──
+        // clip + анимация height от 0 до реальной высоты содержимого.
         Rectangle {
             clip: true;
             height: root.expanded ? detail.preferred-height : 0px;
@@ -147,11 +151,9 @@ export component VpnPage inherits Rectangle {
     /// 0 — простаивает · 1 — качаю · 2 — готово, нужен перезапуск · 3 — ошибка
     in property <int> update-state;
     in property <string> update-error;
-    property <bool> update-dismissed: false;
     in-out property <string> code;
     in-out property <string> guest-password;
     property <int> expanded: -1;
-    property <bool> copied-invite: false;
     callback connect(int);
     // Карточку раскрыли — можно замерить отклик до этого хоста.
     callback expanded-host(int);
@@ -159,130 +161,50 @@ export component VpnPage inherits Rectangle {
     callback disconnect();
     callback paste();
     callback copy-text(string);
-    callback open-invite();
     callback do-update();
 
-    property <color> tint: vpn-state == 1 ? Theme.amber : vpn-state == 2 ? Theme.green : Theme.accent;
+    property <color> tint: vpn-state == 1 ? Theme.amber : vpn-state == 2 ? Theme.green : vpn-state == 3 ? Theme.red : Theme.accent;
 
-    invite-reset := Timer {
-        interval: 1.3s;
-        running: root.copied-invite;
-        triggered() => { root.copied-invite = false; }
-    }
-
-    ScrollView {
-        vertical-scrollbar-policy: ScrollBarPolicy.always-off;
-        horizontal-scrollbar-policy: ScrollBarPolicy.always-off;
-        VerticalLayout {
-            alignment: start;
-            padding: Theme.pad;
-            padding-bottom: 108px;   // не под плавающим нав-баром (iOS navPadding 96)
-            spacing: Theme.gap;
-
-            // ── Свежий релиз ──
-            // Тонкая полоса над героем: заметно, но не перекрывает работу и не
-            // требует реакции. Крестик убирает её до следующего запуска —
-            // навязываться обновлением неправильно, решает человек.
-            if root.update-version != "" && !root.update-dismissed: Rectangle {
-                border-radius: 14px;
-                background: root.update-state == 3 ? Theme.red.with-alpha(0.12) : Theme.accent.with-alpha(0.12);
-                border-width: 1px;
-                border-color: root.update-state == 3 ? Theme.red.with-alpha(0.4) : Theme.accent.with-alpha(0.35);
-                height: 46px;
-                HorizontalLayout {
-                    padding-left: 14px; padding-right: 8px;
-                    spacing: 8px;
+    VerticalLayout {
+        // ── ПРИЖАТАЯ ПАНЕЛЬ ──────────────────────────────────────────────────
+        // Вне ScrollView — не уезжает при прокрутке. Тень отделяет её от
+        // содержимого, которое под неё уходит.
+        Rectangle {
+            // Панель занимает РОВНО столько, сколько нужно содержимому: без
+            // этого Slint отдавал ей всё свободное место, и она растягивалась
+            // на пол-экрана, разгоняя строки друг от друга.
+            vertical-stretch: 0;
+            height: panel-box.preferred-height;
+            background: Theme.bg;
+            drop-shadow-blur: 14px;
+            drop-shadow-color: #000000AA;
+            drop-shadow-offset-y: 8px;
+            panel-box := VerticalLayout {
+                padding: Theme.pad;
+                padding-bottom: 12px;
+                Rectangle {
+                    border-radius: 22px;
+                    background: @linear-gradient(180deg, Theme.panel 0%, Theme.card 100%);
+                    border-width: 1px;
+                    border-color: root.tint.with-alpha(0.2);
                     VerticalLayout {
-                        alignment: center;
-                        horizontal-stretch: 1;
-                        Text {
-                                text: root.update-state == 1 ? "Скачиваю " + root.update-version + "…"
-                                    : root.update-state == 2 ? "Готово — закрываю и обновляю"
-                                    : root.update-state == 3 ? root.update-error
-                                    : "Версия " + root.update-version + " доступна";
-                            color: root.update-state == 3 ? Theme.red : Theme.accent;
-                            font-size: 13px; font-weight: 700; overflow: elide;
-                        }
-                    }
-                    if root.update-state != 1 && root.update-state != 2: VerticalLayout {
-                        alignment: center;
-                        Rectangle {
-                            width: 92px; height: 30px;
-                            border-radius: 10px;
-                            background: upd-ta.pressed ? Theme.accent2 : Theme.accent;
-                            Text {
-                                text: root.update-state == 3 ? "Ещё раз" : "Обновить";
-                                color: white; font-size: 12px; font-weight: 700;
-                                horizontal-alignment: center; vertical-alignment: center;
-                                width: 100%; height: 100%;
-                            }
-                            upd-ta := TouchArea { clicked => { root.do-update(); } }
-                        }
-                    }
-                    // Крестик рисуем ЛИНИЯМИ, а не символом: «✕» в системном
-                    // шрифте отсутствовал и показывался пустым квадратом.
-                    if root.update-state != 1: VerticalLayout {
-                        alignment: center;
-                        Rectangle {
-                            width: 30px; height: 30px;
-                            border-radius: 8px;
-                            background: close-ta.has-hover ? Theme.card-sel : transparent;
-                            IconClose { width: 13px; height: 13px; tint: Theme.dim; }
-                            close-ta := TouchArea { clicked => { root.update-dismissed = true; } }
-                        }
-                    }
-                }
-            }
-
-            // ── Герой-статус ──
-            Rectangle {
-                border-radius: 22px;
-                background: @linear-gradient(180deg, Theme.panel 0%, Theme.card 100%);
-                border-width: 1px;
-                border-color: root.tint.with-alpha(0.2);
-                VerticalLayout {
-                    padding-top: 26px; padding-bottom: 26px;
-                    padding-left: 18px; padding-right: 18px;
-                    spacing: 12px;
-                    HeroCircle {
-                        tint: root.tint;
-                        pulsing: root.vpn-state == 1;
-                        glow: root.vpn-state == 2;
-                        HorizontalLayout {
-                            alignment: center;
-                            VerticalLayout {
-                                alignment: center;
-                                if root.vpn-state == 0: IconShieldSlash { width: 40px; height: 40px; tint: root.tint; hole: Theme.card; }
-                                if root.vpn-state == 1: IconShield { width: 40px; height: 40px; tint: root.tint; }
-                                if root.vpn-state == 2: IconShieldCheck { width: 40px; height: 40px; tint: root.tint; hole: Theme.card; }
-                                if root.vpn-state == 3: IconShieldSlash { width: 40px; height: 40px; tint: Theme.red; hole: Theme.card; }
-                            }
-                        }
-                    }
-                    Text {
-                        text: root.vpn-status;
-                        color: Theme.fg; font-size: 21px; font-weight: 800;
-                        horizontal-alignment: center; overflow: elide;
-                    }
-                    Text {
-                        text: root.vpn-state == 2
-                            ? (root.vpn-country + "  ·  " + root.vpn-proto)
-                            : (root.vpn-sub != "" ? root.vpn-sub
-                               : (root.host-count == 0 ? "Введите код сети или поднимите свой хост"
-                                  : "Доступно хостов: " + root.host-count + " · выберите ниже или жмите «Старт»"));
-                        color: Theme.dim; font-size: 13px;
-                        horizontal-alignment: center; wrap: word-wrap;
-                    }
-
-                    // Подключено — время, плитки, приглашение.
-                    if root.vpn-state == 2: VerticalLayout {
+                        alignment: start;   // иначе строки разъезжаются по высоте
+                        padding-top: 16px; padding-bottom: 18px;
+                        padding-left: 18px; padding-right: 18px;
                         spacing: 8px;
-                        Text {
-                            text: root.vpn-elapsed;
-                            color: Theme.green; font-size: 15px; font-weight: 700;
-                            font-family: "monospace"; horizontal-alignment: center;
+
+                        // ── подключено: значок компактный, место отдано пользе ──
+                        if root.vpn-state == 2: StatusLine {
+                            name: "Подключено";
+                            clock: root.vpn-elapsed;
+                            tint: root.tint;
+                            IconShieldCheck { width: 19px; height: 19px; tint: root.tint; hole: Theme.panel; }
                         }
-                        HorizontalLayout {
+                        if root.vpn-state == 2: Text {
+                            text: root.vpn-country + "  ·  " + root.vpn-proto;
+                            color: Theme.dim; font-size: 13px;
+                        }
+                        if root.vpn-state == 2: HorizontalLayout {
                             spacing: 8px;
                             CopyTile { label: "IP ХОСТА"; value: root.vpn-ip; horizontal-stretch: 1; copy(t) => { root.copy-text(t); } }
                             StatTile {
@@ -290,187 +212,233 @@ export component VpnPage inherits Rectangle {
                                 IconPeople { width: 12px; height: 12px; tint: Theme.fg; }
                             }
                         }
-                        Rectangle { height: 1px; background: Theme.dim.with-alpha(0.15); }
-                        HorizontalLayout {
-                            spacing: 8px;
-                            // «Код сети» — копировать id.
-                            // min/preferred-width: 0 — ОБЯЗАТЕЛЬНО: «Скопировано»
-                            // длиннее «Код сети», и без этого ячейка на секунду
-                            // раздувалась, толкая соседнюю. Ширину задаёт stretch
-                            // (50/50), а не длина текста. Так же сделано в CardButton.
-                            Rectangle {
-                                horizontal-stretch: 1;
-                                min-width: 0px;
-                                preferred-width: 0px;
-                                clip: true;
-                                height: 42px;
-                                border-radius: 12px;
-                                background: Theme.tile;
-                                border-width: 1px;
-                                border-color: root.copied-invite ? Theme.green.with-alpha(0.5) : #FFFFFF14;
-                                HorizontalLayout {
-                                    alignment: center; spacing: 6px;
-                                    VerticalLayout { alignment: center;
-                                        if !root.copied-invite: IconCopy { width: 13px; height: 13px; tint: Theme.accent; }
-                                        if root.copied-invite: IconCheck { width: 13px; height: 13px; tint: Theme.green; }
-                                    }
-                                    Text {
-                                        text: root.copied-invite ? "Скопировано" : "Код сети";
-                                        color: root.copied-invite ? Theme.green : Theme.accent;
-                                        font-size: 13px; font-weight: 700; vertical-alignment: center;
-                                        overflow: elide; min-width: 0px;
-                                    }
-                                }
-                                TouchArea { clicked => { root.copy-text(root.vpn-host-id); root.copied-invite = true; } }
+
+                        // ── не подключено: крупный круг ──
+                        if root.vpn-state != 2: Rectangle {
+                            height: 74px;
+                            // Волна расходится, пока идёт пробитие.
+                            if root.vpn-state == 1: Rectangle {
+                                property <float> t: Math.mod(animation-tick() / 1ms, 1200) / 1200;
+                                property <length> d: 72px * (1 + 0.28 * self.t);
+                                x: (parent.width - self.d) / 2;
+                                y: (74px - self.d) / 2;
+                                width: self.d; height: self.d;
+                                border-radius: self.d / 2;
+                                border-width: 2px;
+                                border-color: root.tint.with-alpha(0.5 * (1 - self.t));
                             }
-                            // QR-код. Те же ограничения ширины — иначе половинки
-                            // ряда перестают быть равными, когда меняется сосед.
                             Rectangle {
-                                horizontal-stretch: 1;
-                                min-width: 0px;
-                                preferred-width: 0px;
-                                clip: true;
-                                height: 42px;
-                                border-radius: 12px;
-                                background: Theme.tile;
+                                x: (parent.width - 72px) / 2;
+                                y: 1px;
+                                width: 72px; height: 72px;
+                                border-radius: 36px;
+                                background: root.tint.with-alpha(0.13);
                                 border-width: 1px;
-                                border-color: #FFFFFF14;
+                                border-color: root.tint.with-alpha(0.3);
                                 HorizontalLayout {
-                                    alignment: center; spacing: 6px;
-                                    VerticalLayout { alignment: center; IconQr { width: 14px; height: 14px; tint: Theme.accent; } }
-                                    Text { text: "QR-код"; color: Theme.accent; font-size: 13px; font-weight: 700; vertical-alignment: center; overflow: elide; min-width: 0px; }
+                                    alignment: center;
+                                    VerticalLayout {
+                                        alignment: center;
+                                        if root.vpn-state == 0: IconShieldSlash { width: 32px; height: 32px; tint: root.tint; hole: Theme.card; }
+                                        if root.vpn-state == 1: IconShield { width: 32px; height: 32px; tint: root.tint; }
+                                        if root.vpn-state == 3: IconShieldSlash { width: 32px; height: 32px; tint: Theme.red; hole: Theme.card; }
+                                    }
                                 }
-                                TouchArea { clicked => { root.open-invite(); } }
                             }
                         }
-                        Text { text: "Позвать друзей в эту же сеть"; color: Theme.dim; font-size: 11px; horizontal-alignment: center; }
+                        if root.vpn-state != 2: Text {
+                            text: root.vpn-status;
+                            color: Theme.fg; font-size: 21px; font-weight: 800;
+                            horizontal-alignment: center; overflow: elide;
+                        }
+                        if root.vpn-state != 2: Text {
+                            text: root.vpn-sub != "" ? root.vpn-sub
+                                : (root.host-count == 0 ? "Введите код сети или поднимите свой хост"
+                                   : "Доступно хостов: " + root.host-count + " · выберите ниже или жмите «Старт»");
+                            color: Theme.dim; font-size: 13px;
+                            horizontal-alignment: center; wrap: word-wrap;
+                        }
                     }
                 }
             }
+        }
 
-            // ── Подключиться по коду ──
-            SectionLabel { text: "Подключиться по коду"; }
-            Rectangle {
-                height: 54px;
-                border-radius: 14px;
-                background: Theme.card;
-                HorizontalLayout {
-                    padding: 5px;
-                    spacing: 6px;
-                    // Поле кода.
-                    Rectangle {
-                        horizontal-stretch: 1;
-                        code-in := TextInput {
-                            x: 12px;
-                            width: parent.width - 24px;
-                            height: parent.height;
-                            vertical-alignment: center;
-                            color: Theme.fg; font-size: 15px;
-                            text <=> root.code;
-                            single-line: true;
-                            accepted => { root.connect-code(); }
-                        }
-                        if root.code == "": Text {
-                            x: 12px; height: parent.height;
-                            text: "КОД СЕТИ"; color: Theme.dim; font-size: 15px; vertical-alignment: center;
-                        }
-                    }
-                    // Вставить.
-                    Rectangle {
-                        width: 44px; height: 44px;
-                        border-radius: 10px;
-                        background: #2E3B57;
-                        VerticalLayout { alignment: center; HorizontalLayout { alignment: center; IconPaste { width: 18px; height: 18px; tint: white; } } }
-                        TouchArea { clicked => { root.paste(); } }
-                    }
-                    // Перейти.
-                    Rectangle {
-                        width: 48px; height: 44px;
-                        border-radius: 10px;
-                        background: @linear-gradient(90deg, Theme.accent 0%, Theme.accent2 100%);
-                        VerticalLayout { alignment: center; HorizontalLayout { alignment: center; IconArrowRight { width: 18px; height: 18px; tint: white; } } }
-                        TouchArea { clicked => { root.connect-code(); } }
-                    }
-                }
-            }
+        // ── ПРОКРУЧИВАЕМОЕ ──────────────────────────────────────────────────
+        ScrollView {
+            vertical-stretch: 1;
+            vertical-scrollbar-policy: ScrollBarPolicy.always-off;
+            horizontal-scrollbar-policy: ScrollBarPolicy.always-off;
+            VerticalLayout {
+                alignment: start;
+                padding: Theme.pad;
+                padding-top: 2px;
+                // Ниже плавают нав-бар и (при подключении) полка действий.
+                padding-bottom: root.vpn-state == 2 ? 168px : 108px;
+                spacing: Theme.gap;
 
-            // ── Недавние ──
-            if root.recent-ids.length > 0: SectionLabel { text: "Недавние"; }
-            if root.recent-ids.length > 0: HorizontalLayout {
-                spacing: 8px;
-                for name[i] in root.recent-names: Rectangle {
-                    property <bool> hot: root.recent-ids[i] == root.vpn-host-id;
-                    height: 38px;
-                    border-radius: 16px;
-                    background: hot ? Theme.accent.with-alpha(0.16) : Theme.card-sel;
+                // ── Свежий релиз ──
+                // Крестика нет намеренно: это единственный канал про новую
+                // версию, и спрятав его, человек больше о ней не узнает.
+                if root.update-version != "": Rectangle {
+                    border-radius: 14px;
+                    background: root.update-state == 3 ? Theme.red.with-alpha(0.09) : Theme.accent.with-alpha(0.09);
                     border-width: 1px;
-                    border-color: hot ? Theme.accent.with-alpha(0.5) : transparent;
+                    border-color: root.update-state == 3 ? Theme.red.with-alpha(0.3) : Theme.accent.with-alpha(0.28);
+                    height: 62px;
                     HorizontalLayout {
-                        padding-left: 13px; padding-right: 13px;
-                        Text { text: name; color: hot ? Theme.accent : Theme.fg; font-size: 13px; font-weight: 700; vertical-alignment: center; }
+                        padding: 12px;
+                        padding-left: 14px;
+                        spacing: 14px;
+                        VerticalLayout {
+                            alignment: center;
+                            horizontal-stretch: 1;
+                            Text {
+                                text: root.update-state == 1 ? "Скачиваю " + root.update-version + "…"
+                                    : root.update-state == 2 ? "Готово — закрываю и обновляю"
+                                    : root.update-state == 3 ? root.update-error
+                                    : "Версия " + root.update-version + " доступна";
+                                color: root.update-state == 3 ? Theme.red : Theme.accent;
+                                font-size: 13px; font-weight: 700; wrap: word-wrap;
+                            }
+                        }
+                        // Пока качаем или готовимся закрыться — кнопки нет:
+                        // решение уже принято, жать больше не на что.
+                        if root.update-state != 1 && root.update-state != 2: VerticalLayout {
+                            alignment: center;
+                            Rectangle {
+                                // Зелёная: обновиться — действие хорошее, а не
+                                // тревожное. При ошибке — в цвете ошибки, иначе
+                                // читалась бы как чужая деталь.
+                                property <color> hue: root.update-state == 3 ? Theme.red : Theme.green;
+                                width: 116px; height: 38px;
+                                border-radius: 11px;
+                                background: upd-ta.has-hover ? self.hue.with-alpha(0.23) : self.hue.with-alpha(0.14);
+                                border-width: 1px;
+                                border-color: self.hue.with-alpha(0.4);
+                                Text {
+                                    text: root.update-state == 3 ? "Ещё раз" : "Обновить";
+                                    color: parent.hue; font-size: 13px; font-weight: 700;
+                                    horizontal-alignment: center; vertical-alignment: center;
+                                    width: 100%; height: 100%;
+                                }
+                                upd-ta := TouchArea { clicked => { root.do-update(); } }
+                            }
+                        }
                     }
-                    TouchArea { clicked => { if (root.vpn-state == 0) { root.code = root.recent-ids[i]; root.connect-code(); } } }
                 }
-                Rectangle { horizontal-stretch: 1; }
-            }
 
-            // ── Хосты ──
-            SectionLabel { text: "Хосты"; }
-            // Связь с сервером потеряна, а список НЕ пуст: цифры и состав хостов
-            // ниже — последние известные, то есть могут врать. Молчать нельзя,
-            // иначе устаревший список выглядит как живой.
-            // Связь потеряна: полоса мягко ДЫШИТ — это и есть весь индикатор
-            // процесса. Отдельной «крутилки» не нужно, движение само говорит,
-            // что работа идёт и руками ничего делать не надо.
-            if root.coord-state == 2 && root.hosts.length > 0: Rectangle {
-                background: #3A2A15;
-                border-radius: 10px;
-                border-width: 1px;
-                border-color: Theme.amber;
-                height: txt.preferred-height + 20px;
-                property <bool> dim: false;
-                opacity: dim ? 0.72 : 1.0;
-                animate opacity { duration: 1100ms; easing: ease-in-out; }
-                Timer {
-                    interval: 1100ms;
-                    running: true;
-                    triggered => { parent.dim = !parent.dim; }
-                }
-                HorizontalLayout {
-                    padding: 10px;
-                    txt := Text {
-                        text: "Нет связи с сервером — список ниже может устареть. Восстанавливаю связь…";
-                        color: Theme.amber; font-size: 12px; wrap: word-wrap;
-                        vertical-alignment: center;
+                // ── Подключиться по коду ──
+                SectionLabel { text: "Подключиться по коду"; }
+                Rectangle {
+                    height: 54px;
+                    border-radius: 14px;
+                    background: Theme.card;
+                    HorizontalLayout {
+                        padding: 5px;
+                        spacing: 6px;
+                        // Поле кода.
+                        Rectangle {
+                            horizontal-stretch: 1;
+                            code-in := TextInput {
+                                x: 12px;
+                                width: parent.width - 24px;
+                                height: parent.height;
+                                vertical-alignment: center;
+                                color: Theme.fg; font-size: 15px;
+                                text <=> root.code;
+                                single-line: true;
+                                accepted => { root.connect-code(); }
+                            }
+                            if root.code == "": Text {
+                                x: 12px; height: parent.height;
+                                text: "КОД СЕТИ"; color: Theme.dim; font-size: 15px; vertical-alignment: center;
+                            }
+                        }
+                        // Вставить — второстепенное действие, поэтому тихое.
+                        Rectangle {
+                            width: 44px; height: 44px;
+                            border-radius: 10px;
+                            background: paste-ta.has-hover ? #333D52 : #2A3244;
+                            border-width: 1px;
+                            border-color: #FFFFFF14;
+                            VerticalLayout { alignment: center; HorizontalLayout { alignment: center; IconPaste { width: 18px; height: 18px; tint: Theme.dim; } } }
+                            paste-ta := TouchArea { clicked => { root.paste(); } }
+                        }
+                        // Перейти. Подкраска вместо сплошного синего: он спорил
+                        // с акцентом всего экрана. Стрелка крупнее соседней —
+                        // здесь она главная.
+                        Rectangle {
+                            width: 52px; height: 44px;
+                            border-radius: 10px;
+                            background: go-ta.has-hover ? Theme.accent.with-alpha(0.28) : Theme.accent.with-alpha(0.16);
+                            border-width: 1px;
+                            border-color: Theme.accent.with-alpha(0.4);
+                            VerticalLayout { alignment: center; HorizontalLayout { alignment: center; IconArrowRight { width: 22px; height: 22px; tint: Theme.accent; } } }
+                            go-ta := TouchArea { clicked => { root.connect-code(); } }
+                        }
                     }
                 }
-            }
-            if root.hosts.length == 0: Text {
-                text: root.coord-state == 2
-                    ? "Нет связи с сервером. Восстанавливаю…\nЕсли не проходит — проверьте адрес во вкладке «Сервер»."
-                    : "Хостов пока нет.\nВведите код сети или поднимите свой во вкладке «Хост».";
-                color: Theme.dim; font-size: 14px;
-                horizontal-alignment: center; wrap: word-wrap;
-            }
-            for h[i] in root.hosts: HostCard {
-                h: h;
-                index: i;
-                // Данные не живые — показываем это САМИМ СПИСКОМ, а не ещё одним
-                // элементом: приглушённое читается как «неактуально» мгновенно
-                // и без слов.
-                opacity: root.coord-state == 2 ? 0.55 : 1.0;
-                animate opacity { duration: 400ms; easing: ease-in-out; }
-                expanded: root.expanded == i;
-                guest-password <=> root.guest-password;
-                toggle() => {
-                    root.expanded = (root.expanded == i) ? -1 : i;
-                    // Шлём ВСЕГДА, в том числе -1 при сворачивании: замер отклика
-                    // идёт циклом, пока карточка открыта, и без сигнала о закрытии
-                    // его нечем было бы остановить.
-                    root.expanded-host(root.expanded);
+
+                // ── Недавние ──
+                if root.recent-ids.length > 0: SectionLabel { text: "Недавние"; }
+                if root.recent-ids.length > 0: HorizontalLayout {
+                    spacing: 8px;
+                    for name[i] in root.recent-names: Rectangle {
+                        property <bool> hot: root.recent-ids[i] == root.vpn-host-id;
+                        height: 38px;
+                        border-radius: 16px;
+                        background: hot ? Theme.accent.with-alpha(0.16) : Theme.card-sel;
+                        border-width: 1px;
+                        border-color: hot ? Theme.accent.with-alpha(0.5) : transparent;
+                        HorizontalLayout {
+                            padding-left: 13px; padding-right: 13px;
+                            Text { text: name; color: hot ? Theme.accent : Theme.fg; font-size: 13px; font-weight: 700; vertical-alignment: center; }
+                        }
+                        TouchArea { clicked => { if (root.vpn-state == 0) { root.code = root.recent-ids[i]; root.connect-code(); } } }
+                    }
+                    Rectangle { horizontal-stretch: 1; }
                 }
-                connect(idx) => { root.connect(idx); }
-                copy-text(t) => { root.copy-text(t); }
+
+                // ── Хосты ──
+                // Связь потеряна, а список НЕ пуст: цифры ниже — последние
+                // известные, то есть могут врать. Раньше об этом кричала
+                // оранжевая полоса во всю ширину, которая ещё и дышала,
+                // перетягивая взгляд с самого списка. Теперь причину называет
+                // тихий знак у заголовка, а «неактуально» говорит сам список —
+                // приглушением. Где искать поломку, показывает точка на ячейке
+                // «Сервер» в нав-баре, видная с любой вкладки.
+                HorizontalLayout {
+                    spacing: 8px;
+                    SectionLabel { text: "Хосты"; vertical-alignment: center; }
+                    Rectangle { horizontal-stretch: 1; }
+                    if root.coord-state == 2 && root.hosts.length > 0: StateChip { text: "последние известные"; }
+                }
+                if root.hosts.length == 0: Text {
+                    text: root.coord-state == 2
+                        ? "Нет связи с сервером. Восстанавливаю…\nЕсли не проходит — проверьте адрес во вкладке «Сервер»."
+                        : "Хостов пока нет.\nВведите код сети или поднимите свой во вкладке «Хост».";
+                    color: Theme.dim; font-size: 14px;
+                    horizontal-alignment: center; wrap: word-wrap;
+                }
+                for h[i] in root.hosts: HostCard {
+                    h: h;
+                    index: i;
+                    // Данные не живые — показываем это САМИМ СПИСКОМ: приглушённое
+                    // читается как «неактуально» мгновенно и без слов.
+                    opacity: root.coord-state == 2 ? 0.55 : 1.0;
+                    animate opacity { duration: 400ms; easing: ease-in-out; }
+                    expanded: root.expanded == i;
+                    guest-password <=> root.guest-password;
+                    toggle() => {
+                        root.expanded = (root.expanded == i) ? -1 : i;
+                        // Шлём ВСЕГДА, в том числе -1 при сворачивании: замер отклика
+                        // идёт циклом, пока карточка открыта, и без сигнала о закрытии
+                        // его нечем было бы остановить.
+                        root.expanded-host(root.expanded);
+                    }
+                    connect(idx) => { root.connect(idx); }
+                    copy-text(t) => { root.copy-text(t); }
+                }
             }
         }
     }

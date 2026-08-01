@@ -111,8 +111,13 @@ export component StatTile inherits TileFrame {
     in property <string> value;
     in property <color> tint: Theme.fg;
     VerticalLayout {
-        padding-left: 11px; padding-right: 11px; padding-top: 9px; padding-bottom: 9px;
-        spacing: 4px;
+        // ПАРА ЦЕНТРИРУЕТСЯ ПО ВЫСОТЕ. Раньше стояли фиксированные отступы
+        // 9px сверху и снизу, а сумма строк с их межстрочными интервалами
+        // перекрывала 52px — значение выдавливало к нижнему краю, и казалось,
+        // что оно проваливается из ячейки.
+        alignment: center;
+        padding-left: 11px; padding-right: 11px; padding-top: 8px; padding-bottom: 8px;
+        spacing: 3px;
         Text { text: root.label; color: Theme.dim; font-size: 10px; font-weight: 900; letter-spacing: 0.7px; }
         // Значение и значок — ПО ЦЕНТРУ ячейки. Раньше текст растягивался
         // (horizontal-stretch), прижимая значок к правому краю, и в соседних
@@ -191,8 +196,9 @@ export component CopyTile inherits TileFrame {
         triggered() => { root.copied = false; }
     }
     VerticalLayout {
-        padding-left: 11px; padding-right: 11px; padding-top: 9px; padding-bottom: 9px;
-        spacing: 4px;
+        alignment: center;   // см. StatTile: иначе значение проваливается вниз
+        padding-left: 11px; padding-right: 11px; padding-top: 8px; padding-bottom: 8px;
+        spacing: 3px;
         Text { text: root.label; color: Theme.dim; font-size: 10px; font-weight: 900; letter-spacing: 0.7px; }
         HorizontalLayout {
             spacing: 5px;
@@ -374,4 +380,133 @@ export component BigChip inherits Rectangle {
         }
     }
     ta := TouchArea { clicked => { root.clicked(); } }
+}
+
+// ── Рабочее состояние: значок компактный, место отдано пользе ────────────────
+
+/// Кружок со значком — тот же опознавательный знак, что и в герой-круге, но
+/// вчетверо меньше. Убирать значок в работе нельзя: он опознаёт экран с одного
+/// взгляда; а держать 74px картинки там, где нужны код и цифры, — расточительство,
+/// потому что панель висит на экране постоянно.
+export component Badge inherits Rectangle {
+    in property <color> tint: Theme.accent;
+    width: 38px;
+    height: 38px;
+    border-radius: 19px;
+    background: root.tint.with-alpha(0.13);
+    border-width: 1px;
+    border-color: root.tint.with-alpha(0.3);
+    HorizontalLayout {
+        alignment: center;
+        VerticalLayout { alignment: center; @children }
+    }
+}
+
+/// Строка состояния для работающего режима: значок, название, часы справа.
+export component StatusLine inherits HorizontalLayout {
+    in property <string> name;
+    in property <string> clock;
+    in property <color> tint: Theme.accent;
+    spacing: 10px;
+    Badge { tint: root.tint; @children }
+    VerticalLayout {
+        alignment: center;
+        horizontal-stretch: 1;
+        Text { text: root.name; color: Theme.fg; font-size: 17px; font-weight: 800; overflow: elide; }
+    }
+    if root.clock != "": VerticalLayout {
+        alignment: center;
+        Text {
+            text: root.clock; color: root.tint;
+            font-size: 14px; font-weight: 700; font-family: "monospace";
+        }
+    }
+}
+
+/// Код сети крупно — то, ради чего открывают вкладку.
+export component BigCode inherits Text {
+    color: Theme.accent;
+    font-size: 26px;
+    font-weight: 800;
+    font-family: "monospace";
+    letter-spacing: 2px;
+    horizontal-alignment: center;
+}
+
+/// Негромкая кнопка внутри панели. Для РЕДКИХ действий («Новый код»): тянуться
+/// к верху экрана за ними приходится нечасто, поэтому им хватает строчки.
+export component QuietButton inherits Rectangle {
+    in property <string> title;
+    in property <bool> feedback: false;
+    property <bool> did: false;
+    callback clicked;
+    height: 34px;
+    min-width: 0px;
+    preferred-width: 0px;
+    clip: true;
+    border-radius: 10px;
+    background: ta.has-hover ? #FFFFFF0A : transparent;
+    border-width: 1px;
+    border-color: root.did ? Theme.green.with-alpha(0.5) : #FFFFFF14;
+    animate border-color { duration: 180ms; easing: ease-out; }
+    reset := Timer { interval: 1.3s; running: root.did; triggered() => { root.did = false; } }
+    HorizontalLayout {
+        alignment: center;
+        spacing: 6px;
+        VerticalLayout { alignment: center; @children }
+        Text {
+            text: root.did ? "Готово" : root.title;
+            color: root.did ? Theme.green : Theme.dim;
+            font-size: 12.5px; font-weight: 700; vertical-alignment: center;
+            overflow: elide; min-width: 0px;
+        }
+    }
+    ta := TouchArea { clicked => { if (root.feedback) { root.did = true; } root.clicked(); } }
+}
+
+/// Кнопка нижней полки. Крупная (48px) и внизу экрана — под большим пальцем:
+/// копирование и QR жмут чаще всего, тянуться за ними через весь экран
+/// неправильно.
+export component DockButton inherits Rectangle {
+    in property <string> title;
+    in property <bool> feedback: false;
+    property <bool> did: false;
+    callback clicked;
+    height: 48px;
+    min-width: 0px;
+    preferred-width: 0px;
+    clip: true;
+    border-radius: 15px;
+    background: ta.has-hover ? #232D42 : #1B2333;
+    border-width: 1px;
+    border-color: root.did ? Theme.green.with-alpha(0.5) : Theme.accent.with-alpha(0.24);
+    animate border-color, background { duration: 160ms; easing: ease-out; }
+    reset := Timer { interval: 1.3s; running: root.did; triggered() => { root.did = false; } }
+    HorizontalLayout {
+        alignment: center;
+        spacing: 8px;
+        VerticalLayout { alignment: center; @children }
+        Text {
+            text: root.did ? "Скопировано" : root.title;
+            color: root.did ? Theme.green : Theme.accent;
+            font-size: 14px; font-weight: 700; vertical-alignment: center;
+            overflow: elide; min-width: 0px;
+        }
+    }
+    ta := TouchArea { clicked => { if (root.feedback) { root.did = true; } root.clicked(); } }
+}
+
+/// Тихий знак состояния у заголовка раздела. Пришёл на смену оранжевой полосе
+/// во всю ширину: та кричала сильнее, чем стоило сообщение, и вдобавок дышала,
+/// перетягивая взгляд с самого списка. Приглушённый список уже говорит «данные
+/// могут врать» — словам остаётся только назвать причину, тихо.
+export component StateChip inherits HorizontalLayout {
+    in property <string> text;
+    in property <color> tint: Theme.amber;
+    spacing: 5px;
+    VerticalLayout {
+        alignment: center;
+        Rectangle { width: 6px; height: 6px; border-radius: 3px; background: root.tint; }
+    }
+    Text { text: root.text; color: root.tint; font-size: 11px; font-weight: 700; vertical-alignment: center; }
 }

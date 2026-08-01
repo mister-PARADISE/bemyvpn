@@ -1,13 +1,19 @@
-// Вкладка «Сервер» — построчный перенос iOS ServerTab: герой-статус координатора
-// (кольцо + пинг/хостов/IP), поле другого адреса, «Сохранить и проверить»,
-// «Вернуть стандартный сервер», недавние серверы. Трафик через координатор НЕ идёт.
+// Вкладка «Сервер» — координатор. Трафик через него НЕ идёт.
+//
+// Как и остальные вкладки: прижатая панель состояния вне прокрутки, настройки
+// под ней. Панель адаптивная — когда связь есть, круг уступает место цифрам
+// (пинг, хостов, свой адрес), потому что смотреть на большой значок «всё
+// хорошо» смысла нет.
+//
+// Адрес показывается доменом, без «https://»: схема у нас всегда одна, и шесть
+// символов перед каждым адресом ничего не сообщают.
 import { Theme } from "theme.slint";
-import { StatTile, ActionTile, CopyTile, SectionLabel, GradientButton, Field, HeroCircle } from "components.slint";
+import { StatTile, CopyTile, SectionLabel, GradientButton, Field, Badge, StatusLine } from "components.slint";
 import { IconAntenna, IconAntennaOff } from "icons.slint";
 import { ScrollView } from "std-widgets.slint";
 
 export component ServerPage inherits Rectangle {
-    in property <string> coord-url;
+    in property <string> coord-url;     // уже без схемы (Rust её срезает)
     in property <int> coord-state;      // 0 проверяю · 1 на связи · 2 нет связи
     in property <int> coord-ping;       // мс
     in property <int> coord-hosts;
@@ -25,91 +31,143 @@ export component ServerPage inherits Rectangle {
     property <string> status-text: coord-state == 1 ? "На связи" : coord-state == 2 ? "Нет связи — восстанавливаю…" : "Проверяю связь…";
     property <color> ping-color: coord-ping < 200 ? Theme.green : coord-ping < 600 ? Theme.fg : Theme.amber;
 
-    ScrollView {
-        vertical-scrollbar-policy: ScrollBarPolicy.always-off;
-        horizontal-scrollbar-policy: ScrollBarPolicy.always-off;
-        VerticalLayout {
-            alignment: start;
-            padding: Theme.pad;
-            padding-bottom: 108px;
-            spacing: Theme.gap;
-
-            // ── Герой-статус ──
-            Rectangle {
-                border-radius: 22px;
-                background: @linear-gradient(180deg, Theme.panel 0%, Theme.card 100%);
-                border-width: 1px;
-                border-color: root.tint.with-alpha(0.2);
-                VerticalLayout {
-                    padding-top: 26px; padding-bottom: 26px;
-                    padding-left: 18px; padding-right: 18px;
-                    spacing: 12px;
-                    HeroCircle {
-                        tint: root.tint;
-                        pulsing: root.coord-state == 0;
-                        glow: root.coord-state == 1;
-                        HorizontalLayout {
-                            alignment: center;
-                            VerticalLayout {
-                                alignment: center;
-                                if root.coord-state != 2: IconAntenna { width: 36px; height: 36px; tint: root.tint; }
-                                if root.coord-state == 2: IconAntennaOff { width: 36px; height: 36px; tint: root.tint; hole: Theme.card; }
-                            }
-                        }
-                    }
-                    Text { text: root.status-text; color: Theme.fg; font-size: 21px; font-weight: 800; horizontal-alignment: center; }
-                    Text { text: root.coord-url; color: Theme.dim; font-size: 13px; font-family: "monospace"; horizontal-alignment: center; overflow: elide; }
-
+    VerticalLayout {
+        // ── ПРИЖАТАЯ ПАНЕЛЬ ──────────────────────────────────────────────────
+        Rectangle {
+            // Панель занимает РОВНО столько, сколько нужно содержимому: без
+            // этого Slint отдавал ей всё свободное место, и она растягивалась
+            // на пол-экрана, разгоняя строки друг от друга.
+            vertical-stretch: 0;
+            height: panel-box.preferred-height;
+            background: Theme.bg;
+            drop-shadow-blur: 14px;
+            drop-shadow-color: #000000AA;
+            drop-shadow-offset-y: 8px;
+            panel-box := VerticalLayout {
+                padding: Theme.pad;
+                padding-bottom: 12px;
+                Rectangle {
+                    border-radius: 22px;
+                    background: @linear-gradient(180deg, Theme.panel 0%, Theme.card 100%);
+                    border-width: 1px;
+                    border-color: root.tint.with-alpha(0.2);
                     VerticalLayout {
-                        padding-top: 4px;
+                        alignment: start;   // иначе строки разъезжаются по высоте
+                        padding-top: 16px; padding-bottom: 18px;
+                        padding-left: 18px; padding-right: 18px;
                         spacing: 8px;
-                        HorizontalLayout {
+
+                        // ── связь есть: значок компактный, место отдано цифрам ──
+                        if root.coord-state == 1: StatusLine {
+                            name: root.status-text;
+                            tint: root.tint;
+                            IconAntenna { width: 19px; height: 19px; tint: root.tint; }
+                        }
+                        if root.coord-state == 1: Text {
+                            text: root.coord-url; color: Theme.dim; font-size: 13px;
+                            font-family: "monospace"; overflow: elide;
+                        }
+                        if root.coord-state == 1: HorizontalLayout {
                             spacing: 8px;
                             StatTile {
                                 // Обычная плитка, а не кнопка: проверка идёт сама
                                 // каждые 3 секунды, и нажатие экономило бы в лучшем
-                                // случае их же. Акцентный значок при этом обещал
-                                // действие, которого нет.
-                                label: "ПИНГ";
-                                value: root.coord-state == 1 ? (root.coord-ping + " мс") : "—";
-                                tint: root.ping-color;
-                                horizontal-stretch: 1;
+                                // случае их же.
+                                label: "ПИНГ"; value: root.coord-ping + " мс";
+                                tint: root.ping-color; horizontal-stretch: 1;
                             }
                             StatTile { label: "ХОСТОВ"; value: root.coord-hosts; horizontal-stretch: 1; }
                         }
-                        CopyTile { label: "ВАШ IP"; value: root.coord-ip == "" ? "—" : root.coord-ip; copy(t) => { root.copy-text(t); } }
+                        if root.coord-state == 1: CopyTile {
+                            label: "ВАШ IP"; value: root.coord-ip == "" ? "—" : root.coord-ip;
+                            copy(t) => { root.copy-text(t); }
+                        }
+
+                        // ── связи нет или проверяем: крупный круг ──
+                        if root.coord-state != 1: Rectangle {
+                            height: 74px;
+                            if root.coord-state == 0: Rectangle {
+                                property <float> t: Math.mod(animation-tick() / 1ms, 1200) / 1200;
+                                property <length> d: 72px * (1 + 0.28 * self.t);
+                                x: (parent.width - self.d) / 2;
+                                y: (74px - self.d) / 2;
+                                width: self.d; height: self.d;
+                                border-radius: self.d / 2;
+                                border-width: 2px;
+                                border-color: root.tint.with-alpha(0.5 * (1 - self.t));
+                            }
+                            Rectangle {
+                                x: (parent.width - 72px) / 2;
+                                y: 1px;
+                                width: 72px; height: 72px;
+                                border-radius: 36px;
+                                background: root.tint.with-alpha(0.13);
+                                border-width: 1px;
+                                border-color: root.tint.with-alpha(0.3);
+                                HorizontalLayout {
+                                    alignment: center;
+                                    VerticalLayout {
+                                        alignment: center;
+                                        if root.coord-state == 0: IconAntenna { width: 32px; height: 32px; tint: root.tint; }
+                                        if root.coord-state == 2: IconAntennaOff { width: 32px; height: 32px; tint: root.tint; hole: Theme.card; }
+                                    }
+                                }
+                            }
+                        }
+                        if root.coord-state != 1: Text {
+                            text: root.status-text; color: Theme.fg; font-size: 21px; font-weight: 800;
+                            horizontal-alignment: center; wrap: word-wrap;
+                        }
+                        if root.coord-state != 1: Text {
+                            text: root.coord-url; color: Theme.dim; font-size: 13px;
+                            font-family: "monospace"; horizontal-alignment: center; overflow: elide;
+                        }
                     }
                 }
             }
+        }
 
-            Text {
-                text: "Сервер ведёт каталог хостов и сводит участников. Ваш трафик через него не проходит.";
-                color: Theme.dim; font-size: 12px; wrap: word-wrap;
-            }
+        // ── ПРОКРУЧИВАЕМОЕ ──────────────────────────────────────────────────
+        ScrollView {
+            vertical-stretch: 1;
+            vertical-scrollbar-policy: ScrollBarPolicy.always-off;
+            horizontal-scrollbar-policy: ScrollBarPolicy.always-off;
+            VerticalLayout {
+                alignment: start;
+                padding: Theme.pad;
+                padding-top: 2px;
+                padding-bottom: 108px;
+                spacing: Theme.gap;
 
-            SectionLabel { text: "Другой адрес сервера"; }
-            Field { placeholder: "http://адрес:3330"; text <=> root.coord-field; accepted => { root.set-coord(root.coord-field); } }
-            GradientButton { title: "Сохранить и проверить"; clicked => { root.set-coord(root.coord-field); } }
-            if !root.coord-is-default: Text {
-                text: "Вернуть стандартный сервер";
-                color: Theme.dim; font-size: 13px; horizontal-alignment: center;
-                TouchArea { clicked => { root.reset-coord(); } }
-            }
-
-            if root.history.length > 0: SectionLabel { text: "Недавние серверы"; }
-            if root.history.length > 0: HorizontalLayout {
-                spacing: 8px;
-                for url in root.history: Rectangle {
-                    height: 36px;
-                    border-radius: 16px;
-                    background: Theme.card-sel;
-                    HorizontalLayout {
-                        padding-left: 14px; padding-right: 14px;
-                        Text { text: url; color: Theme.fg; font-size: 13px; font-weight: 700; vertical-alignment: center; }
-                    }
-                    TouchArea { clicked => { root.coord-field = url; root.set-coord(url); } }
+                Text {
+                    text: "Сервер ведёт каталог хостов и сводит участников. Ваш трафик через него не проходит.";
+                    color: Theme.dim; font-size: 12px; wrap: word-wrap;
                 }
-                Rectangle { horizontal-stretch: 1; }
+
+                SectionLabel { text: "Другой адрес сервера"; }
+                Field { placeholder: "адрес сервера"; text <=> root.coord-field; accepted => { root.set-coord(root.coord-field); } }
+                GradientButton { title: "Сохранить и проверить"; clicked => { root.set-coord(root.coord-field); } }
+                if !root.coord-is-default: Text {
+                    text: "Вернуть стандартный сервер";
+                    color: Theme.dim; font-size: 13px; horizontal-alignment: center;
+                    TouchArea { clicked => { root.reset-coord(); } }
+                }
+
+                if root.history.length > 0: SectionLabel { text: "Недавние серверы"; }
+                if root.history.length > 0: HorizontalLayout {
+                    spacing: 8px;
+                    for url in root.history: Rectangle {
+                        height: 36px;
+                        border-radius: 16px;
+                        background: Theme.card-sel;
+                        HorizontalLayout {
+                            padding-left: 14px; padding-right: 14px;
+                            Text { text: url; color: Theme.fg; font-size: 13px; font-weight: 700; vertical-alignment: center; }
+                        }
+                        TouchArea { clicked => { root.coord-field = url; root.set-coord(url); } }
+                    }
+                    Rectangle { horizontal-stretch: 1; }
+                }
             }
         }
     }
