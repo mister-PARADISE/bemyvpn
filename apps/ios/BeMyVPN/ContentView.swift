@@ -89,9 +89,9 @@ struct NavBar: View {
 
     var body: some View {
         HStack(spacing: 4) {
-            cell(.server, icon: "server.rack", label: "Сервер")
+            serverCell
             vpnCell
-            cell(.host, icon: "wifi.router.fill", label: "Хост")
+            hostCell
         }
         .padding(6)
         .background(
@@ -102,7 +102,8 @@ struct NavBar: View {
         // Тень на почти-чёрном фоне: чёрная тень СЛИВАЕТСЯ с фоном (#0B0E14) и
         // не видна. Поэтому «подъём» бара делаем СВЕТЛЫМ ореолом сверху (тонкая
         // белёсая тень вверх) + плотной чёрной снизу под баром.
-        .shadow(color: .black.opacity(0.6), radius: 10, x: 0, y: 6)
+        .shadow(color: .black.opacity(0.65), radius: 5, x: 0, y: 2)
+        .shadow(color: .black.opacity(0.8), radius: 22, x: 0, y: 12)
         .shadow(color: .white.opacity(0.10), radius: 14, x: 0, y: -6)
         .padding(.horizontal, 18)
         // safe-area пробита на корне (ContentView), поэтому зазор снизу задаём
@@ -122,7 +123,9 @@ struct NavBar: View {
     /// метрики были одинаковые, поэтому раньше не всплывало.
     private let iconBox: CGFloat = 22
 
-    private func cell(_ t: Tab, icon: String, label: String) -> some View {
+    /// Ячейка-переход. `live` — точка состояния: горит, только когда ячейка
+    /// ведёт на ДРУГУЮ вкладку. На своей состояние и так написано словом.
+    private func cell(_ t: Tab, icon: String, label: String, live: Color? = nil) -> some View {
         let active = app.tab == t
         return VStack(spacing: 3) {
             Image(systemName: icon).font(.system(size: 19, weight: .semibold))
@@ -131,33 +134,65 @@ struct NavBar: View {
             Text(label).font(.system(size: 11, weight: .bold)).foregroundColor(active ? Theme.accent : Theme.dim)
         }
         .frame(maxWidth: .infinity).padding(.vertical, 8)
-        .background(active ? RoundedRectangle(cornerRadius: innerR, style: .continuous).fill(Theme.accent.opacity(0.26)) : nil)
+        .background(active ? RoundedRectangle(cornerRadius: innerR, style: .continuous).fill(Theme.accent.opacity(0.16)) : nil)
+        .overlay(alignment: .top) {
+            if let live {
+                Circle().fill(live).frame(width: 7, height: 7)
+                    .overlay(Circle().stroke(Color(hex: 0x161C2B), lineWidth: 2))
+                    .offset(x: 19, y: 3)
+            }
+        }
         .contentShape(Rectangle())
         .onTapGesture { withAnimation(.easeInOut(duration: 0.18)) { app.tab = t } }
     }
 
-    @ViewBuilder private var vpnCell: some View {
-        if app.tab != .vpn {
-            cell(.vpn, icon: "shield.fill", label: "VPN")
-        } else if app.vpnState == 0 {
-            action("bolt.fill", "Старт", grad: [Color(hex: 0x34E29E), Color(hex: 0x12B07E)]) { app.quickConnect() }
-        } else {
-            action("xmark", "Стоп", grad: [Color(hex: 0xFF6473), Color(hex: 0xE23B4C)]) { app.stop() }
-        }
-    }
-
-    private func action(_ icon: String, _ label: String, grad: [Color], _ tap: @escaping () -> Void) -> some View {
+    /// Ячейка-включатель. Подкраска и рамка в цвет состояния — раньше здесь был
+    /// сплошной градиент во всю яркость, и он перетягивал на себя весь экран.
+    private func action(_ icon: String, _ label: String, hue: Color, _ tap: @escaping () -> Void) -> some View {
         VStack(spacing: 3) {
             Image(systemName: icon).font(.system(size: 19, weight: .bold))
                 .frame(height: iconBox)
-                .foregroundColor(.white)
-            Text(label).font(.system(size: 11, weight: .bold)).foregroundColor(.white)
+                .foregroundColor(hue)
+            Text(label).font(.system(size: 11, weight: .bold)).foregroundColor(hue)
+                .lineLimit(1).minimumScaleFactor(0.8)
         }
         .frame(maxWidth: .infinity).padding(.vertical, 8)
-        .background(RoundedRectangle(cornerRadius: innerR, style: .continuous).fill(LinearGradient(colors: grad, startPoint: .top, endPoint: .bottom)))
-        .shadow(color: grad[0].opacity(0.35), radius: 8, y: 3)
+        .background(
+            RoundedRectangle(cornerRadius: innerR, style: .continuous).fill(hue.opacity(0.14))
+                .overlay(RoundedRectangle(cornerRadius: innerR, style: .continuous).stroke(hue.opacity(0.37), lineWidth: 1))
+        )
         .contentShape(Rectangle())
         .onTapGesture(perform: tap)
+    }
+
+    // «Сервер» — навигация всегда: у вкладки нет своего включателя. Зато на ней
+    // горит состояние связи, видное С ЛЮБОЙ вкладки. Когда всё хорошо — точки
+    // нет: молчание и есть «ок». Раньше об обрыве кричала полоса на вкладке VPN.
+    private var serverCell: some View {
+        cell(.server, icon: "server.rack", label: "Сервер",
+             live: app.serverOnline == true ? nil : (app.serverOnline == false ? Theme.red : Theme.amber))
+    }
+
+    @ViewBuilder private var vpnCell: some View {
+        if app.tab != .vpn {
+            cell(.vpn, icon: "shield.fill", label: "VPN",
+                 live: app.vpnState == 0 ? nil : (app.vpnState == 2 ? Theme.green : Theme.amber))
+        } else if app.vpnState == 0 {
+            action("bolt.fill", "Старт", hue: Theme.green) { app.quickConnect() }
+        } else {
+            action("xmark", app.vpnState == 1 ? "Отмена" : "Стоп", hue: Theme.red) { app.stop() }
+        }
+    }
+
+    @ViewBuilder private var hostCell: some View {
+        if app.tab != .host {
+            cell(.host, icon: "wifi.router.fill", label: "Хост",
+                 live: (app.hosting || app.starting) ? (app.hosting ? Theme.green : Theme.amber) : nil)
+        } else if app.hosting || app.starting {
+            action("xmark", app.starting ? "Отмена" : "Стоп", hue: Theme.red) { app.stopHost() }
+        } else {
+            action("power", "Раздать", hue: Theme.green) { app.becomeHost() }
+        }
     }
 }
 
@@ -202,8 +237,12 @@ private struct TileBody<Trailing: View>: View {
             }
             .frame(maxWidth: .infinity, alignment: .center)
         }
-        .padding(.horizontal, 11).padding(.vertical, 9)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 11).padding(.vertical, 8)
+        // Пара «подпись + значение» центрируется в ячейке фиксированной высоты.
+        // Раньше высоту задавали отступы, а сумма строк с их межстрочными
+        // интервалами перекрывала её — значение выдавливало к нижнему краю, и
+        // казалось, что оно проваливается.
+        .frame(maxWidth: .infinity, minHeight: 52, alignment: .leading)
     }
 }
 
@@ -213,6 +252,149 @@ private func tileBackground(_ accent: Color?) -> some View {
         .fill(Theme.tile)
         .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous)
             .stroke(accent ?? Color.white.opacity(0.07), lineWidth: 1))
+}
+
+/// Строка состояния для РАБОТАЮЩЕГО режима: значок кружком, название, часы.
+///
+/// Значок никуда не девается и в работе — он опознаёт экран с одного взгляда.
+/// Но держать 84pt картинки там, где нужны код и цифры, расточительно: панель
+/// прижата к верху и висит на экране постоянно.
+struct StatusLine: View {
+    let icon: String
+    let title: String
+    var clock: String? = nil
+    let tint: Color
+    var body: some View {
+        HStack(spacing: 10) {
+            ZStack {
+                Circle().fill(tint.opacity(0.13))
+                Circle().stroke(tint.opacity(0.3), lineWidth: 1)
+                Image(systemName: icon).font(.system(size: 17, weight: .semibold)).foregroundColor(tint)
+            }
+            .frame(width: 38, height: 38)
+            Text(title).foregroundColor(Theme.fg).font(.system(size: 17, weight: .heavy))
+                .lineLimit(1).minimumScaleFactor(0.7)
+            Spacer(minLength: 6)
+            if let clock {
+                Text(clock).foregroundColor(tint)
+                    .font(.system(size: 14, weight: .bold, design: .monospaced))
+            }
+        }
+    }
+}
+
+/// Кнопки «поделиться» — В НИЗУ панели состояния, прямо под кодом.
+///
+/// Код сети и QR — то, ради чего эту панель открывают. Оторванные от кода,
+/// который копируют, они читались бы как отдельная штука неясно про что.
+struct ShareButtons: View {
+    let code: String
+    @Binding var qrCode: String?
+    @State private var copied = false
+    var body: some View {
+        HStack(spacing: 8) {
+            button(copied ? "checkmark" : "doc.on.doc", copied ? "Скопировано" : "Скопировать", green: copied) {
+                UIPasteboard.general.string = code
+                UINotificationFeedbackGenerator().notificationOccurred(.success)
+                withAnimation(.easeOut(duration: 0.15)) { copied = true }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.3) { withAnimation { copied = false } }
+            }
+            button("qrcode", "QR-код", green: false) { qrCode = code }
+        }
+    }
+    private func button(_ icon: String, _ title: String, green: Bool, _ tap: @escaping () -> Void) -> some View {
+        Button(action: tap) {
+            HStack(spacing: 8) {
+                Image(systemName: icon).font(.system(size: 15, weight: .bold))
+                Text(title).font(.system(size: 14, weight: .bold)).lineLimit(1).minimumScaleFactor(0.7)
+            }
+            .foregroundColor(green ? Theme.green : Theme.accent)
+            .frame(maxWidth: .infinity).frame(height: 48)
+            .background(RoundedRectangle(cornerRadius: 15, style: .continuous).fill(Color(hex: 0x1B2333))
+                .overlay(RoundedRectangle(cornerRadius: 15, style: .continuous)
+                    .stroke(green ? Theme.green.opacity(0.5) : Theme.accent.opacity(0.24), lineWidth: 1)))
+        }.buttonStyle(PressStyle())
+    }
+}
+
+/// Негромкая кнопка внутри панели — для РЕДКИХ действий («Новый код»).
+struct QuietButton: View {
+    let icon: String
+    let title: String
+    var action: () -> Void
+    @State private var did = false
+    var body: some View {
+        Button {
+            action()
+            withAnimation(.easeOut(duration: 0.15)) { did = true }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.3) { withAnimation { did = false } }
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: did ? "checkmark" : icon).font(.system(size: 12, weight: .bold))
+                Text(did ? "Готово" : title).font(.system(size: 12.5, weight: .bold))
+            }
+            .foregroundColor(did ? Theme.green : Theme.dim)
+            .frame(maxWidth: .infinity).frame(height: 34)
+            .background(RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(did ? Theme.green.opacity(0.5) : Color.white.opacity(0.08), lineWidth: 1))
+        }.buttonStyle(PressStyle())
+    }
+}
+
+/// Тихий знак состояния у заголовка раздела — вместо полосы во всю ширину.
+struct StateChip: View {
+    let text: String
+    var tint: Color = Theme.amber
+    var body: some View {
+        HStack(spacing: 5) {
+            Circle().fill(tint).frame(width: 6, height: 6)
+            Text(text).foregroundColor(tint).font(.system(size: 11, weight: .bold))
+        }
+    }
+}
+
+/// Обёртка прижатой панели: она лежит ВНЕ ScrollView, поэтому статус не уезжает
+/// при прокрутке, а содержимое уходит под неё.
+struct PinnedPanel<Content: View>: View {
+    let tint: Color
+    @ViewBuilder let content: Content
+    var body: some View {
+        VStack(spacing: 8) { content }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 16).padding(.horizontal, 18)
+            .background(
+                RoundedRectangle(cornerRadius: 22, style: .continuous)
+                    .fill(LinearGradient(colors: [Theme.panel, Theme.card], startPoint: .top, endPoint: .bottom))
+                    .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous).stroke(tint.opacity(0.2), lineWidth: 1))
+            )
+            .padding(.horizontal, 20).padding(.top, 20).padding(.bottom, 12)
+            .background(Theme.bg)
+            .shadow(color: .black.opacity(0.55), radius: 12, y: 8)
+            .zIndex(1)
+    }
+}
+
+/// Крупный круг статуса — для состояний, где показывать больше нечего.
+struct HeroCircle: View {
+    let icon: String
+    let tint: Color
+    var pulsing = false
+    var glowing = false
+    @State private var wave = false
+    var body: some View {
+        ZStack {
+            if pulsing {
+                Circle().stroke(tint.opacity(0.5), lineWidth: 2).frame(width: 72, height: 72)
+                    .scaleEffect(wave ? 1.28 : 1).opacity(wave ? 0 : 0.7)
+            }
+            Circle().fill(tint.opacity(0.13)).frame(width: 72, height: 72)
+            Circle().stroke(tint.opacity(0.3), lineWidth: 1).frame(width: 72, height: 72)
+            Image(systemName: icon).font(.system(size: 30, weight: .semibold)).foregroundColor(tint)
+        }
+        .frame(height: 74)
+        .shadow(color: tint.opacity(glowing ? 0.32 : 0), radius: 16)
+        .onAppear { withAnimation(.easeOut(duration: 1.2).repeatForever(autoreverses: false)) { wave = true } }
+    }
 }
 
 /// Лёгкое «вдавливание» под пальцем — кнопка отвечает на нажатие.
@@ -291,32 +473,6 @@ struct BigCopyButton: View {
     }
 }
 
-/// Плитка-факт.
-/// Полоса «связь потеряна, восстанавливаю». Мягко ДЫШИТ — это и есть весь
-/// индикатор процесса: отдельной «крутилки» не нужно, движение само говорит,
-/// что работа идёт и руками ничего делать не надо.
-struct StaleBanner: View {
-    @State private var breathe = false
-    var body: some View {
-        Text("Нет связи с сервером — список ниже может устареть. Восстанавливаю связь…")
-            .foregroundColor(Theme.amber).font(.system(size: 12))
-            .frame(maxWidth: .infinity, alignment: .leading).padding(10)
-            .background(RoundedRectangle(cornerRadius: 10).fill(Color(hex: 0x3A2A15)))
-            .overlay(RoundedRectangle(cornerRadius: 10).stroke(Theme.amber.opacity(breathe ? 0.35 : 1), lineWidth: 1))
-            .opacity(breathe ? 0.72 : 1)
-            .animation(.easeInOut(duration: 1.1).repeatForever(autoreverses: true), value: breathe)
-            .onAppear { breathe = true }
-    }
-}
-
-/// Плитка отклика.
-///
-///   • идёт первый замер — КРУГОВАЯ СТРЕЛКА ВРАЩАЕТСЯ: движение честно говорит
-///     «сейчас меряю», в отличие от многоточия, которое просто стоит и молчит;
-///   • ответа нет — перечёркнутая антенна: у «нет отклика» отдельный знак, а не
-///     прочерк, который легко принять за «данных нет»;
-///   • число есть — просто цифра, без всякой анимации: крутить что-то поверх
-///     готового значения значит намекать, что оно ещё не готово.
 struct PingTile: View {
     let value: String
     private var waiting: Bool { value == "…" }
@@ -480,7 +636,7 @@ struct ServerTab: View {
         app.serverOnline == false ? "antenna.radiowaves.left.and.right.slash" : "antenna.radiowaves.left.and.right"
     }
     private var statusText: String {
-        switch app.serverOnline { case .some(true): return "На связи"; case .some(false): return "Нет связи"; default: return "Проверяю связь…" }
+        switch app.serverOnline { case .some(true): return "На связи"; case .some(false): return "Нет связи — восстанавливаю…"; default: return "Проверяю связь…" }
     }
     private var pingColor: Color {
         app.ping < 200 ? Theme.green : (app.ping < 600 ? Theme.fg : Theme.amber)
@@ -488,16 +644,24 @@ struct ServerTab: View {
     private var addr: String { app.coordinator.replacingOccurrences(of: "https://", with: "").replacingOccurrences(of: "http://", with: "") }
 
     var body: some View {
+        VStack(spacing: 0) {
+            hero
+            scrollBody
+        }
+        // Открыли вкладку — сразу свежая цифра, не дожидаясь очередного круга.
+        // Сам цикл живёт всегда (см. watchServer), как на десктопе.
+        .onAppear { coordField = addr; app.checkServer() }
+    }
+
+    private var scrollBody: some View {
         ScrollView(showsIndicators: false) {
             VStack(alignment: .leading, spacing: 14) {
-                hero
-
                 Text("Сервер ведёт каталог хостов и сводит участников. Ваш трафик через него не проходит.")
                     .foregroundColor(Theme.dim).font(.system(size: 12))
                     .frame(maxWidth: .infinity, alignment: .leading)
 
                 sectionLabel("Другой адрес сервера")
-                TextField("http://адрес:3330", text: $coordField)
+                TextField("адрес сервера", text: $coordField)
                     .foregroundColor(Theme.fg).autocorrectionDisabled().textInputAutocapitalization(.never)
                     .padding(14).background(Theme.card).cornerRadius(14)
 
@@ -523,52 +687,33 @@ struct ServerTab: View {
                     }
                 }
             }
-            .padding(20).navPadding()
+            .padding(20).padding(.top, 2).navPadding()
         }
-        // Открыли вкладку — сразу свежая цифра, не дожидаясь очередного круга.
-        // Сам цикл живёт всегда (см. watchServer), как на десктопе.
-        .onAppear { coordField = app.coordinator; app.checkServer() }
     }
 
-    /// Тот же герой, что на вкладках VPN и «Хост» — единый язык статуса.
+    /// Прижатая панель. Когда связь есть, круг уступает место цифрам: смотреть
+    /// на большой значок «всё хорошо» смысла нет.
     private var hero: some View {
-        VStack(spacing: 12) {
-            ZStack {
-                if app.checking {
-                    Circle().stroke(tint.opacity(0.5), lineWidth: 2).frame(width: 84, height: 84)
-                        .scaleEffect(pulsing ? 1.28 : 1).opacity(pulsing ? 0 : 0.7)
-                }
-                Circle().fill(tint.opacity(0.13)).frame(width: 84, height: 84)
-                Circle().stroke(tint.opacity(0.3), lineWidth: 1).frame(width: 84, height: 84)
-                Image(systemName: icon).font(.system(size: 32, weight: .semibold)).foregroundColor(tint)
-            }
-            .frame(height: 88)
-            .shadow(color: tint.opacity(app.serverOnline == true ? 0.3 : 0), radius: 16)
-
-            Text(statusText).foregroundColor(Theme.fg).font(.system(size: 21, weight: .heavy))
-            Text(addr).foregroundColor(Theme.dim).font(.system(size: 13, design: .monospaced))
-
-            VStack(spacing: 8) {
+        PinnedPanel(tint: tint) {
+            if app.serverOnline == true {
+                StatusLine(icon: icon, title: statusText, tint: tint)
+                Text(addr).foregroundColor(Theme.dim).font(.system(size: 13, design: .monospaced))
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 HStack(spacing: 8) {
                     // Обычная плитка, а не кнопка: проверка идёт сама каждые 3
                     // секунды, и нажатие экономило бы в лучшем случае их же.
-                    // Акцентный значок при этом обещал действие, которого нет.
-                    StatTile(label: "ПИНГ", value: app.serverOnline == true ? "\(app.ping) мс" : "—",
-                             tint: pingColor)
+                    StatTile(label: "ПИНГ", value: "\(app.ping) мс", tint: pingColor)
                     StatTile(label: "ХОСТОВ", value: "\(app.hosts.count)")
                 }
                 CopyTile(label: "ВАШ IP", value: app.myIp.isEmpty ? "—" : app.myIp)
+            } else {
+                HeroCircle(icon: icon, tint: tint, pulsing: app.checking)
+                Text(statusText).foregroundColor(Theme.fg).font(.system(size: 21, weight: .heavy))
+                    .multilineTextAlignment(.center)
+                Text(addr).foregroundColor(Theme.dim).font(.system(size: 13, design: .monospaced))
             }
-            .padding(.top, 4)
         }
-        .frame(maxWidth: .infinity).padding(.vertical, 26).padding(.horizontal, 18)
-        .background(
-            RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .fill(LinearGradient(colors: [Theme.panel, Theme.card], startPoint: .top, endPoint: .bottom))
-                .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous).stroke(tint.opacity(0.2), lineWidth: 1))
-        )
         .animation(.easeInOut(duration: 0.3), value: app.serverOnline)
-        .onAppear { withAnimation(.easeOut(duration: 1.2).repeatForever(autoreverses: false)) { pulsing = true } }
     }
 }
 
@@ -606,21 +751,37 @@ struct VPNTab: View {
     }
 
     var body: some View {
+        VStack(spacing: 0) {
+            // Панель ВНЕ прокрутки: статус не уезжает, содержимое уходит под неё.
+            VPNHero(inviteCode: $inviteCode)
+            scrollBody
+        }
+        .sheet(isPresented: $showScanner) { ScannerSheet { handleScanned($0) } }
+        .sheet(item: Binding(get: { inviteCode.map { IdentifiedString($0) } }, set: { inviteCode = $0?.value })) { item in
+            QRSheet(code: item.value)
+        }
+    }
+
+    private var scrollBody: some View {
         ScrollView(showsIndicators: false) {
             VStack(alignment: .leading, spacing: 14) {
-                VPNHero(inviteCode: $inviteCode)
-
                 sectionLabel("Подключиться по коду")
                 HStack(spacing: 6) {
                     TextField("КОД СЕТИ", text: $code)
                         .foregroundColor(Theme.fg).autocorrectionDisabled().textInputAutocapitalization(.characters).padding(12)
                     Button { if let s = UIPasteboard.general.string { code = s } } label: {
-                        Image(systemName: "doc.on.clipboard").font(.system(size: 16, weight: .semibold)).foregroundColor(.white)
-                            .frame(width: 44, height: 44).background(Color(hex: 0x2E3B57)).cornerRadius(10)
+                        Image(systemName: "doc.on.clipboard").font(.system(size: 17, weight: .semibold)).foregroundColor(Theme.dim)
+                            .frame(width: 44, height: 44)
+                            .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color(hex: 0x2A3244))
+                                .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(Color.white.opacity(0.08), lineWidth: 1)))
                     }
+                    // Подкраска вместо сплошного синего: он спорил с акцентом
+                    // всего экрана. Стрелка крупнее соседней — здесь она главная.
                     Button { let c = code; code = ""; app.connectByCode(c) } label: {
-                        Image(systemName: "arrow.right").foregroundColor(.white).frame(width: 48, height: 44)
-                            .background(LinearGradient(colors: [Theme.accent, Theme.accent2], startPoint: .leading, endPoint: .trailing)).cornerRadius(10)
+                        Image(systemName: "arrow.right").font(.system(size: 21, weight: .bold))
+                            .foregroundColor(Theme.accent).frame(width: 52, height: 44)
+                            .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Theme.accent.opacity(0.16))
+                                .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(Theme.accent.opacity(0.4), lineWidth: 1)))
                     }
                 }
                 .padding(5).background(Theme.card).cornerRadius(14)
@@ -652,14 +813,21 @@ struct VPNTab: View {
                     }
                 }
 
-                sectionLabel("Хосты")
                 let shown = app.displayedHosts()
                 // Связь с сервером потеряна, а список НЕ пуст: цифры и состав хостов
                 // ниже — последние известные, то есть могут врать. Молчать нельзя,
                 // иначе устаревший список выглядит как живой. Руками делать ничего
                 // не нужно — клиент переподключается сам, об этом и говорим.
                 let stale = app.serverOnline == false && !shown.isEmpty
-                if stale { StaleBanner() }
+                // Знак у заголовка вместо полосы во всю ширину: та кричала
+                // сильнее, чем стоило сообщение, и вдобавок дышала, перетягивая
+                // взгляд с самого списка. Где искать поломку, показывает точка
+                // на ячейке «Сервер» в нав-баре — видная с любой вкладки.
+                HStack(spacing: 8) {
+                    sectionLabel("Хосты")
+                    Spacer()
+                    if stale { StateChip(text: "последние известные") }
+                }
                 if shown.isEmpty {
                     Text(app.serverOnline == false ? "Нет связи с сервером.\nПроверьте адрес во вкладке «Сервер»." : "Хостов пока нет.\nВведите код сети или поднимите свой во вкладке «Хост».")
                         .foregroundColor(Theme.dim).font(.system(size: 14)).multilineTextAlignment(.center).frame(maxWidth: .infinity).padding(.vertical, 40)
@@ -672,11 +840,7 @@ struct VPNTab: View {
                         .animation(.easeInOut(duration: 0.4), value: stale)
                 }
             }
-            .padding(20).navPadding()
-        }
-        .sheet(isPresented: $showScanner) { ScannerSheet { handleScanned($0) } }
-        .sheet(item: Binding(get: { inviteCode.map { IdentifiedString($0) } }, set: { inviteCode = $0?.value })) { item in
-            QRSheet(code: item.value)
+            .padding(20).padding(.top, 2).navPadding()
         }
     }
 }
@@ -722,93 +886,48 @@ struct VPNHero: View {
     }
 
     var body: some View {
-        VStack(spacing: 12) {
-            ZStack {
-                // Волна расходится, пока идёт пробитие.
-                if app.vpnState == 1 {
-                    Circle().stroke(tint.opacity(0.5), lineWidth: 2).frame(width: 84, height: 84)
-                        .scaleEffect(pulsing ? 1.28 : 1).opacity(pulsing ? 0 : 0.7)
+        PinnedPanel(tint: tint) {
+            if app.vpnState == 2 {
+                // Подключено — круг уступает место пользе: сколько идёт, куда,
+                // адрес хоста, гости и чем позвать друзей.
+                TimelineView(.periodic(from: .now, by: 1)) { _ in
+                    StatusLine(icon: "checkmark.shield.fill", title: title,
+                               clock: uptimeText(app.connectedSince), tint: tint)
                 }
-                Circle().fill(tint.opacity(0.13)).frame(width: 84, height: 84)
-                Circle().stroke(tint.opacity(0.3), lineWidth: 1).frame(width: 84, height: 84)
-                Image(systemName: icon).font(.system(size: 34, weight: .semibold)).foregroundColor(tint)
-            }
-            .frame(height: 88)
-            .shadow(color: tint.opacity(app.vpnState == 2 ? 0.35 : 0), radius: 16)
-
-            Text(title).foregroundColor(Theme.fg).font(.system(size: 21, weight: .heavy))
-                .lineLimit(1).minimumScaleFactor(0.6)
-            subtitle.foregroundColor(Theme.dim).font(.system(size: 13))
-                .multilineTextAlignment(.center)
-
-            // Разовое сообщение об отказе: отдельно от vpnState, иначе фоновый опрос
-            // статуса ядра его затирает (или, наоборот, оставляет навсегда).
-            if let err = app.vpnError {
-                Text(err).foregroundColor(Theme.red).font(.system(size: 13))
+                subtitle.foregroundColor(Theme.dim).font(.system(size: 13))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                if let h = host {
+                    HStack(spacing: 8) {
+                        CopyTile(label: "IP ХОСТА", value: h.ip.isEmpty ? "—" : h.ip)
+                        StatTile(label: "ГОСТЕЙ", value: "\(h.guests) / \(h.max)", symbol: "person.2.fill")
+                    }
+                }
+                if let id = app.connectedTo {
+                    ShareButtons(code: id, qrCode: $inviteCode).padding(.top, 2)
+                    Text("Позвать друзей в эту же сеть").foregroundColor(Theme.dim).font(.system(size: 11))
+                }
+                // Честная сноска — только там, где туннеля нет (симулятор).
+                if !TunnelManager.available {
+                    Text("Канал к хосту поднят. Полный туннель — на устройстве с VPN-профилем.")
+                        .foregroundColor(Theme.dim.opacity(0.7)).font(.system(size: 11))
+                        .multilineTextAlignment(.center)
+                }
+            } else {
+                // Показывать нечего, кроме статуса — круг честно занимает место.
+                HeroCircle(icon: icon, tint: tint, pulsing: app.vpnState == 1)
+                Text(title).foregroundColor(Theme.fg).font(.system(size: 21, weight: .heavy))
+                    .lineLimit(1).minimumScaleFactor(0.6)
+                subtitle.foregroundColor(Theme.dim).font(.system(size: 13))
                     .multilineTextAlignment(.center)
-            }
-
-            if app.vpnState == 2 { connected }
-        }
-        .frame(maxWidth: .infinity).padding(.vertical, 26).padding(.horizontal, 18)
-        .background(
-            RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .fill(LinearGradient(colors: [Theme.panel, Theme.card], startPoint: .top, endPoint: .bottom))
-                .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous).stroke(tint.opacity(0.2), lineWidth: 1))
-        )
-        .animation(.easeInOut(duration: 0.3), value: app.vpnState)
-        .onAppear { withAnimation(.easeOut(duration: 1.2).repeatForever(autoreverses: false)) { pulsing = true } }
-    }
-
-    @ViewBuilder private var connected: some View {
-        let host = app.connectedTo.flatMap { app.hostById($0) }
-        // Время на связи — тикает раз в секунду.
-        TimelineView(.periodic(from: .now, by: 1)) { _ in
-            Text(uptimeText(app.connectedSince))
-                .font(.system(size: 15, weight: .bold, design: .monospaced)).foregroundColor(Theme.green)
-        }
-        // Живая инфа о хосте: IP (копируется тапом) + сколько сейчас гостей.
-        if let h = host {
-            HStack(spacing: 8) {
-                CopyTile(label: "IP ХОСТА", value: h.ip.isEmpty ? "—" : h.ip)
-                StatTile(label: "ГОСТЕЙ", value: "\(h.guests) / \(h.max)", symbol: "person.2.fill")
-            }.padding(.top, 2)
-        }
-        if let id = app.connectedTo {
-            Divider().overlay(Theme.dim.opacity(0.15)).padding(.top, 2)
-            HStack(spacing: 8) {
-                inviteButton(copiedInvite ? "checkmark" : "doc.on.doc",
-                             copiedInvite ? "Скопировано" : "Код сети", green: copiedInvite) {
-                    UIPasteboard.general.string = id
-                    UINotificationFeedbackGenerator().notificationOccurred(.success)
-                    withAnimation(.easeOut(duration: 0.15)) { copiedInvite = true }
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.3) { withAnimation { copiedInvite = false } }
+                // Разовое сообщение об отказе: отдельно от vpnState, иначе фоновый
+                // опрос статуса ядра его затирает (или оставляет навсегда).
+                if let err = app.vpnError {
+                    Text(err).foregroundColor(Theme.red).font(.system(size: 13))
+                        .multilineTextAlignment(.center)
                 }
-                inviteButton("qrcode", "QR-код", green: false) { inviteCode = id }
             }
-            Text("Позвать друзей в эту же сеть").foregroundColor(Theme.dim).font(.system(size: 11))
         }
-        // Честная сноска — только там, где туннеля нет (симулятор).
-        if !TunnelManager.available {
-            Text("Канал к хосту поднят. Полный туннель — на устройстве с VPN-профилем.")
-                .foregroundColor(Theme.dim.opacity(0.7)).font(.system(size: 11))
-                .multilineTextAlignment(.center)
-        }
-    }
-
-    /// Кнопка приглашения — во всю ширину, значок акцентом, как плитки.
-    private func inviteButton(_ icon: String, _ title: String, green: Bool, _ tap: @escaping () -> Void) -> some View {
-        Button(action: tap) {
-            HStack(spacing: 6) {
-                Image(systemName: icon).font(.system(size: 13, weight: .bold))
-                Text(title).font(.system(size: 13, weight: .bold))
-            }
-            .foregroundColor(green ? Theme.green : Theme.accent)
-            .frame(maxWidth: .infinity).padding(.vertical, 11)
-            .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Theme.tile)
-                .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .stroke(green ? Theme.green.opacity(0.5) : Color.white.opacity(0.08), lineWidth: 1)))
-        }.buttonStyle(PressStyle())
+        .animation(.easeInOut(duration: 0.3), value: app.vpnState)
     }
 }
 
@@ -955,36 +1074,83 @@ struct QRSheet: View {
 
 struct HostTab: View {
     @EnvironmentObject var app: AppState
-    @State private var showQR = false
+    @State private var qrCode: String? = nil
     private let protos: [(String, String, String)] = [
         ("noise", protoIcon("noise"), protoName("noise")),
         ("noise-obfs", protoIcon("noise-obfs"), protoName("noise-obfs")),
         ("plain", protoIcon("plain"), protoName("plain")),
     ]
 
+    private var tint: Color {
+        if app.starting { return Theme.amber }
+        if app.hosting { return Theme.green }
+        return app.hostError != nil ? Theme.red : Theme.accent
+    }
+    private var statusTitle: String {
+        if app.starting { return "Запускаюсь…" }
+        if app.hosting { return "Раздаю" }
+        return app.hostError != nil ? "Не удалось начать раздачу" : "Раздача выключена"
+    }
+
     var body: some View {
+        VStack(spacing: 0) {
+            hero
+            scrollBody
+        }
+        .onAppear { app.ensureHostCode() }
+        .sheet(item: Binding(get: { qrCode.map { IdentifiedString($0) } }, set: { qrCode = $0?.value })) { item in
+            QRSheet(code: item.value)
+        }
+    }
+
+    /// Прижатая панель хост-режима — тот же язык, что у VPN и сервера.
+    /// Код сети НЕ показывается, пока раздача выключена: давать его некому.
+    private var hero: some View {
+        PinnedPanel(tint: tint) {
+            if app.hosting {
+                TimelineView(.periodic(from: .now, by: 1)) { _ in
+                    StatusLine(icon: "wifi.router.fill", title: "Раздаю",
+                               clock: uptimeText(app.hostStartedAt), tint: tint)
+                }
+                Text(app.hostCode.isEmpty ? "…" : app.hostCode).foregroundColor(Theme.accent)
+                    .font(.system(size: 26, weight: .heavy, design: .monospaced)).kerning(2)
+                    .frame(maxWidth: .infinity).textSelection(.enabled)
+                // «Новый код» — действие редкое, ему хватает строчки.
+                QuietButton(icon: "arrow.triangle.2.circlepath", title: "Новый код") { app.newHostCode() }
+                HStack(spacing: 8) {
+                    StatTile(label: "ГОСТЕЙ",
+                             value: "\(app.myHostInfo?.guests ?? 0) / \(app.myHostInfo?.max ?? app.hostMax)",
+                             symbol: "person.2.fill")
+                    StatTile(label: "ВИДИМОСТЬ",
+                             value: (app.hostPublic && app.hostPassword.isEmpty) ? "публичный" : "по коду",
+                             symbol: (app.hostPublic && app.hostPassword.isEmpty) ? "globe" : "eye.slash.fill")
+                }
+                HStack(spacing: 8) {
+                    StatTile(label: "ПРОТОКОЛ", value: protoName(app.hostProtocol), symbol: protoIcon(app.hostProtocol))
+                    CopyTile(label: "ВАШ IP", value: app.myHostInfo?.ip.isEmpty == false ? app.myHostInfo!.ip : "—")
+                }
+                // Поделиться — в НИЗУ панели, прямо под самим кодом.
+                if !app.hostCode.isEmpty {
+                    ShareButtons(code: app.hostCode, qrCode: $qrCode).padding(.top, 2)
+                }
+            } else {
+                HeroCircle(icon: "wifi.router.fill", tint: tint, pulsing: app.starting)
+                Text(statusTitle).foregroundColor(Theme.fg).font(.system(size: 21, weight: .heavy))
+                    .multilineTextAlignment(.center).lineLimit(1).minimumScaleFactor(0.7)
+                Text(app.starting ? "Пробиваю канал наружу…"
+                     : (app.hostError ?? "Станьте выходной точкой для друзей"))
+                    .foregroundColor(app.hostError != nil && !app.starting ? Theme.red : Theme.dim)
+                    .font(.system(size: 13)).multilineTextAlignment(.center)
+            }
+        }
+        .animation(.easeInOut(duration: 0.3), value: app.hosting)
+    }
+
+    private var scrollBody: some View {
         ScrollView(showsIndicators: false) {
             VStack(alignment: .leading, spacing: 14) {
-                tabHeader("wifi.router.fill", "Хост-режим")
                 Text("Раздайте свой интернет: \(Platform.device) станет выходной точкой для гостей.")
                     .foregroundColor(Theme.dim).font(.system(size: 13))
-
-                if app.hosting || app.starting { statusCard }
-                if let err = app.hostError {
-                    symbolText("exclamationmark.triangle.fill", err).foregroundColor(Theme.red).font(.system(size: 13))
-                }
-
-                sectionLabel("Код сети (поделитесь, чтобы к вам подключились)")
-                Card {
-                    Text(app.hostCode.isEmpty ? "…" : app.hostCode).foregroundColor(Theme.accent)
-                        .font(.system(size: 28, weight: .heavy, design: .monospaced)).kerning(2)
-                        .frame(maxWidth: .infinity).textSelection(.enabled)
-                    CardButton(icon: "arrow.triangle.2.circlepath", title: "Новый код") { app.newHostCode() }
-                    HStack(spacing: 8) {
-                        CardButton(icon: "doc.on.doc", title: "Код", copy: app.hostCode)
-                        CardButton(icon: "qrcode", title: "QR") { if !app.hostCode.isEmpty { showQR = true } }
-                    }
-                }
 
                 sectionLabel("Имя хоста (видно в каталоге)")
                 TextField("Имя", text: $app.hostName)
@@ -1049,53 +1215,14 @@ struct HostTab: View {
                 }
                 hint(protoDesc(app.hostProtocol), warn: app.hostProtocol == "plain")
 
-
-
-                Button { if app.hosting || app.starting { app.stopHost() } else { app.becomeHost() } } label: {
-                    let stopping = app.hosting || app.starting
-                    Text(app.starting ? "Запускаюсь…" : (app.hosting ? "Остановить хостинг" : "Стать хостом"))
-                        .fontWeight(.bold).foregroundColor(.white).frame(maxWidth: .infinity).padding(.vertical, 17)
-                        .background(stopping ? AnyShapeStyle(Theme.red) : AnyShapeStyle(LinearGradient(colors: [Theme.accent, Theme.accent2], startPoint: .leading, endPoint: .trailing)))
-                        .cornerRadius(18)
-                }.padding(.top, 6)
-
+                // Кнопки «Стать хостом» тут больше нет: она переехала в нав-бар,
+                // по общему правилу «ячейка ведёт на вкладку, а на своей вкладке
+                // становится включателем». Раньше главное действие лежало под
+                // всеми настройками — до него надо было домотать.
                 Text("На \(Platform.deviceName) фоновая раздача ограничена системой — держите приложение открытым, пока раздаёте.")
                     .foregroundColor(Theme.dim).font(.system(size: 12))
             }
-            .padding(20).navPadding()
-        }
-        .onAppear { app.ensureHostCode() }
-        .sheet(isPresented: $showQR) { QRSheet(code: app.hostCode) }
-    }
-
-    private var statusCard: some View {
-        Card {
-            HStack(spacing: 10) {
-                Dot(color: app.starting ? Theme.amber : Theme.green, pulse: app.hosting)
-                Text(app.starting ? "Запускаюсь…" : "Раздаю")
-                    .foregroundColor(Theme.fg).font(.system(size: 15, weight: .bold))
-                Spacer()
-            }
-            if app.hosting {
-                VStack(spacing: 8) {
-                    HStack(spacing: 8) {
-                        // Гостей — отдельной плиткой: это главная цифра хоста,
-                        // в заголовке она терялась приписком к слову «Раздаю».
-                        StatTile(label: "ГОСТЕЙ",
-                                 value: "\(app.myHostInfo?.guests ?? 0) / \(app.myHostInfo?.max ?? app.hostMax)",
-                                 symbol: "person.2.fill")
-                        TimelineView(.periodic(from: .now, by: 1)) { _ in
-                            StatTile(label: "РАЗДАЮ", value: uptimeText(app.hostStartedAt), tint: Theme.green)
-                        }
-                    }
-                    HStack(spacing: 8) {
-                        StatTile(label: "ВИДИМОСТЬ", value: app.hostPublic ? "публичный" : "по коду",
-                                 symbol: app.hostPublic ? "globe" : "eye.slash.fill")
-                        StatTile(label: "ПРОТОКОЛ", value: protoName(app.hostProtocol), symbol: protoIcon(app.hostProtocol))
-                    }
-                    CopyTile(label: "ВАШ IP", value: app.myHostInfo?.ip.isEmpty == false ? app.myHostInfo!.ip : "—")
-                }
-            }
+            .padding(20).padding(.top, 2).navPadding()
         }
     }
 

@@ -79,6 +79,8 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.heightIn
 import org.bemyvpn.AppState
 import org.bemyvpn.Haptics
 import org.bemyvpn.Host
@@ -94,16 +96,18 @@ fun VpnTab(app: AppState, bottomPad: Dp, openScanner: () -> Unit) {
     var code by remember { mutableStateOf("") }
     var inviteCode by remember { mutableStateOf<String?>(null) }
 
+    Column(Modifier.fillMaxWidth()) {
+    // Панель ВНЕ прокрутки: статус не уезжает, содержимое уходит под неё.
+    VpnHero(app) { inviteCode = it }
     Column(
         Modifier
             .fillMaxWidth()
             .verticalScroll(rememberScrollState())
             .padding(horizontal = 20.dp)
-            .padding(top = 20.dp, bottom = bottomPad),
+            .padding(top = 2.dp, bottom = bottomPad),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
         UpdateBanner(app)
-        VpnHero(app) { inviteCode = it }
 
         SectionLabel("Подключиться по коду")
         CodeField(app, code, { code = it })
@@ -134,14 +138,21 @@ fun VpnTab(app: AppState, bottomPad: Dp, openScanner: () -> Unit) {
             }
         }
 
-        SectionLabel("Хосты")
         val shown = app.displayedHosts()
         // Связь с сервером потеряна, а список НЕ пуст: цифры и состав хостов ниже —
         // последние известные, то есть могут врать. Молчать нельзя, иначе
         // устаревший список выглядит как живой. Руками делать ничего не нужно —
         // клиент переподключается сам, об этом и говорим.
         val stale = app.serverOnline == false && shown.isNotEmpty()
-        if (stale) StaleBanner()
+        // Знак у заголовка вместо полосы во всю ширину: та кричала сильнее, чем
+        // стоило сообщение, и вдобавок дышала, перетягивая взгляд с самого
+        // списка. Где искать поломку, показывает точка на ячейке «Сервер» в
+        // нав-баре — видная с любой вкладки.
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            SectionLabel("Хосты")
+            Spacer(Modifier.weight(1f))
+            if (stale) StateChip("последние известные")
+        }
         if (shown.isEmpty()) {
             Text(
                 if (app.serverOnline == false) "Нет связи с сервером.\nПроверьте адрес во вкладке «Сервер»."
@@ -158,6 +169,7 @@ fun VpnTab(app: AppState, bottomPad: Dp, openScanner: () -> Unit) {
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) { shown.forEach { h -> HostCard(app, h) } }
         }
+    }
     }
 
     inviteCode?.let { QrSheet(code = it) { inviteCode = null } }
@@ -182,19 +194,23 @@ private fun CodeField(app: AppState, code: String, onCode: (String) -> Unit) {
         )
         Box(
             Modifier.size(width = 44.dp, height = 44.dp)
-                .background(Color(0xFF2E3B57), RoundedCornerShape(10.dp))
+                .background(Color(0xFF2A3244), RoundedCornerShape(10.dp))
+                .border(1.dp, Color.White.copy(alpha = 0.08f), RoundedCornerShape(10.dp))
                 .pressable { clipboard.getText()?.text?.let(onCode) },
             contentAlignment = Alignment.Center,
         ) {
-            Icon(Icons.Filled.ContentPaste, null, Modifier.size(18.dp), tint = Color.White)
+            Icon(Icons.Filled.ContentPaste, null, Modifier.size(18.dp), tint = Theme.dim)
         }
         Box(
-            Modifier.size(width = 48.dp, height = 44.dp)
-                .background(Brush.horizontalGradient(listOf(Theme.accent, Theme.accent2)), RoundedCornerShape(10.dp))
+            // Подкраска вместо сплошного синего: он спорил с акцентом всего
+            // экрана. Стрелка крупнее соседней — здесь она главная.
+            Modifier.size(width = 52.dp, height = 44.dp)
+                .background(Theme.accent.copy(alpha = 0.16f), RoundedCornerShape(10.dp))
+                .border(1.dp, Theme.accent.copy(alpha = 0.4f), RoundedCornerShape(10.dp))
                 .pressable { val c = code; onCode(""); app.connectByCode(c) },
             contentAlignment = Alignment.Center,
         ) {
-            Icon(Icons.AutoMirrored.Filled.ArrowForward, null, Modifier.size(18.dp), tint = Color.White)
+            Icon(Icons.AutoMirrored.Filled.ArrowForward, null, Modifier.size(22.dp), tint = Theme.accent)
         }
     }
 }
@@ -244,93 +260,72 @@ private fun VpnHero(app: AppState, showInvite: (String) -> Unit) {
         else -> "VPN выключен"
     }
 
-    Column(
-        Modifier
-            .fillMaxWidth()
-            .background(Brush.verticalGradient(listOf(Theme.panel, Theme.card)), RoundedCornerShape(22.dp))
-            .border(1.dp, tint.copy(alpha = 0.2f), RoundedCornerShape(22.dp))
-            .padding(vertical = 26.dp, horizontal = 18.dp)
-            .animateContentSize(tween(300)),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
-        HeroCircle(tint = tint, icon = icon, pulsing = app.vpnState == 1, glow = app.vpnState == 2)
-
-        Text(
-            title, color = Theme.fg, fontSize = 21.sp, fontWeight = FontWeight.ExtraBold,
-            maxLines = 1, overflow = TextOverflow.Ellipsis,
-        )
-        // Подпись — с вклеенным значком протокола, как на iOS.
-        when (app.vpnState) {
-            1 -> Text(host?.name ?: "Пробиваю канал к хосту", color = Theme.dim, fontSize = 13.sp, textAlign = TextAlign.Center)
-            2 -> {
-                if (host != null) {
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
-                        Text(countryLabel(host), color = Theme.dim, fontSize = 13.sp)
-                        Text("·", color = Theme.dim, fontSize = 13.sp)
-                        Icon(protoIcon(host.proto), null, Modifier.size(13.dp), tint = Theme.dim)
-                        Text(protoName(host.proto), color = Theme.dim, fontSize = 13.sp)
-                    }
-                } else Text("Канал поднят", color = Theme.dim, fontSize = 13.sp)
+    PinnedPanel(tint) {
+        if (app.vpnState == 2) {
+            // Подключено — круг уступает место пользе: сколько идёт, куда,
+            // адрес хоста, гости и чем позвать друзей.
+            StatusLine(Icons.Filled.VerifiedUser, title, tint, uptimeText(app.connectedSince))
+            if (host != null) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                    Text(countryLabel(host), color = Theme.dim, fontSize = 13.sp)
+                    Text("·", color = Theme.dim, fontSize = 13.sp)
+                    Icon(protoIcon(host.proto), null, Modifier.size(13.dp), tint = Theme.dim)
+                    Text(protoName(host.proto), color = Theme.dim, fontSize = 13.sp)
+                }
             }
-            else -> {
-                val n = app.displayedHosts().size
+            ConnectedExtras(app, showInvite)
+        } else {
+            // Показывать нечего, кроме статуса — круг честно занимает место.
+            Column(
+                Modifier.fillMaxWidth(),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                HeroCircle(tint = tint, icon = icon, pulsing = app.vpnState == 1, glow = false)
                 Text(
-                    if (n == 0) "Введите код сети или поднимите свой хост"
-                    else "Доступно хостов: $n · выберите ниже или жмите «Старт»",
-                    color = Theme.dim, fontSize = 13.sp, textAlign = TextAlign.Center,
+                    title, color = Theme.fg, fontSize = 21.sp, fontWeight = FontWeight.ExtraBold,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis,
                 )
+                if (app.vpnState == 1) {
+                    Text(host?.name ?: "Пробиваю канал к хосту", color = Theme.dim, fontSize = 13.sp, textAlign = TextAlign.Center)
+                } else {
+                    val n = app.displayedHosts().size
+                    Text(
+                        if (n == 0) "Введите код сети или поднимите свой хост"
+                        else "Доступно хостов: $n · выберите ниже или жмите «Старт»",
+                        color = Theme.dim, fontSize = 13.sp, textAlign = TextAlign.Center,
+                    )
+                }
+                // Разовое сообщение об отказе: отдельно от vpnState, иначе фоновый
+                // опрос статуса ядра его затирает (или оставляет навсегда).
+                app.vpnError?.let { err ->
+                    Text(err, color = Theme.red, fontSize = 13.sp, textAlign = TextAlign.Center)
+                }
             }
         }
-
-        // Разовое сообщение об отказе: отдельно от vpnState, иначе фоновый опрос
-        // статуса ядра его затирает (или, наоборот, оставляет навсегда).
-        app.vpnError?.let { err ->
-            Text(err, color = Theme.red, fontSize = 13.sp, textAlign = TextAlign.Center)
-        }
-
-        if (app.vpnState == 2) ConnectedExtras(app, showInvite)
     }
 }
 
 @Composable
 private fun ConnectedExtras(app: AppState, showInvite: (String) -> Unit) {
-    val clipboard = LocalClipboardManager.current
-    val ctx = LocalContext.current
     val host = app.connectedTo?.let { app.hostById(it) }
-    var copiedInvite by remember { mutableStateOf(false) }
-    LaunchedEffect(copiedInvite) { if (copiedInvite) { delay(1300); copiedInvite = false } }
-
-    // Время на связи — тикает раз в секунду.
-    rememberSecondTick()
-    Text(
-        uptimeText(app.connectedSince), color = Theme.green,
-        fontSize = 15.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace,
-    )
     // Живая инфа о хосте: IP (копируется тапом) + сколько сейчас гостей.
     if (host != null) {
-        Row(Modifier.padding(top = 2.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             CopyTile("IP ХОСТА", host.ip.ifEmpty { "—" }, Modifier.weight(1f))
             StatTile("ГОСТЕЙ", "${host.guests} / ${host.max}", Modifier.weight(1f), symbol = Icons.Filled.People)
         }
     }
+    // Поделиться сетью — В НИЗУ панели, прямо под тем, что копируют.
     app.connectedTo?.let { id ->
-        Box(Modifier.fillMaxWidth().padding(top = 2.dp).height(1.dp).background(Theme.dim.copy(alpha = 0.15f)))
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            InviteButton(
-                if (copiedInvite) Icons.Filled.Check else Icons.Filled.ContentCopy,
-                if (copiedInvite) "Скопировано" else "Код сети",
-                green = copiedInvite, Modifier.weight(1f),
-            ) {
-                clipboard.setText(AnnotatedString(id)); Haptics.success(ctx); copiedInvite = true
-            }
-            InviteButton(Icons.Filled.QrCode2, "QR-код", green = false, Modifier.weight(1f)) { showInvite(id) }
-        }
-        Text("Позвать друзей в эту же сеть", color = Theme.dim, fontSize = 11.sp)
+        ShareButtons(id, showInvite)
+        Text(
+            "Позвать друзей в эту же сеть", color = Theme.dim, fontSize = 11.sp,
+            textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth(),
+        )
     }
 }
 
-/** Кнопка приглашения — во всю ширину, значок акцентом, как плитки. */
 @Composable
 private fun InviteButton(icon: ImageVector, title: String, green: Boolean, modifier: Modifier, tap: () -> Unit) {
     val tint = if (green) Theme.green else Theme.accent
@@ -474,18 +469,21 @@ private fun CapacityBar(host: Host) {
 @Composable
 private fun UpdateBanner(app: AppState) {
     val ver = app.updateVersion ?: return
-    if (app.updateDismissed) return
     val err = app.updateState == 3
     val tint = if (err) Theme.red else Theme.accent
+    // Кнопка ЗЕЛЁНАЯ: обновиться — действие хорошее, а не тревожное. Синяя
+    // сливалась с акцентом интерфейса и не читалась как «нажми меня». При
+    // ошибке — в цвете ошибки, иначе выглядела бы чужой деталью.
+    val btn = if (err) Theme.red else Theme.green
 
     Row(
         Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(14.dp))
-            .background(tint.copy(alpha = 0.12f))
-            .border(1.dp, tint.copy(alpha = 0.35f), RoundedCornerShape(14.dp))
-            .padding(start = 14.dp, end = 8.dp)
-            .height(46.dp),
+            .background(tint.copy(alpha = 0.09f))
+            .border(1.dp, tint.copy(alpha = 0.28f), RoundedCornerShape(14.dp))
+            .heightIn(min = 62.dp)
+            .padding(horizontal = 14.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
@@ -498,8 +496,6 @@ private fun UpdateBanner(app: AppState) {
             color = tint,
             fontSize = 13.sp,
             fontWeight = FontWeight.Bold,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
             modifier = Modifier.weight(1f),
         )
         // Во время загрузки кнопок нет: нажимать нечего, а повторный тап
@@ -507,57 +503,29 @@ private fun UpdateBanner(app: AppState) {
         if (app.updateState != 1 && app.updateState != 2) {
             Box(
                 Modifier
-                    .padding(start = 8.dp)
-                    .clip(RoundedCornerShape(10.dp))
-                    .background(Theme.accent)
+                    .padding(start = 14.dp)
+                    .height(38.dp)
+                    .clip(RoundedCornerShape(11.dp))
+                    .background(btn.copy(alpha = 0.14f))
+                    .border(1.dp, btn.copy(alpha = 0.4f), RoundedCornerShape(11.dp))
                     .clickable { app.doUpdate() }
-                    .padding(horizontal = 16.dp, vertical = 7.dp),
+                    .padding(horizontal = 18.dp),
+                contentAlignment = Alignment.Center,
             ) {
                 Text(
                     if (err) "Ещё раз" else "Обновить",
-                    color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold,
+                    color = btn, fontSize = 13.sp, fontWeight = FontWeight.Bold,
                 )
             }
         }
-        if (app.updateState != 1) {
-            Box(
-                Modifier
-                    .padding(start = 4.dp)
-                    .size(30.dp)
-                    .clip(RoundedCornerShape(8.dp))
-                    .clickable { app.updateDismissed = true },
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(Icons.Filled.Close, contentDescription = "Скрыть", tint = Theme.dim, modifier = Modifier.size(15.dp))
-            }
-        }
+        // Крестика нет намеренно: это единственный канал про новую версию, и
+        // спрятав его, человек больше о ней не узнает.
     }
 }
 
 /// Полоса «связь потеряна, восстанавливаю». Мягко ДЫШИТ — это и есть весь
 /// индикатор процесса: отдельной «крутилки» не нужно, движение само говорит,
 /// что работа идёт и руками ничего делать не надо.
-@Composable
-private fun StaleBanner() {
-    val t = rememberInfiniteTransition(label = "stale")
-    val a by t.animateFloat(
-        1f, 0.72f,
-        infiniteRepeatable(tween(1100), RepeatMode.Reverse),
-        label = "staleBreath",
-    )
-    Row(
-        Modifier.fillMaxWidth().alpha(a)
-            .background(Color(0xFF3A2A15), RoundedCornerShape(10.dp))
-            .border(1.dp, Theme.amber, RoundedCornerShape(10.dp))
-            .padding(10.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(
-            "Нет связи с сервером — список ниже может устареть. Восстанавливаю связь…",
-            color = Theme.amber, fontSize = 12.sp,
-        )
-    }
-}
 
 /**
  * Плитка отклика.

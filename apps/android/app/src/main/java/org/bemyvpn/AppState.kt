@@ -84,7 +84,6 @@ class AppState private constructor(val ctx: Context) {
     var updateState by mutableStateOf(0)
     var updateError by mutableStateOf("")
     /** Скрыто крестиком — до следующего запуска не показываем. */
-    var updateDismissed by mutableStateOf(false)
 
     /**
      * Узнать у GitHub, есть ли релиз новее. Один раз при запуске.

@@ -61,43 +61,86 @@ fun HostTab(app: AppState, bottomPad: Dp) {
 
     androidx.compose.runtime.LaunchedEffect(Unit) { app.ensureHostCode() }
 
+    // Панель ВНЕ прокрутки — тот же язык, что у VPN и сервера. Код сети НЕ
+    // показывается, пока раздача выключена: давать его некому.
+    val tint = when {
+        app.starting -> Theme.amber
+        app.hosting -> Theme.green
+        app.hostError != null -> Theme.red
+        else -> Theme.accent
+    }
+    Column(Modifier.fillMaxWidth()) {
+    PinnedPanel(tint) {
+        if (app.hosting) {
+            rememberSecondTick()
+            StatusLine(Icons.Filled.Router, "Раздаю", tint, uptimeText(app.hostStartedAt))
+            Text(
+                app.hostCode.ifEmpty { "…" }, color = Theme.accent,
+                fontSize = 26.sp, fontWeight = FontWeight.ExtraBold, fontFamily = FontFamily.Monospace,
+                letterSpacing = 2.sp, modifier = Modifier.fillMaxWidth(),
+                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                maxLines = 1, overflow = TextOverflow.Ellipsis,
+            )
+            // «Новый код» — действие редкое, ему хватает строчки.
+            QuietButton(Icons.Filled.Autorenew, "Новый код") { app.newHostCode() }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                StatTile(
+                    "ГОСТЕЙ", "${app.myHostInfo?.guests ?: 0} / ${app.myHostInfo?.max ?: app.hostMax}",
+                    Modifier.weight(1f), symbol = Icons.Filled.People,
+                )
+                StatTile(
+                    "ВИДИМОСТЬ",
+                    if (app.hostPublic && app.hostPassword.isEmpty()) "публичный" else "по коду",
+                    Modifier.weight(1f),
+                    symbol = if (app.hostPublic && app.hostPassword.isEmpty()) Icons.Filled.Public else Icons.Filled.VisibilityOff,
+                )
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                StatTile("ПРОТОКОЛ", protoName(app.hostProtocol), Modifier.weight(1f), symbol = protoIcon(app.hostProtocol))
+                CopyTile("ВАШ IP", app.myHostInfo?.ip?.ifEmpty { "—" } ?: "—", Modifier.weight(1f))
+            }
+            // Поделиться кодом — В НИЗУ панели, прямо под самим кодом.
+            if (app.hostCode.isNotEmpty()) ShareButtons(app.hostCode) { showQR = true }
+        } else {
+            Column(
+                Modifier.fillMaxWidth(),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                HeroCircle(tint = tint, icon = Icons.Filled.Router, pulsing = app.starting, glow = false)
+                Text(
+                    when {
+                        app.starting -> "Запускаюсь…"
+                        app.hostError != null -> "Не удалось начать раздачу"
+                        else -> "Раздача выключена"
+                    },
+                    color = Theme.fg, fontSize = 21.sp, fontWeight = FontWeight.ExtraBold,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    when {
+                        app.starting -> "Пробиваю канал наружу…"
+                        app.hostError != null -> app.hostError!!
+                        else -> "Станьте выходной точкой для друзей"
+                    },
+                    color = if (app.hostError != null && !app.starting) Theme.red else Theme.dim,
+                    fontSize = 13.sp, textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                )
+            }
+        }
+    }
     Column(
         Modifier
             .fillMaxWidth()
             .verticalScroll(rememberScrollState())
             .padding(horizontal = 20.dp)
-            .padding(top = 20.dp, bottom = bottomPad),
+            .padding(top = 2.dp, bottom = bottomPad),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
-        TabHeader(Icons.Filled.Router, "Хост-режим")
         Text(
             "Раздайте свой интернет: телефон станет выходной точкой для гостей.",
             color = Theme.dim, fontSize = 13.sp,
         )
-
-        if (app.hosting || app.starting) StatusCard(app)
-        app.hostError?.let { err ->
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
-                Icon(Icons.Filled.Warning, null, Modifier.size(15.dp), tint = Theme.red)
-                Text(err, color = Theme.red, fontSize = 13.sp)
-            }
-        }
-
-        SectionLabel("Код сети (поделитесь, чтобы к вам подключились)")
-        Card {
-            Text(
-                app.hostCode.ifEmpty { "…" }, color = Theme.accent,
-                fontSize = 28.sp, fontWeight = FontWeight.ExtraBold, fontFamily = FontFamily.Monospace,
-                letterSpacing = 2.sp, modifier = Modifier.fillMaxWidth(),
-                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-                maxLines = 1, overflow = TextOverflow.Ellipsis,
-            )
-            CardButton(Icons.Filled.Autorenew, "Новый код", Modifier.fillMaxWidth()) { app.newHostCode() }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                CardButton(Icons.Filled.ContentCopy, "Код", Modifier.weight(1f), copy = app.hostCode)
-                CardButton(Icons.Filled.QrCode2, "QR", Modifier.weight(1f)) { if (app.hostCode.isNotEmpty()) showQR = true }
-            }
-        }
 
         SectionLabel("Имя хоста (видно в каталоге)")
         BmvTextField(app.hostName, { app.hostName = it; app.applyHostDebounced() }, "Имя")
@@ -177,66 +220,18 @@ fun HostTab(app: AppState, bottomPad: Dp) {
 
         // Главная кнопка: стать хостом / остановить.
         val active = app.hosting || app.starting
-        Box(
-            Modifier
-                .fillMaxWidth()
-                .padding(top = 6.dp)
-                .background(
-                    if (active) androidx.compose.ui.graphics.SolidColor(Theme.red)
-                    else Brush.horizontalGradient(listOf(Theme.accent, Theme.accent2)),
-                    RoundedCornerShape(18.dp),
-                )
-                .pressable { if (active) app.stopHost() else app.becomeHost() }
-                .padding(vertical = 17.dp),
-            contentAlignment = Alignment.Center,
-        ) {
-            Text(
-                if (app.starting) "Запускаюсь…" else if (app.hosting) "Остановить хостинг" else "Стать хостом",
-                color = Color.White, fontWeight = FontWeight.Bold, fontSize = 16.sp,
-            )
-        }
-
+        // Кнопки «Стать хостом» тут больше нет: она переехала в нав-бар, по
+        // общему правилу «ячейка ведёт на вкладку, а на своей вкладке становится
+        // включателем». Раньше главное действие лежало под всеми настройками —
+        // до него надо было домотать.
         Text(
             "Раздача работает и в фоне — приложение можно сворачивать.",
             color = Theme.dim, fontSize = 12.sp,
         )
     }
+    }
 
     if (showQR) QrSheet(code = app.hostCode) { showQR = false }
-}
-
-@Composable
-private fun StatusCard(app: AppState) {
-    Card {
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            Dot(color = if (app.starting) Theme.amber else Theme.green, pulse = app.hosting)
-            Text(
-                if (app.starting) "Запускаюсь…" else "Раздаю",
-                color = Theme.fg, fontSize = 15.sp, fontWeight = FontWeight.Bold,
-            )
-        }
-        if (app.hosting) {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    // Гостей — отдельной плиткой: это главная цифра хоста.
-                    StatTile(
-                        "ГОСТЕЙ", "${app.myHostInfo?.guests ?: 0} / ${app.myHostInfo?.max ?: app.hostMax}",
-                        Modifier.weight(1f), symbol = Icons.Filled.People,
-                    )
-                    rememberSecondTick()
-                    StatTile("РАЗДАЮ", uptimeText(app.hostStartedAt), Modifier.weight(1f), tint = Theme.green)
-                }
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    StatTile(
-                        "ВИДИМОСТЬ", if (app.hostPublic) "публичный" else "по коду", Modifier.weight(1f),
-                        symbol = if (app.hostPublic) Icons.Filled.Public else Icons.Filled.VisibilityOff,
-                    )
-                    StatTile("ПРОТОКОЛ", protoName(app.hostProtocol), Modifier.weight(1f), symbol = protoIcon(app.hostProtocol))
-                }
-                CopyTile("ВАШ IP", app.myHostInfo?.ip?.ifEmpty { "—" } ?: "—", Modifier.fillMaxWidth())
-            }
-        }
-    }
 }
 
 /** Толстый чип: значок сверху, название снизу — палец попадает не глядя. */

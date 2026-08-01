@@ -66,6 +66,9 @@ import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
 import org.bemyvpn.Haptics
 import org.bemyvpn.Host
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.material.icons.filled.QrCode2
 import org.bemyvpn.Theme
 
 // ── Значки протоколов (аналоги SF Symbols из iOS) ─────────────────────────────
@@ -157,7 +160,14 @@ fun TileBody(
     mono: Boolean = false,
     trailing: @Composable () -> Unit = {},
 ) {
-    Column(Modifier.fillMaxWidth().padding(horizontal = 11.dp, vertical = 9.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+    // Пара «подпись + значение» центрируется в ячейке фиксированной высоты.
+    // Раньше высоту задавали отступы, а сумма строк с их межстрочными
+    // интервалами её перекрывала — значение выдавливало к нижнему краю, и
+    // казалось, что оно проваливается.
+    Column(
+        Modifier.fillMaxWidth().heightIn(min = 52.dp).padding(horizontal = 11.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(3.dp, Alignment.CenterVertically),
+    ) {
         Text(label, color = Theme.dim, fontSize = 10.sp, fontWeight = FontWeight.Black, letterSpacing = 0.7.sp)
         // Значение и значок — ПО ЦЕНТРУ ячейки. Раньше symbol вставал слева от
         // текста, а trailing уезжал вправо за weight(1f), и значки в соседних
@@ -359,5 +369,134 @@ fun BmvTextField(
         Box(modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(Theme.card).padding(14.dp)) { body() }
     } else {
         Box(modifier) { body() }
+    }
+}
+
+// ── Прижатая панель и её содержимое ─────────────────────────────────────────
+
+/**
+ * Обёртка прижатой панели: она лежит ВНЕ прокрутки, поэтому статус не уезжает
+ * при листании, а содержимое уходит под неё.
+ */
+@Composable
+fun PinnedPanel(tint: Color, content: @Composable ColumnScope.() -> Unit) {
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .background(Theme.bg)
+            .padding(start = 20.dp, end = 20.dp, top = 20.dp, bottom = 12.dp),
+    ) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .background(
+                    Brush.verticalGradient(listOf(Theme.panel, Theme.card)),
+                    RoundedCornerShape(22.dp),
+                )
+                .border(1.dp, tint.copy(alpha = 0.2f), RoundedCornerShape(22.dp))
+                .padding(vertical = 16.dp, horizontal = 18.dp)
+                .animateContentSize(),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+            content = content,
+        )
+    }
+}
+
+/**
+ * Строка состояния для РАБОТАЮЩЕГО режима: значок кружком, название, часы.
+ *
+ * Значок никуда не девается и в работе — он опознаёт экран с одного взгляда. Но
+ * держать 84dp картинки там, где нужны код и цифры, расточительно: панель прижата
+ * к верху и висит на экране постоянно.
+ */
+@Composable
+fun StatusLine(icon: ImageVector, title: String, tint: Color, clock: String? = null) {
+    Row(
+        Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Box(
+            Modifier
+                .size(38.dp)
+                .background(tint.copy(alpha = 0.13f), CircleShape)
+                .border(1.dp, tint.copy(alpha = 0.3f), CircleShape),
+            contentAlignment = Alignment.Center,
+        ) { Icon(icon, null, Modifier.size(19.dp), tint = tint) }
+        Text(
+            title, color = Theme.fg, fontSize = 17.sp, fontWeight = FontWeight.Black,
+            maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f),
+        )
+        if (clock != null) {
+            Text(clock, color = tint, fontSize = 14.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+        }
+    }
+}
+
+/**
+ * Кнопки «поделиться» — В НИЗУ панели состояния, прямо под кодом.
+ *
+ * Код сети и QR — то, ради чего эту панель открывают. Оторванные от кода, который
+ * копируют, они читались бы как отдельная штука неясно про что.
+ */
+@Composable
+fun ShareButtons(code: String, showQr: (String) -> Unit) {
+    val clipboard = LocalClipboardManager.current
+    val ctx = LocalContext.current
+    var copied by remember { mutableStateOf(false) }
+    LaunchedEffect(copied) { if (copied) { delay(1300); copied = false } }
+    Row(Modifier.fillMaxWidth().padding(top = 2.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        ShareButton(
+            if (copied) Icons.Filled.Check else Icons.Filled.ContentCopy,
+            if (copied) "Скопировано" else "Скопировать",
+            copied, Modifier.weight(1f),
+        ) { clipboard.setText(AnnotatedString(code)); Haptics.tap(ctx); copied = true }
+        ShareButton(Icons.Filled.QrCode2, "QR-код", false, Modifier.weight(1f)) { showQr(code) }
+    }
+}
+
+@Composable
+private fun ShareButton(icon: ImageVector, title: String, green: Boolean, modifier: Modifier, tap: () -> Unit) {
+    val hue = if (green) Theme.green else Theme.accent
+    Row(
+        modifier
+            .height(48.dp)
+            .background(Color(0xFF1B2333), RoundedCornerShape(15.dp))
+            .border(1.dp, hue.copy(alpha = if (green) 0.5f else 0.24f), RoundedCornerShape(15.dp))
+            .pressable(onTap = tap),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
+    ) {
+        Icon(icon, null, Modifier.size(17.dp), tint = hue)
+        Text(title, color = hue, fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+    }
+}
+
+/** Негромкая кнопка внутри панели — для РЕДКИХ действий («Новый код»). */
+@Composable
+fun QuietButton(icon: ImageVector, title: String, tap: () -> Unit) {
+    var did by remember { mutableStateOf(false) }
+    LaunchedEffect(did) { if (did) { delay(1300); did = false } }
+    val hue = if (did) Theme.green else Theme.dim
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .height(34.dp)
+            .border(1.dp, if (did) Theme.green.copy(alpha = 0.5f) else Color.White.copy(alpha = 0.08f), RoundedCornerShape(10.dp))
+            .pressable(onTap = { tap(); did = true }),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally),
+    ) {
+        Icon(if (did) Icons.Filled.Check else icon, null, Modifier.size(13.dp), tint = hue)
+        Text(if (did) "Готово" else title, color = hue, fontSize = 12.5.sp, fontWeight = FontWeight.Bold)
+    }
+}
+
+/** Тихий знак состояния у заголовка раздела — вместо полосы во всю ширину. */
+@Composable
+fun StateChip(text: String, tint: Color = Theme.amber) {
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+        Box(Modifier.size(6.dp).background(tint, CircleShape))
+        Text(text, color = tint, fontSize = 11.sp, fontWeight = FontWeight.Bold)
     }
 }

@@ -45,6 +45,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.text.style.TextAlign
 import org.bemyvpn.AppState
 import org.bemyvpn.Theme
 
@@ -58,16 +59,17 @@ fun ServerTab(app: AppState, bottomPad: androidx.compose.ui.unit.Dp) {
     // Сам цикл живёт всегда (см. watchServer), как на десктопе и iOS.
     LaunchedEffect(Unit) { app.checkServer() }
 
+    Column(Modifier.fillMaxWidth()) {
+    // Панель ВНЕ прокрутки: статус не уезжает при листании.
+    ServerHero(app)
     Column(
         Modifier
             .fillMaxWidth()
             .verticalScroll(rememberScrollState())
             .padding(horizontal = 20.dp)
-            .padding(top = 20.dp, bottom = bottomPad),
+            .padding(top = 2.dp, bottom = bottomPad),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
-        ServerHero(app)
-
         Text(
             "Сервер ведёт каталог хостов и сводит участников. Ваш трафик через него не проходит.",
             color = Theme.dim, fontSize = 12.sp, modifier = Modifier.fillMaxWidth(),
@@ -107,6 +109,7 @@ fun ServerTab(app: AppState, bottomPad: androidx.compose.ui.unit.Dp) {
             }
         }
     }
+    }
 }
 
 /** Тот же герой, что на вкладках VPN и «Хост» — единый язык статуса. */
@@ -123,37 +126,34 @@ private fun ServerHero(app: AppState) {
     )
     val icon = if (app.serverOnline == false) Icons.Filled.PortableWifiOff else Icons.Filled.SettingsInputAntenna
     val statusText = when (app.serverOnline) {
-        true -> "На связи"; false -> "Нет связи"; null -> "Проверяю связь…"
+        true -> "На связи"; false -> "Нет связи — восстанавливаю…"; null -> "Проверяю связь…"
     }
     val pingColor = if (app.ping < 200) Theme.green else if (app.ping < 600) Theme.fg else Theme.amber
     val addr = app.coordinator.removePrefix("https://").removePrefix("http://")
 
-    Column(
-        Modifier
-            .fillMaxWidth()
-            .background(Brush.verticalGradient(listOf(Theme.panel, Theme.card)), RoundedCornerShape(22.dp))
-            .border(1.dp, tint.copy(alpha = 0.2f), RoundedCornerShape(22.dp))
-            .padding(vertical = 26.dp, horizontal = 18.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
-        HeroCircle(tint = tint, icon = icon, pulsing = app.checking, glow = app.serverOnline == true)
-
-        Text(statusText, color = Theme.fg, fontSize = 21.sp, fontWeight = FontWeight.ExtraBold)
-        Text(addr, color = Theme.dim, fontSize = 13.sp, fontFamily = FontFamily.Monospace)
-
-        Column(Modifier.padding(top = 4.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    // Когда связь есть, круг уступает место цифрам: смотреть на большой значок
+    // «всё хорошо» смысла нет, а панель висит на экране постоянно.
+    PinnedPanel(tint) {
+        if (app.serverOnline == true) {
+            StatusLine(icon, statusText, tint)
+            Text(addr, color = Theme.dim, fontSize = 13.sp, fontFamily = FontFamily.Monospace)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 // Обычная плитка, а не кнопка: проверка идёт сама каждые 3
                 // секунды, и нажатие экономило бы в лучшем случае их же.
-                // Акцентный значок при этом обещал действие, которого нет.
-                StatTile(
-                    "ПИНГ", if (app.serverOnline == true) "${app.ping} мс" else "—",
-                    Modifier.weight(1f), tint = pingColor,
-                )
+                StatTile("ПИНГ", "${app.ping} мс", Modifier.weight(1f), tint = pingColor)
                 StatTile("ХОСТОВ", "${app.hosts.size}", Modifier.weight(1f))
             }
             CopyTile("ВАШ IP", app.myIp.ifEmpty { "—" }, Modifier.fillMaxWidth())
+        } else {
+            Column(
+                Modifier.fillMaxWidth(),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                HeroCircle(tint = tint, icon = icon, pulsing = app.checking, glow = false)
+                Text(statusText, color = Theme.fg, fontSize = 21.sp, fontWeight = FontWeight.ExtraBold, textAlign = TextAlign.Center)
+                Text(addr, color = Theme.dim, fontSize = 13.sp, fontFamily = FontFamily.Monospace)
+            }
         }
     }
 }
@@ -172,7 +172,7 @@ fun HeroCircle(tint: Color, icon: androidx.compose.ui.graphics.vector.ImageVecto
             val p by inf.animateFloat(0f, 1f, infiniteRepeatable(tween(1200, easing = EaseOut), RepeatMode.Restart), label = "p")
             Box(
                 Modifier
-                    .size(84.dp)
+                    .size(72.dp)
                     .scale(1f + 0.28f * p)
                     .alpha(0.7f * (1f - p))
                     .border(2.dp, tint.copy(alpha = 0.5f), CircleShape),
@@ -180,13 +180,15 @@ fun HeroCircle(tint: Color, icon: androidx.compose.ui.graphics.vector.ImageVecto
         }
         Box(
             Modifier
-                .size(84.dp)
+                // 72, а не 84: панель прижата и висит на экране постоянно —
+                // каждый лишний десяток пикселей забирается у содержимого.
+                .size(72.dp)
                 .then(if (glow) Modifier.shadow(16.dp, CircleShape, spotColor = tint.copy(alpha = 0.5f), ambientColor = tint.copy(alpha = 0.5f)) else Modifier)
                 .background(tint.copy(alpha = 0.13f), CircleShape)
                 .border(1.dp, tint.copy(alpha = 0.3f), CircleShape),
             contentAlignment = Alignment.Center,
         ) {
-            Icon(icon, null, Modifier.size(36.dp), tint = tint)
+            Icon(icon, null, Modifier.size(31.dp), tint = tint)
         }
     }
 }
