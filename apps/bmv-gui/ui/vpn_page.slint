@@ -6,7 +6,7 @@
 // полке (app.slint), под большим пальцем.
 import { Theme } from "theme.slint";
 import { HostRow, Card, StatTile, PingTile, CopyTile, GradientButton, SectionLabel, Field,
-         Badge, StatusLine, StateChip } from "components.slint";
+         Badge, StatusLine, StateChip, ShareButton } from "components.slint";
 import { IconShield, IconShieldCheck, IconShieldSlash, IconShieldLock, IconMask, IconLock, IconLockOpen,
          IconPeople, IconCopy, IconCheck, IconClose, IconQr, IconScan, IconPaste, IconArrowRight, IconChevronRight, IconChevronUp } from "icons.slint";
 import { ScrollView } from "std-widgets.slint";
@@ -162,6 +162,7 @@ export component VpnPage inherits Rectangle {
     callback paste();
     callback copy-text(string);
     callback do-update();
+    callback show-qr(string);
 
     property <color> tint: vpn-state == 1 ? Theme.amber : vpn-state == 2 ? Theme.green : vpn-state == 3 ? Theme.red : Theme.accent;
 
@@ -212,6 +213,25 @@ export component VpnPage inherits Rectangle {
                                 IconPeople { width: 12px; height: 12px; tint: Theme.fg; }
                             }
                         }
+                        // Поделиться сетью — В НИЗУ панели, прямо под тем, что
+                        // копируют. Отдельной полкой у нав-бара кнопки
+                        // оторвались бы от своего кода.
+                        if root.vpn-state == 2: HorizontalLayout {
+                            spacing: 8px;
+                            padding-top: 2px;
+                            ShareButton {
+                                title: "Скопировать"; feedback: true; horizontal-stretch: 1;
+                                clicked => { root.copy-text(root.vpn-host-id); }
+                                IconCopy { width: 17px; height: 17px; tint: Theme.accent; }
+                            }
+                            ShareButton {
+                                title: "QR-код"; horizontal-stretch: 1;
+                                clicked => { root.show-qr(root.vpn-host-id); }
+                                IconQr { width: 17px; height: 17px; tint: Theme.accent; }
+                            }
+                        }
+                        Text { text: root.vpn-state == 2 ? "Позвать друзей в эту же сеть" : ""; visible: root.vpn-state == 2;
+                               color: Theme.dim; font-size: 11px; horizontal-alignment: center; }
 
                         // ── не подключено: крупный круг ──
                         if root.vpn-state != 2: Rectangle {
@@ -273,7 +293,7 @@ export component VpnPage inherits Rectangle {
                 padding: Theme.pad;
                 padding-top: 2px;
                 // Ниже плавают нав-бар и (при подключении) полка действий.
-                padding-bottom: root.vpn-state == 2 ? 168px : 108px;
+                padding-bottom: 108px;
                 spacing: Theme.gap;
 
                 // ── Свежий релиз ──

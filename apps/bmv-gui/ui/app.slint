@@ -3,8 +3,8 @@
 // центральной ячейкой (Старт/Стоп). Всё состояние — входные свойства, действия —
 // колбэки; заполняет их Rust (main.rs).
 import { Theme } from "theme.slint";
-import { HostRow, DockButton } from "components.slint";
-import { IconServer, IconRouter, IconShield, IconBolt, IconX, IconQr, IconCopy, IconRenew, IconPower } from "icons.slint";
+import { HostRow } from "components.slint";
+import { IconServer, IconRouter, IconShield, IconBolt, IconX, IconQr, IconRenew, IconPower } from "icons.slint";
 import { VpnPage } from "vpn_page.slint";
 import { HostPage } from "host_page.slint";
 import { ServerPage } from "server_page.slint";
@@ -193,6 +193,7 @@ export component AppWindow inherits Window {
                 disconnect() => { root.disconnect(); }
                 paste() => { root.paste(); }
                 copy-text(t) => { root.copy-text(t); }
+                show-qr(c) => { root.show-qr(c); }
             }
             if tab == 1: HostPage {
                 host-state: root.host-state;
@@ -227,32 +228,6 @@ export component AppWindow inherits Window {
                 reset-coord() => { root.reset-coord(); }
                 copy-text(t) => { root.copy-text(t); }
             }
-        }
-    }
-
-    // ── Нижняя полка действий ────────────────────────────────────────────
-    // «Скопировать» и «QR» жмут чаще всего — им место под большим пальцем, а не
-    // у верхнего края, куда руку надо тянуть через весь экран. Полка висит прямо
-    // над нав-баром и появляется, только когда есть чем делиться: на вкладке
-    // VPN при живом подключении и на «Хосте» при работающей раздаче.
-    property <string> share-code:
-        (tab == 0 && vpn-state == 2) ? vpn-host-id
-        : (tab == 1 && host-state == 2) ? host-code
-        : "";
-    if root.share-code != "": HorizontalLayout {
-        x: 18px;
-        y: parent.height - 96px - self.preferred-height;
-        width: parent.width - 36px;
-        spacing: 8px;
-        DockButton {
-            title: "Скопировать"; feedback: true; horizontal-stretch: 1;
-            clicked => { root.copy-text(root.share-code); }
-            IconCopy { width: 17px; height: 17px; tint: Theme.accent; }
-        }
-        DockButton {
-            title: "QR-код"; horizontal-stretch: 1;
-            clicked => { root.show-qr(root.share-code); }
-            IconQr { width: 17px; height: 17px; tint: Theme.accent; }
         }
     }
 

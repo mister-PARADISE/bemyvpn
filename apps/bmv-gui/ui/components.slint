@@ -464,10 +464,12 @@ export component QuietButton inherits Rectangle {
     ta := TouchArea { clicked => { if (root.feedback) { root.did = true; } root.clicked(); } }
 }
 
-/// Кнопка нижней полки. Крупная (48px) и внизу экрана — под большим пальцем:
-/// копирование и QR жмут чаще всего, тянуться за ними через весь экран
-/// неправильно.
-export component DockButton inherits Rectangle {
+/// Кнопка «поделиться» — крупная (48px), стоит В НИЗУ панели состояния.
+///
+/// Код сети и QR — то, ради чего эту панель открывают, поэтому они живут прямо
+/// под кодом, а не в отдельной полке у нав-бара: там они оторвались бы от того,
+/// что копируют.
+export component ShareButton inherits Rectangle {
     in property <string> title;
     in property <bool> feedback: false;
     property <bool> did: false;

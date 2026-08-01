@@ -12,7 +12,7 @@
 // Копирование и QR живут на нижней полке (app.slint) — под большим пальцем.
 import { Theme } from "theme.slint";
 import { Card, StatTile, CopyTile, CardButton, GradientButton, SectionLabel, Field, BigChip,
-         Badge, StatusLine, BigCode, QuietButton } from "components.slint";
+         Badge, StatusLine, BigCode, QuietButton, ShareButton } from "components.slint";
 import { IconRouter, IconRenew, IconCopy, IconQr, IconGlobe, IconEyeOff, IconPeople, IconWarning,
          IconShieldLock, IconMask, IconShieldSlash } from "icons.slint";
 import { ScrollView, Slider } from "std-widgets.slint";
@@ -128,6 +128,21 @@ export component HostPage inherits Rectangle {
                                 copy(t) => { root.copy-text(t); }
                             }
                         }
+                        // Поделиться кодом — В НИЗУ панели, прямо под самим кодом.
+                        if root.host-state == 2: HorizontalLayout {
+                            spacing: 8px;
+                            padding-top: 2px;
+                            ShareButton {
+                                title: "Скопировать"; feedback: true; horizontal-stretch: 1;
+                                clicked => { root.copy-code(); }
+                                IconCopy { width: 17px; height: 17px; tint: Theme.accent; }
+                            }
+                            ShareButton {
+                                title: "QR-код"; horizontal-stretch: 1;
+                                clicked => { root.open-qr(); }
+                                IconQr { width: 17px; height: 17px; tint: Theme.accent; }
+                            }
+                        }
 
                         // ── не раздаём: показывать нечего, кроме статуса ──
                         if root.host-state != 2: Rectangle {
@@ -189,7 +204,7 @@ export component HostPage inherits Rectangle {
                 padding: Theme.pad;
                 padding-top: 2px;
                 // Ниже плавают нав-бар и полка действий — оставляем им место.
-                padding-bottom: root.host-state == 2 ? 168px : 108px;
+                padding-bottom: 108px;
                 spacing: Theme.gap;
 
                 if root.host-error != "" && root.host-state != 3: HorizontalLayout {
