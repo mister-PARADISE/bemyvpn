@@ -28,6 +28,11 @@ int32_t bmv_probe_rtt(const char *coordinator, const char *host_id, const char *
 /* Быстрая проверка связи: true = сервер жив. */
 bool  bmv_health(const char *coordinator);
 
+// Круг до координатора в мс; 0 — ещё не мерили или связи нет.
+// Настоящий замер (свой Ping + Pong с той же меткой), а НЕ время вызова
+// bmv_health: тот читает флаг «сокет жив» и возвращается мгновенно.
+uint32_t bmv_rtt_ms(const char *coordinator);
+
 /* ── Гость: подключение ──────────────────────────────────────────────────── */
 /* Фаза 1: пробитие NAT + рукопожатие БЕЗ туннеля. true — канал готов. */
 bool  bmv_connect(const char *coordinator, const char *host_id,
