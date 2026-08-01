@@ -40,6 +40,7 @@ flate2 = "1"
 directories = "5"
 # Токен для root-хелпера — из криптостойкого генератора (см. helper.rs).
 rand = { workspace = true }
+display-info = "0.5.9"
 
 [build-dependencies]
 slint-build = "1.8"
