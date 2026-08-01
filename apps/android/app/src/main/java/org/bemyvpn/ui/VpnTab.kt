@@ -148,8 +148,14 @@ fun VpnTab(app: AppState, bottomPad: Dp, openScanner: () -> Unit) {
         // стоило сообщение, и вдобавок дышала, перетягивая взгляд с самого
         // списка. Где искать поломку, показывает точка на ячейке «Сервер» в
         // нав-баре — видная с любой вкладки.
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            SectionLabel("Хосты")
+        // Заголовок здесь НЕ через SectionLabel: тот растянут на всю ширину и,
+        // попав в строку, съедал всё место — знак «последние известные»
+        // выталкивало за край экрана, и о потере связи ничего не сообщалось.
+        Row(
+            Modifier.fillMaxWidth().padding(top = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text("Хосты", color = Theme.dim, fontSize = 13.sp, fontWeight = FontWeight.Bold)
             Spacer(Modifier.weight(1f))
             if (stale) StateChip("последние известные")
         }
@@ -550,7 +556,7 @@ private fun PingTile(value: String, modifier: Modifier = Modifier) {
             // Через trailing у TileBody, чтобы не менять общий StatTile ради
             // одного случая: вращение нужно только здесь.
             Box(modifier.tileBackground()) {
-                TileBody("ОТКЛИК", "") {
+                TileBody("ПИНГ", "") {
                     Icon(
                         Icons.Filled.Autorenew, null,
                         Modifier.size(14.dp).rotate(angle),
@@ -561,8 +567,8 @@ private fun PingTile(value: String, modifier: Modifier = Modifier) {
         }
         // Только знак, без слова: перечёркнутая антенна говорит сама, а «нет»
         // рядом с ней — это то же самое ещё раз.
-        "—" -> StatTile("ОТКЛИК", "", modifier, symbol = Icons.Filled.SignalWifiOff, tint = Theme.dim)
-        else -> StatTile("ОТКЛИК", value, modifier, tint = pingTint(value))
+        "—" -> StatTile("ПИНГ", "", modifier, symbol = Icons.Filled.SignalWifiOff, tint = Theme.dim)
+        else -> StatTile("ПИНГ", value, modifier, tint = pingTint(value))
     }
 }
 

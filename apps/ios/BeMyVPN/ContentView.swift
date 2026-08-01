@@ -491,7 +491,7 @@ struct PingTile: View {
     var body: some View {
         Group {
             if waiting {
-                TileBody(label: "ОТКЛИК", value: "", symbol: nil, valueColor: Theme.fg) {
+                TileBody(label: "ПИНГ", value: "", symbol: nil, valueColor: Theme.fg) {
                     Image(systemName: "arrow.triangle.2.circlepath")
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundColor(Theme.accent)
@@ -503,9 +503,9 @@ struct PingTile: View {
             } else if noAnswer {
                 // Только знак, без слова: перечёркнутая антенна говорит сама,
                 // а «нет» рядом с ней — это то же самое ещё раз.
-                StatTile(label: "ОТКЛИК", value: "", symbol: "antenna.radiowaves.left.and.right.slash", tint: Theme.dim)
+                StatTile(label: "ПИНГ", value: "", symbol: "antenna.radiowaves.left.and.right.slash", tint: Theme.dim)
             } else {
-                StatTile(label: "ОТКЛИК", value: value, tint: tint)
+                StatTile(label: "ПИНГ", value: value, tint: tint)
             }
         }
         .animation(.easeOut(duration: 0.25), value: value)
@@ -823,11 +823,14 @@ struct VPNTab: View {
                 // сильнее, чем стоило сообщение, и вдобавок дышала, перетягивая
                 // взгляд с самого списка. Где искать поломку, показывает точка
                 // на ячейке «Сервер» в нав-баре — видная с любой вкладки.
+                // Заголовок здесь НЕ через sectionLabel: тот растянут на всю
+                // ширину и, попав в строку, съедал всё место — знак о потере
+                // связи выталкивало за край.
                 HStack(spacing: 8) {
-                    sectionLabel("Хосты")
+                    Text("Хосты").foregroundColor(Theme.dim).font(.system(size: 13, weight: .bold))
                     Spacer()
                     if stale { StateChip(text: "последние известные") }
-                }
+                }.padding(.top, 6)
                 if shown.isEmpty {
                     Text(app.serverOnline == false ? "Нет связи с сервером.\nПроверьте адрес во вкладке «Сервер»." : "Хостов пока нет.\nВведите код сети или поднимите свой во вкладке «Хост».")
                         .foregroundColor(Theme.dim).font(.system(size: 14)).multilineTextAlignment(.center).frame(maxWidth: .infinity).padding(.vertical, 40)

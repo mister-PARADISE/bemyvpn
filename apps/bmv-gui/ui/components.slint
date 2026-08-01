@@ -157,7 +157,7 @@ export component PingTile inherits StatTile {
         : root.ms <= 150 ? Theme.amber
         : Theme.red;
 
-    label: "ОТКЛИК";
+    label: "ПИНГ";
     // Без слова «нет»: перечёркнутая антенна говорит сама.
     value: (root.waiting || root.no-answer) ? "" : root.ping;
     tint: root.no-answer ? Theme.dim : root.ping-tint;
