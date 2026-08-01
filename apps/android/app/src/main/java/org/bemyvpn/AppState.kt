@@ -397,7 +397,13 @@ class AppState private constructor(val ctx: Context) {
             // health() к недоступному адресу висит на TCP-таймауте и возвращается,
             // когда пользователь уже переключился обратно на живой сервер.
             if (!isActive || coord != coordinator) return@launch
-            serverOnline = ok; ping = ms; myIp = ip; checking = false
+            // Пинг берём ЗАМЕРОМ, а не длительностью проверки: health читает флаг
+            // «сокет жив» и возвращается мгновенно, поэтому «время вызова» пингом
+            // никогда не было.
+            val rtt = if (ok) withContext(Dispatchers.IO) {
+                try { Native.nativeRttMs(coord) } catch (_: Throwable) { 0 }
+            } else 0
+            serverOnline = ok; ping = rtt; myIp = ip; checking = false
             fillDefaultHostNameIfNeeded()   // страна известна — можно назвать хост
             if (ok) addServerHistory(coord)
         }

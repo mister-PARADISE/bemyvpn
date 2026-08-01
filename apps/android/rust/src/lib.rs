@@ -99,6 +99,15 @@ pub extern "system" fn Java_org_bemyvpn_Native_nativeHealth(
     b(bmv_ffi::bmv_health(coord.as_ptr()))
 }
 
+/// Круг до координатора в мс; 0 — ещё не мерили или связи нет.
+#[no_mangle]
+pub extern "system" fn Java_org_bemyvpn_Native_nativeRttMs(
+    mut env: JNIEnv, _c: JClass, coordinator: JString,
+) -> jint {
+    let coord = c_arg(&mut env, &coordinator);
+    bmv_ffi::bmv_rtt_ms(coord.as_ptr()) as jint
+}
+
 // ── гость: подключение ───────────────────────────────────────────────────────
 
 #[no_mangle]

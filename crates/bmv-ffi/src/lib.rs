@@ -223,6 +223,17 @@ pub extern "C" fn bmv_health(coordinator: *const c_char) -> bool {
     RUNTIME.block_on(async { engine.coordinator_health().await.is_ok() })
 }
 
+/// Круг до координатора в мс; 0 — ещё не мерили или связи нет.
+///
+/// Шеллы раньше засекали, сколько длится сам `bmv_health`, и показывали это как
+/// пинг. Но health читает флаг «сокет жив» и возвращается мгновенно — на экране
+/// стояло время вызова функции, а не время до сервера. Здесь настоящий замер:
+/// свой Ping с меткой времени и Pong с той же меткой (см. bmv_signal).
+#[no_mangle]
+pub extern "C" fn bmv_rtt_ms(coordinator: *const c_char) -> u32 {
+    sig_engine(&cstr(coordinator)).coordinator_rtt().unwrap_or(0)
+}
+
 // ── гость: подключение ───────────────────────────────────────────────────────
 
 /// ФАЗА 1: пробитие NAT + рукопожатие БЕЗ TUN. true — канал поднят (зови

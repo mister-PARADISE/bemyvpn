@@ -39,6 +39,8 @@ enum Core {
 
     // ── сигналинг ──
     static func health(_ coord: String) -> Bool { bmv_health(coord) }
+    /// Круг до координатора в мс; 0 — ещё не мерили или связи нет.
+    static func rttMs(_ coord: String) -> Int { Int(bmv_rtt_ms(coord)) }
     static func myIp(_ coord: String) -> String { take(bmv_my_ip(coord)) }
 
     /// Отклик до хоста в мс, nil = не ответил. Сессию на хосте не создаёт,

@@ -26,6 +26,9 @@ object Native {
     /** Быстрая проверка связи: true = сервер жив. */
     external fun nativeHealth(coordinator: String): Boolean
 
+    /** Круг до координатора в мс; 0 — ещё не мерили или связи нет. */
+    external fun nativeRttMs(coordinator: String): Int
+
     // ── Гость: подключение ───────────────────────────────────────────────────
     /** ФАЗА 1: пробитие NAT + рукопожатие БЕЗ TUN. true — канал готов. */
     external fun nativeConnect(coordinator: String, hostId: String, password: String, protocol: String): Boolean

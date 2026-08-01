@@ -352,9 +352,11 @@ final class AppState: ObservableObject {
         let coord = coordinator
         checking = true
         checkTask = Task {
-            let t0 = Date()
             let ok = await bg { Core.health(coord) }
-            let ms = Int(Date().timeIntervalSince(t0) * 1000)
+            // Пинг берём ЗАМЕРОМ, а не длительностью проверки: health читает флаг
+            // «сокет жив» и возвращается мгновенно, поэтому «время вызова» пингом
+            // никогда не было.
+            let ms = ok ? await bg { Core.rttMs(coord) } : 0
             let ip = ok ? await bg { Core.myIp(coord) } : ""
             // Ответ ПРО ПРОШЛЫЙ сервер не должен затирать свежий результат.
             // health() к недоступному адресу висит десятки секунд на таймауте

@@ -11,7 +11,7 @@
 //! resolve/connect) коррелируются по id; каталог хранится локально из дельт.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -161,6 +161,13 @@ struct Shared {
     /// Каталог + сигнал изменения (для directory_watch).
     dir: Mutex<DirState>,
     dir_ver: watch::Sender<u64>,
+    /// Круг до координатора в миллисекундах, 0 — ещё не мерили.
+    ///
+    /// Меряется НАСТОЯЩИМ обменом: свой Ping с меткой времени → Pong с той же
+    /// меткой. Раньше «пинг» в интерфейсе брали из `health()`, а тот просто
+    /// читает флаг «сокет жив» и возвращается мгновенно — на экране всегда
+    /// стоял ноль, то есть время чтения переменной, а не время до сервера.
+    rtt_ms: AtomicU32,
     /// Для восстановления после реконнекта.
     last_announce: Mutex<Option<HostAnnounce>>,
     watching: Mutex<bool>,
@@ -238,7 +245,8 @@ impl Coordinator {
                 guest_rx: tokio::sync::Mutex::new(guest_rx),
                 dir: Mutex::new(DirState::default()),
                 dir_ver,
-                last_announce: Mutex::new(None),
+                rtt_ms: AtomicU32::new(0),
+            last_announce: Mutex::new(None),
                 watching: Mutex::new(false),
                 connected,
                 closed: closed_rx,
@@ -294,6 +302,14 @@ impl Coordinator {
     }
 
     /// Быстрая проверка живости: подключились ли за короткий срок.
+    /// Круг до координатора в мс. `None` — ещё не мерили или связь оборвана.
+    pub fn rtt_ms(&self) -> Option<u32> {
+        match self.shared.rtt_ms.load(Ordering::Relaxed) {
+            0 => None,
+            v => Some(v),
+        }
+    }
+
     pub async fn health(&self) -> Result<()> {
         self.ensure_started();
         if *self.shared.connected.subscribe().borrow() {
@@ -510,6 +526,14 @@ async fn supervisor(sh: Arc<Shared>, mut out_rx: mpsc::UnboundedReceiver<String>
         alive_iv.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         let mut last_rx = std::time::Instant::now();
 
+        // Свой Ping для ЗАМЕРА круга. Отвечать на чужой Ping мы умели и раньше,
+        // но это не даёт числа: чтобы узнать время до сервера, спрашивать должны
+        // МЫ. В полезной нагрузке — метка времени; сервер обязан вернуть её в
+        // Pong байт в байт (RFC 6455), по ней и считаем круг.
+        let started = std::time::Instant::now();
+        let mut rtt_iv = tokio::time::interval(RTT_EVERY);
+        rtt_iv.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
         loop {
             tokio::select! {
                 out = out_rx.recv() => match out {
@@ -522,12 +546,29 @@ async fn supervisor(sh: Arc<Shared>, mut out_rx: mpsc::UnboundedReceiver<String>
                     Some(Ok(Message::Text(txt))) => { last_rx = std::time::Instant::now(); handle_incoming(&sh, &txt); }
                     Some(Ok(Message::Ping(p))) => { last_rx = std::time::Instant::now(); let _ = sink.send(Message::Pong(p)).await; }
                     Some(Ok(Message::Close(_))) | Some(Err(_)) | None => break,
-                    _ => last_rx = std::time::Instant::now(), // Pong и прочие кадры — тоже жизнь
+                    Some(Ok(Message::Pong(p))) => {
+                        last_rx = std::time::Instant::now();
+                        // Считаем круг только по СВОЕЙ метке: чужие Pong (или
+                        // ответ на давно устаревший Ping) дали бы чушь.
+                        if p.len() == 8 {
+                            let sent = u64::from_be_bytes(p[..8].try_into().unwrap());
+                            let now = started.elapsed().as_millis() as u64;
+                            if now >= sent {
+                                let rtt = (now - sent).min(u32::MAX as u64) as u32;
+                                sh.rtt_ms.store(rtt.max(1), Ordering::Relaxed);
+                            }
+                        }
+                    }
+                    _ => last_rx = std::time::Instant::now(), // прочие кадры — тоже жизнь
                 },
                 // Тишина дольше дедлайна → сокет мёртв, рвём и переподключаемся.
                 // Реконнект восстановит host/watch и пришлёт СВЕЖИЙ снапшот каталога.
                 _ = alive_iv.tick() => {
                     if last_rx.elapsed() > LINK_SILENCE_LIMIT { break; }
+                }
+                _ = rtt_iv.tick() => {
+                    let mark = (started.elapsed().as_millis() as u64).to_be_bytes().to_vec();
+                    if sink.send(Message::Ping(mark)).await.is_err() { break; }
                 }
                 // Последний клон Coordinator уронен → аккуратно закрываем сокет и выходим
                 // (хост при этом мгновенно исчезает из каталога — «прощание» = закрытие).
@@ -564,6 +605,9 @@ const RECONNECT_MAX: Duration = Duration::from_secs(8);
 const LINK_SILENCE_LIMIT: Duration = Duration::from_secs(8);
 /// Как часто сверяем тишину. Реже дедлайна — проверка дешёвая, но не суетливая.
 const LINK_CHECK_EVERY: Duration = Duration::from_secs(2);
+/// Как часто меряем круг до координатора. Три секунды — с той же частотой
+/// интерфейс и перерисовывает цифру; чаще значит слать кадры впустую.
+const RTT_EVERY: Duration = Duration::from_secs(3);
 
 /// Прибавить к паузе случайный джиттер до +100% (размазать «стадо» реконнектов).
 /// rand не тянем — дешёвого псевдослучая из наносекунд часов хватает для джиттера.

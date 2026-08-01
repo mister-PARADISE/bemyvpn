@@ -627,10 +627,11 @@ fn spawn_refresh(
             };
             // СТАТУС связи = состояние WS-сокета (health), а НЕ успех watch: сокет
             // жив, пока снапшот каталога ещё в пути (хост уже анонсирован).
-            let t0 = std::time::Instant::now();
             let alive = eng.coordinator_health().await.is_ok();
-
-            let ping = t0.elapsed().as_millis() as i32;
+            // Настоящий круг до координатора. Раньше здесь замеряли, СКОЛЬКО
+            // длился сам вызов health(), — а он читает флаг «сокет жив» и
+            // возвращается мгновенно, поэтому на экране вечно стоял ноль.
+            let ping = eng.coordinator_rtt().unwrap_or(0) as i32;
             if alive && my_ip.is_empty() {
                 if let Ok(ip) = eng.my_ip().await {
                     my_ip = ip.clone();

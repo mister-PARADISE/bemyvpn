@@ -172,6 +172,15 @@ impl BmvEngine {
         self.coordinator()?.health().await
     }
 
+    /// Круг до координатора в мс, `None` — ещё не мерили или связь оборвана.
+    ///
+    /// Именно ЗАМЕР, а не время вызова `coordinator_health`: тот читает флаг
+    /// «сокет жив» и возвращается мгновенно, поэтому раньше на экране всегда
+    /// стоял ноль.
+    pub fn coordinator_rtt(&self) -> Option<u32> {
+        self.coordinator().ok().and_then(|c| c.rtt_ms())
+    }
+
     /// ГОСТЬ: получить список хостов из каталога.
     pub async fn guest_list(
         &self,
