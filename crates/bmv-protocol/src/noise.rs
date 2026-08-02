@@ -73,11 +73,11 @@ impl Protocol for Noise {
     }
 
     async fn connect_host(&self, link: Box<dyn Link>) -> Result<Box<dyn Link>> {
-        handshake(link, self.pattern, false, self.pad).await
+        Ok(Box::new(handshake(link, self.pattern, false, self.pad).await?))
     }
 
     async fn connect_guest(&self, link: Box<dyn Link>) -> Result<Box<dyn Link>> {
-        handshake(link, self.pattern, true, self.pad).await
+        Ok(Box::new(handshake(link, self.pattern, true, self.pad).await?))
     }
 }
 
@@ -134,7 +134,11 @@ fn uncloak_ephemeral(msg: &mut [u8], pad: bool) -> Result<()> {
 
 /// Провести рукопожатие Noise XX поверх канала и вернуть шифрующий Link.
 /// initiator=true — гость (ходит первым), false — хост (отвечает).
-async fn handshake(inner: Box<dyn Link>, pattern: &str, initiator: bool, pad: bool) -> Result<Box<dyn Link>> {
+///
+/// Возвращает КОНКРЕТНЫЙ тип (а не `Box<dyn Link>`): тестам нужен доступ к
+/// транспортному состоянию, чтобы собрать враждебный кадр РАБОЧИМИ ключами
+/// сессии — иначе «злой пир» ничем не отличить от мусора, который и так дропается.
+async fn handshake(inner: Box<dyn Link>, pattern: &str, initiator: bool, pad: bool) -> Result<NoiseLink> {
     let params = pattern.parse().map_err(noe)?;
     let builder = snow::Builder::new(params);
     let keypair = builder.generate_keypair().map_err(noe)?;
@@ -227,14 +231,14 @@ async fn handshake(inner: Box<dyn Link>, pattern: &str, initiator: bool, pad: bo
 
     // Ключ маскировки nonce = хэш рукопожатия (одинаков у обеих сторон, снаружи
     // неизвестен). Берём ДО перехода в транспортный режим (он поглощает hs).
-    let obfs_key = if pad { Some(hs.get_handshake_hash().to_vec()) } else { None };
+    let obfs_key = if pad { Some(charge_mask_key(hs.get_handshake_hash())) } else { None };
     let transport = hs.into_stateless_transport_mode().map_err(noe)?;
     // Пер-сессийный «пол» паддинга: фиксированный 80 давал ВСЕМ сессиям одинаковую
     // полосу мелких пакетов [80,112] — узнаваемый горб в гистограмме длин. Свой
     // случайный пол на сессию убирает эту общую сигнатуру. floor+jitter<256 (одна
     // байтовая длина): 120+32=152 < 255.
     let pad_floor = if pad { 64 + (rand::random::<u8>() as usize % 57) } else { 0 }; // 64..=120
-    Ok(Box::new(NoiseLink {
+    Ok(NoiseLink {
         inner,
         transport,
         send_ctr: std::sync::atomic::AtomicU64::new(0),
@@ -245,18 +249,29 @@ async fn handshake(inner: Box<dyn Link>, pattern: &str, initiator: bool, pad: bo
         send_plain: std::sync::Mutex::new(Vec::new()),
         recv_scratch: std::sync::Mutex::new(Vec::new()),
         replay: std::sync::Mutex::new((0, 0)),
-    }))
+    })
+}
+
+/// ЗАРЯЖЕННЫЙ ключом хэш для маски шапки-nonce — считается ОДИН раз на сессию.
+///
+/// Ключ (хэш рукопожатия) на всю сессию постоянен, а маска нужна КАЖДОМУ пакету
+/// в обе стороны. Раньше на каждый пакет заново создавался Sha256 и в него
+/// заливался ключ; теперь заливка сделана один раз, а на пакет остаётся дешёвый
+/// клон состояния и один короткий `update`.
+fn charge_mask_key(key: &[u8]) -> sha2::Sha256 {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(key);
+    h
 }
 
 /// Маска шапки-nonce для «Маскировки»: PRF(hash_рукопожатия, образец шифротекста).
 /// И отправитель, и приёмник видят один и тот же шифротекст → маска совпадает, но
 /// снаружи (без ключа) шапка выглядит случайной, а счётчик остаётся уникальным.
-fn nonce_mask(key: &[u8], ciphertext: &[u8]) -> u64 {
-    use sha2::{Digest, Sha256};
-    let sample = &ciphertext[..ciphertext.len().min(16)];
-    let mut h = Sha256::new();
-    h.update(key);
-    h.update(sample);
+fn nonce_mask(charged: &sha2::Sha256, ciphertext: &[u8]) -> u64 {
+    use sha2::Digest;
+    let mut h = charged.clone();
+    h.update(&ciphertext[..ciphertext.len().min(16)]);
     u64::from_le_bytes(h.finalize()[..8].try_into().unwrap())
 }
 
@@ -333,8 +348,9 @@ struct NoiseLink {
     pad: bool,
     /// Пер-сессийный «пол» размера plaintext (маскировка). 0 в обычном режиме.
     pad_floor: usize,
-    /// Some(hash) в режиме маскировки — ключ для маскировки шапки-nonce. None иначе.
-    obfs_key: Option<Vec<u8>>,
+    /// Some(hash) в режиме маскировки — ЗАРЯЖЕННЫЙ ключом хэш для маски шапки-nonce
+    /// (см. `charge_mask_key`). None иначе.
+    obfs_key: Option<sha2::Sha256>,
     /// Переиспользуемые буферы горячего пути — чтобы НЕ аллоцировать Vec на каждый
     /// пакет (тяжело для CPU/батареи телефона при высоком pps). Берём из Mutex
     /// до `.await`, кладём обратно после — лок через await не держим.
@@ -392,31 +408,40 @@ impl Link for NoiseLink {
         plain.extend_from_slice(packet);
         if self.pad {
             let pad_len = obfs_pad_len(packet.len(), self.pad_floor);
-            let start = plain.len();
-            plain.resize(start + pad_len, 0);
-            rand::Rng::fill(&mut rand::thread_rng(), &mut plain[start..]);
+            // ПАДДИНГ — НУЛИ, И ЭТО НЕ ЭКОНОМИЯ НА СТОЙКОСТИ. Он лежит ВНУТРИ
+            // AEAD: снаружи видно только шифротекст, а ChaCha20 превращает любой
+            // вход в неотличимую от шума строку — прячется здесь ДЛИНА, а не
+            // содержимое, и случайной должна быть именно она (см. obfs_pad_len).
+            // Криптостойкий генератор на 152 байта КАЖДОГО пакета — это ChaCha20
+            // впустую поверх ChaCha20.
+            // ЭТО ПЕРЕСТАНЕТ БЫТЬ ВЕРНЫМ, если паддинг когда-нибудь окажется ВНЕ
+            // шифрования (например добивка кадра снаружи AEAD или паддинг в
+            // рукопожатии до установки ключей) — там нули видны в проводе и станут
+            // отпечатком; тогда сюда возвращается заполнение случайными байтами.
+            plain.resize(plain.len() + pad_len, 0);
             plain.push(pad_len as u8);
         }
         // Кадр в ПЕРЕИСПОЛЬЗУЕМОМ буфере: [nonce:8][ciphertext+tag].
+        // РАСТЁМ ПО ПОТРЕБНОСТИ, а не clear()+resize(n,0): второе зануляло весь
+        // буфер (≈1.4 КБ на КАЖДЫЙ пакет) прямо перед тем, как его перезапишет
+        // шифрование. Хвост за пределами кадра наружу не уходит — ниже шлём
+        // ровно `&frame[..8 + n]`.
         let mut frame = std::mem::take(&mut *self.send_frame.lock().unwrap());
-        frame.clear();
-        frame.resize(plain.len() + 16 + 8, 0);
-        let res = self
-            .transport
-            .write_message(nonce, &plain, &mut frame[8..])
-            .map_err(noe)
-            .map(|n| {
-                frame.truncate(8 + n);
+        let need = plain.len() + 16 + 8; // +tag +шапка
+        if frame.len() < need {
+            frame.resize(need, 0);
+        }
+        let out = match self.transport.write_message(nonce, &plain, &mut frame[8..]).map_err(noe) {
+            Ok(n) => {
                 // Маскировка шапки: nonce ^ маска(шифротекст). Счётчик остаётся
                 // уникальным (без nonce-reuse), но в проводе монотонности не видно.
                 let wire_nonce = match &self.obfs_key {
-                    Some(k) => nonce ^ nonce_mask(k, &frame[8..]),
+                    Some(k) => nonce ^ nonce_mask(k, &frame[8..8 + n]),
                     None => nonce,
                 };
                 frame[..8].copy_from_slice(&wire_nonce.to_le_bytes());
-            });
-        let out = match res {
-            Ok(()) => self.inner.send(&frame).await,
+                self.inner.send(&frame[..8 + n]).await
+            }
             Err(e) => Err(e),
         };
         // Возвращаем буферы в пул (лок берём заново, через await не держали).
@@ -442,8 +467,13 @@ impl Link for NoiseLink {
                         None => wire_nonce,
                     };
                     // Расшифровываем ПРЯМО в буфер вызывающего (переиспользуется).
-                    out.clear();
-                    out.resize(frame.len(), 0); // ≥ длины plaintext
+                    // РАСТЁМ ПО ПОТРЕБНОСТИ, а не clear()+resize(n,0): второе
+                    // зануляло ≈1.4 КБ на каждый пакет прямо перед перезаписью.
+                    // Остаток прошлого пакета наружу не уедет — ниже стоит
+                    // truncate(n) по фактической длине расшифрованного.
+                    if out.len() < frame.len() {
+                        out.resize(frame.len(), 0); // ≥ длины plaintext
+                    }
                     match self.transport.read_message(nonce, &frame[8..], out) {
                         Ok(n) => {
                             // Окно двигаем ТОЛЬКО после успешной расшифровки: иначе
@@ -455,12 +485,21 @@ impl Link for NoiseLink {
                             out.truncate(n);
                             if self.pad {
                                 // Последний байт — длина паддинга; отрезаем паддинг+байт.
-                                if let Some(&pad_len) = out.last() {
-                                    let strip = pad_len as usize + 1;
-                                    if strip <= out.len() {
-                                        out.truncate(out.len() - strip);
+                                // Не сходится (байт больше самого plaintext или
+                                // plaintext пуст) — кадр ДРОПАЕМ. Раньше паддинг в
+                                // этом случае просто не снимался, и наверх, в IP-стек,
+                                // уезжал мусор вместе со служебным байтом: пир прошёл
+                                // рукопожатие, значит подсунуть такое может он сам.
+                                let strip = match out.last() {
+                                    // «< len», а не «+1 <= len»: сам байт длины тоже
+                                    // отрезается, поэтому паддинг обязан быть строго
+                                    // короче того, в чём он лежит.
+                                    Some(&pad_len) if (pad_len as usize) < out.len() => {
+                                        pad_len as usize + 1
                                     }
-                                }
+                                    _ => continue,
+                                };
+                                out.truncate(out.len() - strip);
                             }
                             break Ok(true);
                         }
@@ -838,7 +877,7 @@ mod tests {
         host.send(b"aaaa").await.unwrap();
         // Косвенно: nonce_mask даёт разные маски для разных шифротекстов, а два
         // шифрования одного текста разными nonce дают разные шифротексты.
-        let k = [7u8; 32];
+        let k = charge_mask_key(&[7u8; 32]);
         assert_ne!(nonce_mask(&k, &[1, 2, 3, 4, 5, 6, 7, 8, 9]), 0, "маска не должна быть нулевой");
         assert_ne!(nonce_mask(&k, b"AAAAAAAAAAAAAAAA"), nonce_mask(&k, b"BBBBBBBBBBBBBBBB"), "маска зависит от шифротекста");
     }
@@ -857,6 +896,70 @@ mod tests {
                     assert!(total >= len.max(floor), "мелкий пакет не добит до пола: len={len} floor={floor} total={total}");
                     assert!(total <= len.max(floor) + OBFS_JITTER, "слишком большой паддинг: len={len} floor={floor} total={total}");
                 }
+            }
+        }
+    }
+
+    /// Собрать кадр РАБОЧИМИ ключами сессии, положив внутрь произвольный
+    /// plaintext (в т.ч. со злым байтом длины паддинга). Так выглядит пир,
+    /// который прошёл рукопожатие, но ведёт себя враждебно, — от мусора снаружи
+    /// это отличается принципиально: пломба сходится, значит кадр РАСШИФРУЕТСЯ.
+    async fn send_forged(from: &NoiseLink, plain: &[u8]) {
+        let nonce = from.send_ctr.fetch_add(1, Ordering::Relaxed);
+        let mut frame = vec![0u8; plain.len() + 16 + 8];
+        let n = from.transport.write_message(nonce, plain, &mut frame[8..]).unwrap();
+        frame.truncate(8 + n);
+        let wire = match &from.obfs_key {
+            Some(k) => nonce ^ nonce_mask(k, &frame[8..]),
+            None => nonce,
+        };
+        frame[..8].copy_from_slice(&wire.to_le_bytes());
+        from.inner.send(&frame).await.unwrap();
+    }
+
+    /// БАЙТ ДЛИНЫ ПАДДИНГА БОЛЬШЕ САМОГО PLAINTEXT. Это единственное число,
+    /// которым «управляет» отправитель внутри расшифрованного кадра. Если такому
+    /// кадру просто не снять паддинг, наверх (в IP-стек!) уедет мусор вместе со
+    /// служебным байтом. Кадр обязан быть ВЫБРОШЕН, а сессия — выжить.
+    #[tokio::test]
+    async fn padding_longer_than_plaintext_drops_the_frame() {
+        let (a, b) = bmv_common::wire::memory_pair(16);
+        let p = "Noise_XX_25519_ChaChaPoly_BLAKE2s";
+        let (host, guest) = tokio::join!(handshake(a, p, false, true), handshake(b, p, true, true));
+        let (host, guest) = (host.unwrap(), guest.unwrap());
+
+        // Заявлено 200 байт паддинга при 3 байтах plaintext.
+        send_forged(&guest, &[b'X', b'Y', 200]).await;
+        // Пустой кадр и «паддинг ровно во весь plaintext» — соседние граничные случаи.
+        send_forged(&guest, &[]).await;
+        send_forged(&guest, &[3, 3]).await;
+        // …а следом — честный пакет. Он и должен прийти первым же recv.
+        guest.send("настоящий".as_bytes()).await.unwrap();
+
+        let got = tokio::time::timeout(Duration::from_secs(2), host.recv())
+            .await
+            .expect("приёмник завис на кривом паддинге")
+            .unwrap();
+        assert_eq!(got, "настоящий".as_bytes(), "наверх уехал мусор вместо ошибки");
+    }
+
+    /// РЕГРЕССИЯ БУФЕРОВ: буфер приёма переиспользуется и больше не зануляется
+    /// целиком, поэтому длинный пакет ОБЯЗАН быть полностью вытеснен коротким.
+    /// Если обрезка съедет, короткий пакет приедет с хвостом предыдущего —
+    /// в туннеле это чужие байты в чужом соединении.
+    #[tokio::test]
+    async fn alternating_sizes_leave_no_leftovers() {
+        for proto in [Noise::obfs(), Noise::chacha()] {
+            let (a, b) = bmv_common::wire::memory_pair(64);
+            let (host, guest) = tokio::join!(proto.connect_host(a), proto.connect_guest(b));
+            let (host, guest) = (host.unwrap(), guest.unwrap());
+            let mut buf = Vec::new();
+            // Чередуем большой → крошечный → большой: именно так вылезает хвост.
+            for len in [1400usize, 1, 1400, 0, 900, 2, 1400, 1, 60, 1399] {
+                let payload: Vec<u8> = (0..len).map(|i| (i % 251) as u8 + 1).collect();
+                guest.send(&payload).await.unwrap();
+                assert!(host.recv_into(&mut buf).await.unwrap());
+                assert_eq!(buf, payload, "остаток предыдущего пакета (len={len}, {})", proto.name());
             }
         }
     }

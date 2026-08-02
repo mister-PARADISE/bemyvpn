@@ -12,7 +12,11 @@ Unstable, under development.
 
 ### Usage
 
-```rust, no_run
+Пример ниже помечен `ignore`: он опирается на внешние крейты `tun` и
+`udp_stream`, которых нет в зависимостях форка, поэтому как доктест он
+не компилируется (и раньше ЛОМАЛ `cargo test -p ipstack`).
+
+```rust,ignore
 use etherparse::Icmpv4Header;
 use ipstack::{IpNumber, IpStackStream};
 use std::net::{Ipv4Addr, SocketAddr};

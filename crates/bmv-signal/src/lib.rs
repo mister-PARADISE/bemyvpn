@@ -12,11 +12,15 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use bmv_common::{Error, Result};
 use futures_util::{SinkExt, StreamExt};
+// Мьютексы БЕЗ отравления (как в bmv-core/bmv-net): паника под локом иначе
+// отравляла его навсегда, и КАЖДЫЙ следующий `.lock().unwrap()` паниковал бы
+// снова — а выше по стеку стоит граница `extern "C"`, где паника = abort.
+use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::sync::{mpsc, oneshot, watch};
@@ -134,11 +138,59 @@ const HEALTH_TIMEOUT: Duration = Duration::from_secs(4);
 /// Как долго ждём гостя в pending() прежде чем вернуть пусто (мимик long-poll).
 const PENDING_TIMEOUT: Duration = Duration::from_secs(20);
 
+/// Потолок каталога на клиенте.
+///
+/// Сломанный (или враждебный) координатор может лить `diradd` бесконечно —
+/// раньше клиент честно складывал всё в память до OOM, а на телефоне это смерть
+/// приложения. Десять тысяч карточек (~3 МБ) на порядки больше любого реального
+/// каталога, так что живой человек потолка не увидит.
+const MAX_HOSTS: usize = 10_000;
+
 /// Локальное состояние каталога, собранное из снапшота + дельт.
+///
+/// Список — `Vec`, потому что ПОРЯДОК ЗАДАЁТ СЕРВЕР (он сортирует по своему
+/// `seq`, новые хосты приходят дельтой в конец): переложить каталог в map значило
+/// бы перетасовать список у людей на каждом обновлении. Рядом — индекс id→позиция,
+/// иначе каждая дельта искала бы линейно (O(n) на дельту, O(n²) на наполнение).
 #[derive(Default)]
 struct DirState {
     version: u64, // локальный монотонный счётчик (растёт на каждое изменение)
     hosts: Vec<HostInfo>,
+    idx: HashMap<String, usize>,
+}
+
+impl DirState {
+    /// Полный снимок от сервера — порядок берём как есть, лишнее отсекаем.
+    fn replace_all(&mut self, mut hosts: Vec<HostInfo>) {
+        hosts.truncate(MAX_HOSTS);
+        self.hosts = hosts;
+        self.reindex();
+    }
+
+    /// Дельта: обновить на месте (порядок сохраняется) или добавить в конец.
+    fn upsert(&mut self, host: HostInfo) {
+        match self.idx.get(&host.id) {
+            Some(&i) => self.hosts[i] = host,
+            None if self.hosts.len() < MAX_HOSTS => {
+                self.idx.insert(host.id.clone(), self.hosts.len());
+                self.hosts.push(host);
+            }
+            None => {} // потолок: молча игнорируем (лога в этом крейте нет)
+        }
+    }
+
+    /// Удаление редкое, поэтому переиндексация целиком — честный O(n) вместо
+    /// хитрой книги дырок, которую потом никто не разберёт.
+    fn remove(&mut self, id: &str) {
+        if self.idx.remove(id).is_some() {
+            self.hosts.retain(|h| h.id != id);
+            self.reindex();
+        }
+    }
+
+    fn reindex(&mut self) {
+        self.idx = self.hosts.iter().enumerate().map(|(i, h)| (h.id.clone(), i)).collect();
+    }
 }
 
 /// Разделяемое состояние соединения.
@@ -147,8 +199,12 @@ struct Shared {
     host: String, // хост координатора без схемы (для coord_host)
     started: AtomicBool,
     next_id: AtomicU64,
-    /// Исходящие кадры (JSON-строки) → супервизор → сокет. Буферизуются, если
-    /// соединение сейчас переустанавливается.
+    /// Исходящие кадры (JSON-строки) → супервизор → сокет.
+    ///
+    /// В ОФФЛАЙНЕ СЮДА НЕ ПИШЕМ (см. `send_if_live`): супервизор в это время
+    /// очередь не читает, и час без связи превращался в сотни протухших кадров,
+    /// улетающих залпом уже ПОСЛЕ восстановительного анонса. Отдельно противное:
+    /// застрявший `bye` доезжал после следующего старта раздачи и гасил её.
     out: mpsc::UnboundedSender<String>,
     out_rx: Mutex<Option<mpsc::UnboundedReceiver<String>>>,
     /// Ожидающие ответы RPC по id.
@@ -161,7 +217,8 @@ struct Shared {
     /// Каталог + сигнал изменения (для directory_watch).
     dir: Mutex<DirState>,
     dir_ver: watch::Sender<u64>,
-    /// Круг до координатора в миллисекундах, 0 — ещё не мерили.
+    /// Круг до координатора в миллисекундах, 0 — ещё не мерили ИЛИ связи нет
+    /// (обнуляем на обрыве: бодрая цифра от мёртвого сокета — враньё на экране).
     ///
     /// Меряется НАСТОЯЩИМ обменом: свой Ping с меткой времени → Pong с той же
     /// меткой. Раньше «пинг» в интерфейсе брали из `health()`, а тот просто
@@ -170,7 +227,10 @@ struct Shared {
     rtt_ms: AtomicU32,
     /// Для восстановления после реконнекта.
     last_announce: Mutex<Option<HostAnnounce>>,
-    watching: Mutex<bool>,
+    /// Подписка на каталог — ВМЕСТЕ С ФИЛЬТРОМ, а не просто «подписан да/нет».
+    /// Восстановление слало голый `watch`, и после первого же реконнекта человек
+    /// с фильтром по стране получал весь каталог целиком.
+    watching: Mutex<Option<Filter>>,
     /// true, когда сокет установлен (для health).
     connected: watch::Sender<bool>,
     /// true → все клоны Coordinator уронены, супервизору пора выйти (сокет закрыть).
@@ -246,8 +306,8 @@ impl Coordinator {
                 dir: Mutex::new(DirState::default()),
                 dir_ver,
                 rtt_ms: AtomicU32::new(0),
-            last_announce: Mutex::new(None),
-                watching: Mutex::new(false),
+                last_announce: Mutex::new(None),
+                watching: Mutex::new(None),
                 connected,
                 closed: closed_rx,
             }),
@@ -266,26 +326,39 @@ impl Coordinator {
         // первый wss:// РОНЯЛ приложение паникой «no process-level CryptoProvider».
         let _ = rustls::crypto::ring::default_provider().install_default();
         let sh = self.shared.clone();
-        let rx = self.shared.out_rx.lock().unwrap().take();
+        let rx = self.shared.out_rx.lock().take();
         if let Some(rx) = rx {
             tokio::spawn(supervisor(sh, rx));
         }
     }
 
-    /// Отправить кадр (буферизуется, если соединение переустанавливается).
+    /// Отправить кадр, ТОЛЬКО пока сокет жив (см. `Shared::out`). В оффлайне кадр
+    /// выбрасываем осознанно: состояние восстанавливается супервизором из
+    /// `last_announce`/`watching`, так что терять нечего, а копить — вредно.
+    fn send_if_live(&self, frame: String) {
+        if *self.shared.connected.borrow() {
+            let _ = self.shared.out.send(frame);
+        }
+    }
+
+    /// Отправить кадр (в оффлайне — выбросить, см. `send_if_live`).
     fn send(&self, v: Value) {
         self.ensure_started();
-        let _ = self.shared.out.send(v.to_string());
+        self.send_if_live(v.to_string());
     }
 
     /// RPC: послать сообщение с новым id и дождаться ответа по этому id.
     async fn rpc(&self, mut v: Value) -> Result<Value> {
-        self.ensure_started();
+        // Пока связи нет, кадр в очередь НЕ кладём: ждём короткое окно на
+        // подключение (health) и, если его нет, отвечаем сразу. Иначе человек
+        // смотрит на «приложение задумалось» все десять секунд таймаута, а
+        // запрос всё это время лежит в мёртвой очереди.
+        self.health().await?;
         let id = self.shared.next_id.fetch_add(1, Ordering::Relaxed);
         v["id"] = json!(id);
         let (tx, rx) = oneshot::channel();
-        self.shared.pending.lock().unwrap().insert(id, tx);
-        let _ = self.shared.out.send(v.to_string());
+        self.shared.pending.lock().insert(id, tx);
+        self.send_if_live(v.to_string());
         match tokio::time::timeout(RPC_TIMEOUT, rx).await {
             Ok(Ok(val)) => {
                 if val.get("t").and_then(|t| t.as_str()) == Some("error") {
@@ -294,8 +367,10 @@ impl Coordinator {
                 }
                 Ok(val)
             }
+            // Сюда же попадает ОБРЫВ: `go_offline` роняет отправителя, и
+            // ожидание кончается мгновенно, а не через десять секунд.
             _ => {
-                self.shared.pending.lock().unwrap().remove(&id);
+                self.shared.pending.lock().remove(&id);
                 Err(Error::Signal("координатор не ответил".into()))
             }
         }
@@ -337,12 +412,15 @@ impl Coordinator {
     /// ждём подтверждения `hostok` (или ошибку отклонения от координатора).
     pub async fn announce(&self, ann: &HostAnnounce) -> Result<()> {
         self.ensure_started();
-        *self.shared.last_announce.lock().unwrap() = Some(ann.clone());
+        // Порядок важен: сначала запомнили анонс, потом отправили. Если сокет
+        // сейчас лежит, кадр выбрасывается, но супервизор пошлёт ровно этот
+        // анонс на (пере)подключении — подтверждение придёт в тот же `host_ack`.
+        *self.shared.last_announce.lock() = Some(ann.clone());
         let (tx, rx) = oneshot::channel();
-        *self.shared.host_ack.lock().unwrap() = Some(tx);
+        *self.shared.host_ack.lock() = Some(tx);
         let mut v = serde_json::to_value(ann).map_err(|e| Error::Signal(e.to_string()))?;
         v["t"] = json!("host");
-        let _ = self.shared.out.send(v.to_string());
+        self.send_if_live(v.to_string());
         match tokio::time::timeout(RPC_TIMEOUT, rx).await {
             Ok(Ok(Ok(()))) => Ok(()),
             Ok(Ok(Err(e))) => Err(e),
@@ -358,7 +436,7 @@ impl Coordinator {
     /// ХОСТ: «я ухожу». Убираем восстановление (чтобы реконнект не воскресил) и
     /// шлём bye — координатор снимет запись мгновенно.
     pub async fn bye(&self, _id: &str, _token: &str) -> Result<()> {
-        *self.shared.last_announce.lock().unwrap() = None;
+        *self.shared.last_announce.lock() = None;
         self.send(json!({ "t": "bye" }));
         Ok(())
     }
@@ -404,7 +482,7 @@ impl Coordinator {
         self.ensure_watch(filter);
         // Дадим первому снапшоту прийти, если только что подписались.
         let _ = tokio::time::timeout(CONNECT_TIMEOUT, self.wait_first_snapshot()).await;
-        Ok(self.shared.dir.lock().unwrap().hosts.clone())
+        Ok(self.shared.dir.lock().hosts.clone())
     }
 
     /// ГОСТЬ: дождаться ИЗМЕНЕНИЯ каталога (since = прошлая версия). Возвращает
@@ -427,7 +505,7 @@ impl Coordinator {
         if !*self.shared.connected.subscribe().borrow() {
             return Err(Error::Signal("координатор недоступен".into()));
         }
-        let d = self.shared.dir.lock().unwrap();
+        let d = self.shared.dir.lock();
         Ok(DirectoryUpdate { version: d.version, hosts: d.hosts.clone() })
     }
 
@@ -446,10 +524,10 @@ impl Coordinator {
     // ── вспомогательное ──
     fn ensure_watch(&self, filter: &Filter) {
         self.ensure_started();
-        let mut w = self.shared.watching.lock().unwrap();
-        if !*w {
-            *w = true;
-            drop(w);
+        let mut w = self.shared.watching.lock();
+        if w.is_none() {
+            *w = Some(filter.clone());
+            drop(w); // лок снят ДО отправки: send не должен ждать под ним
             self.send(watch_frame(filter));
         }
     }
@@ -476,6 +554,25 @@ fn watch_frame(filter: &Filter) -> Value {
 /// Супервизор: держит сокет, читает/пишет, ПЕРЕПОДКЛЮЧАЕТСЯ и восстанавливает
 /// состояние (повторный анонс + подписка). Один на Coordinator; ВЫХОДИТ (и
 /// закрывает сокет), когда уронен последний клон Coordinator (сигнал `closed`).
+/// Связь пропала: погасить флаг И РАЗБУДИТЬ ЖДУЩИХ ОТВЕТА RPC.
+///
+/// Без этого каждый RPC, отправленный до обрыва, честно висел все свои десять
+/// секунд — ровно то, что человек видит как «приложение задумалось», хотя ответ
+/// уже физически неоткуда взять: перепосылки RPC при реконнекте нет. Дроп
+/// отправителя = мгновенная ошибка у ждущего.
+///
+/// А вот `host_ack` НЕ трогаем нарочно: анонс супервизор ПЕРЕПОСЫЛАЕТ сам из
+/// `last_announce`, и `hostok` придёт в то же самое ожидание секундой позже.
+/// Разбуди мы его ошибкой — короткое дрожание связи в момент старта раздачи
+/// превратилось бы в «раздача не поднялась» на ровном месте.
+///
+/// Круг обнуляем: бодрая цифра от мёртвого сокета — враньё на экране.
+fn go_offline(sh: &Shared) {
+    let _ = sh.connected.send_replace(false);
+    sh.rtt_ms.store(0, Ordering::Relaxed);
+    sh.pending.lock().clear();
+}
+
 async fn supervisor(sh: Arc<Shared>, mut out_rx: mpsc::UnboundedReceiver<String>) {
     let mut closed = sh.closed.clone();
     // Бэкофф с джиттером: при рестарте координатора тысячи клиентов иначе ломятся
@@ -484,13 +581,13 @@ async fn supervisor(sh: Arc<Shared>, mut out_rx: mpsc::UnboundedReceiver<String>
     let mut backoff = RECONNECT_MIN;
     loop {
         if *closed.borrow() {
-            let _ = sh.connected.send_replace(false);
+            go_offline(&sh);
             return;
         }
         let stream = match tokio::time::timeout(CONNECT_TIMEOUT, tokio_tungstenite::connect_async(&sh.ws_url)).await {
             Ok(Ok((s, _))) => s,
             _ => {
-                let _ = sh.connected.send_replace(false);
+                go_offline(&sh);
                 // Пауза с джиттером — просыпаемся сразу, если клиент уронен.
                 tokio::select! {
                     _ = tokio::time::sleep(with_jitter(backoff)) => {}
@@ -506,16 +603,17 @@ async fn supervisor(sh: Arc<Shared>, mut out_rx: mpsc::UnboundedReceiver<String>
 
         // Восстановление состояния на (пере)подключении. Локи снимаем ДО await
         // (иначе MutexGuard живёт через await → future не Send).
-        let restore_ann = sh.last_announce.lock().unwrap().clone();
+        let restore_ann = sh.last_announce.lock().clone();
         if let Some(ann) = restore_ann {
             if let Ok(mut v) = serde_json::to_value(&ann) {
                 v["t"] = json!("host");
                 let _ = sink.send(Message::Text(v.to_string())).await;
             }
         }
-        let restore_watch = *sh.watching.lock().unwrap();
-        if restore_watch {
-            let _ = sink.send(Message::Text(json!({ "t": "watch" }).to_string())).await;
+        // Подписку восстанавливаем С ТЕМ ЖЕ ФИЛЬТРОМ, с каким подписывались.
+        let restore_watch = sh.watching.lock().clone();
+        if let Some(filter) = restore_watch {
+            let _ = sink.send(Message::Text(watch_frame(&filter).to_string())).await;
         }
 
         // Часы живости: любой входящий кадр (в т.ч. Ping/Pong) — признак жизни.
@@ -574,17 +672,17 @@ async fn supervisor(sh: Arc<Shared>, mut out_rx: mpsc::UnboundedReceiver<String>
                 // (хост при этом мгновенно исчезает из каталога — «прощание» = закрытие).
                 _ = closed.changed() => {
                     let _ = sink.send(Message::Close(None)).await;
-                    let _ = sh.connected.send_replace(false);
+                    go_offline(&sh);
                     return;
                 }
             }
         }
-        let _ = sh.connected.send_replace(false);
+        go_offline(&sh);
         // Сорвались — короткая пауза с джиттером (не синхронно со всеми), затем
         // переподключаемся и восстанавливаем состояние. Реагируем на закрытие сразу.
         tokio::select! {
             _ = tokio::time::sleep(with_jitter(RECONNECT_MIN)) => {}
-            _ = closed.changed() => { let _ = sh.connected.send_replace(false); return; }
+            _ = closed.changed() => { go_offline(&sh); return; }
         }
     }
 }
@@ -635,7 +733,8 @@ fn handle_incoming(sh: &Arc<Shared>, txt: &str) {
         // Ответы RPC по id.
         "code" | "ip" | "resolved" | "connected" => {
             if let Some(id) = v.get("id").and_then(|x| x.as_u64()) {
-                if let Some(tx) = sh.pending.lock().unwrap().remove(&id) {
+                let waiter = sh.pending.lock().remove(&id);
+                if let Some(tx) = waiter {
                     let _ = tx.send(v);
                 }
             }
@@ -643,16 +742,21 @@ fn handle_incoming(sh: &Arc<Shared>, txt: &str) {
         "error" => {
             let id = v.get("id").and_then(|x| x.as_u64()).unwrap_or(0);
             if id != 0 {
-                if let Some(tx) = sh.pending.lock().unwrap().remove(&id) {
+                let waiter = sh.pending.lock().remove(&id);
+                if let Some(tx) = waiter {
                     let _ = tx.send(v);
                 }
-            } else if let Some(tx) = sh.host_ack.lock().unwrap().take() {
-                let reason = v.get("reason").and_then(|r| r.as_str()).unwrap_or("отклонено");
-                let _ = tx.send(Err(Error::Signal(reason.to_string())));
+            } else {
+                let ack = sh.host_ack.lock().take();
+                if let Some(tx) = ack {
+                    let reason = v.get("reason").and_then(|r| r.as_str()).unwrap_or("отклонено");
+                    let _ = tx.send(Err(Error::Signal(reason.to_string())));
+                }
             }
         }
         "hostok" => {
-            if let Some(tx) = sh.host_ack.lock().unwrap().take() {
+            let ack = sh.host_ack.lock().take();
+            if let Some(tx) = ack {
                 let _ = tx.send(Ok(()));
             }
         }
@@ -663,28 +767,24 @@ fn handle_incoming(sh: &Arc<Shared>, txt: &str) {
         }
         "dirfull" => {
             if let Some(hosts) = v.get("hosts").and_then(|h| serde_json::from_value::<Vec<HostInfo>>(h.clone()).ok()) {
-                let mut d = sh.dir.lock().unwrap();
-                d.hosts = hosts;
+                let mut d = sh.dir.lock();
+                d.replace_all(hosts);
                 d.version += 1;
                 let _ = sh.dir_ver.send_replace(d.version);
             }
         }
         "diradd" | "dirupdate" => {
             if let Some(host) = v.get("host").and_then(|h| serde_json::from_value::<HostInfo>(h.clone()).ok()) {
-                let mut d = sh.dir.lock().unwrap();
-                if let Some(e) = d.hosts.iter_mut().find(|x| x.id == host.id) {
-                    *e = host;
-                } else {
-                    d.hosts.push(host);
-                }
+                let mut d = sh.dir.lock();
+                d.upsert(host);
                 d.version += 1;
                 let _ = sh.dir_ver.send_replace(d.version);
             }
         }
         "dirremove" => {
             if let Some(id) = v.get("id").and_then(|x| x.as_str()) {
-                let mut d = sh.dir.lock().unwrap();
-                d.hosts.retain(|x| x.id != id);
+                let mut d = sh.dir.lock();
+                d.remove(id);
                 d.version += 1;
                 let _ = sh.dir_ver.send_replace(d.version);
             }
@@ -696,6 +796,172 @@ fn handle_incoming(sh: &Arc<Shared>, txt: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Клиент, не поднимающий сокет: нужен только ради `Shared` под тесты
+    /// маршрутизации (`handle_incoming` синхронна и сети не требует).
+    fn offline_client() -> Coordinator {
+        Coordinator::new("http://127.0.0.1:1").unwrap()
+    }
+
+    fn host_frame(t: &str, id: &str, name: &str) -> String {
+        json!({ "t": t, "host": { "id": id, "name": name } }).to_string()
+    }
+
+    /// ПОРЯДОК КАТАЛОГА ЗАДАЁТ СЕРВЕР. Дельты не должны его перетасовывать:
+    /// обновление правит карточку НА МЕСТЕ, новые уходят в конец, удаление не
+    /// сдвигает остальных друг относительно друга.
+    #[test]
+    fn directory_deltas_keep_server_order() {
+        let c = offline_client();
+        let sh = &c.shared;
+        handle_incoming(sh, &json!({ "t": "dirfull", "hosts": [
+            { "id": "a", "name": "первый" },
+            { "id": "b", "name": "второй" },
+            { "id": "c", "name": "третий" },
+        ] }).to_string());
+        handle_incoming(sh, &host_frame("dirupdate", "a", "первый-обновлён"));
+        handle_incoming(sh, &host_frame("diradd", "d", "четвёртый"));
+        handle_incoming(sh, &json!({ "t": "dirremove", "id": "b" }).to_string());
+
+        let d = sh.dir.lock();
+        let ids: Vec<&str> = d.hosts.iter().map(|h| h.id.as_str()).collect();
+        assert_eq!(ids, ["a", "c", "d"], "порядок сервера обязан сохраниться");
+        assert_eq!(d.hosts[0].name, "первый-обновлён", "dirupdate правит карточку на месте");
+        // Индекс обязан оставаться согласованным со списком — иначе следующая
+        // дельта запишет чужую карточку поверх соседней.
+        for (i, h) in d.hosts.iter().enumerate() {
+            assert_eq!(d.idx.get(&h.id), Some(&i), "индекс разъехался на {}", h.id);
+        }
+        assert_eq!(d.idx.len(), d.hosts.len(), "в индексе остался мусор от удалённых");
+    }
+
+    /// Сломанный (или враждебный) сервер льёт `diradd` без конца — память клиента
+    /// не должна расти вместе с его фантазией.
+    #[test]
+    fn directory_is_capped() {
+        let c = offline_client();
+        let sh = &c.shared;
+        for i in 0..(MAX_HOSTS + 50) {
+            handle_incoming(sh, &host_frame("diradd", &format!("h{i}"), "x"));
+        }
+        assert_eq!(sh.dir.lock().hosts.len(), MAX_HOSTS, "потолок каталога не держится");
+        // Уже известный хост поверх потолка обязан обновляться (это не рост).
+        handle_incoming(sh, &host_frame("dirupdate", "h0", "обновлён"));
+        assert_eq!(sh.dir.lock().hosts[0].name, "обновлён");
+    }
+
+    /// Ответы RPC разбираются по id, а подтверждение анонса — по `hostok`.
+    #[tokio::test]
+    async fn incoming_routes_answers_to_waiters() {
+        let c = offline_client();
+        let sh = &c.shared;
+        let (tx, rx) = oneshot::channel();
+        sh.pending.lock().insert(7, tx);
+        let (atx, arx) = oneshot::channel();
+        *sh.host_ack.lock() = Some(atx);
+
+        handle_incoming(sh, &json!({ "t": "ip", "id": 7, "addr": "1.2.3.4" }).to_string());
+        handle_incoming(sh, &json!({ "t": "hostok" }).to_string());
+
+        let v = rx.await.expect("ответ не доехал до ждущего RPC");
+        assert_eq!(v.get("addr").unwrap(), "1.2.3.4");
+        assert!(arx.await.unwrap().is_ok(), "hostok обязан подтвердить анонс");
+        assert!(sh.pending.lock().is_empty(), "ожидающий не убран из карты");
+    }
+
+    /// Ошибка БЕЗ id — это отказ по анонсу, а не потерянный ответ RPC.
+    #[tokio::test]
+    async fn incoming_error_without_id_rejects_announce() {
+        let c = offline_client();
+        let (tx, rx) = oneshot::channel();
+        *c.shared.host_ack.lock() = Some(tx);
+        handle_incoming(&c.shared, &json!({ "t": "error", "reason": "код устарел" }).to_string());
+        let err = rx.await.unwrap().unwrap_err().to_string();
+        assert!(err.contains("код устарел"), "причина отказа обязана дойти до хоста: {err}");
+    }
+
+    /// ОБРЫВ БУДИТ ЖДУЩИХ. Пока этого не было, каждый запрос после обрыва висел
+    /// все десять секунд таймаута — это и есть «приложение задумалось».
+    #[tokio::test]
+    async fn disconnect_wakes_pending_rpc_and_clears_rtt() {
+        let c = offline_client();
+        let sh = &c.shared;
+        sh.rtt_ms.store(42, Ordering::Relaxed);
+        let (tx, rx) = oneshot::channel();
+        sh.pending.lock().insert(1, tx);
+        let (atx, mut arx) = oneshot::channel::<Result<()>>();
+        *sh.host_ack.lock() = Some(atx);
+
+        go_offline(sh);
+
+        assert!(rx.await.is_err(), "ждущий RPC обязан очнуться на обрыве, а не досиживать таймаут");
+        assert_eq!(sh.rtt_ms.load(Ordering::Relaxed), 0, "круг от мёртвого сокета обязан обнулиться");
+        assert!(sh.pending.lock().is_empty());
+        // Анонс ждёт дальше: его перепошлёт супервизор на реконнекте, и `hostok`
+        // придёт в это же ожидание (иначе дрожание связи ломало бы старт раздачи).
+        assert!(arx.try_recv().is_err(), "ожидание анонса рвать нельзя — оно переживает реконнект");
+        handle_incoming(sh, &json!({ "t": "hostok" }).to_string());
+        assert!(arx.await.unwrap().is_ok(), "подтверждение после реконнекта обязано дойти");
+    }
+
+    /// В ОФФЛАЙНЕ НЕ БУФЕРИЗУЕМ. Иначе час без связи = сотни протухших кадров,
+    /// которые улетят залпом при реконнекте (и `bye` доедет после нового старта).
+    #[test]
+    fn offline_frames_are_dropped_not_queued() {
+        let c = offline_client();
+        let mut rx = c.shared.out_rx.lock().take().expect("очередь исходящих");
+        c.send_if_live(json!({ "t": "watch" }).to_string());
+        c.send_if_live(json!({ "t": "bye" }).to_string());
+        assert!(rx.try_recv().is_err(), "в оффлайне очередь исходящих обязана остаться пустой");
+        // А на живом сокете кадр обязан уходить (иначе «фикс» — просто заглушка).
+        let _ = c.shared.connected.send_replace(true);
+        c.send_if_live(json!({ "t": "bye" }).to_string());
+        assert_eq!(rx.try_recv().unwrap(), json!({ "t": "bye" }).to_string());
+    }
+
+    /// ПОСЛЕ РЕКОННЕКТА ФИЛЬТР НЕ ТЕРЯЕТСЯ. Восстановление слало голый `watch`,
+    /// и человек, выбравший страну, после первого же обрыва получал весь каталог.
+    /// Сервер тут рвёт первое соединение сразу после подписки.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn reconnect_restores_watch_with_filter() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+
+        tokio::spawn(async move {
+            while let Ok((sock, _)) = listener.accept().await {
+                let tx = tx.clone();
+                tokio::spawn(async move {
+                    let Ok(mut ws) = tokio_tungstenite::accept_async(sock).await else { return };
+                    // Первый текстовый кадр — это подписка; забираем и рвём связь.
+                    while let Some(Ok(msg)) = ws.next().await {
+                        if let Message::Text(t) = msg {
+                            let _ = tx.send(t);
+                            break;
+                        }
+                    }
+                    // Уронив сокет, заставляем клиента переподключиться.
+                });
+            }
+        });
+
+        let c = Coordinator::new(format!("http://127.0.0.1:{port}")).unwrap();
+        let filter = Filter { country: Some("NL".into()), public_only: true };
+        let bg = c.clone();
+        tokio::spawn(async move {
+            let _ = bg.directory(&filter).await;
+        });
+
+        for n in 1..=2 {
+            let frame = tokio::time::timeout(Duration::from_secs(15), rx.recv())
+                .await
+                .unwrap_or_else(|_| panic!("подписка №{n} не пришла — реконнект не восстановил watch"))
+                .expect("канал закрыт");
+            let v: Value = serde_json::from_str(&frame).unwrap();
+            assert_eq!(v["t"], "watch", "кадр №{n} — не подписка: {frame}");
+            assert_eq!(v["country"], "NL", "фильтр по стране потерян в кадре №{n}: {frame}");
+        }
+    }
 
     /// ТИХО умерший сокет обязан приводить к переподключению.
     ///

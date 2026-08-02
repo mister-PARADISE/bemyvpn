@@ -15,23 +15,25 @@ import { ScrollView } from "std-widgets.slint";
 component ProtoIcon inherits Rectangle {
     in property <string> id;
     in property <color> tint: Theme.dim;
-    if id == "noise" || id == "noise-aes": IconShieldLock { width: 100%; height: 100%; tint: root.tint; hole: Theme.card-hi; }
+    if id == "" || id == "noise" || id == "noise-aes": IconShieldLock { width: 100%; height: 100%; tint: root.tint; hole: Theme.card-hi; }
     if id == "noise-obfs": IconMask { width: 100%; height: 100%; tint: root.tint; }
-    // Последняя ветка — ЛОВИТ ВСЁ ОСТАЛЬНОЕ, а не только "plain"/"": ровно так
-    // же поступает proto_name в main.rs («Без шифра» на всё незнакомое). Значок
-    // теперь стоит в КАЖДОЙ строке списка, и пустое место на месте незнакомого
-    // протокола читалось бы как «тут ничего нет», а не как «мы это не опознали».
-    if id != "noise" && id != "noise-aes" && id != "noise-obfs": IconShieldSlash { width: 100%; height: 100%; tint: root.tint; hole: Theme.card-hi; }
+    // ПУСТОЙ протокол — это «Обычный» (щит с замком), а не «без шифра»: хост
+    // просто не объявил имя, канал всё равно шифрованный. Раньше он попадал в
+    // последнюю ветку и рисовался перечёркнутым щитом — самый опасный из
+    // возможных обманов. Последняя ветка ловит всё остальное незнакомое: пустое
+    // место читалось бы как «тут ничего нет», а не как «мы это не опознали».
+    if id != "" && id != "noise" && id != "noise-aes" && id != "noise-obfs": IconShieldSlash { width: 100%; height: 100%; tint: root.tint; hole: Theme.card-hi; }
 }
 
 // Карточка хоста: свёрнутый вид + раскрытие (детали + Подключить).
 component HostCard inherits Rectangle {
     in property <HostRow> h;
-    in property <int> index;
     in property <bool> expanded: false;
     in-out property <string> guest-password;
     callback toggle();
-    callback connect(int);
+    // ID хоста, а не номер строки: список пересобирается целиком на каждое
+    // обновление каталога, и номер к моменту нажатия мог указывать на другой хост.
+    callback connect(string);
     callback copy-text(string);
     border-radius: 16px;
     background: root.expanded ? Theme.card-hi : Theme.card;
@@ -155,7 +157,7 @@ component HostCard inherits Rectangle {
                 CalmButton {
                     title: "Подключить";
                     enabled: h.usable;
-                    clicked => { root.connect(root.index); }
+                    clicked => { root.connect(root.h.id); }
                 }
             }
         }
@@ -186,10 +188,13 @@ export component VpnPage inherits Rectangle {
     in property <string> update-error;
     in-out property <string> code;
     in-out property <string> guest-password;
-    property <int> expanded: -1;
-    callback connect(int);
-    // Карточку раскрыли — можно замерить отклик до этого хоста.
-    callback expanded-host(int);
+    // Раскрытая карточка помнится ПО ID, а не по номеру строки. Номер переживал
+    // пересборку списка: состав менялся — и раскрытой оказывалась карточка
+    // другого хоста, а замер отклика продолжал мерить прежний.
+    property <string> expanded: "";
+    callback connect(string);
+    // Карточку раскрыли — можно замерить отклик до этого хоста ("" = свернули).
+    callback expanded-host(string);
     callback connect-code();
     callback disconnect();
     callback paste();
@@ -473,23 +478,22 @@ export component VpnPage inherits Rectangle {
                     color: Theme.dim; font-size: 14px;
                     horizontal-alignment: center; wrap: word-wrap;
                 }
-                for h[i] in root.hosts: HostCard {
+                for h in root.hosts: HostCard {
                     h: h;
-                    index: i;
                     // Данные не живые — показываем это САМИМ СПИСКОМ: приглушённое
                     // читается как «неактуально» мгновенно и без слов.
                     opacity: root.coord-state == 2 ? 0.55 : 1.0;
                     animate opacity { duration: 400ms; easing: ease-in-out; }
-                    expanded: root.expanded == i;
+                    expanded: root.expanded == h.id;
                     guest-password <=> root.guest-password;
                     toggle() => {
-                        root.expanded = (root.expanded == i) ? -1 : i;
-                        // Шлём ВСЕГДА, в том числе -1 при сворачивании: замер отклика
+                        root.expanded = (root.expanded == h.id) ? "" : h.id;
+                        // Шлём ВСЕГДА, в том числе "" при сворачивании: замер отклика
                         // идёт циклом, пока карточка открыта, и без сигнала о закрытии
                         // его нечем было бы остановить.
                         root.expanded-host(root.expanded);
                     }
-                    connect(idx) => { root.connect(idx); }
+                    connect(id) => { root.connect(id); }
                     copy-text(t) => { root.copy-text(t); }
                 }
             }

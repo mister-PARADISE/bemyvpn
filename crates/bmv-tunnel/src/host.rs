@@ -49,10 +49,35 @@ const UDP_BUF_FROM_SERVER: usize = 32 * 1024;
 /// ponytail: лимит по числу соединений, а не по памяти; если понадобится точнее —
 /// считать байты в пуле буферов, а не штуки.
 fn max_conns() -> usize {
-    std::env::var("BMV_MAX_CONNS")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(512)
+    static V: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *V.get_or_init(|| num_env("BMV_MAX_CONNS", 512))
+}
+
+/// ОБЩИЙ потолок проксируемых соединений НА ВЕСЬ ХОСТ (все гости вместе).
+/// Настраивается env `BMV_MAX_CONNS_TOTAL` (0 = без лимита).
+///
+/// Пер-гостевой лимит сам по себе ничего не гарантирует: он считается ВНУТРИ
+/// одной сессии, поэтому при `max_guests=128` потолок был 128 × 512 = 65536
+/// дескрипторов — при системном лимите 1024 на Linux и 256 у GUI-приложения на
+/// macOS. А исчерпание дескрипторов бьёт не только по сессиям: рвётся сокет к
+/// координатору, и хост целиком пропадает из каталога.
+///
+/// 1024 — заведомо ниже любого разумного `ulimit -n`, с запасом на служебные
+/// сокеты (координатор, хаб, STUN). Кому мало — поднимают лимит ОС и эту
+/// переменную осознанно.
+/// ponytail: одно число вместо чтения RLIMIT_NOFILE; если понадобится точнее —
+/// брать мягкий лимит ОС и делить, но это тянет libc в крейт.
+fn max_conns_total() -> usize {
+    static V: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *V.get_or_init(|| num_env("BMV_MAX_CONNS_TOTAL", 1024))
+}
+
+/// Живые проксируемые соединения ВСЕХ гостей этого процесса.
+static TOTAL_CONNS: AtomicUsize = AtomicUsize::new(0);
+
+/// Числовая настройка из окружения (кривое значение → дефолт).
+fn num_env(key: &str, default: usize) -> usize {
+    std::env::var(key).ok().and_then(|s| s.parse().ok()).unwrap_or(default)
 }
 
 /// SSRF-ЗАЩИТА ХОСТА. Гость сам задаёт адрес назначения (это его IP-пакеты),
@@ -67,9 +92,16 @@ fn dst_allowed(dst: &SocketAddr) -> bool {
 }
 
 /// Отдал ли хозяин хоста доступ к своей приватной сети СОЗНАТЕЛЬНО.
-/// Только «1»/«true»: иначе `BMV_HOST_ALLOW_PRIVATE=0` открывало бы LAN.
+/// Читается ОДИН раз: за время жизни процесса окружение не меняется, а звалось
+/// это на КАЖДОЕ новое соединение гостя (см. `env_settings_are_read_once`).
 fn allow_private() -> bool {
-    std::env::var("BMV_HOST_ALLOW_PRIVATE").map(|v| v == "1" || v == "true").unwrap_or(false)
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| yes(std::env::var("BMV_HOST_ALLOW_PRIVATE").ok()))
+}
+
+/// «Да» — это только «1»/«true»: иначе `BMV_HOST_ALLOW_PRIVATE=0` открывало бы LAN.
+fn yes(v: Option<String>) -> bool {
+    matches!(v.as_deref(), Some("1") | Some("true"))
 }
 
 /// Само правило, без чтения окружения.
@@ -186,22 +218,62 @@ pub async fn run_host(link: Box<dyn Link>) -> Result<()> {
     Ok(())
 }
 
-/// Считает живые проксируемые соединения гостя; на Drop уменьшает счётчик.
+/// Считает живые проксируемые соединения гостя И общий счётчик хоста; на Drop
+/// возвращает место обоим (в т.ч. при панике/отмене задачи моста).
 struct ConnGuard(Arc<AtomicUsize>);
 impl Drop for ConnGuard {
     fn drop(&mut self) {
         self.0.fetch_sub(1, Ordering::Relaxed);
+        TOTAL_CONNS.fetch_sub(1, Ordering::Relaxed);
     }
 }
 
-/// Принять новое соединение, если гость не превысил лимит. None → отказ (лимит).
+/// Принять новое соединение, если не превышен ни пер-гостевой, ни ОБЩИЙ лимит.
+/// None → отказ.
 fn admit_conn(conns: &Arc<AtomicUsize>) -> Option<ConnGuard> {
-    let cap = max_conns();
+    let (cap, total_cap) = (max_conns(), max_conns_total());
+    if total_cap > 0 && TOTAL_CONNS.fetch_add(1, Ordering::Relaxed) >= total_cap {
+        TOTAL_CONNS.fetch_sub(1, Ordering::Relaxed);
+        tracing::warn!(total_cap, "общий лимит соединений хоста достигнут — поток отклонён");
+        return None;
+    }
     if cap > 0 && conns.fetch_add(1, Ordering::Relaxed) >= cap {
         conns.fetch_sub(1, Ordering::Relaxed);
-        None
-    } else {
-        Some(ConnGuard(conns.clone()))
+        TOTAL_CONNS.fetch_sub(1, Ordering::Relaxed);
+        return None;
+    }
+    Some(ConnGuard(conns.clone()))
+}
+
+/// КУДА МОЖНО СЛАТЬ ВСТРЕЧНЫЙ PUNCH. Адреса ждущего гостя хост узнаёт С ЕГО СЛОВ
+/// (через координатор) и бьёт в них 48 пачками UDP — то есть чужими руками можно
+/// было сканировать LAN хозяина и облачные метаданные.
+///
+/// Правило то же, что для трафика (`dst_allowed_with`), с ОДНИМ послаблением:
+/// приватные адреса разрешены. Гость в той же локальной сети — рабочий сценарий
+/// (ради него в кандидатах и есть `local_ip()`), а вот петля, link-local
+/// (169.254.169.254 — метаданные облака), мультикаст и зарезервированные
+/// диапазоны точками входа гостя не бывают никогда.
+pub fn punch_target_allowed(dst: &SocketAddr) -> bool {
+    if dst.port() == 0 {
+        return false; // пробивать некуда
+    }
+    // Публичный адрес — обычным правилом (оно же режет всё внутреннее).
+    if dst_allowed_with(dst, false) {
+        return true;
+    }
+    // Осталось разрешить РОВНО локальные сети — и ничего больше.
+    match dst.ip() {
+        IpAddr::V4(v4) => {
+            let o = v4.octets();
+            v4.is_private() || (o[0] == 100 && (o[1] & 0xC0) == 64) // 10/8,172.16/12,192.168/16 + CGNAT
+        }
+        IpAddr::V6(v6) => match embedded_v4(v6) {
+            // IPv4 внутри IPv6 судим по правилам IPv4 (иначе фильтр обходится
+            // записью адреса в другой форме — см. тесты SSRF).
+            Some(v4) => punch_target_allowed(&SocketAddr::new(v4.into(), dst.port())),
+            None => (v6.segments()[0] & 0xfe00) == 0xfc00, // ULA fc00::/7
+        },
     }
 }
 
@@ -261,7 +333,16 @@ async fn bridge_tcp(mut guest: ipstack::IpStackTcpStream, dst: SocketAddr) {
     let mut server = match tokio::time::timeout(CONNECT_TIMEOUT, TcpStream::connect(dst)).await {
         Ok(Ok(s)) => s,
         Ok(Err(e)) => {
-            tracing::debug!(%dst, "TCP connect не удался: {e}");
+            // Кончились дескрипторы — это не «сайт не отвечает», а отказ ВСЕГО
+            // хоста: следом рвётся и сокет к координатору. Такое обязано быть
+            // видно в журнале, а не тонуть среди обычных отказов соединения.
+            // EMFILE=24 (лимит процесса), ENFILE=23 (лимит системы) — на Linux и
+            // macOS номера совпадают.
+            if matches!(e.raw_os_error(), Some(23) | Some(24)) {
+                tracing::warn!(%dst, "КОНЧИЛИСЬ ДЕСКРИПТОРЫ ({e}) — поднимите ulimit -n или BMV_MAX_CONNS_TOTAL");
+            } else {
+                tracing::debug!(%dst, "TCP connect не удался: {e}");
+            }
             return;
         }
         Err(_) => {
@@ -391,22 +472,99 @@ mod tests {
     }
 
     /// Явное разрешение приватных адресов — осознанный выбор хозяина хоста.
-    /// Тест держит семантику переменной: включает ТОЛЬКО «1»/«true», а не любое
-    /// непустое значение (иначе `BMV_HOST_ALLOW_PRIVATE=0` открывало бы LAN).
+    /// Тест держит семантику значения: включает ТОЛЬКО «1»/«true», а не любое
+    /// непустое (иначе `BMV_HOST_ALLOW_PRIVATE=0` открывало бы LAN).
+    ///
+    /// Разбор проверяется на ЧИСТОЙ функции, без окружения: переменные окружения
+    /// глобальны на процесс, а тесты идут параллельно — прежняя версия этого теста
+    /// на секунду открывала LAN всему бинарю тестов.
     #[test]
     fn ssrf_opt_in_requires_explicit_yes() {
-        // Разбор переменной — единственный тест, трогающий окружение (оно общее на
-        // процесс). Остальные зовут чистое правило, поэтому параллельно не дерутся.
         for (val, expect) in [("1", true), ("true", true), ("0", false), ("нет", false), ("", false)] {
-            std::env::set_var("BMV_HOST_ALLOW_PRIVATE", val);
-            assert_eq!(super::allow_private(), expect, "значение «{val}» разобрано неверно");
+            assert_eq!(super::yes(Some(val.into())), expect, "значение «{val}» разобрано неверно");
         }
-        std::env::remove_var("BMV_HOST_ALLOW_PRIVATE");
-        assert!(!super::allow_private(), "без переменной доступ в LAN обязан быть закрыт");
+        assert!(!super::yes(None), "без переменной доступ в LAN обязан быть закрыт");
 
         // И само правило: включённый флаг открывает приватку, выключенный — нет.
         assert!(dst_allowed_with(&a("192.168.1.1:80"), true), "явное согласие обязано открывать LAN");
         assert!(!dst_allowed_with(&a("192.168.1.1:80"), false));
+    }
+
+    /// НАСТРОЙКИ ЧИТАЮТСЯ ОДИН РАЗ, А НЕ НА КАЖДОЕ СОЕДИНЕНИЕ. `env::var` — это
+    /// поиск по таблице окружения с блокировкой; на горячем пути (новое соединение
+    /// гостя) он не нужен: переменная за время работы процесса не меняется, и
+    /// комментарий рядом с фильтром это давно утверждал, а код делал иначе.
+    #[test]
+    fn env_settings_are_read_once() {
+        let first = super::allow_private();
+        assert!(!first, "в тестах переменная не задана");
+        std::env::set_var("BMV_HOST_ALLOW_PRIVATE", "1");
+        let second = super::allow_private();
+        std::env::remove_var("BMV_HOST_ALLOW_PRIVATE");
+        assert_eq!(second, first, "значение перечитано из окружения на ходу");
+    }
+
+    /// ЛИМИТ СОЕДИНЕНИЙ ОБЩИЙ НА ХОСТ, А НЕ НА ГОСТЯ. Пер-гостевой потолок (512)
+    /// считался внутри одной сессии, поэтому при 128 гостях потолок был 65536
+    /// дескрипторов при системном лимите 1024 (а на macOS-GUI и вовсе 256). Их
+    /// исчерпание валит не только сессии: рвётся и связь с координатором, то есть
+    /// хост пропадает из каталога целиком.
+    #[test]
+    fn conn_limit_is_global_not_per_guest() {
+        let guests: Vec<_> = (0..3).map(|_| std::sync::Arc::new(super::AtomicUsize::new(0))).collect();
+        let cap = super::max_conns_total();
+        let per_guest = super::max_conns();
+        assert!(cap > 0 && per_guest > 0, "лимиты должны быть заданы");
+
+        // Набираем соединения, пока пускают, — по всем гостям сразу.
+        let mut held = Vec::new();
+        'outer: for _ in 0..per_guest {
+            for g in &guests {
+                match super::admit_conn(g) {
+                    Some(guard) => held.push(guard),
+                    None => break 'outer,
+                }
+            }
+        }
+        assert!(
+            held.len() <= cap,
+            "выдано {} соединений при общем потолке {cap} — потолок считается на гостя",
+            held.len()
+        );
+        // Место освобождается по мере закрытия соединений (иначе хост «залипал» бы
+        // на потолке до перезапуска).
+        held.truncate(held.len().saturating_sub(1));
+        assert!(super::admit_conn(&guests[0]).is_some(), "освободившееся место не вернулось");
+    }
+
+    /// ЦЕЛИ ВСТРЕЧНОГО ПРОБИТИЯ. Адреса ждущего гостя приходят хосту С ЕГО СЛОВ
+    /// (через координатор), и хост шлёт туда 48 пачек UDP с шагом 250мс. Без
+    /// фильтра это сканер чужой LAN и облачных метаданных, оплаченный чужой
+    /// машиной. При этом гость в ТОЙ ЖЕ локальной сети — рабочий сценарий (потому
+    /// в кандидатах и есть local_ip), и приватку резать нельзя.
+    #[test]
+    fn punch_targets_exclude_internal_but_keep_lan() {
+        use super::punch_target_allowed as ok;
+        // Свой же хост, чужие админки, метаданные облака, мультикаст — нельзя.
+        assert!(!ok(&a("127.0.0.1:40000")), "петля");
+        assert!(!ok(&a("169.254.169.254:80")), "метаданные облака");
+        assert!(!ok(&a("169.254.1.1:40000")), "link-local");
+        assert!(!ok(&a("224.0.0.1:40000")), "мультикаст");
+        assert!(!ok(&a("255.255.255.255:40000")), "бродкаст");
+        assert!(!ok(&a("0.0.0.0:40000")));
+        assert!(!ok(&a("240.0.0.1:40000")), "зарезервированный 240/4");
+        assert!(!ok(&a("8.8.8.8:0")), "нулевой порт — пробивать некуда");
+        assert!(!ok(&a("[::1]:40000")), "v6 петля");
+        assert!(!ok(&a("[::ffff:127.0.0.1]:40000")), "петля в записи v4-mapped");
+        assert!(!ok(&a("[64:ff9b::a9fe:a9fe]:80")), "метаданные через NAT64");
+        // Публичный интернет и ЛОКАЛЬНАЯ СЕТЬ — можно (иначе гость из той же
+        // квартиры/офиса перестал бы подключаться).
+        assert!(ok(&a("45.11.22.33:40000")), "публичный адрес зря отрезан");
+        assert!(ok(&a("192.168.1.5:40000")), "гость в той же LAN — рабочий случай");
+        assert!(ok(&a("10.1.2.3:40000")), "LAN 10/8 зря отрезана");
+        assert!(ok(&a("172.16.5.5:40000")), "LAN 172.16/12 зря отрезана");
+        assert!(ok(&a("100.64.0.1:40000")), "CGNAT — обычный мобильный гость");
+        assert!(ok(&a("[fc00::1]:40000")), "ULA — та же LAN по IPv6");
     }
 
     /// Разбор вложенного IPv4 — отдельно от политики: если он ошибётся, фильтр

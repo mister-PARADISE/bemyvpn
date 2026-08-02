@@ -80,21 +80,28 @@ impl IpStackUdpStream {
         self.stream_sender.clone()
     }
 
-    fn create_rev_packet(&self, ttl: u8, mut payload: Vec<u8>) -> std::io::Result<NetworkPacket> {
+    /// `None` — датаграмма не помещается в MTU и должна быть ПОТЕРЯНА целиком.
+    /// BeMyVPN fork: раньше здесь стоял `payload.truncate(..)`. Обрезанный ответ
+    /// >MTU (DNS с EDNS0, QUIC Initial) приходит приложению без флага TC — то
+    /// есть как валидный, но битый. Это хуже честной потери: приложение не
+    /// повторит запрос, а споткнётся на разборе. UDP теряет датаграммы штатно.
+    fn create_rev_packet(&self, ttl: u8, payload: Vec<u8>) -> std::io::Result<Option<NetworkPacket>> {
         const UHS: usize = 8; // udp header size is 8
         match (self.dst_addr.ip(), self.src_addr.ip()) {
             (std::net::IpAddr::V4(dst), std::net::IpAddr::V4(src)) => {
                 let mut ip_h = Ipv4Header::new(0, ttl, IpNumber::UDP, dst.octets(), src.octets()).map_err(IpStackError::from)?;
                 let line_buffer = self.mtu.saturating_sub((ip_h.header_len() + UHS) as u16);
-                payload.truncate(line_buffer as usize);
+                if payload.len() > line_buffer as usize {
+                    return Ok(None);
+                }
                 ip_h.set_payload_len(payload.len() + UHS).map_err(IpStackError::from)?;
                 let udp_header = UdpHeader::with_ipv4_checksum(self.dst_addr.port(), self.src_addr.port(), &ip_h, &payload)
                     .map_err(IpStackError::from)?;
-                Ok(NetworkPacket {
+                Ok(Some(NetworkPacket {
                     ip: IpHeader::Ipv4(ip_h),
                     transport: TransportHeader::Udp(udp_header),
                     payload: Some(payload),
-                })
+                }))
             }
             (std::net::IpAddr::V6(dst), std::net::IpAddr::V6(src)) => {
                 let mut ip_h = Ipv6Header {
@@ -107,17 +114,17 @@ impl IpStackUdpStream {
                     destination: src.octets(),
                 };
                 let line_buffer = self.mtu.saturating_sub((ip_h.header_len() + UHS) as u16);
-
-                payload.truncate(line_buffer as usize);
-
+                if payload.len() > line_buffer as usize {
+                    return Ok(None);
+                }
                 ip_h.payload_length = (payload.len() + UHS) as u16;
                 let udp_header = UdpHeader::with_ipv6_checksum(self.dst_addr.port(), self.src_addr.port(), &ip_h, &payload)
                     .map_err(IpStackError::from)?;
-                Ok(NetworkPacket {
+                Ok(Some(NetworkPacket {
                     ip: IpHeader::Ipv6(ip_h),
                     transport: TransportHeader::Udp(udp_header),
                     payload: Some(payload),
-                })
+                }))
             }
             _ => unreachable!(),
         }
@@ -191,7 +198,13 @@ impl AsyncRead for IpStackUdpStream {
 impl AsyncWrite for IpStackUdpStream {
     fn poll_write(mut self: Pin<&mut Self>, _cx: &mut std::task::Context<'_>, buf: &[u8]) -> std::task::Poll<std::io::Result<usize>> {
         self.reset_timeout();
-        let packet = self.create_rev_packet(TTL, buf.to_vec())?;
+        let Some(packet) = self.create_rev_packet(TTL, buf.to_vec())? else {
+            // Датаграмма не влезает в MTU — теряем ЦЕЛИКОМ, но приложению
+            // рапортуем успех: ошибка записи убила бы весь UDP-поток, хотя
+            // потеря одной датаграммы для UDP — норма.
+            log::debug!("UDP datagram of {} bytes exceeds mtu {}, dropping", buf.len(), self.mtu);
+            return std::task::Poll::Ready(Ok(buf.len()));
+        };
         let payload_len = packet.payload.as_ref().map(|p| p.len()).unwrap_or(0);
         self.up_pkt_sender.send(packet).or(Err(std::io::ErrorKind::UnexpectedEof))?;
         std::task::Poll::Ready(Ok(payload_len))
@@ -211,5 +224,34 @@ impl Drop for IpStackUdpStream {
         if let Some(messenger) = self.destroy_messenger.take() {
             let _ = messenger.send(());
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::AsyncWriteExt;
+
+    /// BeMyVPN fork: датаграмма больше MTU ДОЛЖНА пропадать целиком.
+    /// Раньше её обрезали (`payload.truncate`) и отправляли огрызок без флага
+    /// TC — для приложения это БИТЫЙ ответ (DNS с EDNS0, QUIC Initial), хуже
+    /// честной потери: retry не будет, разбор упадёт.
+    #[tokio::test]
+    async fn oversized_datagram_is_dropped_not_truncated() {
+        let (tx, mut rx) = mpsc::unbounded_channel::<NetworkPacket>();
+        let src: SocketAddr = "10.0.0.2:5353".parse().unwrap();
+        let dst: SocketAddr = "1.1.1.1:53".parse().unwrap();
+        let mut s = IpStackUdpStream::new(src, dst, Vec::new(), tx, 1280, Duration::from_secs(5), None);
+
+        // 1280 - 20 (IPv4) - 8 (UDP) = 1252 — предельный размер, проходит целиком.
+        let n = s.write(&vec![7u8; 1252]).await.unwrap();
+        assert_eq!(n, 1252);
+        let pkt = rx.try_recv().expect("датаграмма по размеру обязана уйти");
+        assert_eq!(pkt.payload.unwrap().len(), 1252);
+
+        // На байт больше — на провод не должно уйти НИЧЕГО.
+        let n = s.write(&vec![7u8; 1253]).await.unwrap();
+        assert_eq!(n, 1253, "для приложения запись принята: потеря датаграммы — штатная семантика UDP");
+        assert!(rx.try_recv().is_err(), "ушёл обрезанный пакет — приложение получит битый ответ");
     }
 }

@@ -14,6 +14,13 @@ bmv-tunnel = { path = "../bmv-tunnel" }
 # Только ради `bmv_common::command` — единой точки порождения процессов
 # (на Windows она гасит мигающее окно консоли у route/netsh).
 bmv-common = { path = "../bmv-common" }
+# Гостевой перебор кандидатов и дерево задач раздачи (tunnel.rs / hosting.rs):
+# они одинаковы для GUI и терминала, поэтому живут здесь, а не в бинаре.
+bmv-core = { path = "../bmv-core" }
+bmv-config = { path = "../bmv-config" }
+bmv-signal = { path = "../bmv-signal" }
+# Тип хаба (UdpHub), который возвращает host_bind_announce и держит раздача.
+bmv-net = { path = "../bmv-net" }
 # Для TunDevice-адаптера (AsyncRead/AsyncWrite поверх tun::AsyncDevice: снятие
 # 4-байтового utun-заголовка на macOS).
 tokio = { workspace = true }

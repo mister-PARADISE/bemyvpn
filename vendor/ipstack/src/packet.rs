@@ -221,4 +221,90 @@ pub fn tcp_header_flags(inner: &TcpHeader) -> u8 {
 // BeMyVPN fork: удалён criterion-бенчмарк `mod tests` — он требовал dev-dep
 // `criterion`, которого нет в Cargo.toml форка, и потому ЛОМАЛ `cargo test -p
 // ipstack` целиком (единственный «тест» в модуле — обёртка запуска бенча, не
-// юнит-тест). Настоящие тесты стека живут в stream/tcb.rs.
+// юнит-тест).
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use etherparse::{IpNumber, TcpHeader};
+
+    /// Собрать валидный IPv4+TCP пакет. `ihl_options` — сколько байт «опций»
+    /// дописать в IP-заголовок (кратно 4), чтобы проверить разбор IHL > 5.
+    fn ipv4_tcp(payload: &[u8], ihl_options: usize) -> Vec<u8> {
+        assert!(ihl_options % 4 == 0);
+        let mut tcp = TcpHeader::new(1234, 80, 1000, 4096);
+        tcp.ack = true;
+        let ip_len = 20 + ihl_options;
+        let mut ip = Ipv4Header::new(0, 64, IpNumber::TCP, [10, 0, 0, 1], [1, 1, 1, 1]).unwrap();
+        ip.set_payload_len(tcp.header_len() + payload.len()).unwrap();
+
+        let mut buf = Vec::new();
+        ip.write(&mut buf).unwrap();
+        if ihl_options > 0 {
+            // Заголовок длиннее: правим IHL и total_length руками, опции — NOP (0x01).
+            buf[0] = 0x40 | ((ip_len / 4) as u8);
+            let total = (ip_len + tcp.header_len() + payload.len()) as u16;
+            buf[2..4].copy_from_slice(&total.to_be_bytes());
+            buf.splice(20..20, std::iter::repeat_n(0x01u8, ihl_options));
+        }
+        tcp.write(&mut buf).unwrap();
+        buf.extend_from_slice(payload);
+        buf
+    }
+
+    #[test]
+    fn parse_rejects_truncated_input() {
+        assert!(NetworkPacket::parse(&[]).is_err(), "пустой буфер");
+        assert!(NetworkPacket::parse(&[0x45]).is_err(), "один байт");
+        let pkt = ipv4_tcp(b"hello", 0);
+        // Обрезаем по-разному: до конца IP-заголовка, до середины TCP-заголовка,
+        // до середины payload — ни один вариант не должен паниковать.
+        for cut in [1, 10, 19, 25, 39, pkt.len() - 1] {
+            let r = NetworkPacket::parse(&pkt[..cut]);
+            assert!(r.is_err(), "обрезка до {cut} байт должна быть отвергнута");
+        }
+    }
+
+    #[test]
+    fn parse_handles_ipv4_options() {
+        // IHL = 6 (24 байта): payload обязан отсчитываться от КОНЦА опций,
+        // иначе первые байты TCP-заголовка уедут в данные.
+        let pkt = ipv4_tcp(b"hello", 4);
+        let p = NetworkPacket::parse(&pkt).unwrap();
+        assert_eq!(p.src_addr().port(), 1234);
+        assert_eq!(p.dst_addr().port(), 80);
+        assert_eq!(p.payload.as_deref(), Some(&b"hello"[..]));
+    }
+
+    #[test]
+    fn parse_rejects_declared_length_beyond_buffer() {
+        let mut pkt = ipv4_tcp(b"hello", 0);
+        let total = u16::from_be_bytes([pkt[2], pkt[3]]);
+        pkt[2..4].copy_from_slice(&(total + 100).to_be_bytes()); // объявили больше, чем есть
+        assert!(NetworkPacket::parse(&pkt).is_err(), "объявленная длина > реальной должна отвергаться");
+    }
+
+    #[test]
+    fn parse_ignores_trailing_garbage() {
+        // Объявленная длина МЕНЬШЕ буфера: хвост (склейка двух пакетов в одном
+        // чтении устройства) не должен попасть в TCP-поток как данные.
+        let mut pkt = ipv4_tcp(b"hello", 0);
+        pkt.extend_from_slice(&[0xAA; 64]);
+        let p = NetworkPacket::parse(&pkt).unwrap();
+        assert_eq!(p.payload.as_deref(), Some(&b"hello"[..]), "мусор за total_length утёк в данные");
+    }
+
+    #[test]
+    fn parse_rejects_tcp_data_offset_past_end() {
+        let mut pkt = ipv4_tcp(b"", 0);
+        pkt[32] = 0xF0; // data offset = 15 (60 байт), а TCP-заголовка всего 20
+        assert!(NetworkPacket::parse(&pkt).is_err(), "data offset за концом пакета");
+    }
+
+    #[test]
+    fn parse_rejects_ihl_below_minimum() {
+        let mut pkt = ipv4_tcp(b"hello", 0);
+        pkt[0] = 0x44; // IHL = 4 → заголовок «16 байт», меньше минимума
+        assert!(NetworkPacket::parse(&pkt).is_err(), "IHL < 5 должен отвергаться");
+    }
+}

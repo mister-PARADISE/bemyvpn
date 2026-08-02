@@ -136,6 +136,10 @@ struct App {
     coord: String,
     coord_ok: Option<bool>,
     coord_ping: u32,
+    /// Отклик до ВЫБРАННОГО хоста: (id, Some(мс) — ответил · None — молчит).
+    /// Ключ по id, а не по номеру строки: список пересобирается фоном, и цифра
+    /// от прежнего хоста осталась бы висеть под новым.
+    host_ping: Option<(String, Option<u32>)>,
     my_ip: String,
     srv: SrvState,
     srv_cfg: bmv_config::ServerConfig,
@@ -158,6 +162,10 @@ type Shared = Arc<Mutex<App>>;
 type EngineSlot = Arc<Mutex<Arc<BmvEngine>>>;
 /// Живой движок раздачи — для host_set_* на ходу.
 type HostEngine = Arc<Mutex<Option<Arc<BmvEngine>>>>;
+/// Задача гостя + её «стоп». Отдельно от JoinHandle, потому что просто оборвать
+/// задачу нельзя: перед уходом гость обязан попрощаться (BYE), иначе хост держит
+/// его в счётчике ещё 8 секунд до keepalive-таймаута.
+type VpnTask = Option<(tokio::task::JoinHandle<()>, Arc<tokio::sync::Notify>)>;
 
 pub async fn run(config: Config, seed: Seed) -> Result<(), Box<dyn std::error::Error>> {
     let engine: EngineSlot = Arc::new(Mutex::new(Arc::new(BmvEngine::from_config(config.clone()))));
@@ -205,6 +213,7 @@ pub async fn run(config: Config, seed: Seed) -> Result<(), Box<dyn std::error::E
         coord,
         coord_ok: None,
         coord_ping: 0,
+        host_ping: None,
         my_ip: String::new(),
         srv: SrvState::Off,
         srv_cfg: config.server.clone(),
@@ -234,7 +243,7 @@ pub async fn run(config: Config, seed: Seed) -> Result<(), Box<dyn std::error::E
     // Код хоста запрашиваем сразу, чтобы был виден во вкладке «Хост» (как iOS onAppear).
     ensure_host_code(&engine, &app);
 
-    let mut vpn_task: Option<tokio::task::JoinHandle<()>> = None;
+    let mut vpn_task: VpnTask = None;
     let mut host_task: Option<tokio::task::JoinHandle<()>> = None;
     let mut srv_task: Option<tokio::task::JoinHandle<()>> = None;
 
@@ -251,10 +260,17 @@ pub async fn run(config: Config, seed: Seed) -> Result<(), Box<dyn std::error::E
     let mut events = EventStream::new();
     let mut tick = tokio::time::interval(Duration::from_millis(250));
 
+    // Ошибку отрисовки НЕЛЬЗЯ отдавать через `?` прямо отсюда: выход мимо
+    // `ratatui::restore()` оставляет терминал в альтернативном буфере с выключенным
+    // эхом — человек получает «сломанный» терминал и вслепую набирает `reset`.
+    let mut draw_err = None;
     loop {
         {
             let a = app.lock().unwrap();
-            terminal.draw(|f| ui(f, &a))?;
+            if let Err(e) = terminal.draw(|f| ui(f, &a)) {
+                draw_err = Some(e);
+                break;
+            }
             if a.quit {
                 break;
             }
@@ -271,8 +287,16 @@ pub async fn run(config: Config, seed: Seed) -> Result<(), Box<dyn std::error::E
         }
     }
 
-    // Красивый выход: рвём задачи → Drop снимает TUN и откатывает маршруты.
-    for h in [vpn_task.take(), host_task.take(), srv_task.take()].into_iter().flatten() {
+    // Красивый выход. Гостю сначала даём попрощаться (BYE) — иначе хост держит
+    // нас в счётчике ещё 8 секунд, — и только потом рвём остальное: Drop снимает
+    // TUN и откатывает маршруты.
+    if let Some((mut h, stop)) = vpn_task.take() {
+        stop.notify_waiters();
+        if tokio::time::timeout(Duration::from_secs(3), &mut h).await.is_err() {
+            h.abort();
+        }
+    }
+    for h in [host_task.take(), srv_task.take()].into_iter().flatten() {
         h.abort();
     }
     // Снять запись хоста из каталога (bye), если раздавали. Гард мьютекса НЕ
@@ -283,6 +307,9 @@ pub async fn run(config: Config, seed: Seed) -> Result<(), Box<dyn std::error::E
     }
     tokio::time::sleep(Duration::from_millis(150)).await;
     ratatui::restore();
+    if let Some(e) = draw_err {
+        return Err(e.into());
+    }
     Ok(())
 }
 
@@ -294,7 +321,7 @@ fn handle_key(
     engine: &EngineSlot,
     app: &Shared,
     host_engine: &HostEngine,
-    vpn_task: &mut Option<tokio::task::JoinHandle<()>>,
+    vpn_task: &mut VpnTask,
     host_task: &mut Option<tokio::task::JoinHandle<()>>,
     srv_task: &mut Option<tokio::task::JoinHandle<()>>,
 ) {
@@ -329,7 +356,7 @@ fn handle_input_key(
     engine: &EngineSlot,
     app: &Shared,
     host_engine: &HostEngine,
-    vpn_task: &mut Option<tokio::task::JoinHandle<()>>,
+    vpn_task: &mut VpnTask,
 ) {
     match code {
         KeyCode::Esc => {
@@ -379,15 +406,15 @@ fn handle_input_key(
                     app.lock().unwrap().toast("Пароль обновлён");
                     persist(engine, app);
                 }
-                InputKind::Coordinator => {
-                    let url = buf.trim().trim_end_matches('/').to_string();
-                    if url.starts_with("http") {
+                InputKind::Coordinator => match full_url(&buf) {
+                    Some(url) => {
                         switch_coordinator(engine, app, url);
                         persist(engine, app);
-                    } else {
-                        app.lock().unwrap().toast("Адрес должен начинаться с http");
                     }
-                }
+                    // Раньше здесь требовалось набрать «https://» руками, и на
+                    // «bemyvpn.net» человек получал отказ вместо адреса.
+                    None => app.lock().unwrap().toast("Пустой адрес"),
+                },
                 InputKind::SrvDomain => {
                     let d = buf.trim().trim_end_matches('/').trim_start_matches("https://").trim_start_matches("http://").to_string();
                     {
@@ -430,7 +457,7 @@ fn handle_input_key(
     }
 }
 
-fn vpn_key(code: KeyCode, engine: &EngineSlot, app: &Shared, vpn_task: &mut Option<tokio::task::JoinHandle<()>>) {
+fn vpn_key(code: KeyCode, engine: &EngineSlot, app: &Shared, vpn_task: &mut VpnTask) {
     match code {
         KeyCode::Up => {
             let mut a = app.lock().unwrap();
@@ -451,21 +478,28 @@ fn vpn_key(code: KeyCode, engine: &EngineSlot, app: &Shared, vpn_task: &mut Opti
                 start_vpn(engine, app, vpn_task);
             }
         }
-        // «Старт»: первый открытый онлайн-хост со свободным местом (как iOS Старт).
+        // «Старт»: та же очередь кандидатов, что в окне — сначала ЧУЖАЯ страна,
+        // потом где свободнее, и с перебором запасных. Раньше здесь брался
+        // ПЕРВЫЙ попавшийся хост в порядке каталога: ни страны, ни перебора —
+        // молчащий хост означал «не подключилось», хотя рядом стояли живые.
         KeyCode::Char('c') | KeyCode::Char('C') => {
             if matches!(app.lock().unwrap().vpn, Vpn::On { .. } | Vpn::Connecting(_)) {
                 return;
             }
-            let pick = {
+            let cands = {
                 let a = app.lock().unwrap();
-                a.hosts.iter().position(|h| h.online && !h.has_password && h.guests < h.max_guests)
+                let own = a.host_code.clone();
+                // Своя страна — из поля анонса: встроенной базы IP→страна в
+                // терминале нет (см. default_host_name).
+                let my_cc = a.hosts.iter().find(|h| h.id == own).map(|h| h.country.clone());
+                bmv_desktop::tunnel::rank_candidates(&a.hosts, my_cc.as_deref(), &own, &|h| {
+                    (!h.country.is_empty()).then(|| h.country.clone())
+                })
             };
-            match pick {
-                Some(i) => {
-                    app.lock().unwrap().sel = i;
-                    start_vpn(engine, app, vpn_task);
-                }
-                None => app.lock().unwrap().toast("Нет открытого свободного хоста"),
+            if cands.is_empty() {
+                app.lock().unwrap().toast("Нет открытого свободного хоста");
+            } else {
+                connect_queue(engine, app, vpn_task, cands, None);
             }
         }
         // Подключиться по коду (как поле «КОД СЕТИ» на iOS).
@@ -625,12 +659,21 @@ fn server_key(code: KeyCode, engine: &EngineSlot, app: &Shared, srv_task: &mut O
 }
 
 /// Применить настройку к ЖИВОМУ движку раздачи (если раздача активна).
+///
+/// Движок снимается в ЛОКАЛЬНУЮ до всякого ветвления. Раньше здесь стояло
+/// `if let Some(eng) = host_engine.lock().unwrap().clone()`, и guard мьютекса
+/// жил через ВСЁ тело ветки (edition 2021) — а тело вызывает `f`, ЧУЖОЕ
+/// замыкание, пришедшее снаружи. Тронь оно `host_engine` (а это ровно тот слот,
+/// с которым работает вкладка «Хост») — и поток встаёт навсегда, вместе с
+/// перерисовкой всего меню. Из всех пяти таких мест это было самое опасное:
+/// остальные держат лок над СВОИМ кодом, здесь — над неизвестным.
 fn apply_host<F, Fut>(host_engine: &HostEngine, f: F)
 where
     F: FnOnce(Arc<BmvEngine>) -> Fut + Send + 'static,
     Fut: std::future::Future<Output = ()> + Send + 'static,
 {
-    if let Some(eng) = host_engine.lock().unwrap().clone() {
+    let eng = host_engine.lock().unwrap().clone();
+    if let Some(eng) = eng {
         tokio::spawn(f(eng));
     }
 }
@@ -778,6 +821,25 @@ fn spawn_autostart_toggle(host: bool, engine: &EngineSlot, app: &Shared) {
     });
 }
 
+/// То, что набрал человек, → пригодный адрес координатора. Пусто → None.
+///
+/// Голому имени приписываем https: незашифрованную схему нужно указывать явно,
+/// случайно на неё свалиться нельзя. Ровно та же логика, что в окне
+/// (main.rs::full_url) — иначе один и тот же адрес принимался бы в одной
+/// оболочке и отвергался в другой.
+fn full_url(input: &str) -> Option<String> {
+    // Схему отделяем ДО обрезки хвостовых слэшей: иначе «https://» само
+    // превращалось в «https:» и получало ещё одну схему спереди.
+    let t = input.trim();
+    let (scheme, rest) = match (t.strip_prefix("https://"), t.strip_prefix("http://")) {
+        (Some(r), _) => ("https://", r),
+        (_, Some(r)) => ("http://", r),
+        _ => ("https://", t),
+    };
+    let rest = rest.trim_end_matches('/');
+    (!rest.is_empty()).then(|| format!("{scheme}{rest}"))
+}
+
 /// Сменить координатор: пересоздаём движок с новым адресом (список станет живым в фоне).
 fn switch_coordinator(engine: &EngineSlot, app: &Shared, url: String) {
     let mut cfg = engine.lock().unwrap().config().clone();
@@ -811,7 +873,7 @@ fn ensure_host_code(engine: &EngineSlot, app: &Shared) {
 
 // ── VPN (гость) ──────────────────────────────────────────────────────────────
 
-fn start_vpn(engine: &EngineSlot, app: &Shared, vpn_task: &mut Option<tokio::task::JoinHandle<()>>) {
+fn start_vpn(engine: &EngineSlot, app: &Shared, vpn_task: &mut VpnTask) {
     let host = {
         let a = app.lock().unwrap();
         a.hosts.get(a.sel).cloned()
@@ -827,68 +889,86 @@ fn start_vpn(engine: &EngineSlot, app: &Shared, vpn_task: &mut Option<tokio::tas
     }
 }
 
-fn connect_to(
-    engine: &EngineSlot,
-    app: &Shared,
-    vpn_task: &mut Option<tokio::task::JoinHandle<()>>,
-    host: HostInfo,
-    password: Option<String>,
-) {
-    let name = if host.name.is_empty() { host.id.clone() } else { host.name.clone() };
-    let id = host.id.clone();
-    app.lock().unwrap().vpn = Vpn::Connecting(name.clone());
-    let e = engine.lock().unwrap().clone();
-    let app2 = app.clone();
+/// Подключиться к очереди кандидатов (первый успешный — тот и качает трафик).
+///
+/// Вся гостевая механика — общая с окном (`bmv_desktop::tunnel`): бюджеты на
+/// попытку, перебор запасных и ОБЯЗАТЕЛЬНЫЙ BYE на выходе. Раньше здесь жила
+/// своя упрощённая копия: один хост без запасных, без поводка и без прощания —
+/// хост держал ушедшего гостя лишние 8 секунд, до keepalive-таймаута.
+fn connect_queue(engine: &EngineSlot, app: &Shared, vpn_task: &mut VpnTask, cands: Vec<HostInfo>, password: Option<String>) {
+    let Some(first) = cands.first() else {
+        app.lock().unwrap().toast("Нет подходящего хоста");
+        return;
+    };
+    app.lock().unwrap().vpn = Vpn::Connecting(host_name(first));
+    // Имена для показа — по id, чтобы сообщения не зависели от того, что в этот
+    // момент лежит в каталоге.
+    let names: std::collections::HashMap<String, String> =
+        cands.iter().map(|h| (h.id.clone(), host_name(h))).collect();
+    let pw = password.unwrap_or_default();
+    let list: Vec<(String, String, String)> =
+        cands.iter().map(|h| (h.id.clone(), pw.clone(), h.protocol.clone())).collect();
+    // Конфиг гостя — НАСТОЯЩИЙ, из движка: там свои STUN-серверы и настройки
+    // протоколов. Одного адреса координатора мало — остальное молча уехало бы
+    // на умолчания, хотя человек прописал своё в файле.
+    let mut cfg = engine.lock().unwrap().config().clone();
+    cfg.coordinators = vec![app.lock().unwrap().coord.clone()];
+    let had_password = !pw.is_empty();
+
+    let stop = Arc::new(tokio::sync::Notify::new());
+    let (app2, stop2) = (app.clone(), stop.clone());
     let handle = tokio::spawn(async move {
-        // Протокол хоста из каталога (гость обязан следовать), иначе из записи хоста.
-        let proto = e
-            .guest_list(None, false)
-            .await
-            .ok()
-            .and_then(|hs| hs.into_iter().find(|h| h.id == id).map(|h| h.protocol))
-            .filter(|p| !p.is_empty())
-            .or_else(|| Some(host.protocol.clone()).filter(|p| !p.is_empty()));
-        let (peer, link) = match e.guest_establish(&id, password.as_deref(), proto.as_deref()).await {
-            Ok(v) => v,
-            Err(err) => {
-                let msg = if password.is_some() {
-                    format!("не подключился (неверный пароль?): {err}")
-                } else {
-                    format!("не соединился: {err}")
-                };
-                app2.lock().unwrap().vpn = Vpn::Failed(msg);
-                return;
-            }
-        };
-        let params = bmv_tunnel::TunParams::guest();
-        let (device, ifname) = match bmv_desktop::make_tun(&params) {
-            Ok(d) => d,
-            Err(err) => {
-                app2.lock().unwrap().vpn = Vpn::Failed(format!("нужен root (sudo bemyvpn): {err}"));
-                return;
-            }
-        };
-        let _guard = match bmv_desktop::RouteGuard::install(peer.ip(), &ifname) {
-            Ok(g) => g,
-            Err(err) => {
-                app2.lock().unwrap().vpn = Vpn::Failed(format!("маршрутизация: {err}"));
-                return;
-            }
-        };
-        app2.lock().unwrap().vpn = Vpn::On { id, name, since: Instant::now() };
-        let _ = bmv_tunnel::run_guest(device, Arc::from(link)).await;
-        let mut a = app2.lock().unwrap();
-        if matches!(a.vpn, Vpn::On { .. }) {
-            a.vpn = Vpn::Off;
-            a.toast("Туннель закрыт");
-        }
+        bmv_desktop::tunnel::run_candidates(
+            cfg,
+            list,
+            move |s| {
+                let name = |id: &String| names.get(id).cloned().unwrap_or_else(|| id.clone());
+                let mut a = app2.lock().unwrap();
+                match s {
+                    bmv_desktop::tunnel::State::Connecting(id) => a.vpn = Vpn::Connecting(name(&id)),
+                    bmv_desktop::tunnel::State::Up(id) => {
+                        a.vpn = Vpn::On { name: name(&id), id, since: Instant::now() }
+                    }
+                    bmv_desktop::tunnel::State::Off => {
+                        if matches!(a.vpn, Vpn::On { .. }) {
+                            a.toast("Туннель закрыт");
+                        }
+                        a.vpn = Vpn::Off;
+                    }
+                    bmv_desktop::tunnel::State::Failed(e) => {
+                        a.vpn = Vpn::Failed(if had_password {
+                            format!("{e} (неверный пароль?)")
+                        } else {
+                            e
+                        })
+                    }
+                }
+            },
+            stop2,
+        )
+        .await;
     });
-    *vpn_task = Some(handle);
+    *vpn_task = Some((handle, stop));
 }
 
-fn disconnect_vpn(app: &Shared, vpn_task: &mut Option<tokio::task::JoinHandle<()>>) {
-    if let Some(h) = vpn_task.take() {
-        h.abort();
+fn connect_to(engine: &EngineSlot, app: &Shared, vpn_task: &mut VpnTask, host: HostInfo, password: Option<String>) {
+    connect_queue(engine, app, vpn_task, vec![host], password);
+}
+
+fn host_name(h: &HostInfo) -> String {
+    if h.name.is_empty() { h.id.clone() } else { h.name.clone() }
+}
+
+/// Отключиться ВЕЖЛИВО: сначала «стоп» (задача успеет отправить BYE и откатить
+/// маршруты), и только если она за 3с не управилась — обрыв.
+fn disconnect_vpn(app: &Shared, vpn_task: &mut VpnTask) {
+    if let Some((mut h, stop)) = vpn_task.take() {
+        stop.notify_waiters();
+        tokio::spawn(async move {
+            if tokio::time::timeout(Duration::from_secs(3), &mut h).await.is_err() {
+                h.abort(); // не попрощалась — хотя бы не висим
+            }
+        });
     }
     let mut a = app.lock().unwrap();
     a.vpn = Vpn::Off;
@@ -941,9 +1021,26 @@ fn start_host(engine: &EngineSlot, app: &Shared, host_engine: &HostEngine, host_
             hcfg.host.id = code;
             hcfg.host.code_sig = sig;
         }
-        let used_sig = hcfg.host.code_sig.clone();
-        let engine = Arc::new(BmvEngine::from_config(hcfg));
-        let hub = match engine.host_bind_announce().await {
+        let mut used_sig = hcfg.host.code_sig.clone();
+        let mut engine = Arc::new(BmvEngine::from_config(hcfg.clone()));
+        let mut announce = engine.host_bind_announce().await;
+        // 403 = координатор не признаёт нашу пару код+подпись (сервер сменили,
+        // код отозвали, конфиг переехал). Раньше терминал на этом просто вставал
+        // с непонятным «403», хотя лечится оно само: просим новый код и пробуем
+        // ещё раз — ровно так делает окно.
+        if announce.as_ref().err().map(|e| e.to_string().contains("403")).unwrap_or(false) {
+            if let Ok((c, s)) = BmvEngine::from_config(base.clone()).host_new_code().await {
+                if !c.is_empty() && !s.is_empty() {
+                    let mut fresh = hcfg.clone();
+                    fresh.host.id = c;
+                    fresh.host.code_sig = s.clone();
+                    used_sig = s;
+                    engine = Arc::new(BmvEngine::from_config(fresh));
+                    announce = engine.host_bind_announce().await;
+                }
+            }
+        }
+        let hub = match announce {
             Ok((hub, _id, _eps)) => hub,
             Err(err) => {
                 let s = err.to_string();
@@ -965,27 +1062,13 @@ fn start_host(engine: &EngineSlot, app: &Shared, host_engine: &HostEngine, host_
             a.host_started = Some(Instant::now());
         }
         persist(&slot, &app2); // код+настройки переживают перезапуск
-        {
-            let (e, h) = (engine.clone(), hub.clone());
-            tokio::spawn(async move {
-                loop {
-                    tokio::time::sleep(Duration::from_secs(10)).await;
-                    let _ = e.host_heartbeat(&h).await;
-                }
-            });
-        }
-        {
-            let (e, h) = (engine.clone(), hub.clone());
-            tokio::spawn(async move {
-                let _ = e.host_serve_punch(h).await;
-            });
-        }
-        while let Some((peer, raw)) = hub.accept().await {
-            let e = engine.clone();
-            tokio::spawn(async move {
-                let _ = e.host_run_session(peer, raw, true).await;
-            });
-        }
+        // Всё дерево раздачи — в одном JoinSet (bmv_desktop::hosting). Раньше
+        // здесь heartbeat, пробитие и КАЖДАЯ гостевая сессия были отдельными
+        // `tokio::spawn`: «Выключить» обрывало только этот цикл, гости
+        // продолжали ходить в интернет через машину, а heartbeat каждые 10с
+        // заново чинил запись в каталоге — de-announce отменялся сам собой, и
+        // хост-призрак висел в публичном списке до выхода из программы.
+        bmv_desktop::hosting::serve_host(engine.clone(), hub).await;
         heng.lock().unwrap().take();
         let mut a = app2.lock().unwrap();
         a.host = HostMode::Off;
@@ -995,11 +1078,17 @@ fn start_host(engine: &EngineSlot, app: &Shared, host_engine: &HostEngine, host_
 }
 
 fn stop_host(app: &Shared, host_engine: &HostEngine, host_task: &mut Option<tokio::task::JoinHandle<()>>) {
-    if let Some(eng) = host_engine.lock().unwrap().take() {
-        tokio::spawn(async move { let _ = tokio::time::timeout(Duration::from_secs(2), eng.host_deannounce()).await; });
-    }
+    // СНАЧАЛА обрываем дерево задач (в нём heartbeat, который каждые 10с чинит
+    // запись в каталоге), и только потом прощаемся — иначе bye отменялся бы
+    // собственным heartbeat'ом.
     if let Some(h) = host_task.take() {
         h.abort();
+    }
+    // Движок — в ЛОКАЛЬНУЮ до ветвления: guard мьютекса из скрутинии `if let`
+    // живёт через всё тело ветки (edition 2021), а внутри мы порождаем задачу.
+    let eng = host_engine.lock().unwrap().take();
+    if let Some(eng) = eng {
+        tokio::spawn(async move { let _ = tokio::time::timeout(Duration::from_secs(2), eng.host_deannounce()).await; });
     }
     let mut a = app.lock().unwrap();
     a.host = HostMode::Off;
@@ -1010,11 +1099,13 @@ fn stop_host(app: &Shared, host_engine: &HostEngine, host_task: &mut Option<toki
 /// Новый код: сброс + (если раздавали) авто-рестарт под свежим кодом (как iOS).
 fn new_host_code(engine: &EngineSlot, app: &Shared, host_engine: &HostEngine, host_task: &mut Option<tokio::task::JoinHandle<()>>) {
     let was = matches!(app.lock().unwrap().host, HostMode::On { .. } | HostMode::Starting);
-    if let Some(eng) = host_engine.lock().unwrap().take() {
-        tokio::spawn(async move { let _ = tokio::time::timeout(Duration::from_secs(2), eng.host_deannounce()).await; });
-    }
+    // Тот же порядок и тот же срез в локальную, что и в stop_host.
     if let Some(h) = host_task.take() {
         h.abort();
+    }
+    let eng = host_engine.lock().unwrap().take();
+    if let Some(eng) = eng {
+        tokio::spawn(async move { let _ = tokio::time::timeout(Duration::from_secs(2), eng.host_deannounce()).await; });
     }
     {
         let mut a = app.lock().unwrap();
@@ -1111,11 +1202,26 @@ fn spawn_refresh(engine: EngineSlot, app: Shared) {
             // СТАТУС связи = состояние WS-сокета (health), а НЕ успех watch: сокет
             // может быть жив, пока снапшот каталога ещё в пути (хост при этом уже
             // анонсирован). Иначе показывало «нет связи» на живом соединении.
-            let t0 = Instant::now();
             let connected = eng.coordinator_health().await.is_ok();
-            let ping = t0.elapsed().as_millis() as u32;
+            // НАСТОЯЩИЙ круг до координатора. Раньше здесь секундомером мерили,
+            // сколько длился сам вызов health(), — а он читает флаг «сокет жив»
+            // и возвращается мгновенно, поэтому на экране вечно стоял ноль.
+            let ping = eng.coordinator_rtt().unwrap_or(0);
+            let got_catalog = list.is_some();
             let need_ip = app.lock().unwrap().my_ip.is_empty();
             let ip = if connected && need_ip { eng.my_ip().await.ok() } else { None };
+            // Отклик до ВЫБРАННОГО хоста — так же, как окно мерит раскрытую
+            // карточку: настоящая проба к чужой машине, поэтому только один
+            // хост, а не весь список.
+            let target = {
+                let a = app.lock().unwrap();
+                a.hosts.get(a.sel).map(|h| (h.id.clone(), h.endpoints.clone()))
+            };
+            let host_ping = match target {
+                Some((id, eps)) if !eps.is_empty() => Some((id.clone(), eng.probe_host_rtt(&id, &eps).await)),
+                Some((id, _)) => Some((id, None)), // адресов нет — честное «не ответил»
+                None => None,
+            };
             {
                 let mut a = app.lock().unwrap();
                 a.coord_ok = Some(connected);
@@ -1126,6 +1232,9 @@ fn spawn_refresh(engine: EngineSlot, app: Shared) {
                 if let Some(ip) = ip {
                     a.my_ip = ip;
                 }
+                if let Some((id, ms)) = host_ping {
+                    a.host_ping = Some((id, ms));
+                }
                 if a.sel >= a.hosts.len() {
                     a.sel = a.hosts.len().saturating_sub(1);
                 }
@@ -1133,8 +1242,11 @@ fn spawn_refresh(engine: EngineSlot, app: Shared) {
                     break;
                 }
             }
-            if !connected {
-                tokio::time::sleep(Duration::from_secs(2)).await; // не молотить при обрыве
+            // Пауза нужна на ЛЮБОЙ неудаче, а не только когда сокет объявлен
+            // мёртвым: watch может вернуть ошибку при живом сокете, и тогда цикл
+            // молотил бы сотнями запросов в секунду в чужой сервер.
+            if !connected || !got_catalog {
+                tokio::time::sleep(Duration::from_secs(2)).await;
             }
         }
     });
@@ -1301,7 +1413,10 @@ fn vpn_tab(f: &mut Frame, area: Rect, a: &App) {
                 ListItem::new(Line::from(vec![
                     Span::raw(format!("{dot} ")),
                     Span::styled(format!("{name}{lock}"), Style::default().fg(Color::White)),
-                    Span::styled(format!("   👥 {}/{}{cc}   {}", h.guests, h.max_guests, proto_short(&h.protocol)), Style::default().fg(DIM)),
+                    Span::styled(
+                        format!("   👥 {}/{}{cc}   {}{}", h.guests, h.max_guests, proto_short(&h.protocol), ping_text(a, &h.id)),
+                        Style::default().fg(DIM),
+                    ),
                 ]))
             })
             .collect()
@@ -1310,11 +1425,28 @@ fn vpn_tab(f: &mut Frame, area: Rect, a: &App) {
     if !a.hosts.is_empty() {
         st.select(Some(a.sel.min(a.hosts.len() - 1)));
     }
+    // При обрыве список НЕ трётся (иначе он мигал бы пустотой на каждой
+    // заминке), но и выдавать вчерашние цифры за живые нельзя — говорим прямо.
+    let title = if a.coord_ok == Some(false) && !a.hosts.is_empty() {
+        " Доступные хосты — последние известные (нет связи) "
+    } else {
+        " Доступные хосты "
+    };
     let list = List::new(items)
-        .block(card(" Доступные хосты "))
+        .block(card(title))
         .highlight_style(Style::default().bg(SEL).fg(Color::White).add_modifier(Modifier::BOLD))
         .highlight_symbol("");
     f.render_stateful_widget(list, rows[1], &mut st);
+}
+
+/// Подпись отклика для строки хоста: «· 24 мс», «· нет ответа» или пусто, если
+/// этот хост ещё не мерили (меряется только выбранный — см. spawn_refresh).
+fn ping_text(a: &App, id: &str) -> String {
+    match &a.host_ping {
+        Some((pid, Some(ms))) if pid == id => format!("   ⏱ {ms} мс"),
+        Some((pid, None)) if pid == id => "   ⏱ нет ответа".to_string(),
+        _ => String::new(),
+    }
 }
 
 fn host_tab(f: &mut Frame, area: Rect, a: &App) {
@@ -1527,6 +1659,7 @@ mod tests {
             coord: "https://bemyvpn.net".into(),
             coord_ok: Some(true),
             coord_ping: 42,
+            host_ping: Some(("NG4RDJDM".into(), Some(24))),
             my_ip: "1.2.3.4".into(),
             srv: SrvState::On,
             srv_cfg: bmv_config::ServerConfig::default(),
@@ -1586,5 +1719,56 @@ mod tests {
         assert_eq!(proto_short("noise-obfs"), "🎭 Маскировка");
         assert_eq!(proto_short(""), "🔐 Обычный");
         assert!(!qr_lines("bemyvpn://ABCD1234").is_empty());
+    }
+
+    /// Адрес координатора можно набрать без схемы.
+    ///
+    /// Раньше «bemyvpn.net» отвергалось с требованием начать с http, хотя в окне
+    /// то же самое работает — одна и та же строка принималась в одной оболочке и
+    /// не принималась в другой.
+    #[test]
+    fn a_coordinator_address_does_not_need_its_scheme_typed_by_hand() {
+        assert_eq!(full_url("bemyvpn.net").as_deref(), Some("https://bemyvpn.net"));
+        assert_eq!(full_url("  bemyvpn.net/ ").as_deref(), Some("https://bemyvpn.net"));
+        // Явную схему не трогаем — в том числе незашифрованную: на неё нужно
+        // сваливаться осознанно, а не молча.
+        assert_eq!(full_url("http://10.0.0.5:3330").as_deref(), Some("http://10.0.0.5:3330"));
+        assert_eq!(full_url("https://свой.сервер").as_deref(), Some("https://свой.сервер"));
+        // А вот из ничего адреса не бывает.
+        assert!(full_url("").is_none());
+        assert!(full_url("   ").is_none());
+        assert!(full_url("https://").is_none());
+    }
+
+    /// ЧАСОВОЙ НА САМОДЕДЛОК: `apply_host` не должна держать лок, пока крутится
+    /// чужое замыкание.
+    ///
+    /// Внутрь ей передают произвольный код (`f`), а раньше вызов шёл из
+    /// скрутинии `if let Some(eng) = host_engine.lock()…`, то есть guard жил
+    /// через всё тело ветки. Замыкание, тронувшее тот же слот, вешало поток —
+    /// вместе с перерисовкой всего меню. Дедлок не падает, он ВИСИТ, поэтому у
+    /// теста обязан быть срок.
+    #[test]
+    fn applying_a_setting_does_not_hold_the_lock_across_foreign_code() {
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let _g = rt.enter();
+
+        let host_engine: HostEngine = Arc::new(Mutex::new(None));
+        let (tx, rx) = std::sync::mpsc::channel();
+
+        let slot = host_engine.clone();
+        let probe = host_engine.clone();
+        std::thread::spawn(move || {
+            // Пустой слот: замыкание не зовётся, но лок всё равно не должен
+            // оставаться взятым после возврата.
+            apply_host(&slot, |_e| async {});
+            let free = probe.try_lock().is_ok();
+            let _ = tx.send(free);
+        });
+
+        let free = rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("apply_host зависла — снова lock() прямо в скрутинии ветвления");
+        assert!(free, "после apply_host слот обязан быть свободен");
     }
 }

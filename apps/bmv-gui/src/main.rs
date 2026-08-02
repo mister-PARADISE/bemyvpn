@@ -44,11 +44,22 @@ fn uptime_text(sec: u64) -> String {
 }
 
 /// Имя протокола по-человечески (protoName на iOS).
+///
+/// ПУСТАЯ СТРОКА — ЭТО «ОБЫЧНЫЙ», А НЕ «БЕЗ ШИФРА». Хост, не объявивший
+/// протокол в каталоге, всё равно поднимает шифрованный канал (noise — значение
+/// по умолчанию у ядра). Раньше такой хост показывался как незашифрованный:
+/// человек видел «Без шифра» там, где шифр есть, и та же самая запись каталога
+/// в терминале подписывалась «Обычный» — две оболочки говорили противоположное
+/// об одном и том же хосте.
+///
+/// Незнакомое имя показываем КАК ЕСТЬ. Врать «Без шифра» про неизвестный
+/// протокол так же неверно, как врать про пустой: мы про него ничего не знаем.
 fn proto_name(p: &str) -> &str {
     match p {
-        "noise" | "noise-aes" => "Обычный",
+        "" | "noise" | "noise-aes" => "Обычный",
         "noise-obfs" => "Маскировка",
-        _ => "Без шифра",
+        "plain" => "Без шифра",
+        other => other,
     }
 }
 
@@ -64,7 +75,12 @@ fn host_cc(h: &HostInfo) -> Option<String> {
     })
 }
 
-/// Скачать релиз, сверить sha256 и запустить установку.
+/// Скачать релиз и запустить установку.
+///
+/// Целостность обеспечивает ТОЛЬКО HTTPS до github.com. Ни sha256, ни подписи
+/// здесь не проверяется — раньше об этом врал и заголовок, и комментарий у
+/// вызова кнопки «Обновить». Отдельная проверка хэша, скачанного по тому же
+/// каналу, ничего бы и не добавила: подменивший файл подменит и хэш.
 ///
 /// Возврат Ok означает «помощник запущен» — приложение после этого обязано
 /// завершиться, иначе подмена не пройдёт: пока процесс жив, файлы держатся.
@@ -74,8 +90,6 @@ async fn fetch_update(tag: &str) -> Result<(), String> {
     let repo = std::env::var("BMV_REPO").unwrap_or_else(|_| "mister-PARADISE/bemyvpn".into());
     let url = bmv_common::update::asset_url(&repo, tag, asset);
 
-    // Целостность обеспечивает HTTPS: файл идёт с github.com, подменить его в
-    // пути нельзя. Отдельная проверка хэша тут ничего бы не добавила.
     let bytes = bmv_common::update::download(&url, bmv_common::update::MAX_ASSET_BYTES)
         .await
         // Частый случай: GitHub заблокирован. Наш же продукт это и решает.
@@ -212,8 +226,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
     let handle = rt.handle().clone();
 
-    let config = Config::load(None).unwrap_or_default();
+    // Битый конфиг НЕ ЗАМАЛЧИВАЕМ. Раньше стояло `unwrap_or_default()`: одна
+    // опечатка в .toml — и приложение молча брало настройки по умолчанию, то
+    // есть уезжало на СТАНДАРТНЫЙ координатор, хотя человек прописал свой. Со
+    // стороны это выглядит как «сохранённый сервер сам сбросился».
+    let (config, config_error) = match Config::load(None) {
+        Ok(c) => (c, String::new()),
+        Err(e) => (Config::default(), format!("Настройки не прочитались ({e}) — взяты стандартные")),
+    };
     let coord = config.coordinators.first().cloned().unwrap_or_else(|| DEFAULT_COORD.into());
+    // Настройки хоста показываем ровно те, что сохранены (иначе имя, лимит,
+    // пароль, протокол и видимость сбрасывались при каждом запуске).
+    let saved_host = config.host.clone();
+    let saved_proto = config.default_protocol.clone();
     let engine: EngineSlot = Arc::new(Mutex::new(Arc::new(BmvEngine::from_config(config))));
 
     let ui = AppWindow::new()?;
@@ -228,8 +253,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ui.set_coord_url(pretty_url(&coord).into());
     ui.set_coord_field(pretty_url(&coord).into());
     ui.set_coord_is_default(coord == DEFAULT_COORD);
+    ui.set_config_error(config_error.into());
     ui.set_vpn_status("VPN выключен".into());
     ui.set_host_status("Раздача выключена".into());
+    // Сохранённые настройки раздачи — на экран.
+    ui.set_host_name(saved_host.name.into());
+    ui.set_host_public(saved_host.public);
+    ui.set_host_max(saved_host.max_guests.clamp(1, i32::MAX as u32) as i32);
+    ui.set_host_password(saved_host.password.into());
+    if !saved_proto.is_empty() {
+        ui.set_host_protocol(saved_proto.into());
+    }
     ui.set_server_history(str_model(
         &store::load_server_history().iter().map(|u| pretty_url(u)).collect::<Vec<_>>(),
     ));
@@ -253,9 +287,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let vpn_since: Ts = Arc::new(Mutex::new(None));
 
     // Файл-маркер «туннель поднят» от root-хелпера (надёжный канал для UI в обход
-    // TCP-STATE, который на idle event-loop macOS до окна мог не дойти). Путь
-    // привязан к pid GUI — и хелпер, и фон-цикл знают его одинаково.
-    let up_file = std::env::temp_dir().join(format!("bemyvpn-up-{}", std::process::id()));
+    // TCP-STATE, который на idle event-loop macOS до окна мог не дойти).
+    //
+    // Лежит в СВОЁМ каталоге 0700, а не прямо в общем /tmp с именем по pid.
+    // Писал его root, а на Linux /tmp общий: сосед по машине заранее клал по
+    // предсказуемому пути ссылку на любой root-овый файл — и root затирал его.
+    // Тем же файлом сосед рисовал в чужом окне ложное «подключено»: тик-цикл
+    // ниже считает этот файл авторитетом состояния VPN.
+    let up_dir = helper::private_dir();
+    let up_file = up_dir.join("up");
     let _ = std::fs::remove_file(&up_file);
 
     // Копирование в буфер (тап по плиткам Код/IP).
@@ -267,10 +307,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    // «Обновить»: скачать, проверить, установить. Подпись манифеста проверена
-    // ещё при получении, здесь остаётся sha256 файла. На десктопе установка идёт
-    // через помощника: приложение не может подменить себя на ходу — оно выходит,
-    // помощник доделывает.
+    // «Обновить»: скачать и установить. Единственная защита файла — HTTPS до
+    // github.com (ни sha256, ни подписи мы не проверяем, см. fetch_update). На
+    // десктопе установка идёт через помощника: приложение не может подменить
+    // себя на ходу — оно выходит, помощник доделывает.
     {
         let (weak, handle2) = (ui.as_weak(), handle.clone());
         ui.on_do_update(move || {
@@ -371,7 +411,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let coord_full = coord_full.clone();
             let _ = slint::invoke_from_event_loop(move || {
                 let Some(ui) = weak.upgrade() else { return };
-                let name = hosts.lock().unwrap().iter().find(|h| h.id == id).map(display_name).unwrap_or_else(|| id.clone());
+                // Запись хоста СНИМАЕТСЯ В ЛОКАЛЬНУЮ до всякого ветвления.
+                // Раньше ниже стояло `if let Some(h) = hosts.lock()…find(…)`, и
+                // guard мьютекса жил через ВСЁ тело ветки (edition 2021):
+                // достаточно было тронуть `hosts` внутри — и поток интерфейса
+                // вставал намертво. Дважды такое окно уже вешали.
+                let found = hosts.lock().unwrap().iter().find(|h| h.id == id).cloned();
+                let name = found.as_ref().map(display_name).unwrap_or_else(|| id.clone());
                 match n {
                     1 => { ui.set_vpn_state(1); ui.set_vpn_host_id(id.clone().into()); ui.set_vpn_status("Подключаюсь…".into()); ui.set_vpn_sub(format!("к {name}").into()); }
                     2 => {
@@ -380,7 +426,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         // выбирает хост из списка кандидатов, и до этого момента id
                         // нам неизвестен. Заполняем карточку здесь — иначе ячейки
                         // пустуют до ответа каталога.
-                        if let Some(h) = hosts.lock().unwrap().iter().find(|h| h.id == id) {
+                        if let Some(h) = &found {
                             fill_vpn_card(&ui, h);
                         }
                         { let mut r = recent.lock().unwrap(); r.retain(|x| x != &id); r.insert(0, id.clone()); r.truncate(6); }
@@ -414,6 +460,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     ui.run()?;
     let _ = std::fs::remove_file(&up_file); // убрать маркер (хелпер тоже уберёт при выходе)
+    let _ = std::fs::remove_dir(&up_dir);
 
     // Окно закрыто. На Windows туннель живёт в этом процессе, поэтому явно просим
     // откатить маршруты/DNS и даём мгновение отработать (иначе резкий выход
@@ -447,6 +494,33 @@ fn ensure_host_code(ui: &AppWindow, engine: &EngineSlot, handle: &tokio::runtime
             }
         }
     });
+}
+
+/// Сохранить настройки раздачи и адрес координатора в конфиг ОС.
+///
+/// До этого во всём GUI не было ни одного `Config::save()`: имя хоста, лимит
+/// гостей, пароль, протокол, видимость И ВЫБРАННЫЙ КООРДИНАТОР жили только в
+/// памяти окна и сбрасывались при каждом запуске — человек заново вбивал свой
+/// сервер после перезагрузки. Терминальная оболочка это умела с самого начала
+/// (tui.rs::persist), пишем в тот же файл теми же полями, чтобы обе оболочки
+/// видели одни настройки.
+///
+/// Права 0600 на файл ставит сам `Config::save` — в нём лежит пароль раздачи.
+fn save_config(engine: &EngineSlot, ui: &AppWindow) {
+    let mut cfg = engine.lock().unwrap().config().clone();
+    cfg.host.name = ui.get_host_name().to_string();
+    cfg.host.public = ui.get_host_public();
+    cfg.host.max_guests = ui.get_host_max().max(1) as u32;
+    cfg.host.password = ui.get_host_password().to_string();
+    let proto = ui.get_host_protocol().to_string();
+    if !proto.is_empty() {
+        cfg.default_protocol = proto;
+    }
+    // Координатор в конфиг движка кладёт wire_coord, отдельно его тут не берём —
+    // иначе показанный доменом адрес мог бы уехать в конфиг без схемы.
+    if let Err(e) = cfg.save() {
+        ui.set_config_error(format!("Настройки не сохранились: {e}").into());
+    }
 }
 
 fn str_model(v: &[String]) -> ModelRc<SharedString> {
@@ -488,16 +562,20 @@ fn wire_expand_probe(
     // сущностей: свернули карточку или открыли другую — прошлый цикл умер.
     let gen = Arc::new(std::sync::atomic::AtomicU64::new(0));
 
-    ui.on_expanded_host(move |idx| {
+    // Аргумент — ID ХОСТА, а не номер строки. Номер врал: список пересобирается
+    // целиком на каждое обновление каталога (а оно приходит сразу, как только у
+    // любого хоста сменился счётчик гостей), состав меняется, и замер продолжал
+    // мерить хост, который на этом месте стоял РАНЬШЕ.
+    ui.on_expanded_host(move |id| {
         use std::sync::atomic::Ordering;
         // Увеличиваем ВСЕГДА — это и есть отмена предыдущего цикла.
         let mine = gen.fetch_add(1, Ordering::SeqCst) + 1;
 
-        // -1 приходит при сворачивании: мерить больше нечего.
-        if idx < 0 {
+        // Пустая строка приходит при сворачивании: мерить больше нечего.
+        if id.is_empty() {
             return;
         }
-        let Some(h) = hosts.lock().unwrap().get(idx as usize).cloned() else { return };
+        let Some(h) = hosts.lock().unwrap().iter().find(|h| h.id == id.as_str()).cloned() else { return };
 
         // Без адресов пробить некуда — честное «не ответил» сразу, без цикла
         // вхолостую (тот же ранний выход, что на iOS и Android).
@@ -557,6 +635,28 @@ fn set_row_ping(ui: &AppWindow, id: &str, ms: Option<u32>) {
             }
         }
     }
+}
+
+/// Кого показывать в списке (как displayedHosts на iOS).
+///
+/// Правила три, и каждое появилось из живой жалобы:
+/// * онлайн — очевидное;
+/// * тот, к кому мы ПОДКЛЮЧЕНЫ, — даже если координатор уже пометил его
+///   офлайном: исчезнувшая строка при работающем VPN читается как «оборвалось»;
+/// * свой хост, ПОКА раздаём, — а после остановки его надо ПРЯТАТЬ: запись в
+///   каталоге живёт ещё несколько секунд после bye, и человек видел «призрак»
+///   собственной раздачи, который уже никого не пускает.
+fn visible_hosts(list: &[HostInfo], connected_to: &str, my_code: &str, hosting: bool) -> Vec<HostInfo> {
+    list.iter()
+        .filter(|h| {
+            let mine = !my_code.is_empty() && h.id == my_code;
+            if mine {
+                return hosting; // своя запись видна ровно пока раздаём
+            }
+            h.online || h.id == connected_to
+        })
+        .cloned()
+        .collect()
 }
 
 /// Строка каталога → карточка (host_row на iOS): подпись, полоса, значок протокола.
@@ -759,6 +859,7 @@ fn spawn_refresh(
                 if cur != hist_top { hist_top = cur.clone(); Some(store::add_server_history(&cur)) } else { None }
             } else { None };
 
+            let got_catalog = list.is_some();
             let hosts_n = list.as_ref().map(|l| l.len() as i32);
             let ip = my_ip.clone();
             let recent = recent_ids.lock().unwrap().clone();
@@ -779,15 +880,8 @@ fn spawn_refresh(
                 // Каталог обновляем ТОЛЬКО когда пришёл (watch Ok); на Err оставляем
                 // прошлый список — не мигаем «пусто» на живом соединении.
                 let Some(list) = list else { return };
-                // Видимость (как displayedHosts на iOS): онлайн + подключённый +
-                // свой раздающийся; прячем свой «призрак» после стопа раздачи.
-                let connected_to = ui.get_vpn_host_id().to_string();
                 let hosting = ui.get_host_state() == 2 || ui.get_host_state() == 1;
-                let my_code = ui.get_host_code().to_string();
-                let visible: Vec<HostInfo> = list.iter()
-                    .filter(|h| (h.online || h.id == connected_to || (hosting && h.id == my_code))
-                        && !(!hosting && !my_code.is_empty() && h.id == my_code))
-                    .cloned().collect();
+                let visible = visible_hosts(&list, &ui.get_vpn_host_id(), &ui.get_host_code(), hosting);
                 let rows: Vec<HostRow> = visible.iter().map(|h| host_row(h, &pings)).collect();
                 *hosts2.lock().unwrap() = visible;
                 ui.set_hosts(ModelRc::new(VecModel::from(rows)));
@@ -823,8 +917,12 @@ fn spawn_refresh(
                     }
                 }
             });
-            if !alive {
-                tokio::time::sleep(Duration::from_secs(2)).await; // не молотить при обрыве
+            // Пауза нужна на ЛЮБОЙ неудаче, а не только когда сокет объявлен
+            // мёртвым. Watch может вернуть ошибку при живом сокете (сервер
+            // ответил 5xx, снапшот не собрался) — и тогда цикл крутился без
+            // паузы вообще, выдавая сотни запросов в секунду в чужой сервер.
+            if !alive || !got_catalog {
+                tokio::time::sleep(Duration::from_secs(2)).await;
             }
         }
     });
@@ -858,15 +956,20 @@ fn wire_vpn(
         s == 1 || s == 2
     }
 
-    // Подключение по индексу карточки.
+    // Подключение по ID карточки.
+    //
+    // Раньше сюда приходил НОМЕР СТРОКИ, а список параллельно заменяет фоновая
+    // задача каталога: между нажатием и обработкой состав мог смениться, и
+    // человек подключался не к тому хосту, на который нажал. Цена ошибки здесь
+    // — весь трафик через чужую машину, поэтому индексов тут больше нет.
     {
         let weak = ui.as_weak();
         let (hosts, hlp) = (hosts.clone(), hlp.clone());
         let coord_full = coord_full.clone();
-        ui.on_connect(move |idx| {
+        ui.on_connect(move |id| {
             let Some(u) = weak.upgrade() else { return };
             if busy(&u) { return; }
-            let Some(host) = hosts.lock().unwrap().get(idx as usize).cloned() else { return };
+            let Some(host) = hosts.lock().unwrap().iter().find(|h| h.id == id.as_str()).cloned() else { return };
             if u.get_host_state() == 2 && u.get_host_code() == host.id.as_str() {
                 u.set_vpn_state(3);
                 u.set_vpn_status("Это ваш собственный хост".into());
@@ -930,29 +1033,20 @@ fn wire_vpn(
             if busy(&u) { return; }
             let own = if u.get_host_state() == 2 { u.get_host_code().to_string() } else { String::new() };
             let mine = geo::country_of(&my_ip.lock().unwrap());
-            let mut cands: Vec<HostInfo> = hosts.lock().unwrap().iter()
-                .filter(|h| h.online && !h.has_password && h.guests < h.max_guests && h.id != own)
-                .cloned().collect();
-            cands.sort_by(|a, b| {
-                if let Some(m) = &mine {
-                    let af = host_cc(a).as_ref() != Some(m);
-                    let bf = host_cc(b).as_ref() != Some(m);
-                    if af != bf { return bf.cmp(&af); }
-                }
-                (b.max_guests - b.guests).cmp(&(a.max_guests - a.guests))
-            });
+            // Порядок перебора — общий с терминалом (bmv_desktop::tunnel), чтобы
+            // «Старт» вёл в один и тот же хост в обеих оболочках. Страну хоста
+            // здесь определяем по IP встроенной базой, а не по самоотчёту.
+            let cands = {
+                let hs = hosts.lock().unwrap();
+                bmv_desktop::tunnel::rank_candidates(&hs, mine.as_deref(), &own, &host_cc)
+            };
             let Some(first) = cands.first() else {
                 u.set_vpn_state(3);
                 u.set_vpn_status("Нет открытого свободного хоста".into());
                 return;
             };
             begin(&u, &first.id, &display_name(first));
-            // Берём только несколько лучших по сортировке выше. Раньше в хелпер
-            // уходил ВЕСЬ каталог: при сотне свободных хостов перебор шёл бы
-            // минутами, а человек всё это время смотрел бы на «подключаюсь».
-            // Если не подошёл никто из первой пятёрки — проблема не в хостах.
-            const QUICK_MAX: usize = 5;
-            let list: Vec<(String, String)> = cands.iter().take(QUICK_MAX)
+            let list: Vec<(String, String)> = cands.iter()
                 .map(|h| (h.id.clone(), h.protocol.clone())).collect();
             hlp.quick(&coord_full.lock().unwrap(), &list);
         });
@@ -986,6 +1080,8 @@ fn wire_host(
 ) {
     let host_engine: Arc<Mutex<Option<Arc<BmvEngine>>>> = Arc::new(Mutex::new(None));
     let engine_nc = engine.clone(); // для «Новый код» (engine уходит в toggle-замыкание)
+    let engine_ap = engine.clone(); // для «Применить» (сохранение настроек)
+    let engine_tg = engine.clone(); // для сохранения настроек при старте раздачи
 
     let handle_nc = handle.clone();
     let hs_nc = host_started.clone();
@@ -994,13 +1090,21 @@ fn wire_host(
     let heng = host_engine.clone();
     let byhandle = handle.clone();
     let hs = host_started.clone();
+    let my_ip_toggle = my_ip.clone();
     ui.on_toggle_host(move || {
         let state = weak.upgrade().map(|u| u.get_host_state()).unwrap_or(0);
         if state == 1 || state == 2 {
-            if let Some(eng) = heng.lock().unwrap().take() {
+            // СНАЧАЛА рвём дерево задач раздачи, потом прощаемся с каталогом.
+            // Внутри задачи живёт heartbeat, который каждые 10с чинит запись:
+            // отправь мы bye первым — heartbeat мог бы воскресить хост-призрак.
+            if let Some(h) = ht.borrow_mut().take() { h.abort(); }
+            // Движок снимается в ЛОКАЛЬНУЮ до ветвления: guard мьютекса в
+            // скрутинии `if let` жил бы через всё тело (edition 2021), а тело
+            // тут запускает чужой код.
+            let eng = heng.lock().unwrap().take();
+            if let Some(eng) = eng {
                 byhandle.spawn(async move { let _ = tokio::time::timeout(Duration::from_secs(3), eng.host_deannounce()).await; });
             }
-            if let Some(h) = ht.borrow_mut().take() { h.abort(); }
             *hs.lock().unwrap() = None;
             set_host(&weak, 0, "Раздача выключена".into(), String::new());
             return;
@@ -1009,18 +1113,28 @@ fn wire_host(
             .map(|u| (u.get_host_name().to_string(), u.get_host_public(), u.get_host_max().max(1) as u32,
                       u.get_host_password().to_string(), u.get_host_protocol().to_string()))
             .unwrap_or_else(|| (String::new(), true, 8, String::new(), "noise".into()));
+        // Имя по умолчанию — СТРАНА по своему IP. Считаем ЗДЕСЬ, потому что
+        // раньше подстановка жила только в «Применить»: старт раздачи с пустым
+        // полем отправлял хост в ПУБЛИЧНЫЙ каталог вообще без имени, и в списке
+        // у всех он показывался голым кодом.
+        let fallback_name = default_host_name(&my_ip_toggle.lock().unwrap().clone());
         let base = engine.lock().unwrap().config().clone();
         let (weak, heng2, hs2) = (weak.clone(), heng.clone(), hs.clone());
         if let Some(ui) = weak.upgrade() {
+            save_config(&engine_tg, &ui); // раздача пошла с этими настройками — они и сохраняются
             ui.set_host_state(1);
             ui.set_host_status("Запускаюсь…".into());
             ui.set_host_error("".into());
-            ui.set_host_code("".into());
+            // КОД НЕ СТИРАЕМ. Он выдан сервером, валиден и переживает
+            // перезапуск. Стирали его здесь, а восстанавливать было некому:
+            // после неудачного старта (например, за NAT — 422) код исчезал с
+            // экрана до перезапуска приложения, хотя комментарий в set_host_err
+            // утверждал обратное.
         }
         let task = handle.spawn(async move {
             let build = |id: &str, sig: &str| {
                 let mut cfg = base.clone();
-                cfg.host.name = name.clone();
+                cfg.host.name = if name.trim().is_empty() { fallback_name.clone() } else { name.clone() };
                 cfg.host.public = public;
                 cfg.host.max_guests = max;
                 cfg.host.password = password.clone();
@@ -1061,16 +1175,11 @@ fn wire_host(
             *hs2.lock().unwrap() = Some(std::time::Instant::now());
             set_host(&weak, 2, "Раздаю интернет".into(), eng.host_id().to_string());
 
-            let mut set = tokio::task::JoinSet::new();
-            { let (e, h) = (eng.clone(), hub.clone()); set.spawn(async move { loop { tokio::time::sleep(Duration::from_secs(10)).await; let _ = e.host_heartbeat(&h).await; } }); }
-            { let (e, h) = (eng.clone(), hub.clone()); set.spawn(async move { let _ = e.host_serve_punch(h).await; }); }
-            { let (e, h) = (eng.clone(), hub.clone()); set.spawn(async move {
-                while let Some((peer, raw)) = h.accept().await {
-                    let e = e.clone();
-                    tokio::spawn(async move { let _ = e.host_run_session(peer, raw, true).await; });
-                }
-            }); }
-            while set.join_next().await.is_some() {}
+            // Всё дерево раздачи — в bmv_desktop::hosting: там сессии гостей
+            // порождаются в тот же JoinSet, поэтому abort() этой задачи гасит и
+            // УЖЕ ПОДКЛЮЧЁННЫХ гостей. Раньше сессии были отдельными spawn'ами и
+            // после «Выключить» продолжали ходить в интернет через эту машину.
+            bmv_desktop::hosting::serve_host(eng.clone(), hub).await;
             heng2.lock().unwrap().take();
             *hs2.lock().unwrap() = None;
             set_host(&weak, 0, "Раздача выключена".into(), String::new());
@@ -1096,10 +1205,14 @@ fn wire_host(
         ui.on_new_code(move || {
             store::clear_host_creds();
             let was = weak.upgrade().map(|u| u.get_host_state() == 2 || u.get_host_state() == 1).unwrap_or(false);
-            if let Some(eng) = heng2.lock().unwrap().take() {
+            // Тот же порядок, что и в «Выключить»: сперва оборвать дерево задач
+            // (в нём heartbeat), потом bye. И тот же срез движка в локальную —
+            // guard `if let` жил бы через всё тело ветки.
+            if let Some(h) = ht2.borrow_mut().take() { h.abort(); }
+            let eng = heng2.lock().unwrap().take();
+            if let Some(eng) = eng {
                 byh.spawn(async move { let _ = tokio::time::timeout(Duration::from_secs(3), eng.host_deannounce()).await; });
             }
-            if let Some(h) = ht2.borrow_mut().take() { h.abort(); }
             *hs_nc.lock().unwrap() = None;
             set_host(&weak, 0, "Раздача выключена".into(), String::new());
             if was {
@@ -1133,8 +1246,15 @@ fn wire_host(
         let (heng2, hap) = (host_engine, handle_nc);
         let my_ip2 = my_ip;
         ui.on_apply_host(move || {
-            let Some(eng) = heng2.lock().unwrap().clone() else { return };
             let Some(u) = weak.upgrade() else { return };
+            // Настройки сохраняем ВСЕГДА — и когда раздача ещё не запущена.
+            // Иначе имя, лимит, пароль, протокол и видимость жили бы только в
+            // памяти окна и терялись при выходе.
+            save_config(&engine_ap, &u);
+            // Движок раздачи — в ЛОКАЛЬНУЮ до ветвления: guard мьютекса из
+            // скрутинии `let … else` живёт до конца ВСЕГО оператора.
+            let eng = heng2.lock().unwrap().clone();
+            let Some(eng) = eng else { return }; // не раздаём — сохранили и хватит
             let (name, public, max, password, protocol) = (
                 u.get_host_name().to_string(), u.get_host_public(), u.get_host_max().max(1) as u32,
                 u.get_host_password().to_string(), u.get_host_protocol().to_string());
@@ -1195,8 +1315,17 @@ pub fn pretty_url(url: &str) -> String {
 /// обязано работать. Голому имени приписываем https: небезопасную схему нужно
 /// указать явно, случайно на неё не свалишься.
 fn full_url(input: &str) -> String {
-    let t = input.trim().trim_end_matches('/');
-    if t.starts_with("http://") || t.starts_with("https://") { t.to_string() } else { format!("https://{t}") }
+    // Схему отделяем ДО обрезки хвостовых слэшей. Иначе одинокое «https://»
+    // (человек стёр адрес, оставив схему) превращалось в «https:» и получало
+    // ВТОРУЮ схему спереди — «https://https:», и приложение честно уходило
+    // искать координатор по этому адресу.
+    let t = input.trim();
+    let (scheme, rest) = match (t.strip_prefix("https://"), t.strip_prefix("http://")) {
+        (Some(r), _) => ("https://", r),
+        (_, Some(r)) => ("http://", r),
+        _ => ("https://", t),
+    };
+    format!("{scheme}{}", rest.trim_end_matches('/'))
 }
 
 fn wire_coord(ui: &AppWindow, engine: EngineSlot, coord_full: Arc<Mutex<String>>) {
@@ -1215,6 +1344,9 @@ fn wire_coord(ui: &AppWindow, engine: EngineSlot, coord_full: Arc<Mutex<String>>
                 ui.set_coord_url(pretty_url(&url).into());
                 ui.set_coord_field(pretty_url(&url).into());
                 ui.set_coord_state(0);
+                // Выбранный сервер обязан пережить перезапуск: раньше человек
+                // вбивал свой адрес заново после каждого запуска приложения.
+                save_config(&engine, &ui);
             }
         }
     };
@@ -1359,6 +1491,10 @@ mod tests {
         assert_eq!(full_url("  bemyvpn.net/ "), "https://bemyvpn.net");
         // Явную схему не трогаем — в том числе незашифрованную.
         assert_eq!(full_url("http://10.0.0.5:3330"), "http://10.0.0.5:3330");
+        // Одна схема без адреса адресом НЕ становится — раньше отсюда выходило
+        // «https://https:», и приложение уходило искать координатор по нему.
+        assert_eq!(full_url("https://"), "https://");
+        assert_eq!(full_url("  "), "https://");
 
         // Показали → ввели обратно → адрес тот же.
         for u in ["https://bemyvpn.net", "http://10.0.0.5:3330"] {
@@ -1415,5 +1551,134 @@ mod tests {
         assert_eq!(seen[0], ("42 мс".to_string(), 42));
         assert_eq!(seen[1], ("—".to_string(), -1));
         assert_eq!(seen[2], (String::new(), -1));
+    }
+
+    /// ХОСТ БЕЗ ОБЪЯВЛЕННОГО ПРОТОКОЛА — ЭТО «ОБЫЧНЫЙ», А НЕ «БЕЗ ШИФРА».
+    ///
+    /// Он поднимает шифрованный канал (noise по умолчанию), но подписывался как
+    /// незашифрованный — самый опасный вид ошибки в подписи: человек отказывался
+    /// от безопасного хоста или, наоборот, переставал верить надписи вообще.
+    /// Тот же вход в терминале давал «Обычный» — оболочки противоречили друг другу.
+    #[test]
+    fn a_host_that_did_not_name_its_protocol_is_not_called_unencrypted() {
+        assert_eq!(proto_name(""), "Обычный");
+        assert_eq!(proto_name("noise"), "Обычный");
+        assert_eq!(proto_name("noise-aes"), "Обычный");
+        assert_eq!(proto_name("noise-obfs"), "Маскировка");
+        // «Без шифра» остаётся ровно за тем протоколом, который и правда без шифра.
+        assert_eq!(proto_name("plain"), "Без шифра");
+        // Незнакомое имя показываем как есть: врать про него мы тоже не вправе.
+        assert_eq!(proto_name("wireguard"), "wireguard");
+        // И терминальная оболочка обязана говорить о том же самом то же самое.
+        for p in ["", "noise", "noise-obfs", "plain"] {
+            assert!(
+                bmv_cli_proto_agrees(p, proto_name(p)),
+                "оболочки расходятся в подписи протокола «{p}»",
+            );
+        }
+    }
+
+    /// Что о протоколе говорит терминал (tui.rs::proto_short без эмодзи).
+    fn bmv_cli_proto_agrees(p: &str, gui: &str) -> bool {
+        let cli = match p {
+            "noise-obfs" => "Маскировка",
+            "plain" => "Без шифра",
+            "" | "noise" => "Обычный",
+            other => other,
+        };
+        cli == gui
+    }
+
+    #[test]
+    fn session_clock_reads_like_a_clock() {
+        assert_eq!(uptime_text(0), "00:00");
+        assert_eq!(uptime_text(9), "00:09");
+        assert_eq!(uptime_text(75), "01:15");
+        assert_eq!(uptime_text(3599), "59:59");
+        // После часа появляется разряд часов — и минуты остаются двузначными.
+        assert_eq!(uptime_text(3600), "1:00:00");
+        assert_eq!(uptime_text(3661), "1:01:01");
+        assert_eq!(uptime_text(36_000), "10:00:00");
+    }
+
+    fn h(id: &str, online: bool) -> HostInfo {
+        HostInfo { id: id.into(), online, ..HostInfo::default() }
+    }
+
+    /// Список показывает живых, текущий хост и свою раздачу — и ПРЯЧЕТ
+    /// собственного «призрака» после остановки.
+    ///
+    /// Призрак — это своя же запись, которая живёт в каталоге ещё несколько
+    /// секунд после bye: человек останавливал раздачу и продолжал видеть в
+    /// списке свой хост, который уже никого не пускает.
+    #[test]
+    fn the_list_hides_ones_own_ghost_but_keeps_the_host_we_are_riding() {
+        let list = vec![h("ЖИВОЙ", true), h("МЁРТВЫЙ", false), h("МОЙ", true)];
+
+        // Раздаём: свой хост виден.
+        let ids: Vec<String> =
+            visible_hosts(&list, "", "МОЙ", true).iter().map(|x| x.id.clone()).collect();
+        assert_eq!(ids, ["ЖИВОЙ", "МОЙ"]);
+
+        // Раздачу остановили: своя запись ещё в каталоге, но показывать её нельзя.
+        let ids: Vec<String> =
+            visible_hosts(&list, "", "МОЙ", false).iter().map(|x| x.id.clone()).collect();
+        assert_eq!(ids, ["ЖИВОЙ"]);
+
+        // Хост, к которому мы ПОДКЛЮЧЕНЫ, остаётся видимым даже помеченный
+        // офлайном — иначе строка исчезает при работающем VPN.
+        let ids: Vec<String> =
+            visible_hosts(&list, "МЁРТВЫЙ", "", false).iter().map(|x| x.id.clone()).collect();
+        assert_eq!(ids, ["ЖИВОЙ", "МЁРТВЫЙ", "МОЙ"]);
+        // …а офлайновый чужой хост, к которому мы НЕ подключены, не показываем.
+        let ids: Vec<String> =
+            visible_hosts(&list, "ЖИВОЙ", "", false).iter().map(|x| x.id.clone()).collect();
+        assert_eq!(ids, ["ЖИВОЙ", "МОЙ"]);
+
+        // Кода своего хоста ещё нет — пустая строка не должна прятать чужие.
+        let ids: Vec<String> =
+            visible_hosts(&list, "", "", false).iter().map(|x| x.id.clone()).collect();
+        assert_eq!(ids, ["ЖИВОЙ", "МОЙ"]);
+    }
+
+    /// Путь уходит в `do shell script … with administrator privileges`, то есть
+    /// исполняется ПОД ROOT. Апостроф в имени папки закрывал строку и всё, что
+    /// дальше, становилось командой администратора.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_quoted_path_cannot_break_out_into_a_root_command() {
+        use std::path::Path;
+        let q = |p: &str| helper::sh_quote(Path::new(p));
+
+        assert_eq!(q("/Applications/BeMyVPN.app"), "'/Applications/BeMyVPN.app'");
+        assert_eq!(q("/Users/Моё имя/BeMyVPN.app"), "'/Users/Моё имя/BeMyVPN.app'");
+        // Апостроф — тот самый случай: закрыть, вставить экранированный, открыть.
+        assert_eq!(q("/Users/o'brien/x"), r"'/Users/o'\''brien/x'");
+
+        // Проверяем НАСТОЯЩИМ /bin/sh — тем самым, который потом выполнит эту
+        // строку под администратором. Путь обязан доехать до него ОДНИМ
+        // аргументом, байт в байт, и ничего постороннего не выполниться.
+        for path in [
+            "/Applications/BeMyVPN.app",
+            "/Users/o'brien/BeMyVPN.app",
+            "/Users/Моё имя/BeMyVPN.app",
+            "/tmp/a'; touch /tmp/бемивпн-вырвался; echo '",
+            "/tmp/$(id -u) `id -u` \"кавычки\"",
+        ] {
+            let out = std::process::Command::new("/bin/sh")
+                .arg("-c")
+                .arg(format!("printf '%s' {}", q(path)))
+                .output()
+                .expect("sh");
+            assert_eq!(
+                String::from_utf8_lossy(&out.stdout),
+                path,
+                "путь доехал до администраторской команды искажённым",
+            );
+        }
+        assert!(
+            !std::path::Path::new("/tmp/бемивпн-вырвался").exists(),
+            "подставленная команда ВЫПОЛНИЛАСЬ — это была бы дыра под root",
+        );
     }
 }

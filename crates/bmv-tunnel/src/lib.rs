@@ -26,7 +26,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 mod host;
 mod linkio;
 
-pub use host::run_host;
+pub use host::{punch_target_allowed, run_host};
 
 /// MTU оверлея. 1400: оверхед инкапсуляции (Noise ~24 + UDP 8 + IP 20 ≈ 52)
 /// укладывает внешний пакет в 1500 без фрагментации, но даёт на ~9% больше

@@ -41,6 +41,16 @@ rustls-acme = { version = "0.13", default-features = false, features = ["ring", 
 # (StreamExt/SinkExt). Раньше был только под tls.
 futures-util = { version = "0.3", default-features = false, features = ["sink"] }
 
+[dev-dependencies]
+# WS-КЛИЕНТ ТОЛЬКО ДЛЯ ТЕСТОВ. Жизненный цикл сокета (кто владеет записью, что
+# происходит при переподключении, кто кого выселяет) живёт ВНУТРИ обработчика и
+# из юнит-теста недостижим: `WebSocket` axum'а руками не создать. Без настоящего
+# клиента ошибки «призрачных хостов» и гонки переподключения не воспроизводятся.
+tokio-tungstenite = { version = "0.24", default-features = false, features = ["connect", "handshake"] }
+# Виртуальные часы: таймаут отправки — 5 секунд, и ждать их по-настоящему в тесте
+# незачем (тест на зависший клиент шёл бы 5с на ровном месте).
+tokio = { version = "1", features = ["test-util"] }
+
 [features]
 default = ["tls"]
 tls = ["dep:axum-server", "dep:rustls", "dep:rustls-acme"]

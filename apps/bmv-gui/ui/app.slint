@@ -139,6 +139,7 @@ export component AppWindow inherits Window {
     in property <int> coord-hosts;
     in property <string> coord-ip;
     in property <bool> coord-is-default: true;
+    in property <string> config-error;
     in property <[string]> server-history;
     // ── навигация/ввод ──
     in-out property <int> tab: 0;            // 0 VPN · 1 Хост · 2 Сервер
@@ -149,9 +150,9 @@ export component AppWindow inherits Window {
     in-out property <string> qr-overlay: "";
     in property <image> qr-overlay-img;
 
-    callback connect(int);
+    callback connect(string);
     // Карточку хоста раскрыли — Rust замерит отклик до него.
-    callback expanded-host(int);
+    callback expanded-host(string);
     callback connect-code();
     callback quick-connect();
     callback disconnect();
@@ -202,8 +203,8 @@ export component AppWindow inherits Window {
                 host-count: root.hosts.length;
                 code <=> root.code;
                 guest-password <=> root.guest-password;
-                connect(i) => { root.connect(i); }
-                expanded-host(i) => { root.expanded-host(i); }
+                connect(id) => { root.connect(id); }
+                expanded-host(id) => { root.expanded-host(id); }
                 connect-code() => { root.connect-code(); }
                 disconnect() => { root.disconnect(); }
                 paste() => { root.paste(); }
@@ -237,6 +238,7 @@ export component AppWindow inherits Window {
                 coord-hosts: root.coord-hosts;
                 coord-ip: root.coord-ip;
                 coord-is-default: root.coord-is-default;
+                config-error: root.config-error;
                 history: root.server-history;
                 coord-field <=> root.coord-field;
                 set-coord(t) => { root.set-coord(t); }

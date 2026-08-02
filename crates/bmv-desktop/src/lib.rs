@@ -14,6 +14,9 @@ use std::task::{Context, Poll};
 use bmv_tunnel::TunParams;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
+pub mod hosting;
+pub mod tunnel;
+
 /// Создать десктопный TUN (нужен root/sudo). Android/iOS дают готовый fd мимо этого.
 /// Возвращает устройство И РЕАЛЬНОЕ имя интерфейса: на macOS ядро само выдаёт
 /// `utunN` (кастомное «bmv0» там невалидно → «invalid device name»), а маршруты
@@ -39,8 +42,20 @@ pub fn make_tun(params: &TunParams) -> Result<(TunDevice, String), String> {
     });
     let dev = tun::create_as_async(&config).map_err(|e| e.to_string())?;
     let name = dev.get_ref().name().map_err(|e| e.to_string())?;
-    Ok((TunDevice { inner: dev }, name))
+    Ok((
+        TunDevice {
+            inner: dev,
+            #[cfg(target_os = "macos")]
+            rx: vec![0u8; RX_SCRATCH],
+        },
+        name,
+    ))
 }
+
+/// Разовый буфер чтения под macOS-кадрирование. 65540 = максимальный IP-пакет
+/// плюс 4 байта AF-заголовка utun.
+#[cfg(target_os = "macos")]
+const RX_SCRATCH: usize = 65540;
 
 /// Обёртка TUN-устройства с корректным кадрированием под платформу.
 ///
@@ -52,23 +67,40 @@ pub fn make_tun(params: &TunParams) -> Result<(TunDevice, String), String> {
 /// мгновенно. На Linux/Windows — прозрачная передача (там заголовка нет).
 pub struct TunDevice {
     inner: tun::AsyncDevice,
+    /// Буфер под снятие utun-заголовка. ЖИВЁТ В СТРУКТУРЕ, а не создаётся на
+    /// каждый пакет: `[0u8; 65540]` на стеке — это 64 КБ обнуления памяти на
+    /// КАЖДЫЙ прочитанный пакет, обычно длиной 1500 байт. На гигабитном канале
+    /// это десятки гигабайт записи в никуда каждую секунду.
+    #[cfg(target_os = "macos")]
+    rx: Vec<u8>,
 }
 
 #[cfg(target_os = "macos")]
 impl AsyncRead for TunDevice {
-    fn poll_read(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut ReadBuf<'_>) -> Poll<std::io::Result<()>> {
-        // Читаем во временный буфер, снимаем 4-байтовый AF-заголовок.
-        let mut tmp = [0u8; 65540];
-        let mut rb = ReadBuf::new(&mut tmp);
-        match Pin::new(&mut self.inner).poll_read(cx, &mut rb) {
-            Poll::Ready(Ok(())) => {
-                let filled = rb.filled();
-                if filled.len() > 4 {
-                    buf.put_slice(&filled[4..]);
+    fn poll_read(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut ReadBuf<'_>) -> Poll<std::io::Result<()>> {
+        // Разделяем заимствования полей: буфер и устройство нужны одновременно.
+        let this = self.get_mut();
+        loop {
+            let n = {
+                let mut rb = ReadBuf::new(&mut this.rx);
+                match Pin::new(&mut this.inner).poll_read(cx, &mut rb) {
+                    Poll::Ready(Ok(())) => rb.filled().len(),
+                    other => return other,
                 }
-                Poll::Ready(Ok(()))
+            };
+            // РОВНО НОЛЬ — настоящий конец файла (устройство закрыли).
+            if n == 0 {
+                return Poll::Ready(Ok(()));
             }
-            other => other,
+            // 1..=4 байта — кадр без полезной нагрузки (один AF-заголовок).
+            // Раньше условие было `len > 4`, и такой кадр отдавался наверх как
+            // «прочитано 0 байт», то есть как EOF: туннель гасился на ровном
+            // месте, и со стороны это выглядело «сам отвалился». Пропускаем и
+            // читаем дальше.
+            if n > 4 {
+                buf.put_slice(&this.rx[4..n]);
+                return Poll::Ready(Ok(()));
+            }
         }
     }
 }
@@ -154,12 +186,21 @@ fn ensure_wintun() -> Result<(), String> {
         .join("BeMyVPN");
     std::fs::create_dir_all(&base).map_err(|e| format!("wintun: {e}"))?;
     write_dll(&base).map_err(|e| format!("wintun: {e}"))?;
-    let path = std::env::var_os("PATH").unwrap_or_default();
-    let mut paths: Vec<_> = std::env::split_paths(&path).collect();
-    paths.insert(0, base);
-    if let Ok(joined) = std::env::join_paths(paths) {
-        std::env::set_var("PATH", joined);
-    }
+    // Правка PATH — ГЛОБАЛЬНАЯ и не потокобезопасная (в многопоточном процессе
+    // чужой поток может читать окружение ровно в этот момент). Делаем её
+    // РОВНО ОДИН раз за процесс: повторные вызовы make_tun иначе и правили бы
+    // окружение на каждое подключение, и удлиняли PATH одним и тем же путём.
+    // ponytail: правильный путь — SetDllDirectoryW из windows-sys вместо PATH;
+    // меняем, если понадобится второй такой случай.
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let path = std::env::var_os("PATH").unwrap_or_default();
+        let mut paths: Vec<_> = std::env::split_paths(&path).collect();
+        paths.insert(0, base);
+        if let Ok(joined) = std::env::join_paths(paths) {
+            std::env::set_var("PATH", joined);
+        }
+    });
     Ok(())
 }
 

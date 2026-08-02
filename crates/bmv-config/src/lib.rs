@@ -14,6 +14,18 @@ use std::path::{Path, PathBuf};
 use bmv_common::{Error, Result};
 use serde::{Deserialize, Serialize};
 
+/// ПРОТОКОЛ ПО УМОЛЧАНИЮ — ОДИН НА ВЕСЬ ПРОЕКТ.
+///
+/// «Маскировка»: то же шифрование, что и «Обычный», плюс защита от DPI —
+/// провайдер видит просто случайные данные, а не VPN. Цена — небольшой оверхед,
+/// выигрыш в местах с блокировками важнее.
+///
+/// Константа, а не строка в трёх местах: раньше ядро для гостя подставляло
+/// «noise», а конфиг и хост — «noise-obfs», и пустая настройка из оболочки
+/// разводила стороны по разным протоколам. Со стороны человека это выглядело как
+/// 12 секунд тишины при подключении, а не как ошибка.
+pub const DEFAULT_PROTOCOL: &str = "noise-obfs";
+
 /// Корневой конфиг клиента. Один на всё приложение.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -191,10 +203,7 @@ impl Default for Config {
             // собственный (см. README → «Свой сервер»). Не захардкожено в логике —
             // это лишь дефолт, любой адрес переопределяет.
             coordinators: vec!["https://bemyvpn.net".into()],
-            // По умолчанию «Маскировка»: то же шифрование, что и «Обычный», плюс
-            // защита от DPI — провайдер видит просто случайные данные, а не VPN.
-            // Цена — небольшой оверхед; выигрыш в местах с блокировками важнее.
-            default_protocol: "noise-obfs".into(),
+            default_protocol: DEFAULT_PROTOCOL.into(), // см. константу выше
             guest: GuestConfig::default(),
             host: HostConfig::default(),
             source: None,
@@ -423,7 +432,7 @@ mod tests {
     fn defaults_are_sane() {
         let c = Config::default();
         // По умолчанию «Маскировка» — шифрование плюс защита от DPI.
-        assert_eq!(c.default_protocol, "noise-obfs");
+        assert_eq!(c.default_protocol, DEFAULT_PROTOCOL);
         assert_eq!(c.guest.dns, "tunnel");
         assert_eq!(c.protocols.reality.sni, "www.mi.com");
         // Лимит подбирается от числа ядер, поэтому проверяем не число, а рамки:
@@ -432,19 +441,26 @@ mod tests {
         assert_eq!(c.host.max_guests, suggested_max_guests());
     }
 
-    /// Авто-сохранение: save() → user_path() → load обратно с теми же значениями.
+    /// Авто-сохранение: save() → load обратно с теми же значениями, и файл виден
+    /// ТОЛЬКО владельцу.
+    ///
+    /// Изолированно, без окружения: раньше тест подменял XDG_CONFIG_HOME, а это
+    /// переменная всего ПРОЦЕССА — соседние тесты, идущие параллельно, на это
+    /// время считали своим конфигом временную папку этого теста. Здесь путь задан
+    /// прямо через `source` (тот же код сохранения, что и в бою).
     #[test]
-    fn save_roundtrip_user_path() {
-        let dir = std::env::temp_dir().join(format!("bmv-cfg-test-{}", std::process::id()));
-        std::env::set_var("XDG_CONFIG_HOME", &dir);
+    fn save_roundtrip_and_owner_only_permissions() {
+        let dir = std::env::temp_dir().join(format!("bmv-cfg-test-{}-{:?}", std::process::id(), std::thread::current().id()));
+        let path = dir.join("config.toml");
         let mut c = Config {
-            default_protocol: "noise-obfs".into(),
+            default_protocol: DEFAULT_PROTOCOL.into(),
+            source: Some(path.clone()),
             ..Default::default()
         };
         c.host.max_guests = 42;
         c.save().unwrap();
-        let loaded = Config::from_file(&Config::user_path()).unwrap();
-        assert_eq!(loaded.default_protocol, "noise-obfs");
+        let loaded = Config::from_file(&path).unwrap();
+        assert_eq!(loaded.default_protocol, DEFAULT_PROTOCOL);
         assert_eq!(loaded.host.max_guests, 42);
         // В конфиге лежат пароль хоста и token владения записью в каталоге —
         // читать его должен ТОЛЬКО владелец, иначе на общей машине сосед забирает
@@ -452,11 +468,19 @@ mod tests {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let mode = std::fs::metadata(Config::user_path()).unwrap().permissions().mode() & 0o777;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
             assert_eq!(mode, 0o600, "конфиг с паролем доступен не только владельцу: {mode:o}");
         }
-        std::env::remove_var("XDG_CONFIG_HOME");
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Пользовательский путь: имя файла и папка — те, что ждёт остальной проект
+    /// (сюда пишет авто-сохранение, отсюда читает старт).
+    #[test]
+    fn user_path_points_into_bemyvpn_dir() {
+        let p = Config::user_path();
+        assert!(p.ends_with("bemyvpn/config.toml"), "необычный путь конфига: {}", p.display());
+        assert!(p.is_absolute() || p.starts_with("."), "путь ниоткуда: {}", p.display());
     }
 
 

@@ -6,27 +6,45 @@
 //! диалог пароля (macOS osascript «with administrator privileges», Linux pkexec,
 //! Windows UAC) — как система показывает запрос при установке VPN-профиля на iOS.
 //!
+//! Файлы обмена (порт, токен, маркер «туннель поднят») лежат в СВОЁМ каталоге
+//! 0700 во временной папке, а не прямо в ней: на Linux /tmp общий для всех
+//! пользователей машины, и по предсказуемому пути сосед подкладывал симлинк на
+//! чужой файл — писал-то по нему root. См. `private_dir` и `write_nofollow`.
+//!
 //! Общение — по локальному TCP (127.0.0.1, случайный порт) с токеном (файл 0600):
 //!   GUI → хелпер:  CONNECT\t<coord>\t<host>\t<pw>\t<proto>
 //!                  QUICK\t<coord>\t<host1>\t<proto1>\t<host2>\t<proto2>…
 //!                  STOP
 //!   хелпер → GUI:  STATE\t<n>\t<id>\t<err>     (n: 0 выкл·1 подключаюсь·2 готово·3 ошибка)
 //!
-//! Хелпер обслуживает ОДНУ управляющую сессию (это приложение). Закрылось
-//! соединение (GUI вышел) → хелпер шлёт BYE, откатывает маршруты и выходит:
-//! «повисшего» root-VPN не остаётся. root запрашивается ОДИН раз за сессию.
+//! Хелпер обслуживает ОДНУ УДОСТОВЕРЕННУЮ управляющую сессию (это приложение),
+//! но подключения принимает В ЦИКЛЕ: неудачная попытка соседа больше не роняет
+//! его до прихода настоящего GUI. Закрылось соединение (GUI вышел) → хелпер
+//! шлёт BYE, откатывает маршруты и выходит: «повисшего» root-VPN не остаётся.
+//! root запрашивается ОДИН раз за сессию.
 
 use std::io::{BufRead, BufReader, Write};
 use std::sync::Arc;
 use std::time::Duration;
 
-use bmv_config::Config;
-use bmv_core::BmvEngine;
+use bmv_desktop::tunnel::{self, State};
 
 // ── Root-сторона: сам хелпер ─────────────────────────────────────────────────
 
+/// Годится ли предъявленный токен.
+///
+/// Отдельной функцией потому, что ошибиться тут стоит дороже всего в программе:
+/// хелпер — это root, который по команде CONNECT заворачивает ВЕСЬ трафик
+/// машины на указанный ему координатор. Раньше токен читался как
+/// `read_to_string(...).unwrap_or_default()`, то есть при любом сбое чтения
+/// становился ПУСТОЙ строкой — и тогда любой локальный процесс, приславший
+/// пустую первую строку, получал этого root-хелпера в своё распоряжение.
+fn token_ok(expected: &str, got: &str) -> bool {
+    !expected.is_empty() && got.trim() == expected
+}
+
 /// Запустить хелпер (мы — root). Слушает 127.0.0.1:0, порт пишет в port_file,
-/// обслуживает одну сессию и выходит. Никогда не возвращается.
+/// обслуживает одну УДОСТОВЕРЕННУЮ сессию и выходит. Никогда не возвращается.
 ///
 /// Только Unix (macOS/Linux): там GUI под обычным пользователем поднимает ЭТОТ
 /// же бинарь отдельным root-процессом. На Windows схема иная — один процесс под
@@ -34,14 +52,26 @@ use bmv_core::BmvEngine;
 #[cfg(not(windows))]
 pub fn run_helper(port_file: &str, token_file: &str, up_file: &str) -> ! {
     let token = std::fs::read_to_string(token_file).unwrap_or_default().trim().to_string();
+    // Нет токена — нет и работы. Продолжить значило бы поднять root-хелпера,
+    // который принимает команды от кого угодно.
+    if token.is_empty() {
+        std::process::exit(1);
+    }
     let up_file = up_file.to_string();
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().expect("rt");
     rt.block_on(async move {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
         let port = listener.local_addr().map(|a| a.port()).unwrap_or(0);
-        let _ = std::fs::write(port_file, port.to_string());
-        if let Ok((conn, _)) = listener.accept().await {
-            serve(conn, token, up_file.clone()).await;
+        let _ = write_nofollow(std::path::Path::new(port_file), &port.to_string());
+        // ЦИКЛ, а не одно соединение. Раньше хелпер принимал ровно первое
+        // подключение: сосед по машине, успевший подключиться раньше нашего GUI
+        // и приславший мусор вместо токена, ронял хелпера — и VPN не поднимался
+        // вовсе, причём выглядело это как «не сработал запрос пароля».
+        // Выходим только когда закончилась НАСТОЯЩАЯ сессия (GUI закрылся).
+        while let Ok((conn, _)) = listener.accept().await {
+            if serve(conn, &token, up_file.clone()).await {
+                break;
+            }
         }
         let _ = std::fs::remove_file(&up_file);
     });
@@ -61,23 +91,76 @@ fn mirror_state(up_file: &str, msg: &str) {
     let f: Vec<&str> = msg.trim().split('\t').collect();
     if f.first() == Some(&"STATE") {
         if f.get(1) == Some(&"2") {
-            let _ = std::fs::write(up_file, f.get(2).copied().unwrap_or(""));
+            let _ = write_nofollow(std::path::Path::new(up_file), f.get(2).copied().unwrap_or(""));
         } else {
             let _ = std::fs::remove_file(up_file);
         }
     }
 }
 
+/// Записать файл, НЕ ИДЯ ПО СИМЛИНКУ.
+///
+/// Этим пишет root-хелпер, а раньше здесь стоял `std::fs::write`, который по
+/// симлинку идёт. На Linux /tmp общий для всех пользователей машины, поэтому
+/// локальный сосед мог заранее положить по нашему пути ссылку на любой
+/// root-овый файл — и root покорно затирал его нашим содержимым. Тем же файлом
+/// сосед рисовал в чужом окне ложное «подключено»: тик-цикл в main.rs считает
+/// этот файл авторитетом.
+///
+/// O_NOFOLLOW — вторая линия обороны (первая — приватный каталог 0700, см.
+/// `private_dir`): открытие ПАДАЕТ, если по пути оказался симлинк, вместо того
+/// чтобы молча писать в чужой файл. На Windows временный каталог и так
+/// пер-пользовательский, флага там нет — пишем обычно.
+fn write_nofollow(path: &std::path::Path, data: &str) -> std::io::Result<()> {
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.custom_flags(libc::O_NOFOLLOW);
+        opts.mode(0o600); // права ставятся В МОМЕНТ создания, а не chmod'ом после
+    }
+    let mut f = opts.open(path)?;
+    f.write_all(data.as_bytes())
+}
+
+/// Каталог обмена с root-хелпером — ТОЛЬКО НАШ (0700, случайное имя).
+///
+/// Все три файла (порт, токен, маркер «туннель поднят») лежат здесь, а не прямо
+/// в общем /tmp. В каталог с правами 0700 сосед не войдёт и симлинк внутри не
+/// подложит, поэтому подмена цели записи невозможна ещё до всяких O_NOFOLLOW.
+/// Имя случайное, а не по pid: pid переиспользуются, и остаток от прошлого
+/// запуска (в т.ч. чужого) мешал бы создать каталог заново.
+pub fn private_dir() -> std::path::PathBuf {
+    let stamp: u128 = {
+        use rand::Rng;
+        rand::thread_rng().gen()
+    };
+    let dir = std::env::temp_dir().join(format!("bemyvpn-{stamp:032x}"));
+    let mut b = std::fs::DirBuilder::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        b.mode(0o700);
+    }
+    // create (не create_all) и без recursive: имя случайное, столкновение = чужой
+    // каталог, и тогда лучше упасть на записи, чем писать в него.
+    let _ = b.create(&dir);
+    dir
+}
+
+/// Обслужить одно управляющее соединение. `true` — это была НАША сессия (можно
+/// выходить), `false` — не удостоверился, ждём следующего.
 #[cfg(not(windows))]
-async fn serve(conn: tokio::net::TcpStream, token: String, up_file: String) {
+async fn serve(conn: tokio::net::TcpStream, token: &str, up_file: String) -> bool {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader as ABufReader};
     let (rd, mut wr) = conn.into_split();
     let mut lines = ABufReader::new(rd).lines();
 
     // Первая строка — токен.
     match lines.next_line().await {
-        Ok(Some(t)) if t.trim() == token => {}
-        _ => return,
+        Ok(Some(t)) if token_ok(token, &t) => {}
+        _ => return false,
     }
 
     // Канал исходящих STATE-строк (пишут туннель-задачи, дренит этот цикл).
@@ -98,7 +181,7 @@ async fn serve(conn: tokio::net::TcpStream, token: String, up_file: String) {
                         let tx = tx.clone();
                         tokio::spawn(async move {
                             let cands = vec![(host, pw, proto)];
-                            run_candidates(coord, cands, tx, stop).await;
+                            tunnel::run_candidates(guest_config(coord), cands, move |s| { let _ = tx.send(state_line(&s)); }, stop).await;
                         });
                     }
                     Some("QUICK") if f.len() >= 4 => {
@@ -106,15 +189,15 @@ async fn serve(conn: tokio::net::TcpStream, token: String, up_file: String) {
                         let stop = Arc::new(tokio::sync::Notify::new());
                         current = Some(stop.clone());
                         let coord = f[1].to_string();
-                        let mut cands = Vec::new();
-                        let mut i = 2;
-                        while i + 1 < f.len() { cands.push((f[i].to_string(), String::new(), f[i + 1].to_string())); i += 2; }
+                        let cands = parse_quick(&f);
                         let tx = tx.clone();
-                        tokio::spawn(async move { run_candidates(coord, cands, tx, stop).await; });
+                        tokio::spawn(async move {
+                            tunnel::run_candidates(guest_config(coord), cands, move |s| { let _ = tx.send(state_line(&s)); }, stop).await;
+                        });
                     }
                     Some("STOP") => {
                         stop_current(&mut current).await;
-                        let _ = tx.send("STATE\t0\t\t".to_string());
+                        let _ = tx.send(state_line(&State::Off));
                     }
                     _ => {}
                 }
@@ -131,6 +214,35 @@ async fn serve(conn: tokio::net::TcpStream, token: String, up_file: String) {
     let _ = std::fs::remove_file(&up_file);
     // Небольшая пауза, чтобы BYE успел уйти до выхода процесса.
     tokio::time::sleep(Duration::from_millis(250)).await;
+    true
+}
+
+/// Конфиг гостя для хелпера: кроме адреса координатора у него ничего и нет —
+/// root-процесс запускается с пустым окружением и файл настроек пользователя не
+/// читает (да и не должен: это чужой файл под другими правами).
+fn guest_config(coord: String) -> bmv_config::Config {
+    bmv_config::Config { coordinators: vec![coord], ..Default::default() }
+}
+
+/// Состояние туннеля → строка проводного протокола `STATE\t<n>\t<id>\t<err>`.
+fn state_line(s: &State) -> String {
+    match s {
+        State::Connecting(id) => format!("STATE\t1\t{id}\t"),
+        State::Up(id) => format!("STATE\t2\t{id}\t"),
+        State::Off => "STATE\t0\t\t".to_string(),
+        State::Failed(e) => format!("STATE\t3\t\t{e}"),
+    }
+}
+
+/// Разобрать команду QUICK: пары (host, proto) начиная с поля 2.
+fn parse_quick(f: &[&str]) -> Vec<(String, String, String)> {
+    let mut cands = Vec::new();
+    let mut i = 2;
+    while i + 1 < f.len() {
+        cands.push((f[i].to_string(), String::new(), f[i + 1].to_string()));
+        i += 2;
+    }
+    cands
 }
 
 async fn stop_current(current: &mut Option<Arc<tokio::sync::Notify>>) {
@@ -139,87 +251,6 @@ async fn stop_current(current: &mut Option<Arc<tokio::sync::Notify>>) {
         // Дать задаче закрыть канал (BYE) и снять RouteGuard.
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
-}
-
-/// Поводок для кандидата, ПОСЛЕ которого есть кого попробовать ещё. Внутри
-/// `guest_establish` на пробивание NAT отведено 12с — щедро, потому что двум
-/// мобильным NAT столько и нужно. Но когда в очереди ждут живые хосты, сидеть
-/// эти 12с у молчащего смысла нет: дешевле взять следующего. 5с покрывают
-/// запрос к координатору (доли секунды по уже открытому сокету) плюс несколько
-/// раундов пробивания — обычная пара NAT укладывается за секунду-две.
-const TRY_NEXT_AFTER: Duration = Duration::from_secs(5);
-/// Поводок для ПОСЛЕДНЕЙ попытки — запасных больше нет, поэтому даём пробиванию
-/// доработать полностью (12с) с запасом на подготовку. Без этого у человека за
-/// строгим NAT умная кнопка не срабатывала бы НИКОГДА, сколько ни жми.
-const LAST_CHANCE: Duration = Duration::from_secs(15);
-
-/// Перебрать кандидатов: первый, к кому удалось подключиться, — запускаем туннель.
-/// Порядок задаёт GUI (лучшие первыми), поводок — константы выше. Умный «Старт»
-/// на iOS перебирает так же.
-async fn run_candidates(
-    coord: String,
-    cands: Vec<(String, String, String)>, // (host, pw, proto)
-    tx: tokio::sync::mpsc::UnboundedSender<String>,
-    stop: Arc<tokio::sync::Notify>,
-) {
-    let cfg = Config { coordinators: vec![coord], ..Default::default() };
-    let eng = Arc::new(BmvEngine::from_config(cfg));
-
-    let total = cands.len();
-    for (i, (host, pw, proto)) in cands.into_iter().enumerate() {
-        let _ = tx.send(format!("STATE\t1\t{host}\t"));
-        let pw_opt = (!pw.is_empty()).then_some(pw.clone());
-        let proto_opt = (!proto.is_empty()).then_some(proto.clone());
-        let budget = if i + 1 == total { LAST_CHANCE } else { TRY_NEXT_AFTER };
-        let est_fut = tokio::time::timeout(budget, eng.guest_establish(&host, pw_opt.as_deref(), proto_opt.as_deref()));
-        tokio::pin!(est_fut);
-        let est = tokio::select! {
-            _ = stop.notified() => {
-                // Отключились ВО ВРЕМЯ подключения: даём establish короткую фору —
-                // если link успел подняться, шлём BYE (хост мог уже завести сессию).
-                if let Ok(Ok(Ok((_p, link)))) = tokio::time::timeout(Duration::from_secs(2), &mut est_fut).await {
-                    let _ = tokio::time::timeout(Duration::from_millis(600), link.close()).await;
-                }
-                let _ = tx.send("STATE\t0\t\t".to_string());
-                return;
-            }
-            r = &mut est_fut => r,
-        };
-        if let Ok(Ok((peer, link))) = est {
-            run_tunnel(&host, peer, link, &tx, &stop).await;
-            return;
-        }
-    }
-    let _ = tx.send("STATE\t3\t\tне удалось подключиться".to_string());
-}
-
-async fn run_tunnel(
-    host: &str,
-    peer: std::net::SocketAddr,
-    link: Box<dyn bmv_common::Link>,
-    tx: &tokio::sync::mpsc::UnboundedSender<String>,
-    stop: &Arc<tokio::sync::Notify>,
-) {
-    let params = bmv_tunnel::TunParams::guest();
-    let (device, ifname) = match bmv_desktop::make_tun(&params) {
-        Ok(d) => d,
-        Err(e) => { let _ = tx.send(format!("STATE\t3\t\tTUN: {e}")); return; }
-    };
-    let _guard = match bmv_desktop::RouteGuard::install(peer.ip(), &ifname) {
-        Ok(g) => g,
-        Err(e) => { let _ = tx.send(format!("STATE\t3\t\tмаршрут: {e}")); return; }
-    };
-    let _ = tx.send(format!("STATE\t2\t{host}\t"));
-    let link_arc: Arc<dyn bmv_common::Link> = Arc::from(link);
-    tokio::select! {
-        _ = bmv_tunnel::run_guest(device, link_arc.clone()) => {}
-        _ = stop.notified() => {}
-    }
-    // ВСЕГДА прощаемся (BYE) — и при «Стоп», и если run_guest завершился сам
-    // (обрыв/ошибка). Хост увидит EOF сразу и снимет гостя из счётчика, не ожидая
-    // keepalive-таймаута (8с). BYE идёт ДО снятия RouteGuard (_guard жив до конца).
-    let _ = tokio::time::timeout(Duration::from_millis(600), link_arc.close()).await;
-    let _ = tx.send("STATE\t0\t\t".to_string()); // guard снимется здесь (Drop) — маршруты откатятся
 }
 
 // ── Клиентская сторона (в GUI под пользователем) ─────────────────────────────
@@ -327,18 +358,20 @@ async fn inproc_serve(
                         current = Some(stop.clone());
                         let (coord, host, pw, proto) = (f[1].to_string(), f[2].to_string(), f[3].to_string(), f[4].to_string());
                         let tx = tx.clone();
-                        tokio::spawn(async move { run_candidates(coord, vec![(host, pw, proto)], tx, stop).await; });
+                        tokio::spawn(async move {
+                            tunnel::run_candidates(guest_config(coord), vec![(host, pw, proto)], move |s| { let _ = tx.send(state_line(&s)); }, stop).await;
+                        });
                     }
                     Some("QUICK") if f.len() >= 4 => {
                         stop_current(&mut current).await;
                         let stop = Arc::new(tokio::sync::Notify::new());
                         current = Some(stop.clone());
                         let coord = f[1].to_string();
-                        let mut cands = Vec::new();
-                        let mut i = 2;
-                        while i + 1 < f.len() { cands.push((f[i].to_string(), String::new(), f[i + 1].to_string())); i += 2; }
+                        let cands = parse_quick(&f);
                         let tx = tx.clone();
-                        tokio::spawn(async move { run_candidates(coord, cands, tx, stop).await; });
+                        tokio::spawn(async move {
+                            tunnel::run_candidates(guest_config(coord), cands, move |s| { let _ = tx.send(state_line(&s)); }, stop).await;
+                        });
                     }
                     Some("STOP") => {
                         stop_current(&mut current).await;
@@ -401,10 +434,11 @@ fn spawn_and_connect(on_state: Arc<dyn Fn(i32, String, String) + Send + Sync>, u
         .map(std::path::PathBuf::from)
         .map_or_else(std::env::current_exe, Ok)
         .map_err(|e| e.to_string())?;
-    let dir = std::env::temp_dir();
-    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
-    let port_file = dir.join(format!("bemyvpn-port-{stamp}"));
-    let token_file = dir.join(format!("bemyvpn-tok-{stamp}"));
+    // Свой каталог 0700 на каждый подъём хелпера: и порт, и токен лежат там, где
+    // соседу по машине нечего подложить (см. private_dir).
+    let dir = private_dir();
+    let port_file = dir.join("port");
+    let token_file = dir.join("token");
     // Токен — из криптостойкого генератора, а НЕ из времени и pid, как было.
     // По этому токену root-хелпер принимает команду CONNECT с ЛЮБЫМ адресом
     // координатора, то есть угадавший его сосед по машине уводит весь трафик
@@ -431,6 +465,7 @@ fn spawn_and_connect(on_state: Arc<dyn Fn(i32, String, String) + Send + Sync>, u
     }
     let _ = std::fs::remove_file(&token_file);
     let _ = std::fs::remove_file(&port_file);
+    let _ = std::fs::remove_dir(&dir);
     if port == 0 {
         return Err("привилегии не получены (пароль отменён?)".into());
     }
@@ -466,15 +501,15 @@ fn clean(s: &str) -> String {
     s.chars().filter(|c| *c != '\t' && *c != '\n' && *c != '\r').collect()
 }
 
+/// Файл только для владельца — права 0600 ставятся В МОМЕНТ СОЗДАНИЯ.
+///
+/// Раньше здесь было `fs::write` + `set_permissions` следом, и между этими двумя
+/// строками файл существовал с правами по умолчанию (0644). Микросекунды — но
+/// содержимое этого файла и есть токен управления root-хелпером, а сосед по
+/// машине может просто крутить открытие в цикле.
 #[cfg(not(windows))]
 fn write_private(path: &std::path::Path, data: &str) -> Result<(), String> {
-    std::fs::write(path, data).map_err(|e| e.to_string())?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
-    }
-    Ok(())
+    write_nofollow(path, data).map_err(|e| e.to_string())
 }
 
 // ── Запуск root-процесса с системным запросом пароля ─────────────────────────
@@ -485,7 +520,7 @@ fn write_private(path: &std::path::Path, data: &str) -> Result<(), String> {
 /// апостроф в имени папки был готовой подстановкой чужого кода под root.
 /// Приём стандартный: закрыть строку, вставить экранированную кавычку, открыть снова.
 #[cfg(target_os = "macos")]
-fn sh_quote(p: &std::path::Path) -> String {
+pub fn sh_quote(p: &std::path::Path) -> String {
     format!("'{}'", p.display().to_string().replace('\'', r"'\''"))
 }
 
@@ -513,3 +548,134 @@ fn elevate_launch(exe: &std::path::Path, port_file: &std::path::Path, token_file
 // На Windows отдельного root-процесса нет: приложение уже под админом (манифест
 // UAC), туннель качается в самом процессе (см. `inproc_serve`). Поэтому здесь
 // нет windows-варианта elevate_launch — он не нужен.
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// ПУСТОЙ ТОКЕН НЕ ГОДИТСЯ НИКОГДА.
+    ///
+    /// Токен читается из файла через `unwrap_or_default()`, то есть сбой чтения
+    /// превращает его в "". Со сравнением «строка == строка» такой хелпер
+    /// принимал ЛЮБОГО, кто прислал пустую первую строку, — а принимает он
+    /// команду CONNECT с произвольным координатором, то есть весь трафик машины.
+    #[test]
+    fn an_empty_token_never_authenticates_anyone() {
+        assert!(!token_ok("", ""), "пустой токен обязан отвергать всех");
+        assert!(!token_ok("", "\n"));
+        assert!(!token_ok("", "что угодно"));
+        assert!(!token_ok("секрет", ""));
+        assert!(!token_ok("секрет", "не секрет"));
+        // Настоящий токен по-прежнему работает, в том числе с переводом строки.
+        assert!(token_ok("секрет", "секрет"));
+        assert!(token_ok("секрет", " секрет\n"));
+    }
+
+    /// Запись НЕ ИДЁТ ПО СИМЛИНКУ — иначе root затирает чужой файл.
+    ///
+    /// Ровно эта атака и была возможна: файлы обмена лежали в общем /tmp, писал
+    /// их root через `std::fs::write`, а сосед по машине заранее клал по этому
+    /// пути ссылку на любой root-овый файл.
+    #[cfg(unix)]
+    #[test]
+    fn a_root_write_refuses_to_follow_a_planted_symlink() {
+        let dir = private_dir();
+        let victim = dir.join("чужой-важный-файл");
+        std::fs::write(&victim, "не трогать").unwrap();
+        let trap = dir.join("маркер");
+        std::os::unix::fs::symlink(&victim, &trap).unwrap();
+
+        let res = write_nofollow(&trap, "ABCD1234");
+        assert!(res.is_err(), "запись по симлинку обязана падать, а не менять цель");
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "не трогать");
+
+        // Обычный файл пишется как ни в чём не бывало, и сразу с правами 0600.
+        let plain = dir.join("порт");
+        write_nofollow(&plain, "51234").unwrap();
+        assert_eq!(std::fs::read_to_string(&plain).unwrap(), "51234");
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&plain).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "файл не должен ни мгновения существовать читаемым всем");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Каталог обмена закрыт для соседей по машине.
+    #[cfg(unix)]
+    #[test]
+    fn the_exchange_directory_is_ours_alone() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = private_dir();
+        let mode = std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700, "в каталог 0777 сосед подложит симлинк ещё до записи");
+        // Два вызова подряд не должны дать один и тот же каталог.
+        let other = private_dir();
+        assert_ne!(dir, other);
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&other);
+    }
+
+    /// Разделители протокола не должны приезжать внутри поля.
+    ///
+    /// Поля разделяются табом, команды — переводом строки, и эти же строки
+    /// человек может вставить из буфера обмена (код сети, пароль, адрес
+    /// сервера). Уцелевший таб превратил бы пароль в лишнее поле команды, а
+    /// перевод строки — во ВТОРУЮ команду root-хелперу.
+    #[test]
+    fn field_separators_never_survive_inside_a_field() {
+        assert_eq!(clean("AB\tCD"), "ABCD");
+        assert_eq!(clean("STOP\nCONNECT\thttp://зло"), "STOPCONNECThttp://зло");
+        assert_eq!(clean("пароль\r\n"), "пароль");
+        // Обычный текст не портим, включая пробелы и юникод.
+        assert_eq!(clean("мой пароль 123"), "мой пароль 123");
+    }
+
+    /// Маркер «туннель поднят» ставится только по состоянию 2 и снимается всеми
+    /// остальными — окно верит этому файлу как единственному авторитету.
+    #[test]
+    fn the_up_marker_follows_the_tunnel_and_nothing_else() {
+        let dir = private_dir();
+        let up = dir.join("up");
+        let path = up.to_string_lossy().to_string();
+
+        mirror_state(&path, "STATE\t2\tAB12\t");
+        assert_eq!(std::fs::read_to_string(&up).unwrap(), "AB12");
+
+        mirror_state(&path, "STATE\t1\tAB12\t"); // «подключаюсь» — это ещё не туннель
+        assert!(!up.exists());
+
+        mirror_state(&path, "STATE\t2\tCD34\t");
+        assert_eq!(std::fs::read_to_string(&up).unwrap(), "CD34");
+        mirror_state(&path, "STATE\t0\t\t");
+        assert!(!up.exists());
+
+        // Чужая строка не трогает маркер вообще.
+        mirror_state(&path, "STATE\t2\tEF56\t");
+        mirror_state(&path, "ЧУШЬ\t2\t\t");
+        assert_eq!(std::fs::read_to_string(&up).unwrap(), "EF56");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Разбор STATE-строк и команды QUICK — проводной протокол с root-хелпером.
+    #[test]
+    fn the_wire_protocol_round_trips() {
+        assert_eq!(state_line(&State::Connecting("AB12".into())), "STATE\t1\tAB12\t");
+        assert_eq!(state_line(&State::Up("AB12".into())), "STATE\t2\tAB12\t");
+        assert_eq!(state_line(&State::Off), "STATE\t0\t\t");
+        assert_eq!(state_line(&State::Failed("нет NAT".into())), "STATE\t3\t\tнет NAT");
+
+        let f: Vec<&str> = "QUICK\thttps://s\tH1\tnoise\tH2\tnoise-obfs".split('\t').collect();
+        assert_eq!(
+            parse_quick(&f),
+            vec![
+                ("H1".to_string(), String::new(), "noise".to_string()),
+                ("H2".to_string(), String::new(), "noise-obfs".to_string()),
+            ]
+        );
+        // Нечётный хвост (протокол не пришёл) не должен ни паниковать, ни
+        // подставлять чужой протокол следующему хосту.
+        let f: Vec<&str> = "QUICK\thttps://s\tH1".split('\t').collect();
+        assert!(parse_quick(&f).is_empty());
+    }
+}

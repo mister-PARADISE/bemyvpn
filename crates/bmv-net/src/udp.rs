@@ -9,6 +9,7 @@
 
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use parking_lot::Mutex;
 use std::time::{Duration, Instant};
@@ -84,31 +85,51 @@ fn fnv1a(data: &[u8]) -> u64 {
     }
     h
 }
-/// Пер-хостовые токены (punch, pack) из host_id. FNV-1a — детерминирован и
-/// СТАБИЛЕН между версиями/платформами (std DefaultHasher этого НЕ гарантирует,
-/// а гость и хост могут быть на разных сборках).
-pub fn punch_tokens(host_id: &str) -> (Vec<u8>, Vec<u8>) {
-    let punch = fnv1a(format!("bmv-punch:{host_id}").as_bytes()).to_le_bytes().to_vec();
-    let pack = fnv1a(format!("bmv-pack:{host_id}").as_bytes()).to_le_bytes().to_vec();
-    (punch, pack)
-}
-
-/// Токены ПРОБЫ ЗАДЕРЖКИ (ping, pong) — чтобы гость мог узнать, далеко ли хост,
-/// ДО подключения к нему.
+/// ЧЕТЫРЕ пер-хостовых токена одной сессии пробивания, выведенные из host_id.
 ///
-/// Зачем отдельные, а не те же punch/pack: `PUNCH` на хосте заводит СЕССИЮ —
+/// Один Copy-тип вместо четырёх `Vec<u8>`, которые раньше поодиночке кочевали по
+/// семи аргументам конструкторов (`#[allow(too_many_arguments)]` был именно про
+/// это) и клонировались на каждого гостя. 32 байта на стеке — копия дешевле
+/// счётчика ссылок, а перепутать местами `pack` и `pong` больше нельзя.
+///
+/// FNV-1a — детерминирован и СТАБИЛЕН между версиями/платформами (std
+/// DefaultHasher этого НЕ гарантирует, а гость и хост могут быть на разных
+/// сборках).
+///
+/// Зачем ping/pong отдельно от punch/pack: `PUNCH` на хосте заводит СЕССИЮ —
 /// создаёт запись пира, канал и отдаёт «гостя» в accept-цикл. Такой «гость»
 /// никогда не пожмёт руку, провисит до таймаута рукопожатия (6с) и всё это время
 /// будет держать слот в воротах анти-флуда. Если каждый гость станет так мерить
-/// задержку до всех хостов в списке, хосты захлебнутся ничем.
-///
-/// Ответ на `ping` НЕ СОЗДАЁТ НИЧЕГО: восемь байт пришло — восемь ушло. Усиления
-/// нет (ответ ровно того же размера), состояния нет, поэтому злоупотребить этим
-/// сложнее, чем уже существующим `PUNCH`.
-pub fn ping_tokens(host_id: &str) -> (Vec<u8>, Vec<u8>) {
-    let ping = fnv1a(format!("bmv-ping:{host_id}").as_bytes()).to_le_bytes().to_vec();
-    let pong = fnv1a(format!("bmv-pong:{host_id}").as_bytes()).to_le_bytes().to_vec();
-    (ping, pong)
+/// задержку до всех хостов в списке, хосты захлебнутся ничем. Ответ на `ping` НЕ
+/// СОЗДАЁТ НИЧЕГО: восемь байт пришло — восемь ушло (усиления нет, состояния нет).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct PunchTokens {
+    /// «Я пробиваюсь к тебе».
+    pub punch: [u8; 8],
+    /// «Слышу тебя» — подтверждение обратного пути.
+    pub pack: [u8; 8],
+    /// «Ты далеко?» — проба задержки, состояния не создаёт.
+    pub ping: [u8; 8],
+    /// Ответ на пробу.
+    pub pong: [u8; 8],
+}
+
+impl PunchTokens {
+    /// Вывести все четыре токена из идентификатора хоста.
+    pub fn for_host(host_id: &str) -> Self {
+        let t = |kind: &str| fnv1a(format!("{kind}:{host_id}").as_bytes()).to_le_bytes();
+        PunchTokens {
+            punch: t("bmv-punch"),
+            pack: t("bmv-pack"),
+            ping: t("bmv-ping"),
+            pong: t("bmv-pong"),
+        }
+    }
+
+    /// Это «хвост» фазы пробивания, а не данные? (punch/pack фильтруются в recv)
+    fn is_punch_noise(&self, data: &[u8]) -> bool {
+        data == self.punch || data == self.pack
+    }
 }
 
 
@@ -130,13 +151,13 @@ pub async fn probe_rtt(host_id: &str, endpoints: &[String], timeout: Duration) -
     if addrs.is_empty() {
         return None;
     }
-    let (ping, pong) = ping_tokens(host_id);
+    let t = PunchTokens::for_host(host_id);
     // Свой одноразовый сокет: чужой (хаб хоста или туннель) трогать нельзя —
     // ответы на пробу смешались бы с рабочим трафиком.
     let sock = bind_udp("0.0.0.0:0".parse().ok()?).await.ok()?;
     let started = std::time::Instant::now();
     for a in &addrs {
-        let _ = sock.send_to(&ping, a).await;
+        let _ = sock.send_to(&t.ping, a).await;
     }
     let mut buf = [0u8; 64];
     let deadline = tokio::time::Instant::now() + timeout;
@@ -148,7 +169,7 @@ pub async fn probe_rtt(host_id: &str, endpoints: &[String], timeout: Duration) -
         match tokio::time::timeout(left, sock.recv_from(&mut buf)).await {
             Ok(Ok((n, from))) => {
                 // Чужие датаграммы (сканеры, поздние ответы) не считаем за ответ.
-                if buf[..n] == pong[..] && addrs.contains(&from) {
+                if buf[..n] == t.pong && addrs.contains(&from) {
                     return Some(started.elapsed());
                 }
             }
@@ -181,17 +202,16 @@ impl UdpEndpoint {
         stun::reflexive_addr_on(&self.sock, servers, wait).await
     }
 
-    /// ГОСТЬ: отдать Link после пробития. `punch`/`pack` — пер-хостовые токены
-    /// фазы пробивания (их «хвост» recv отфильтрует, чтобы не принять за данные).
+    /// ГОСТЬ: отдать Link после пробития. `tokens` — пер-хостовые токены фазы
+    /// пробивания (их «хвост» recv отфильтрует, чтобы не принять за данные).
     /// `primed` — возможный первый пакет данных (вернётся первым `recv`).
-    pub fn connect_primed(&self, peer: SocketAddr, primed: Option<Vec<u8>>, punch: Vec<u8>, pack: Vec<u8>) -> UdpLink {
+    pub fn connect_primed(&self, peer: SocketAddr, primed: Option<Vec<u8>>, tokens: PunchTokens) -> UdpLink {
         UdpLink {
             sock: self.sock.clone(),
             peer,
             primed: Mutex::new(primed),
             scratch: Mutex::new(None),
-            punch,
-            pack,
+            tokens,
         }
     }
 
@@ -207,9 +227,9 @@ impl UdpEndpoint {
         &self,
         peers: &[SocketAddr],
         window: Duration,
-        punch: &[u8],
-        pack: &[u8],
+        tokens: PunchTokens,
     ) -> Result<(SocketAddr, Option<Vec<u8>>)> {
+        let (punch, pack) = (&tokens.punch[..], &tokens.pack[..]);
         let deadline = Instant::now() + window;
         let mut buf = vec![0u8; MAX_DATAGRAM];
         // Если получили PUNCH пира, но PACK ещё не пришёл — путь, вероятно, уже
@@ -320,8 +340,7 @@ pub struct UdpLink {
     /// через await, поэтому future остаётся Send.
     scratch: Mutex<Option<Vec<u8>>>,
     /// Пер-хостовые токены фазы пробивания — их «хвост» отфильтровываем в recv.
-    punch: Vec<u8>,
-    pack: Vec<u8>,
+    tokens: PunchTokens,
 }
 
 impl UdpLink {
@@ -357,7 +376,7 @@ impl Link for UdpLink {
                     }
                     let data = &buf[..n];
                     // «Хвост» пакетов фазы пробивания NAT — не данные, пропускаем.
-                    if data == self.punch.as_slice() || data == self.pack.as_slice() {
+                    if self.tokens.is_punch_noise(data) {
                         continue;
                     }
                     // В буфер вызывающего — без аллокации (переиспользуется).
@@ -394,28 +413,115 @@ pub fn local_ip() -> Option<IpAddr> {
 pub struct UdpHub {
     sock: Arc<UdpSocket>,
     accept_rx: tokio::sync::Mutex<mpsc::Receiver<(SocketAddr, Box<dyn Link>)>>,
-    /// Пер-хостовый токен встречного PUNCH (см. `punch_tokens`).
-    punch: Vec<u8>,
+    state: Arc<HubState>,
+    /// Пер-хостовые токены (см. `PunchTokens`).
+    tokens: PunchTokens,
 }
 
-type Peers = Arc<Mutex<HashMap<SocketAddr, mpsc::Sender<Vec<u8>>>>>;
+/// Сколько держим «поручительство» координатора за адрес гостя. Гость пробивает
+/// окном 12с; двух минут хватает и на очередь, и на повторную попытку, а дольше
+/// держать незачем — это просто разрешение зайти, не сессия.
+const VOUCH_TTL: Duration = Duration::from_secs(120);
+/// Потолок таблицы поручительств (заслон памяти, если координатор сойдёт с ума).
+const MAX_VOUCHED: usize = 1024;
+/// Сколько пиров ОДНОВРЕМЕННО терпим БЕЗ поручительства координатора.
+///
+/// ПОЧЕМУ ВООБЩЕ КВОТА. Токен пробивания выводится из host_id, а он у публичного
+/// хоста лежит в открытом каталоге; адрес источника в UDP подделывается. Раньше
+/// каждый PUNCH от нового адреса сразу заводил пира и «гостя» в accept, и тот
+/// занимал пермит ворот рукопожатия на 6 секунд: 4096 датаграмм по 8 байт (32 КБ!)
+/// — и легальные гости не подключались минутами.
+///
+/// ПОЧЕМУ НЕ ЖЁСТКИЙ СПИСОК, А КВОТА. Гость всегда проходит через координатор, и
+/// тот называет хосту его адрес (`UdpHub::punch`) — казалось бы, можно пускать
+/// ТОЛЬКО названных. Но адрес, с которого гость реально приходит, не обязан
+/// совпадать с наблюдённым координатором: у части операторских NAT (CGNAT с пулом
+/// адресов) UDP-поток выходит с другого IP, чем TCP-сессия к координатору. Жёсткий
+/// список выключил бы таким людям связь совсем.
+///
+/// ПОЧЕМУ НЕ COOKIE. Подтверждение обратного пути (ответить непредсказуемым
+/// значением и требовать его эхо) — самый честный вариант, но он меняет ПРОВОД:
+/// уже выпущенные гости не знают, что нужно вернуть cookie, и перестали бы
+/// подключаться к обновлённым хостам. Квота даёт тот же эффект по живучести без
+/// разрыва совместимости: флуд занимает максимум восемь мест, а гость, о котором
+/// координатор предупредил, заходит поверх квоты.
+const MAX_UNVOUCHED_PEERS: usize = 8;
+
+/// Общее состояние хаба: кому раскладывать пакеты, кто представлен координатором
+/// и сколько сейчас непредставленных. Делят demux, сам хаб и пер-гостевые Link'и.
+struct HubState {
+    peers: Mutex<HashMap<SocketAddr, mpsc::Sender<Vec<u8>>>>,
+    /// IP, о которых координатор сказал «к тебе идёт гость» + момент, когда сказал.
+    /// Ключ — IP, а НЕ ip:port: за строгим (симметричным) NAT гость приходит с
+    /// другого порта, чем назвал координатору, и по порту мы бы отсекли своего же.
+    vouched: Mutex<HashMap<IpAddr, Instant>>,
+    /// Сколько сейчас заведено пиров, за которых никто не ручался (см. квоту).
+    unvouched: AtomicUsize,
+    pool: BufPool,
+}
+
+impl HubState {
+    /// Координатор назвал адреса ждущего гостя — с этого момента пускаем их
+    /// PUNCH мимо квоты.
+    fn vouch(&self, addrs: &[SocketAddr]) {
+        let now = Instant::now();
+        let mut v = self.vouched.lock();
+        v.retain(|_, t| now.duration_since(*t) < VOUCH_TTL);
+        for a in addrs {
+            if v.len() >= MAX_VOUCHED && !v.contains_key(&a.ip()) {
+                break; // таблица переполнена живыми записями — новых не берём
+            }
+            v.insert(a.ip(), now);
+        }
+    }
+
+    /// Завести пира на адрес `from`, если он проходит допуск. `None` — отказ
+    /// (потолок пиров или исчерпана квота непредставленных).
+    fn admit(
+        self: &Arc<Self>,
+        from: SocketAddr,
+        sock: &Arc<UdpSocket>,
+        tokens: PunchTokens,
+    ) -> Option<HubPeerLink> {
+        let now = Instant::now();
+        let vouched = self
+            .vouched
+            .lock()
+            .get(&from.ip())
+            .is_some_and(|t| now.duration_since(*t) < VOUCH_TTL);
+        let mut peers = self.peers.lock();
+        if peers.len() >= MAX_HUB_PEERS {
+            return None;
+        }
+        if !vouched && self.unvouched.load(Ordering::Relaxed) >= MAX_UNVOUCHED_PEERS {
+            return None;
+        }
+        let (tx, rx) = mpsc::channel(1024);
+        peers.insert(from, tx);
+        if !vouched {
+            self.unvouched.fetch_add(1, Ordering::Relaxed);
+        }
+        Some(HubPeerLink {
+            sock: sock.clone(),
+            peer: from,
+            rx: tokio::sync::Mutex::new(rx),
+            state: self.clone(),
+            tokens,
+            vouched,
+        })
+    }
+}
 
 impl UdpHub {
     /// Забиндить хаб и УЗНАТЬ внешний адрес STUN'ом ДО запуска демультиплексора.
     /// Критично: если STUN'ить после старта demux, тот съест STUN-ответ и хост за
     /// NAT анонсирует только LAN-адрес → гости к нему не пробьются. Поэтому STUN —
     /// на «чистом» сокете, и лишь потом включаем демукс.
-    /// `punch`/`pack` — пер-хостовые токены фазы пробивания (см. `punch_tokens`),
-    /// `ping`/`pong` — токены пробы задержки (см. `ping_tokens`).
-    #[allow(clippy::too_many_arguments)]
     pub async fn bind_reflexive(
         addr: SocketAddr,
         servers: &[String],
         wait: Duration,
-        punch: Vec<u8>,
-        pack: Vec<u8>,
-        ping: Vec<u8>,
-        pong: Vec<u8>,
+        tokens: PunchTokens,
     ) -> Result<(Arc<Self>, Option<SocketAddr>)> {
         let sock = Arc::new(bind_udp(addr).await?);
         let reflexive = if wait.is_zero() {
@@ -423,14 +529,19 @@ impl UdpHub {
         } else {
             stun::reflexive_addr_on(&sock, servers, wait).await.ok()
         };
-        let peers: Peers = Arc::new(Mutex::new(HashMap::new()));
-        let pool: BufPool = Arc::new(Mutex::new(Vec::new()));
+        let state = Arc::new(HubState {
+            peers: Mutex::new(HashMap::new()),
+            vouched: Mutex::new(HashMap::new()),
+            unvouched: AtomicUsize::new(0),
+            pool: Arc::new(Mutex::new(Vec::new())),
+        });
         let (accept_tx, accept_rx) = mpsc::channel(32);
-        tokio::spawn(demux(sock.clone(), peers, pool, accept_tx, punch.clone(), pack, ping, pong));
+        tokio::spawn(demux(sock.clone(), state.clone(), accept_tx, tokens));
         let hub = Arc::new(UdpHub {
             sock,
             accept_rx: tokio::sync::Mutex::new(accept_rx),
-            punch,
+            state,
+            tokens,
         });
         Ok((hub, reflexive))
     }
@@ -468,8 +579,11 @@ impl UdpHub {
     /// гостя не дойдёт до хоста за NAT. Демультиплексор при этом заведёт гостя,
     /// когда ЕГО PUNCH наконец пробьётся.
     pub async fn punch(&self, addrs: &[SocketAddr]) {
+        // Заодно это ПОРУЧИТЕЛЬСТВО: адреса пришли от координатора, значит их
+        // PUNCH пускаем мимо квоты непредставленных (см. MAX_UNVOUCHED_PEERS).
+        self.state.vouch(addrs);
         for a in addrs {
-            let _ = self.sock.send_to(&self.punch, a).await;
+            let _ = self.sock.send_to(&self.tokens.punch, a).await;
         }
     }
 
@@ -488,16 +602,11 @@ impl UdpHub {
 }
 
 /// Фоновый демультиплексор: раскидывает датаграммы по персональным очередям.
-#[allow(clippy::too_many_arguments)]
 async fn demux(
     sock: Arc<UdpSocket>,
-    peers: Peers,
-    pool: BufPool,
+    state: Arc<HubState>,
     accept_tx: mpsc::Sender<(SocketAddr, Box<dyn Link>)>,
-    punch: Vec<u8>,
-    pack: Vec<u8>,
-    ping: Vec<u8>,
-    pong: Vec<u8>,
+    tokens: PunchTokens,
 ) {
     let mut buf = vec![0u8; MAX_DATAGRAM];
     loop {
@@ -506,37 +615,43 @@ async fn demux(
             Err(_) => break,
         };
         let data = &buf[..n];
-        let tx = peers.lock().get(&from).cloned();
+        let tx = state.peers.lock().get(&from).cloned();
         if let Some(tx) = tx {
             // Буфер из пула (не аллокация на пакет). Полна очередь → try_send
             // вернёт буфер в Err, кладём обратно в пул (для UDP дроп норм).
-            match tx.try_send(pooled_copy(&pool, data)) {
+            match tx.try_send(pooled_copy(&state.pool, data)) {
                 Ok(()) => {}
                 Err(mpsc::error::TrySendError::Full(b)) | Err(mpsc::error::TrySendError::Closed(b)) => {
-                    pool_return(&pool, b);
+                    pool_return(&state.pool, b);
                 }
             }
-        } else if data == ping.as_slice() {
+        } else if data == tokens.ping {
             // Проба задержки: отвечаем и НЕ заводим ни пира, ни канала, ни сессии
-            // (см. ping_tokens). Ровно поэтому её можно звать для всего списка.
-            let _ = sock.send_to(&pong, from).await;
-        } else if data == punch.as_slice() && peers.lock().len() < MAX_HUB_PEERS {
-            // новый гость: подтверждаем и заводим персональный канал (пока не
-            // упёрлись в потолок пиров — иначе флуд PUNCH раздул бы карту).
-            let _ = sock.send_to(&pack, from).await;
-            let (tx, rx) = mpsc::channel(1024);
-            peers.lock().insert(from, tx);
-            let link = HubPeerLink {
-                sock: sock.clone(),
-                peer: from,
-                rx: tokio::sync::Mutex::new(rx),
-                peers: peers.clone(),
-                pool: pool.clone(),
-                punch: punch.clone(),
-                pack: pack.clone(),
-            };
-            if accept_tx.send((from, Box::new(link))).await.is_err() {
-                break; // хаб уронили — выходим
+            // (см. PunchTokens). Ровно поэтому её можно звать для всего списка.
+            let _ = sock.send_to(&tokens.pong, from).await;
+        } else if data == tokens.punch {
+            // Новый гость. Состояние заводим ТОЛЬКО если он проходит допуск
+            // (поручительство координатора или свободная квота) — иначе флуд с
+            // подделанных адресов выключал бы хост (см. MAX_UNVOUCHED_PEERS).
+            if let Some(link) = state.admit(from, &sock, tokens) {
+                // PACK — только когда гость ДЕЙСТВИТЕЛЬНО принят. Иначе он бы
+                // счёл путь открытым, перестал пробиваться и молча висел бы до
+                // таймаута рукопожатия; без PACK он продолжает стучаться и
+                // зайдёт следующей попыткой, когда очередь разгребут.
+                match accept_tx.try_send((from, Box::new(link) as Box<dyn Link>)) {
+                    Ok(()) => {
+                        let _ = sock.send_to(&tokens.pack, from).await;
+                    }
+                    // ОЧЕРЕДЬ ПОЛНА — гостя роняем, но приём НЕ ОСТАНАВЛИВАЕМ.
+                    // Раньше здесь был `send().await`: пока верх не разберёт 32
+                    // новых гостя, demux не читал сокет — и трафик ВСЕХ уже
+                    // подключённых вставал. Дроп нового гостя дешевле: он
+                    // продолжает пробиваться и зайдёт следующей попыткой.
+                    // `Drop` у HubPeerLink сам снимет запись из peers и вернёт
+                    // место в квоте — откат делать руками не нужно.
+                    Err(mpsc::error::TrySendError::Full(_)) => {}
+                    Err(mpsc::error::TrySendError::Closed(_)) => break, // хаб уронили
+                }
             }
         }
         // датаграммы от неизвестных без PUNCH — игнорируем
@@ -549,15 +664,19 @@ struct HubPeerLink {
     sock: Arc<UdpSocket>,
     peer: SocketAddr,
     rx: tokio::sync::Mutex<mpsc::Receiver<Vec<u8>>>,
-    peers: Peers,
-    pool: BufPool,
-    punch: Vec<u8>,
-    pack: Vec<u8>,
+    state: Arc<HubState>,
+    tokens: PunchTokens,
+    /// За этого гостя ручался координатор? От этого зависит, чьё место он занимал
+    /// (квота непредставленных) и что надо вернуть на Drop.
+    vouched: bool,
 }
 
 impl Drop for HubPeerLink {
     fn drop(&mut self) {
-        self.peers.lock().remove(&self.peer);
+        self.state.peers.lock().remove(&self.peer);
+        if !self.vouched {
+            self.state.unvouched.fetch_sub(1, Ordering::Relaxed);
+        }
     }
 }
 
@@ -573,14 +692,14 @@ impl Link for HubPeerLink {
         loop {
             match rx.recv().await {
                 None => return Ok(false), // хаб закрыт
-                Some(d) if d.as_slice() == self.punch.as_slice() || d.as_slice() == self.pack.as_slice() => {
-                    pool_return(&self.pool, d); // «хвост» пробивания — вернуть буфер
+                Some(d) if self.tokens.is_punch_noise(&d) => {
+                    pool_return(&self.state.pool, d); // «хвост» пробивания — вернуть буфер
                     continue;
                 }
                 Some(d) => {
                     out.clear();
                     out.extend_from_slice(&d);
-                    pool_return(&self.pool, d); // буфер отработал — назад в пул
+                    pool_return(&self.state.pool, d); // буфер отработал — назад в пул
                     return Ok(true);
                 }
             }
@@ -602,10 +721,10 @@ mod tests {
         let b = UdpEndpoint::bind("127.0.0.1:0".parse().unwrap()).await.unwrap();
         let a_addr = a.local_addr().unwrap();
         let b_addr = b.local_addr().unwrap();
-        let (pt, pk) = punch_tokens("bye-udp-test");
+        let t = PunchTokens::for_host("bye-udp-test");
         // Два UdpLink, направленных друг на друга (как гость↔хост после пробития).
-        let la = a.connect_primed(b_addr, None, pt.clone(), pk.clone());
-        let lb = b.connect_primed(a_addr, None, pt, pk);
+        let la = a.connect_primed(b_addr, None, t);
+        let lb = b.connect_primed(a_addr, None, t);
         let ka = bmv_common::KeepaliveLink::new(Box::new(la));
         let kb = bmv_common::KeepaliveLink::new(Box::new(lb));
 
@@ -634,7 +753,7 @@ mod tests {
         let a_addr = a.local_addr().unwrap();
         let b_addr = b.local_addr().unwrap();
         // Обе стороны — один host_id → одинаковые токены пробивания.
-        let (pt, pk) = punch_tokens("loopback-host");
+        let t = PunchTokens::for_host("loopback-host");
 
         // «STUN-сервер» шлёт мусор на A ДО начала пробития — он оседает в буфере.
         let stranger = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
@@ -642,12 +761,11 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(50)).await;
 
         // B пробивается к A навстречу (те же токены).
-        let (pt2, pk2) = (pt.clone(), pk.clone());
         let b_task = tokio::spawn(async move {
-            let _ = b.hole_punch(&[a_addr], Duration::from_secs(3), &pt2, &pk2).await;
+            let _ = b.hole_punch(&[a_addr], Duration::from_secs(3), t).await;
         });
         // A должен соединиться с B (b_addr), а НЕ с адресом «STUN-сервера».
-        let (peer, _) = a.hole_punch(&[b_addr], Duration::from_secs(3), &pt, &pk).await.unwrap();
+        let (peer, _) = a.hole_punch(&[b_addr], Duration::from_secs(3), t).await.unwrap();
         assert_eq!(peer, b_addr, "hole_punch поймал чужой пакет вместо пира");
         let _ = b_task.await;
     }
@@ -659,10 +777,9 @@ mod tests {
     /// хостов превращался бы в атаку на всех сразу.
     #[tokio::test]
     async fn probe_measures_rtt_without_creating_a_session() {
-        let (pt, pk) = punch_tokens("probe-test");
-        let (pi, po) = ping_tokens("probe-test");
+        let t = PunchTokens::for_host("probe-test");
         let (hub, _refl) = UdpHub::bind_reflexive(
-            "127.0.0.1:0".parse().unwrap(), &[], Duration::ZERO, pt, pk, pi, po,
+            "127.0.0.1:0".parse().unwrap(), &[], Duration::ZERO, t,
         ).await.unwrap();
         let addr = hub.local_addr().unwrap().to_string();
 
@@ -679,10 +796,9 @@ mod tests {
     /// было бы «нащупать» хост, кода которого не знаешь.
     #[tokio::test]
     async fn probe_with_wrong_host_id_gets_no_answer() {
-        let (pt, pk) = punch_tokens("real-host");
-        let (pi, po) = ping_tokens("real-host");
+        let t = PunchTokens::for_host("real-host");
         let (hub, _refl) = UdpHub::bind_reflexive(
-            "127.0.0.1:0".parse().unwrap(), &[], Duration::ZERO, pt, pk, pi, po,
+            "127.0.0.1:0".parse().unwrap(), &[], Duration::ZERO, t,
         ).await.unwrap();
         let addr = hub.local_addr().unwrap().to_string();
         let rtt = probe_rtt("НЕ-тот-хост", &[addr], Duration::from_millis(400)).await;
@@ -706,15 +822,14 @@ mod tests {
     /// Проверяет мультигость-путь end-to-end + переиспользование буферов demux.
     #[tokio::test]
     async fn hub_accepts_guest_and_delivers_via_pool() {
-        let (pt, pk) = punch_tokens("hub-test");
-        let (pi, po) = ping_tokens("hub-test");
+        let t = PunchTokens::for_host("hub-test");
         let (hub, _refl) = UdpHub::bind_reflexive(
-            "127.0.0.1:0".parse().unwrap(), &[], Duration::ZERO, pt.clone(), pk.clone(), pi, po,
+            "127.0.0.1:0".parse().unwrap(), &[], Duration::ZERO, t,
         ).await.unwrap();
         let hub_addr = hub.local_addr().unwrap();
 
         let guest = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
-        guest.send_to(&pt, hub_addr).await.unwrap(); // PUNCH → хаб заводит гостя
+        guest.send_to(&t.punch, hub_addr).await.unwrap(); // PUNCH → хаб заводит гостя
 
         let (_gaddr, link) = timeout(Duration::from_secs(2), hub.accept())
             .await.expect("accept не дождался").expect("хаб закрыт");
@@ -734,16 +849,106 @@ mod tests {
         }
     }
 
+    /// ФЛУД PUNCH НЕ ДОЛЖЕН ВЫКЛЮЧАТЬ ХОСТ. Токен пробивания выводится из host_id,
+    /// а он у публичного хоста лежит в открытом каталоге; адрес источника в UDP
+    /// подделывается. Значит кто угодно может залить хаб PUNCH'ами с тысяч чужих
+    /// адресов, и раньше КАЖДЫЙ заводил пира и «гостя» в accept — легальный гость
+    /// уже не пробивался. Пиры без поручительства координатора обязаны иметь
+    /// жёсткую квоту, а гость, о котором координатор предупредил, — проходить
+    /// поверх этой квоты.
+    #[tokio::test]
+    async fn unvouched_punch_flood_cannot_lock_out_a_real_guest() {
+        let t = PunchTokens::for_host("flood-test");
+        let (hub, _refl) = UdpHub::bind_reflexive(
+            "127.0.0.1:0".parse().unwrap(), &[], Duration::ZERO, t,
+        ).await.unwrap();
+        let hub_addr = hub.local_addr().unwrap();
+
+        // Флуд: 24 «гостя», за которых никто не ручался.
+        let mut flood = Vec::new();
+        for _ in 0..24 {
+            let s = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+            s.send_to(&t.punch, hub_addr).await.unwrap();
+            flood.push(s);
+        }
+        // Собираем всё, что хаб отдал (держим Link'и — они занимают квоту).
+        let mut admitted = Vec::new();
+        while let Ok(Some(g)) = timeout(Duration::from_millis(300), hub.accept()).await {
+            admitted.push(g);
+        }
+        assert!(
+            admitted.len() <= 8,
+            "флуд без поручительства завёл {} сессий — хост выключается 32 КБ мусора",
+            admitted.len()
+        );
+
+        // А вот НАСТОЯЩИЙ гость: координатор назвал хосту его адрес (host_serve_punch
+        // зовёт hub.punch на кандидатах гостя). Он обязан пройти НЕСМОТРЯ на флуд.
+        let real = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let real_addr = real.local_addr().unwrap();
+        hub.punch(&[real_addr]).await;
+        real.send_to(&t.punch, hub_addr).await.unwrap();
+        let (got, _link) = timeout(Duration::from_secs(2), hub.accept())
+            .await
+            .expect("настоящий гость не принят: флуд занял все места")
+            .expect("хаб закрыт");
+        assert_eq!(got, real_addr);
+    }
+
+    /// ACCEPT НЕ ДОЛЖЕН БЛОКИРОВАТЬ ПРИЁМ. Очередь новых гостей — 32; пока верх её
+    /// не разберёт, демультиплексор не читает сокет, то есть трафик ВСЕХ уже
+    /// подключённых встаёт. Здесь accept намеренно не зовут: данные живого гостя
+    /// обязаны идти дальше.
+    #[tokio::test]
+    async fn accept_backlog_does_not_stall_existing_guest() {
+        let t = PunchTokens::for_host("backlog-test");
+        let (hub, _refl) = UdpHub::bind_reflexive(
+            "127.0.0.1:0".parse().unwrap(), &[], Duration::ZERO, t,
+        ).await.unwrap();
+        let hub_addr = hub.local_addr().unwrap();
+
+        // Живой гость (координатор о нём предупредил — обычный путь).
+        let guest = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        hub.punch(&[guest.local_addr().unwrap()]).await;
+        guest.send_to(&t.punch, hub_addr).await.unwrap();
+        let (_a, link) = timeout(Duration::from_secs(2), hub.accept())
+            .await.expect("accept не дождался").expect("хаб закрыт");
+
+        // 40 новых гостей подряд — больше, чем вмещает очередь accept (32).
+        let mut newcomers = Vec::new();
+        for _ in 0..40 {
+            let s = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+            hub.punch(&[s.local_addr().unwrap()]).await; // все «настоящие»
+            s.send_to(&t.punch, hub_addr).await.unwrap();
+            newcomers.push(s);
+        }
+
+        // accept НЕ зовём. Данные живого гостя обязаны дойти.
+        guest.send_to(b"still-alive", hub_addr).await.unwrap();
+        let mut buf = Vec::new();
+        assert!(
+            timeout(Duration::from_secs(2), link.recv_into(&mut buf)).await
+                .expect("демультиплексор встал: очередь accept заблокировала приём").unwrap(),
+        );
+        assert_eq!(&buf, b"still-alive");
+    }
+
     /// Токены пробивания: детерминированы, зависят от host_id, не ASCII-маркер.
     #[test]
     fn punch_tokens_are_per_host_and_stable() {
-        let (p1, a1) = punch_tokens("net-ABC");
-        let (p2, a2) = punch_tokens("net-ABC");
-        assert_eq!((&p1, &a1), (&p2, &a2), "один host_id → одинаковые токены");
-        let (p3, _) = punch_tokens("net-XYZ");
-        assert_ne!(p1, p3, "разные host_id → разные токены");
-        assert_ne!(p1, a1, "punch и pack различаются");
-        assert_ne!(p1.as_slice(), b"BMV-PUNCH", "не открытый ASCII-маркер");
-        assert_eq!(p1.len(), 8, "8-байтовый токен");
+        let t1 = PunchTokens::for_host("net-ABC");
+        let t2 = PunchTokens::for_host("net-ABC");
+        assert_eq!(t1, t2, "один host_id → одинаковые токены");
+        let t3 = PunchTokens::for_host("net-XYZ");
+        assert_ne!(t1.punch, t3.punch, "разные host_id → разные токены");
+        // Все четыре роли обязаны различаться: совпади punch с ping — проба
+        // задержки заводила бы сессию, а это ровно то, чего мы избегаем.
+        let all = [t1.punch, t1.pack, t1.ping, t1.pong];
+        for i in 0..all.len() {
+            for j in i + 1..all.len() {
+                assert_ne!(all[i], all[j], "токены {i} и {j} совпали");
+            }
+        }
+        assert_ne!(&t1.punch[..], b"BMV-PUNCH", "не открытый ASCII-маркер");
     }
 }

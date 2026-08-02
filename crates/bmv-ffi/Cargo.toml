@@ -24,5 +24,16 @@ bmv-tunnel.workspace = true
 tokio.workspace = true
 log.workspace = true
 serde_json.workspace = true
+# Мьютексы БЕЗ отравления: паника под локом иначе отравляла его навсегда, а
+# `.lock().unwrap()` следом — это паника через границу `extern "C"`, то есть
+# abort всего приложения. Как в остальном проекте (bmv-core, bmv-net).
+parking_lot.workspace = true
 once_cell = "1"
 libc = "0.2"
+
+# Только для тестов: подставные каналы (Link) в петле реконнекта и остановленные
+# часы (test-util) — без них тест на исчерпание реконнектов ждал бы бэкоффы
+# ЖИВЫМ временем, то есть пару минут.
+[dev-dependencies]
+async-trait.workspace = true
+tokio = { workspace = true, features = ["test-util"] }

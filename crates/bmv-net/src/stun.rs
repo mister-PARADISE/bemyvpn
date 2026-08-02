@@ -194,22 +194,67 @@ fn parse_response(buf: &[u8], txid: &[u8; 12]) -> Option<SocketAddr> {
         let attr_len = u16::from_be_bytes([buf[pos + 2], buf[pos + 3]]) as usize;
         let val_start = pos + 4;
         let val_end = val_start + attr_len;
-        if val_end > buf.len() {
+        // Граница — по ОБЪЯВЛЕННОЙ длине тела, а не по размеру буфера. Иначе за
+        // концом тела можно дописать «невидимый» атрибут, и разбор возьмёт адрес
+        // из него (заявленное и фактическое содержимое пакета разошлись бы).
+        if val_end > end {
             break;
         }
         let val = &buf[val_start..val_end];
         match attr_type {
             ATTR_XOR_MAPPED_ADDRESS => {
-                if let Some(addr) = parse_xor_mapped(val) {
+                if let Some(addr) = parse_xor_mapped(val).filter(plausible_external) {
                     return Some(addr);
                 }
             }
-            ATTR_MAPPED_ADDRESS if fallback.is_none() => fallback = parse_mapped(val),
+            ATTR_MAPPED_ADDRESS if fallback.is_none() => {
+                fallback = parse_mapped(val).filter(plausible_external)
+            }
             _ => {}
         }
         pos = val_end + ((4 - (attr_len % 4)) % 4);
     }
     fallback
+}
+
+/// Может ли это вообще быть НАШИМ ВНЕШНИМ адресом.
+///
+/// Ответ STUN приходит по UDP от чужой машины, то есть подделывается кем угодно,
+/// кто угадал наш порт, — а названный адрес мы анонсируем в каталог, и все гости
+/// пойдут пробивать NAT именно туда. Враждебный (или просто сломанный) сервер мог
+/// назвать петлю, LAN-адрес или чужой публичный, и хост честно раздал бы это как
+/// свою точку входа. Полностью проверить «наш ли это адрес» нельзя (в том и смысл
+/// STUN — мы его сами не знаем), но заведомо невозможные варианты режем здесь.
+///
+/// Приватка отвергается без потерь: если внешний адрес совпал с локальным, он и
+/// так уже анонсирован кандидатом `local_ip()`.
+fn plausible_external(addr: &SocketAddr) -> bool {
+    if addr.port() == 0 {
+        return false;
+    }
+    match addr.ip() {
+        std::net::IpAddr::V4(a) => {
+            !(a.is_loopback()
+                || a.is_private()
+                || a.is_link_local() // 169.254/16, в т.ч. метаданные облака
+                || a.is_unspecified()
+                || a.is_broadcast()
+                || a.is_multicast()
+                || a.is_documentation()
+                || a.octets()[0] == 0
+                || a.octets()[0] >= 240) // 240/4 зарезервировано
+        }
+        // Данные ходят по IPv4 (сокеты биндятся в 0.0.0.0), но правило пусть
+        // будет полным — иначе при переходе на IPv6 дыра откроется молча.
+        std::net::IpAddr::V6(a) => {
+            let s0 = a.segments()[0];
+            !(a.is_loopback()
+                || a.is_unspecified()
+                || a.is_multicast()
+                || (s0 & 0xffc0) == 0xfe80
+                || (s0 & 0xfe00) == 0xfc00)
+        }
+    }
 }
 
 fn parse_xor_mapped(val: &[u8]) -> Option<SocketAddr> {
@@ -324,6 +369,65 @@ mod tests {
         let mut bad_cookie = resp(&txid, &[]);
         bad_cookie[4..8].copy_from_slice(&0xDEADBEEFu32.to_be_bytes());
         assert_eq!(parse_response(&bad_cookie, &txid), None);
+    }
+
+    /// Собрать тело с одним XOR-MAPPED-ADDRESS на заданный адрес.
+    fn xor_body(ip: [u8; 4], port: u16) -> Vec<u8> {
+        let magic = MAGIC_COOKIE.to_be_bytes();
+        let mut body = Vec::new();
+        body.extend_from_slice(&ATTR_XOR_MAPPED_ADDRESS.to_be_bytes());
+        body.extend_from_slice(&8u16.to_be_bytes());
+        body.push(0);
+        body.push(0x01); // IPv4
+        body.extend_from_slice(&(port ^ ((MAGIC_COOKIE >> 16) as u16)).to_be_bytes());
+        for i in 0..4 {
+            body.push(ip[i] ^ magic[i]);
+        }
+        body
+    }
+
+    /// ВРАЖДЕБНЫЙ STUN НАЗЫВАЕТ НЕ ТОТ АДРЕС. Ответ приходит по UDP от ЧУЖОЙ
+    /// машины, а полученный адрес мы анонсируем в каталог — и все гости пойдут
+    /// пробивать NAT туда. Значит бессмысленный «внешний» адрес принимать нельзя:
+    /// петля/приватка/мультикаст/0.0.0.0 внешними не бывают никогда.
+    #[test]
+    fn implausible_external_address_is_rejected() {
+        let txid = [4u8; 12];
+        for ip in [
+            [127, 0, 0, 1],   // петля
+            [10, 0, 0, 5],    // LAN
+            [192, 168, 1, 1], // роутер
+            [172, 16, 0, 1],
+            [169, 254, 169, 254], // link-local / метаданные облака
+            [224, 0, 0, 1],       // мультикаст
+            [255, 255, 255, 255], // бродкаст
+            [0, 0, 0, 0],
+            [0, 1, 2, 3], // 0.0.0.0/8
+        ] {
+            assert_eq!(
+                parse_response(&resp(&txid, &xor_body(ip, 40000)), &txid),
+                None,
+                "принят невозможный внешний адрес {ip:?} — он уедет в каталог"
+            );
+        }
+        // Нулевой порт — тоже не адрес: пробиваться туда некуда.
+        assert_eq!(parse_response(&resp(&txid, &xor_body([8, 8, 8, 8], 0)), &txid), None);
+        // А нормальный публичный адрес обязан проходить.
+        assert!(parse_response(&resp(&txid, &xor_body([45, 11, 22, 33], 40000)), &txid).is_some());
+    }
+
+    /// Атрибут вылезает ЗА объявленную длину тела. Граница проверялась по размеру
+    /// буфера, а не по слову отправителя, — значит в пакет можно было дописать
+    /// «невидимый» атрибут после конца тела, и разбор брал адрес из него.
+    #[test]
+    fn attribute_past_declared_body_is_ignored() {
+        let txid = [6u8; 12];
+        let body = xor_body([45, 11, 22, 33], 40000);
+        let mut v = resp(&txid, &body);
+        // Говорим «тела всего 4 байта» (только заголовок атрибута), значение —
+        // уже за границей тела.
+        v[2..4].copy_from_slice(&4u16.to_be_bytes());
+        assert_eq!(parse_response(&v, &txid), None, "атрибут за концом тела принят");
     }
 
     /// Поле длины тела врёт в БОЛЬШУЮ сторону (тела столько нет). Разбор обязан

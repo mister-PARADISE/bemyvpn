@@ -139,12 +139,21 @@ impl IpStackUnknownTransport {
     /// ```
     pub fn send(&self, mut payload: Vec<u8>) -> std::io::Result<()> {
         loop {
+            let remaining_before = payload.len();
             let packet = self.create_rev_packet(&mut payload)?;
             self.packet_sender
                 .send(packet)
                 .map_err(|e| std::io::Error::other(format!("send error: {e}")))?;
             if payload.is_empty() {
                 return Ok(());
+            }
+            // BeMyVPN fork: при mtu <= размера IP-заголовка (доступно через
+            // `mtu_unchecked`) окно фрагмента = 0, из payload не уходит ни байта
+            // и цикл крутится ВЕЧНО, забивая канал пустыми пакетами. Ловим
+            // отсутствие прогресса вместо того, чтобы подвесить поток.
+            if payload.len() == remaining_before {
+                let e = format!("mtu {} is too small to carry any payload", self.mtu);
+                return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, e));
             }
         }
     }
@@ -210,5 +219,30 @@ impl IpStackUnknownTransport {
             }
             _ => unreachable!(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// BeMyVPN fork: mtu меньше IP-заголовка больше не вешает поток навсегда.
+    /// Тест гоняет `send` в blocking-задаче под таймаутом: на старом коде
+    /// он не возвращался НИКОГДА.
+    #[tokio::test]
+    async fn tiny_mtu_errors_instead_of_looping_forever() {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let ip = Ipv4Header::new(0, TTL, IpNumber::ICMP, [10, 0, 0, 1], [10, 0, 0, 2]).unwrap();
+        let u = IpStackUnknownTransport::new(
+            "10.0.0.1".parse().unwrap(),
+            "10.0.0.2".parse().unwrap(),
+            Vec::new(),
+            &IpHeader::Ipv4(ip),
+            20, // ровно размер IPv4-заголовка → места под payload нет
+            tx,
+        );
+        let h = tokio::task::spawn_blocking(move || u.send(vec![0u8; 100]));
+        let r = tokio::time::timeout(std::time::Duration::from_secs(1), h).await;
+        assert!(matches!(r, Ok(Ok(Err(_)))), "ожидалась ошибка, а не бесконечный цикл");
     }
 }

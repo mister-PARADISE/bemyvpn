@@ -347,14 +347,27 @@ impl AsyncRead for IpStackTcpStream {
         // read data from channel
         match self.data_rx.poll_recv(cx) {
             Poll::Ready(Some(data)) => {
+                let len = data.len();
                 let capacity = buf.remaining();
-                if capacity >= data.len() {
+                if capacity >= len {
                     buf.put_slice(&data);
                 } else {
                     // if `buf` is not enough, put the remaining data into the temp buffer
                     buf.put_slice(&data[..capacity]);
                     self.temp_read_buffer.extend_from_slice(&data[capacity..]);
                 }
+                // BeMyVPN fork: приложение забрало байты — место в приёмном буфере
+                // вернулось, окно можно открыть. Если МЫ ЖЕ до этого объявили ноль,
+                // пир сидит в persist-режиме и следующий зонд пришлёт через RTO с
+                // экспоненциальным backoff (до минуты). Поэтому window update шлём
+                // сами, сразу — иначе поток встаёт на секунды на ровном месте.
+                let mut tcb = self.tcb.lock().unwrap();
+                let was_closed = tcb.get_recv_window() == 0;
+                tcb.release_upstream_queued(len);
+                if was_closed && tcb.get_recv_window() > 0 {
+                    write_packet_to_device(&self.up_packet_sender, network_tuple, &tcb, None, ACK, None, None)?;
+                }
+                drop(tcb);
                 Poll::Ready(Ok(()))
             }
             Poll::Ready(None) => Poll::Ready(Ok(())),
@@ -773,11 +786,29 @@ async fn tcp_main_logic_loop(
                 }
             }
             TcpState::Established => {
-                if flags == ACK {
+                // BeMyVPN fork: разбор по БИТОВЫМ МАСКАМ вместо точного сравнения
+                // флагов. Раньше ветки писались как `flags == ACK` и
+                // `flags == (ACK | FIN)`, а tcp_header_flags собирает все 8 бит:
+                // реальный стек на `send(); close();` склеивает данные с FIN и
+                // ставит PSH → приходил ACK|PSH|FIN, не совпадал НИ С ОДНОЙ веткой
+                // и молча проваливался в «ничего не делаем». Данные терялись, FIN
+                // не обрабатывался, соединение висело до таймаута сессии.
+                // Порядок как в RFC 793 §3.9: RST (обработан выше по циклу) →
+                // данные → FIN.
+                if len > 0 {
+                    if pkt_type == PacketType::KeepAlive {
+                        write_packet_to_device(&up_packet_sender, network_tuple, &tcb, None, ACK, None, None)?;
+                    } else {
+                        // Кладём БЕЗУСЛОВНО, в том числе вне порядка: свою защиту
+                        // (seq < ack и предел буфера) add_unordered_packet делает
+                        // сам, а extract отдаст наверх ровно то, что собралось.
+                        tcb.add_unordered_packet(incoming_seq, payload);
+                        extract_data_n_write_upstream(&up_packet_sender, &mut tcb, network_tuple, &data_tx, &read_notify)?;
+                    }
+                    // Вместе с данными приехал ACK — окно пира могло сдвинуться.
+                    write_notify.lock().unwrap().take().map(|w| w.wake_by_ref()).unwrap_or(());
+                } else {
                     match pkt_type {
-                        PacketType::WindowUpdate => {
-                            write_notify.lock().unwrap().take().map(|w| w.wake_by_ref()).unwrap_or(());
-                        }
                         PacketType::KeepAlive => {
                             write_packet_to_device(&up_packet_sender, network_tuple, &tcb, None, ACK, None, None)?;
                         }
@@ -798,18 +829,26 @@ async fn tcp_main_logic_loop(
                             // Окно пира могло сдвинуться вместе с dup-ACK — будим писателя.
                             write_notify.lock().unwrap().take().map(|w| w.wake_by_ref()).unwrap_or(());
                         }
-                        PacketType::NewPacket => {
-                            tcb.add_unordered_packet(incoming_seq, payload);
-                            let nt = network_tuple;
-                            extract_data_n_write_upstream(&up_packet_sender, &mut tcb, nt, &data_tx, &read_notify)?;
+                        // WindowUpdate / Ack — просто разбудить писателя. NewPacket
+                        // сюда не попадает (len == 0), Invalid отсеян выше.
+                        _ => {
                             write_notify.lock().unwrap().take().map(|w| w.wake_by_ref()).unwrap_or(());
                         }
-                        PacketType::Ack => {
-                            write_notify.lock().unwrap().take().map(|w| w.wake_by_ref()).unwrap_or(());
-                        }
-                        PacketType::Invalid => {}
                     }
-                } else if flags == (ACK | FIN) {
+                }
+
+                // FIN обрабатываем ТОЛЬКО когда собраны все предшествующие данные:
+                // иначе (внеочередной сегмент с FIN) мы бы подтвердили закрытие,
+                // перепрыгнув дыру, и порвали поток. Дыра есть → шлём дубль-ACK,
+                // пир быстро повторит потерянное и следом FIN.
+                // `>=`, а не `==`: повторно приехавший сегмент «данные + FIN»
+                // (мы уже приняли данные, но наш ACK потерялся) тоже должен
+                // закрывать соединение, а не гонять лишний круг.
+                let fin_in_order = tcb.get_ack() >= incoming_seq + len as u32;
+                if flags & FIN == FIN && !fin_in_order {
+                    write_packet_to_device(&up_packet_sender, network_tuple, &tcb, None, ACK, None, None)?;
+                    log::debug!("{network_tuple} {state:?}: FIN пришёл вперёд данных, ждём дыру {}", tcb.get_ack());
+                } else if flags & FIN == FIN {
                     // The other side is closing the connection, we need to send an ACK and change state to CloseWait
                     tcb.increase_ack();
                     write_packet_to_device(&up_packet_sender, network_tuple, &tcb, None, ACK, None, None)?;
@@ -859,14 +898,6 @@ async fn tcp_main_logic_loop(
                             config.last_ack_max_retries,
                         ));
                     }
-                } else if flags == (ACK | PSH) && pkt_type == PacketType::NewPacket {
-                    if !payload.is_empty() && tcb.get_ack() == incoming_seq {
-                        tcb.add_unordered_packet(incoming_seq, payload);
-                        extract_data_n_write_upstream(&up_packet_sender, &mut tcb, network_tuple, &data_tx, &read_notify)?;
-                    }
-                } else {
-                    // unnormal case, we do nothing here
-                    log::trace!("{network_tuple} {state:?}: {l_info}, {pkt_type:?}, unnormal case, we do nothing here");
                 }
             }
             TcpState::CloseWait => {
@@ -994,10 +1025,21 @@ fn extract_data_n_write_upstream(
         return Ok(());
     }
 
-    if let Some(data) = tcb.consume_unordered_packets(8192) {
+    // BeMyVPN fork: тянем ВСЁ, что уже собралось по порядку. Раньше был один
+    // вызов consume(8192): если дыру закрывал ретрансмит и за ней лежало больше
+    // 8 КБ, хвост оставался в буфере до следующего ВХОДЯЩЕГО пакета — лишний
+    // круг RTT на ровном месте.
+    let mut delivered = false;
+    while let Some(data) = tcb.consume_unordered_packets(8192) {
         let hint = if state == TcpState::Established { "normally" } else { "still" };
         log::trace!("{network_tuple} {state:?}: {l_info} {hint} receiving data, len = {}", data.len());
+        // Байты уходят в НЕограниченный канал наверх — учитываем их в приёмном
+        // окне, иначе объявленное окно врёт и тормозить пира нечем.
+        tcb.reserve_upstream_queued(data.len());
         data_tx.send(data).map_err(|e| std::io::Error::new(BrokenPipe, e))?;
+        delivered = true;
+    }
+    if delivered {
         read_notify.lock().unwrap().take().map(|w| w.wake_by_ref()).unwrap_or(());
         write_packet_to_device(up_packet_sender, network_tuple, tcb, None, ACK, None, None)?;
     } else if tcb.get_unordered_packets_total_len() > 0 {
@@ -1127,4 +1169,254 @@ pub(crate) fn create_raw_packet(
         transport: TransportHeader::Tcp(tcp_header),
         payload: Some(payload),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::AsyncReadExt;
+
+    const GUEST: &str = "10.0.0.2:40000";
+    const SERVER: &str = "1.1.1.1:80";
+    const PEER_ISN: u32 = 5000;
+    /// В debug-сборке Tcb::new берёт фиксированный ISN 100, +1 за SYN-ACK.
+    const OUR_SEQ: u32 = 101;
+
+    fn addrs() -> (SocketAddr, SocketAddr) {
+        (GUEST.parse().unwrap(), SERVER.parse().unwrap())
+    }
+
+    /// Поднять настоящий `IpStackTcpStream` (со своей фоновой задачей) и отдать
+    /// приёмник исходящих пакетов — то есть встать на место «провода».
+    fn new_stream(config: TcpConfig) -> (IpStackTcpStream, PacketReceiver) {
+        let (guest, server) = addrs();
+        let (up_tx, up_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut syn = TcpHeader::new(guest.port(), server.port(), PEER_ISN, 64000);
+        syn.syn = true;
+        let s = IpStackTcpStream::new(guest, server, syn, up_tx, 1500, None, Arc::new(config)).unwrap();
+        (s, up_rx)
+    }
+
+    /// Отправить стеку пакет «от гостя».
+    fn send(stream: &IpStackTcpStream, flags: u8, seq: u32, payload: &[u8]) {
+        send_with_ack(stream, flags, seq, OUR_SEQ, payload)
+    }
+
+    fn send_with_ack(stream: &IpStackTcpStream, flags: u8, seq: u32, ack: u32, payload: &[u8]) {
+        let (guest, server) = addrs();
+        let p = create_raw_packet(guest, server, |_, _| 1500, flags, 64, seq, ack, 64000, payload.to_vec(), None).unwrap();
+        stream.stream_sender().send(p).unwrap();
+    }
+
+    async fn next_pkt(rx: &mut PacketReceiver) -> Option<(TcpHeader, Vec<u8>)> {
+        let p = tokio::time::timeout(Duration::from_millis(400), rx.recv()).await.ok()??;
+        let TransportHeader::Tcp(h) = p.transport else { return None };
+        Some((h, p.payload.unwrap_or_default()))
+    }
+
+    /// Собрать все исходящие пакеты, пока стек не замолчит.
+    async fn drain(rx: &mut PacketReceiver) -> Vec<(TcpHeader, Vec<u8>)> {
+        let mut out = Vec::new();
+        while let Some(p) = next_pkt(rx).await {
+            out.push(p);
+        }
+        out
+    }
+
+    async fn handshake(stream: &IpStackTcpStream, rx: &mut PacketReceiver) {
+        let (synack, _) = next_pkt(rx).await.expect("нет SYN-ACK");
+        assert!(synack.syn && synack.ack);
+        assert_eq!(synack.acknowledgment_number, PEER_ISN + 1);
+        send(stream, ACK, PEER_ISN + 1, b""); // финальный ACK рукопожатия
+    }
+
+    async fn read_some(stream: &mut IpStackTcpStream) -> Vec<u8> {
+        let mut buf = [0u8; 4096];
+        match tokio::time::timeout(Duration::from_millis(400), stream.read(&mut buf)).await {
+            Ok(Ok(n)) => buf[..n].to_vec(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// Точка 7: подбор нашего wscale в SYN-ACK — ГЛАВНАЯ фича форка. Ошибка на
+    /// единицу в сдвиге молча делит скорость надвое, а пропущенная опция
+    /// выключает масштаб для ОБЕИХ сторон (RFC 7323 §2.2).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn syn_ack_carries_mss_and_minimal_sufficient_window_scale() {
+        const BUF: usize = 1024 * 1024;
+        let (guest, server) = addrs();
+        let mut config = TcpConfig::default();
+        config.read_buffer_size = BUF;
+
+        let (up_tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut syn = TcpHeader::new(guest.port(), server.port(), PEER_ISN, 64000);
+        syn.syn = true;
+        syn.set_options(&[TcpOptionElement::WindowScale(7)]).unwrap();
+        let _s = IpStackTcpStream::new(guest, server, syn, up_tx, 1500, None, Arc::new(config.clone())).unwrap();
+
+        let (h, _) = next_pkt(&mut rx).await.expect("нет SYN-ACK");
+        assert!(h.syn && h.ack);
+        let opt = |h: &TcpHeader| {
+            let (mut ws, mut mss) = (None, None);
+            for o in h.options_iterator().flatten() {
+                match o {
+                    TcpOptionElement::WindowScale(s) => ws = Some(s),
+                    TcpOptionElement::MaximumSegmentSize(m) => mss = Some(m),
+                    _ => {}
+                }
+            }
+            (ws, mss)
+        };
+        let (ws, mss) = opt(&h);
+        assert_eq!(mss, Some(1500 - 40), "без MSS пир уйдёт на 536 байт/сегмент");
+        let shift = ws.expect("SYN-ACK без window scale — масштаб выключается для обеих сторон");
+
+        // Сдвиг обязан быть МИНИМАЛЬНЫМ достаточным: буфер целиком влезает в
+        // 16-битное поле, а на единицу меньше — уже нет. Больше нужного = грубее
+        // гранулярность, меньше = теряем половину окна, то есть половину скорости.
+        assert_eq!((BUF >> shift) as usize, u16::from(h.window_size) as usize);
+        assert!(BUF >> shift <= u16::MAX as usize, "сдвиг мал: окно не влезает в поле");
+        assert!(BUF >> (shift - 1) > u16::MAX as usize, "сдвиг великоват, можно было точнее");
+        assert_eq!((h.window_size as usize) << shift, BUF, "объявленное окно не покрывает приёмный буфер");
+
+        // Пир БЕЗ wscale: опции быть не должно, поле зажимается в u16 — иначе
+        // объявили бы мусор от переполнения.
+        let (up_tx2, mut rx2) = tokio::sync::mpsc::unbounded_channel();
+        let mut plain = TcpHeader::new(guest.port(), server.port(), PEER_ISN, 64000);
+        plain.syn = true;
+        let _s2 = IpStackTcpStream::new(guest, server, plain, up_tx2, 1500, None, Arc::new(config)).unwrap();
+        let (h2, _) = next_pkt(&mut rx2).await.expect("нет SYN-ACK");
+        let (ws2, _) = opt(&h2);
+        assert_eq!(ws2, None, "мы не имеем права включать масштаб в одностороннем порядке");
+        assert_eq!(h2.window_size, u16::MAX, "без масштаба окно должно упираться в потолок поля");
+    }
+
+    /// Страховка на рефактор горячего пути: обычный поток по порядку в обе
+    /// стороны и штатное закрытие обязаны работать ровно как раньше.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn plain_in_order_transfer_and_graceful_close() {
+        use tokio::io::AsyncWriteExt;
+        let (mut stream, mut rx) = new_stream(TcpConfig::default());
+        handshake(&stream, &mut rx).await;
+
+        let mut seq = PEER_ISN + 1;
+        for i in 0..3u8 {
+            send(&stream, ACK | PSH, seq, &[i; 1000]);
+            seq += 1000;
+        }
+        let mut got = Vec::new();
+        while got.len() < 3000 {
+            let chunk = read_some(&mut stream).await;
+            if chunk.is_empty() {
+                break;
+            }
+            got.extend_from_slice(&chunk);
+        }
+        assert_eq!(got.len(), 3000, "обычный поток по порядку сломан");
+        assert_eq!((got[0], got[1500], got[2999]), (0, 1, 2), "куски перепутаны местами");
+        let acks: Vec<u32> = drain(&mut rx).await.iter().map(|(h, _)| h.acknowledgment_number).collect();
+        assert!(acks.contains(&seq), "нет ACK на конец потока, ack'и: {acks:?}");
+
+        // Данные вниз: приложение пишет — сегмент обязан уйти на провод.
+        stream.write_all(b"hello").await.unwrap();
+        let (h, payload) = next_pkt(&mut rx).await.expect("ответ приложения не ушёл на провод");
+        assert!(h.ack && h.psh);
+        assert_eq!(payload, b"hello");
+
+        // Пир подтверждает наши 5 байт и закрывается штатным FIN без данных.
+        send_with_ack(&stream, ACK | FIN, seq, OUR_SEQ + 5, b"");
+        let pkts = drain(&mut rx).await;
+        assert!(pkts.iter().any(|(h, _)| h.acknowledgment_number == seq + 1), "FIN не подтверждён");
+        assert!(pkts.iter().any(|(h, _)| h.fin), "стек не ответил своим FIN");
+    }
+
+    /// Keep-alive приходит с PSH так же часто, как обычные данные. Раньше такой
+    /// зонд не совпадал ни с одной веткой и оставался БЕЗ ОТВЕТА — пир считал
+    /// соединение мёртвым и рвал его.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn keep_alive_probe_is_answered_and_not_leaked_upstream() {
+        let (mut stream, mut rx) = new_stream(TcpConfig::default());
+        handshake(&stream, &mut rx).await;
+
+        send(&stream, ACK | PSH, PEER_ISN, &[0xFF]); // seq = ack-1, один байт
+        let (h, payload) = next_pkt(&mut rx).await.expect("keep-alive остался без ответа");
+        assert!(h.ack && payload.is_empty());
+        assert_eq!(h.acknowledgment_number, PEER_ISN + 1, "ack не должен двигаться от keep-alive");
+        assert!(read_some(&mut stream).await.is_empty(), "байт keep-alive утёк в поток приложения");
+    }
+
+    /// Точка 1: сегмент «данные + закрытие». Реальные стеки на `send(); close();`
+    /// склеивают данные с FIN и ставят PSH → приходит ACK|PSH|FIN. Точное
+    /// сравнение `flags == (ACK | FIN)` его не ловило: данные терялись, FIN не
+    /// обрабатывался, соединение висело до таймаута.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn data_with_psh_and_fin_is_delivered_and_closed() {
+        let (mut stream, mut rx) = new_stream(TcpConfig::default());
+        handshake(&stream, &mut rx).await;
+
+        send(&stream, ACK | PSH | FIN, PEER_ISN + 1, b"bye");
+
+        assert_eq!(read_some(&mut stream).await, b"bye", "данные из сегмента с FIN потеряны");
+
+        // FIN обязан быть подтверждён: ack = ISN+1 + 3 (данные) + 1 (FIN).
+        let acks: Vec<u32> = drain(&mut rx).await.iter().map(|(h, _)| h.acknowledgment_number).collect();
+        assert!(acks.contains(&(PEER_ISN + 5)), "FIN вместе с данными не подтверждён, ack'и: {acks:?}");
+    }
+
+    /// Точка 2: внеочередной сегмент С PSH (а PSH стоит на большинстве реальных
+    /// сегментов) раньше выбрасывался целиком — вместе с ним не работал и наш
+    /// дубль-ACK, так что отправитель ждал полный RTO вместо быстрого повтора.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn out_of_order_psh_segment_is_buffered_and_dup_acked() {
+        let (mut stream, mut rx) = new_stream(TcpConfig::default());
+        handshake(&stream, &mut rx).await;
+
+        // Второй сегмент приезжает первым: дыра ISN+1 .. ISN+4.
+        send(&stream, ACK | PSH, PEER_ISN + 4, b"def");
+        let (h, _) = next_pkt(&mut rx).await.expect("нет дубль-ACK на внеочередной сегмент");
+        assert_eq!(h.acknowledgment_number, PEER_ISN + 1, "дубль-ACK должен повторять текущий ack");
+
+        // Дыра закрыта — наверх обязаны уехать ОБА куска, по порядку.
+        send(&stream, ACK | PSH, PEER_ISN + 1, b"abc");
+        let mut got = Vec::new();
+        while got.len() < 6 {
+            let chunk = read_some(&mut stream).await;
+            if chunk.is_empty() {
+                break;
+            }
+            got.extend_from_slice(&chunk);
+        }
+        assert_eq!(got, b"abcdef", "внеочередной сегмент выброшен вместо пересборки");
+    }
+
+    /// Точка 4: приёмное окно обязано закрываться, когда приложение не успевает
+    /// читать, и открываться обратно САМО (window update), а не ждать зонда пира.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn receive_window_closes_when_app_stalls_and_reopens_on_read() {
+        let mut config = TcpConfig::default();
+        config.read_buffer_size = 8 * 1024;
+        let (mut stream, mut rx) = new_stream(config);
+        handshake(&stream, &mut rx).await;
+
+        // 7 × 1200 = 8400 байт лежат в очереди наверх, приложение не читает.
+        let mut seq = PEER_ISN + 1;
+        for _ in 0..7 {
+            send(&stream, ACK | PSH, seq, &[7u8; 1200]);
+            seq += 1200;
+        }
+        let windows: Vec<u16> = drain(&mut rx).await.iter().map(|(h, _)| h.window_size).collect();
+        assert!(windows.contains(&0), "окно так и не закрылось, объявляли: {windows:?}");
+
+        // Приложение читает — окно должно открыться, и стек обязан сам
+        // сообщить об этом: пир сидит в persist-режиме и иначе ждёт до минуты.
+        let mut reopened = false;
+        for _ in 0..4 {
+            assert!(!read_some(&mut stream).await.is_empty(), "данные пропали");
+            if drain(&mut rx).await.iter().any(|(h, _)| h.window_size > 0) {
+                reopened = true;
+                break;
+            }
+        }
+        assert!(reopened, "после чтения не пришёл window update — поток встанет на секунды");
+    }
 }

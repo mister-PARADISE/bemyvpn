@@ -67,6 +67,11 @@ pub struct BmvEngine {
     /// рукопожатий; лишние ждут очереди (рукопожатие — миллисекунды, легальный
     /// наплыв не страдает, а флуд не может выжрать ядро).
     handshake_gate: Arc<tokio::sync::Semaphore>,
+    /// ОТДЕЛЬНЫЕ ворота для штрафной паузы на неверном пароле. Пауза обязана
+    /// тормозить ПЕРЕБОР, но не легальных гостей: пока она занимала пермит
+    /// `handshake_gate`, 64 неверных пароля в секунду выкупали все общие ворота, и
+    /// подключиться не мог никто — защита от перебора работала как готовый DoS.
+    penalty_gate: Arc<tokio::sync::Semaphore>,
 }
 
 /// Потолок одновременных рукопожатий гостей (анти-флуд, см. handshake_gate).
@@ -106,7 +111,7 @@ impl BmvEngine {
             config.host.token.clone()
         };
         let default_proto = if config.default_protocol.is_empty() {
-            "noise-obfs".to_string() // дефолт проекта — «Маскировка» (см. bmv-config)
+            bmv_config::DEFAULT_PROTOCOL.to_string() // единый дефолт проекта
         } else {
             config.default_protocol.clone()
         };
@@ -127,6 +132,7 @@ impl BmvEngine {
             active_guests: Arc::new(Mutex::new(HashMap::new())),
             session_gen: Arc::new(AtomicU64::new(0)),
             handshake_gate: Arc::new(tokio::sync::Semaphore::new(HANDSHAKE_CONCURRENCY)),
+            penalty_gate: Arc::new(tokio::sync::Semaphore::new(HANDSHAKE_CONCURRENCY)),
         }
     }
 
@@ -277,11 +283,11 @@ impl BmvEngine {
         // Пробиваем NAT к хосту и поднимаем протокол (гость — инициатор).
         // Токены пробивания выводятся из host_id (не общий ASCII-маркер).
         // Окно щедрое: между двумя мобильными NAT пробитие может занять секунды.
-        let (pt, pk) = bmv_net::punch_tokens(host_id);
-        let (peer, primed) = ep.hole_punch(&peers, Duration::from_secs(12), &pt, &pk).await?;
+        let tokens = bmv_net::PunchTokens::for_host(host_id);
+        let (peer, primed) = ep.hole_punch(&peers, Duration::from_secs(12), tokens).await?;
         // Протокол ДОЛЖЕН совпадать с хостом (гость берёт его из каталога).
-        let proto = self.protocol_by_name(protocol.unwrap_or("noise"));
-        let link = ep.connect_primed(peer, primed, pt, pk);
+        let proto = self.protocol_by_name(self.guest_protocol_name(protocol));
+        let link = ep.connect_primed(peer, primed, tokens);
         let plink = proto.connect_guest(Box::new(link)).await?;
         let link: Box<dyn Link> = Box::new(bmv_common::KeepaliveLink::new(plink));
         // Если хост запаролен — первым делом шлём auth-кадр (иначе хост нас закроет).
@@ -328,12 +334,10 @@ impl BmvEngine {
         // STUN делаем ВНУТРИ bind (до старта демультиплексора) — иначе demux
         // съедает STUN-ответ и хост за NAT узнаёт только свой LAN-адрес.
         let servers = self.config.stun.resolve();
-        // Токены встречного пробивания — из СВОЕГО host_id (гость выведет те же).
-        let (pt, pk) = bmv_net::punch_tokens(&self.host_id);
-        // Токены пробы задержки — по ним гость узнаёт, далеко ли мы, ДО подключения.
-        let (pi, po) = bmv_net::ping_tokens(&self.host_id);
+        // Токены пробивания и пробы задержки — из СВОЕГО host_id (гость выведет те же).
+        let tokens = bmv_net::PunchTokens::for_host(&self.host_id);
         let (hub, reflexive) = bmv_net::UdpHub::bind_reflexive(
-            "0.0.0.0:0".parse().unwrap(), &servers, Duration::from_secs(4), pt, pk, pi, po,
+            "0.0.0.0:0".parse().unwrap(), &servers, Duration::from_secs(4), tokens,
         )
         .await?;
         let port = hub.local_addr()?.port();
@@ -394,10 +398,34 @@ impl BmvEngine {
         self.announce_state().await
     }
 
-    /// Выбрать протокол по имени (или первый доступный как фолбэк).
+    /// Каким протоколом гость идёт к хосту: что сказал каталог, иначе ЕДИНЫЙ
+    /// дефолт проекта. Раньше здесь стояло «noise», а у хоста дефолт был
+    /// «noise-obfs» — пустая строка из оболочки разводила стороны по разным
+    /// протоколам, и это выглядело как 12 секунд тишины вместо ошибки.
+    fn guest_protocol_name<'a>(&self, requested: Option<&'a str>) -> &'a str {
+        match requested {
+            Some(p) if !p.is_empty() => p,
+            _ => bmv_config::DEFAULT_PROTOCOL,
+        }
+    }
+
+    /// Выбрать протокол по имени. Неизвестное имя — это рассогласование версий
+    /// (хост объявил протокол, которого нет в этой сборке): берём дефолт проекта
+    /// — его же возьмёт и вторая сторона, поэтому шанс договориться остаётся, —
+    /// но ГРОМКО, а не молча: раньше подменялось «первым доступным» без следа в
+    /// журнале, и диагностировать это было нечем.
     fn protocol_by_name(&self, name: &str) -> Arc<dyn Protocol> {
+        if let Some(p) = self.protocols.get(name) {
+            return p;
+        }
+        if !name.is_empty() {
+            log::warn!(
+                "протокол «{name}» этой сборке неизвестен — беру дефолт «{}»",
+                bmv_config::DEFAULT_PROTOCOL
+            );
+        }
         self.protocols
-            .get(name)
+            .get(bmv_config::DEFAULT_PROTOCOL)
             .or_else(|| self.connect_order().into_iter().next())
             .expect("хотя бы один протокол есть")
     }
@@ -550,31 +578,21 @@ impl BmvEngine {
                 // Пауза ФИКСИРОВАННАЯ: случайная ничего не добавляет (сравнение
                 // и так постоянного времени), а плавающий ответ лишь мешал бы
                 // отличить «не тот пароль» от «сеть тормозит».
-                let _slow = self.handshake_gate.acquire().await;
+                // Ворота — ОТДЕЛЬНЫЕ (см. penalty_gate): темп перебора ограничен
+                // по-прежнему, но легальные гости в это время подключаются.
+                let _slow = self.penalty_gate.acquire().await;
                 tokio::time::sleep(WRONG_PASSWORD_DELAY).await;
                 let _ = link.close().await;
                 return Err(bmv_common::Error::Protocol("неверный пароль".into()));
             }
         }
 
-        // Учёт по адресу пира: с одного ip:port один гость; переподключение
-        // заменяет запись. Своё поколение — чтобы протухшая сессия не сняла чужой.
-        // Гард мьютекса НЕ держим через await (иначе future не Send).
-        let gen = self.session_gen.fetch_add(1, Ordering::SeqCst);
-        let max = self.host_max.load(Ordering::SeqCst);
-        let full = {
-            let mut g = self.active_guests.lock();
-            if max > 0 && !g.contains_key(&peer) && g.len() as u32 >= max {
-                true
-            } else {
-                g.insert(peer, gen);
-                false
-            }
-        };
-        if full {
+        // Слот занимаем ГАРДОМ: он снимет запись на ЛЮБОМ выходе, включая панику и
+        // отмену задачи (а сессии гостей во всех оболочках живут в tokio::spawn).
+        let Some(_slot) = GuestSlot::take(self, peer) else {
             let _ = link.close().await;
             return Err(bmv_common::Error::Net("хост заполнен: лимит гостей".into()));
-        }
+        };
         let _ = self.announce_state().await; // каталог видит нового гостя сразу
 
         let res = if tunnel {
@@ -583,13 +601,7 @@ impl BmvEngine {
             echo_session(link).await
         };
 
-        {
-            // снимаем ТОЛЬКО если наше место не занял новый коннект (по поколению)
-            let mut g = self.active_guests.lock();
-            if g.get(&peer) == Some(&gen) {
-                g.remove(&peer);
-            }
-        }
+        drop(_slot); // место освобождаем ДО анонса, чтобы каталог увидел уже новое число
         let _ = self.announce_state().await; // гость ушёл — счётчик вниз сразу
         res
     }
@@ -661,9 +673,82 @@ impl BmvEngine {
     }
 }
 
-/// Разобрать список строк "ip:port" в адреса, пропуская неразборчивые.
+/// ЗАНЯТЫЙ СЛОТ ГОСТЯ. Живёт, пока живёт сессия; на Drop снимает запись из
+/// `active_guests`.
+///
+/// Гард, а не пара «вставил/удалил» вокруг сессии: снятие «в конце функции»
+/// НЕ ВЫПОЛНЯЕТСЯ при панике и при отмене задачи, а гостя каждая оболочка
+/// обслуживает в `tokio::spawn` — то есть один свёрнутый экран или одна паника в
+/// туннеле оставляли запись навсегда. Счётчик полз вверх, и после `max_guests`
+/// таких случаев хост отказывал ВСЕМ, показывая «X из X» при нуле реальных гостей.
+/// Заодно это единственное место учёта — раньше блок дублировался дважды.
+struct GuestSlot {
+    guests: Arc<Mutex<HashMap<SocketAddr, u64>>>,
+    peer: SocketAddr,
+    /// Поколение сессии: снимаем запись ТОЛЬКО если её не занял новый коннект с
+    /// того же адреса (иначе протухшая сессия обнуляла бы живую).
+    gen: u64,
+}
+
+impl GuestSlot {
+    /// Занять слот. `None` — хост заполнен (лимит гостей).
+    fn take(engine: &BmvEngine, peer: SocketAddr) -> Option<GuestSlot> {
+        let gen = engine.session_gen.fetch_add(1, Ordering::SeqCst);
+        let max = engine.host_max.load(Ordering::SeqCst);
+        let mut g = engine.active_guests.lock();
+        if max > 0 && !g.contains_key(&peer) && g.len() as u32 >= max {
+            return None;
+        }
+        g.insert(peer, gen);
+        Some(GuestSlot { guests: engine.active_guests.clone(), peer, gen })
+    }
+}
+
+impl Drop for GuestSlot {
+    fn drop(&mut self) {
+        let mut g = self.guests.lock();
+        if g.get(&self.peer) == Some(&self.gen) {
+            g.remove(&self.peer);
+        }
+        // Ре-анонс отсюда невозможен (Drop синхронный, а анонс — сеть). При
+        // штатном выходе его делает host_run_session; при отмене/панике каталог
+        // подтянется ближайшим heartbeat'ом — числа сходятся с задержкой в тик,
+        // но НЕ врут навсегда, как раньше.
+    }
+}
+
+/// Сколько адресов одного пира вообще имеет смысл пробивать. У живого участника
+/// их два (домашний и внешний), координатор режет список до восьми. Свой потолок
+/// нужен на случай ЧУЖОГО координатора: по каждому адресу уходит 48 пачек UDP с
+/// шагом 250мс, и длинный список превращает хост в веерный флудер.
+const MAX_PUNCH_TARGETS: usize = 8;
+
+/// Разобрать список строк "ip:port" в адреса ДЛЯ ПРОБИВАНИЯ: выбросить
+/// неразборчивые и внутренние, схлопнуть дубликаты, ограничить число целей.
+///
+/// Фильтр здесь, а не у вызывающих, потому что через эту функцию проходят ОБА
+/// пути: адреса гостя (их хосту называет координатор) и адреса хоста (их
+/// называет гостю тот же координатор). В обе стороны это чужие слова, и по
+/// каждому адресу уходит 12 секунд UDP-пачек — без фильтра получается сканер LAN
+/// и облачных метаданных, оплаченный чужой машиной. Правило общее с туннелем
+/// (`bmv_tunnel::punch_target_allowed`): приватка разрешена (пир в той же
+/// локальной сети — рабочий случай), петля/link-local/мультикаст — нет.
 fn parse_addrs(list: &[String]) -> Vec<SocketAddr> {
-    list.iter().filter_map(|s| s.parse().ok()).collect()
+    let mut out: Vec<SocketAddr> = Vec::new();
+    for s in list {
+        let Ok(addr) = s.parse::<SocketAddr>() else { continue };
+        if !bmv_tunnel::punch_target_allowed(&addr) {
+            log::warn!("ПАНЧ: адрес {addr} отклонён фильтром (внутренний/служебный)");
+            continue;
+        }
+        if !out.contains(&addr) {
+            out.push(addr);
+        }
+        if out.len() >= MAX_PUNCH_TARGETS {
+            break;
+        }
+    }
+    out
 }
 
 /// Собрать auth-кадр гостя: маркер + пароль (UTF-8).
@@ -708,6 +793,144 @@ async fn echo_session(link: Box<dyn Link>) -> Result<()> {
 #[cfg(test)]
 mod announce_tests {
     use super::*;
+    use bmv_protocol::Protocol;
+
+    /// Движок, который НЕ ХОДИТ к координатору: `host_active=false` глушит любой
+    /// анонс (см. `announce_state`). Иначе каждый тест сессии ждал бы сеть по 10с
+    /// на пустом месте.
+    fn offline_engine(cfg: Config) -> BmvEngine {
+        let eng = BmvEngine::from_config(cfg);
+        eng.host_active.store(false, Ordering::SeqCst);
+        eng
+    }
+
+    /// Поднять гостя на другом конце канала (то же рукопожатие, что в бою).
+    async fn guest_side(link: Box<dyn Link>, proto: &str) -> Box<dyn Link> {
+        let p = if proto == "noise" { bmv_protocol::Noise::chacha() } else { bmv_protocol::Noise::obfs() };
+        p.connect_guest(link).await.expect("гость не пожал руку")
+    }
+
+    /// СЛОТ ГОСТЯ ОБЯЗАН ОСВОБОЖДАТЬСЯ ПРИ ОТМЕНЕ ЗАДАЧИ. Учёт снимался только на
+    /// нормальном возврате, а сессии гостей во ВСЕХ оболочках живут в
+    /// `tokio::spawn`: отмена (или паника) оставляла запись навсегда. Счётчик
+    /// полз вверх, и после `max_guests` таких событий хост отказывал ВСЕМ, честно
+    /// показывая «X из X» при нуле реальных гостей.
+    #[tokio::test]
+    async fn cancelled_session_frees_the_guest_slot() {
+        let eng = offline_engine(Config::default());
+        let (host_side, guest_link) = bmv_common::wire::memory_pair(16);
+        let peer: SocketAddr = "203.0.113.7:41000".parse().unwrap();
+
+        let proto = eng.host_protocol.lock().clone();
+        let guest = tokio::spawn(async move {
+            let link = guest_side(guest_link, &proto).await;
+            tokio::time::sleep(Duration::from_secs(10)).await; // держим канал живым
+            drop(link);
+        });
+        let e2 = eng.clone();
+        let session = tokio::spawn(async move { e2.host_run_session(peer, host_side, false).await });
+
+        // Ждём, пока гость встанет на учёт.
+        for _ in 0..200 {
+            if !eng.active_guests.lock().is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        assert_eq!(eng.active_guests.lock().len(), 1, "гость не попал в учёт — тест ничего не проверяет");
+
+        // Так шелл гасит сессию: задача отменяется, кода после await не будет.
+        session.abort();
+        let _ = session.await;
+        assert!(
+            eng.active_guests.lock().is_empty(),
+            "после отмены задачи слот гостя остался занят — счётчик ползёт вверх навсегда"
+        );
+        guest.abort();
+    }
+
+    /// ШТРАФНАЯ ПАУЗА НЕ ДОЛЖНА ДЕРЖАТЬ ОБЩИЕ ВОРОТА. Пауза на неверном пароле —
+    /// заявленная защита от перебора, но пока она занимала пермит `handshake_gate`,
+    /// 64 неверных пароля в секунду выкупали ВСЕ ворота, и легальные гости не
+    /// подключались вовсе: защита от перебора превращалась в готовый DoS.
+    #[tokio::test]
+    async fn wrong_password_penalty_does_not_hold_the_handshake_gate() {
+        let mut cfg = Config::default();
+        cfg.host.password = "правильный".into();
+        let eng = offline_engine(cfg);
+        let (host_side, guest_link) = bmv_common::wire::memory_pair(16);
+
+        let proto = eng.host_protocol.lock().clone();
+        let guest = tokio::spawn(async move {
+            let link = guest_side(guest_link, &proto).await;
+            link.send(&auth_frame("НЕ тот")).await.unwrap();
+            tokio::time::sleep(Duration::from_secs(10)).await;
+        });
+        let e2 = eng.clone();
+        let peer: SocketAddr = "203.0.113.9:41001".parse().unwrap();
+        let session = tokio::spawn(async move { e2.host_run_session(peer, host_side, false).await });
+
+        // Пауза — секунда; смотрим в её середину.
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        assert!(!session.is_finished(), "сессия уже завершилась — момент паузы не пойман");
+        assert_eq!(
+            eng.handshake_gate.available_permits(),
+            HANDSHAKE_CONCURRENCY,
+            "штрафная пауза держит общие ворота — перебором паролей выключается весь хост"
+        );
+        let _ = session.await;
+        guest.abort();
+    }
+
+    /// ЦЕЛИ ПРОБИВАНИЯ — НЕ ПО ЧУЖИМ СЛОВАМ. Адреса приходят от гостя (и от хоста
+    /// для гостя), а по каждому уходит 48 пачек UDP. Внутренние адреса обязаны
+    /// отсеиваться, дубликаты — схлопываться, число целей — быть ограничено.
+    #[test]
+    fn parse_addrs_drops_internal_targets_and_duplicates() {
+        let list: Vec<String> = [
+            "127.0.0.1:41000",        // петля — сам себе сканер
+            "169.254.169.254:80",     // метаданные облака
+            "[::1]:41000",
+            "224.0.0.1:41000",        // мультикаст
+            "45.11.22.33:40000",      // нормальный публичный
+            "45.11.22.33:40000",      // ...и его дубль
+            "192.168.1.5:40000",      // гость в той же LAN — ОСТАВЛЯЕМ
+            "не адрес",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        let got = parse_addrs(&list);
+        let s: Vec<String> = got.iter().map(|a| a.to_string()).collect();
+        assert!(!s.iter().any(|a| a.starts_with("127.") || a.starts_with("[::1]")), "петля в целях: {s:?}");
+        assert!(!s.iter().any(|a| a.starts_with("169.254.")), "link-local/метаданные в целях: {s:?}");
+        assert!(!s.iter().any(|a| a.starts_with("224.")), "мультикаст в целях: {s:?}");
+        assert_eq!(s.iter().filter(|a| a.starts_with("45.11.22.33")).count(), 1, "дубликаты не схлопнуты: {s:?}");
+        assert!(s.iter().any(|a| a.starts_with("192.168.1.5")), "гость из своей LAN отрезан: {s:?}");
+
+        // Длинный список от недоброго координатора не должен превращаться в веер.
+        let many: Vec<String> = (1..100).map(|i| format!("45.11.22.{i}:40000")).collect();
+        assert!(parse_addrs(&many).len() <= MAX_PUNCH_TARGETS, "число целей не ограничено");
+    }
+
+    /// ОДИН ДЕФОЛТНЫЙ ПРОТОКОЛ НА ВЕСЬ ПРОЕКТ. Пустая строка из оболочки давала
+    /// гостю «noise», а хосту — «noise-obfs»: рукопожатие шло не с тем протоколом
+    /// и выглядело как 12 секунд тишины вместо понятной ошибки.
+    #[test]
+    fn default_protocol_is_one_for_everyone() {
+        assert_eq!(bmv_config::DEFAULT_PROTOCOL, Config::default().default_protocol);
+
+        // Пустая настройка из оболочки → тот же дефолт, а не «первый доступный».
+        let cfg = Config { default_protocol: String::new(), ..Default::default() };
+        let eng = BmvEngine::from_config(cfg);
+        assert_eq!(*eng.host_protocol.lock(), bmv_config::DEFAULT_PROTOCOL);
+        assert_eq!(eng.guest_protocol_name(None), bmv_config::DEFAULT_PROTOCOL,
+            "гость без явного протокола обязан брать общий дефолт");
+
+        // Неизвестное имя не подменяется молча «первым доступным».
+        assert_eq!(eng.protocol_by_name("выдуманный").name(), bmv_config::DEFAULT_PROTOCOL);
+        assert_eq!(eng.protocol_by_name("plain").name(), "plain", "известное имя обязано работать");
+    }
 
     /// Пароль ⇒ сеть скрытая, что бы ни стояло в настройке публичности.
     /// Правило живёт в build_announce, потому что через неё проходят ВСЕ пути

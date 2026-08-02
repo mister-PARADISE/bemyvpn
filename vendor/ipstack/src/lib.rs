@@ -189,20 +189,17 @@ impl IpStackConfig {
 ///
 /// ```no_run
 /// use ipstack::{IpStack, IpStackConfig, IpStackStream};
-/// use std::net::Ipv4Addr;
 ///
 /// #[tokio::main]
 /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
-///     // Configure TUN device
-///     let mut config = tun::Configuration::default();
-///     config
-///         .address(Ipv4Addr::new(10, 0, 0, 1))
-///         .netmask(Ipv4Addr::new(255, 255, 255, 0))
-///         .up();
+///     // Устройство — что угодно с AsyncRead + AsyncWrite (обычно TUN).
+///     // В доктесте берём duplex-заглушку: крейт `tun` не входит в зависимости
+///     // форка, и пример с ним не компилировался, роняя `cargo test`.
+///     let (device, _peer) = tokio::io::duplex(1500);
 ///
 ///     // Create IP stack
 ///     let ipstack_config = IpStackConfig::default();
-///     let mut ip_stack = IpStack::new(ipstack_config, tun::create_as_async(&config)?);
+///     let mut ip_stack = IpStack::new(ipstack_config, device);
 ///
 ///     // Accept incoming streams
 ///     while let Ok(stream) = ip_stack.accept().await {
@@ -236,16 +233,14 @@ impl IpStack {
     ///
     /// ```no_run
     /// use ipstack::{IpStack, IpStackConfig};
-    /// use std::net::Ipv4Addr;
     ///
     /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-    /// let mut tun_config = tun::Configuration::default();
-    /// tun_config.address(Ipv4Addr::new(10, 0, 0, 1))
-    ///           .netmask(Ipv4Addr::new(255, 255, 255, 0))
-    ///           .up();
+    /// // Обычно сюда отдают TUN; duplex-заглушка нужна лишь чтобы пример
+    /// // компилировался без внешнего крейта `tun`.
+    /// let (device, _peer) = tokio::io::duplex(1500);
     ///
     /// let ipstack_config = IpStackConfig::default();
-    /// let ip_stack = IpStack::new(ipstack_config, tun::create_as_async(&tun_config)?);
+    /// let ip_stack = IpStack::new(ipstack_config, device);
     /// # Ok(())
     /// # }
     /// ```
@@ -319,7 +314,29 @@ fn run<Device: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
     tokio::spawn(async move {
         loop {
             select! {
-                Ok(n) = device.read(&mut buffer) => {
+                // BeMyVPN fork: было `Ok(n) = device.read(..)`. Две беды сразу:
+                // (1) n == 0 (EOF устройства) не проверялся — пустой срез уходил
+                //     в parse, тот падал, ошибка уезжала как UnknownNetwork, и
+                //     цикл крутился вечно на 100% CPU;
+                // (2) при Err ветка select! ОТКЛЮЧАЛАСЬ, а когда отключены все
+                //     ветки, tokio::select! ПАНИКУЕТ.
+                // Поэтому Result разбираем явно и в обоих случаях выходим.
+                r = device.read(&mut buffer) => {
+                    let n = match r {
+                        Ok(0) => {
+                            log::debug!("device EOF, stopping ip stack");
+                            break;
+                        }
+                        Ok(n) => n,
+                        Err(e) => {
+                            log::warn!("device read error: {e}, stopping ip stack");
+                            break;
+                        }
+                    };
+                    if n <= offset {
+                        // Короче служебного префикса packet information — не пакет.
+                        continue;
+                    }
                     if let Err(e) = process_device_read(&buffer[offset..n], &mut sessions, &session_remove_tx, &up_pkt_sender, &config, &accept_sender).await {
                         let io_err: std::io::Error = e.into();
                         if io_err.kind() == std::io::ErrorKind::ConnectionRefused {
@@ -338,6 +355,7 @@ fn run<Device: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
                 }
             }
         }
+        Ok(())
     })
 }
 
@@ -440,4 +458,24 @@ async fn process_upstream_recv<Device: AsyncWrite + Unpin + 'static>(
     // device.flush().await?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// BeMyVPN fork: устройство закрылось (TUN снят, канал к пиру оборван) —
+    /// стек обязан ЗАВЕРШИТЬСЯ. Раньше `Ok(n) = device.read(..)` не проверял
+    /// n == 0: пустой буфер шёл в parse, тот возвращал ошибку, ошибка уезжала
+    /// как UnknownNetwork — и так вечно на 100% CPU.
+    #[tokio::test]
+    async fn device_eof_stops_the_stack() {
+        let (device, peer) = tokio::io::duplex(4096);
+        drop(peer); // EOF на чтении устройства
+        let mut stack = IpStack::new(IpStackConfig::default(), device);
+        let r = tokio::time::timeout(Duration::from_millis(500), stack.accept()).await;
+        // Задача вышла → accept_sender уронен → accept() отдаёт AcceptError.
+        // На старом коде сюда прилетал бесконечный поток UnknownNetwork(пусто).
+        assert!(matches!(r, Ok(Err(IpStackError::AcceptError))), "ожидался выход стека по EOF");
+    }
 }

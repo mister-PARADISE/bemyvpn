@@ -22,19 +22,36 @@ fn load() -> Option<Db> {
     let mut dec = flate2::read::GzDecoder::new(gz);
     let mut raw = Vec::new();
     dec.read_to_end(&mut raw).ok()?;
+    parse(&raw)
+}
 
+/// Разбор распакованной базы. Отдельно от `load`, чтобы тест мог скормить сюда
+/// обрезанный и мусорный ввод: сам файл вшит в бинарь и всегда правильный, а
+/// проверять надо как раз обратное.
+fn parse(raw: &[u8]) -> Option<Db> {
+    // ГРАНИЦЫ ПРОВЕРЯЕМ ЗАРАНЕЕ, ОДНИМ РАСЧЁТОМ. Раньше чтение шло индексами
+    // `raw[p]`, `raw[p+1]`… без единой проверки: обрезанный или подменённый
+    // файл ронял приложение паникой прямо на старте окна. Формат
+    // фиксированный, поэтому нужный размер считается сразу: 8 байт шапки +
+    // n×(4 дельта + 4 длина + 2 код страны).
+    if raw.len() < 8 {
+        return None;
+    }
     let mut p = 0usize;
     let mut rd = |raw: &[u8]| -> u32 {
         let v = u32::from_be_bytes([raw[p], raw[p + 1], raw[p + 2], raw[p + 3]]);
         p += 4;
         v
     };
-    if rd(&raw) != 0x424D_5632 {
+    if rd(raw) != 0x424D_5632 {
         return None; // "BMV2"
     }
-    let n = rd(&raw) as usize;
-    let deltas: Vec<u32> = (0..n).map(|_| rd(&raw)).collect();
-    let lens: Vec<u32> = (0..n).map(|_| rd(&raw)).collect();
+    let n = rd(raw) as usize;
+    if raw.len() < 8usize.checked_add(n.checked_mul(10)?)? {
+        return None; // файл короче, чем обещает его же заголовок
+    }
+    let deltas: Vec<u32> = (0..n).map(|_| rd(raw)).collect();
+    let lens: Vec<u32> = (0..n).map(|_| rd(raw)).collect();
     let mut starts = Vec::with_capacity(n);
     let mut ends = Vec::with_capacity(n);
     let mut prev_end: u32 = 0;
@@ -100,6 +117,29 @@ mod tests {
         assert_eq!(country_of("77.88.8.8").as_deref(), Some("RU")); // Яндекс DNS
         assert!(country_of("10.0.0.1").is_none()); // приватный — нет в базе
         assert!(country_of("bad").is_none());
+    }
+
+    /// Битая база — это None, а НЕ паника при запуске окна.
+    #[test]
+    fn a_corrupt_database_is_refused_instead_of_crashing() {
+        assert!(parse(&[]).is_none(), "пусто");
+        assert!(parse(b"BMV").is_none(), "короче заголовка");
+        assert!(parse(b"XXXX\x00\x00\x00\x01").is_none(), "чужая метка формата");
+        // Заголовок обещает миллион записей, а их нет — раньше это была паника
+        // по выходу за границу среза.
+        assert!(parse(b"BMV2\x00\x0F\x42\x40").is_none(), "обещано больше, чем есть");
+        // Обещана одна запись, но код страны обрезан (нужно 8+10 байт, есть 17).
+        let mut short = b"BMV2\x00\x00\x00\x01".to_vec();
+        short.extend_from_slice(&[0; 9]);
+        assert!(parse(&short).is_none(), "хвост обрезан");
+        // Ровно одна честная запись 1.0.0.0–1.0.0.255 → NL.
+        let mut ok = b"BMV2\x00\x00\x00\x01".to_vec();
+        ok.extend_from_slice(&0x0100_0000u32.to_be_bytes()); // дельта
+        ok.extend_from_slice(&255u32.to_be_bytes()); // длина
+        ok.extend_from_slice(b"NL");
+        let db = parse(&ok).expect("правильная база обязана читаться");
+        assert_eq!(db.starts, [0x0100_0000]);
+        assert_eq!(db.cc, b"NL");
     }
 
     #[test]

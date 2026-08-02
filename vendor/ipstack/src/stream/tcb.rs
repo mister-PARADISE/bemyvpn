@@ -75,6 +75,15 @@ pub(crate) struct Tcb {
     state: TcpState,
     inflight_packets: BTreeMap<SeqNum, InflightPacket>,
     unordered_packets: BTreeMap<SeqNum, Vec<u8>>,
+    /// BeMyVPN fork: суммарный объём `unordered_packets`, поддерживается при
+    /// каждой вставке/изъятии. Раньше сумму считали проходом по всей карте, а
+    /// зовут её на КАЖДОМ пакете (приёмное окно) — теперь это O(1).
+    unordered_bytes: usize,
+    /// BeMyVPN fork: байты, уже отданные наверх в `data_tx` (unbounded!), но
+    /// ещё не прочитанные приложением. Без их учёта приёмное окно не отражало
+    /// реальную загрузку приёмника, и притормозить быстрого пира было нечем.
+    /// Живёт под тем же `Mutex<Tcb>`, что и всё остальное — атомик не нужен.
+    upstream_queued: usize,
     duplicate_ack_count: usize,
     duplicate_ack_count_helper: SeqNum,
     max_unacked_bytes: u32,
@@ -123,6 +132,8 @@ impl Tcb {
             state: TcpState::Listen,
             inflight_packets: BTreeMap::new(),
             unordered_packets: BTreeMap::new(),
+            unordered_bytes: 0,
+            upstream_queued: 0,
             duplicate_ack_count: 0,
             duplicate_ack_count_helper: seq.into(),
             max_unacked_bytes,
@@ -163,14 +174,50 @@ impl Tcb {
             log::warn!("{:?}: Received packet seq {seq} < self ack {}, len = {}", self.state, self.ack, buf.len());
             return;
         }
-        self.unordered_packets.insert(seq, buf);
+        // BeMyVPN fork: ВЕРХНИЙ ПРЕДЕЛ буфера пересборки. Без него гость, шлющий
+        // сегменты с пропуском (seq = ack + 1360·k), навсегда закреплял память
+        // хоста: дыра на self.ack не закроется никогда, а класть мы продолжали.
+        //
+        // Порог = read_buffer_size, то есть МАКСИМУМ приёмного окна, который мы
+        // когда-либо объявляли пиру. Меньше брать нельзя: при потере ПЕРВОГО
+        // сегмента окна всё остальное окно (законные данные, крупный реордеринг
+        // мобильного пути) приезжает вне порядка и обязано поместиться — иначе
+        // мы дропаем то, что сами же разрешили прислать, и платим лишними
+        // ретрансмитами. Больше — незачем: пир по объявленному окну столько и
+        // не пришлёт. Потолок памяти на соединение = 2 × read_buffer_size
+        // (буфер пересборки + очередь наверх), и это ОГРАНИЧЕНО, в отличие от
+        // прежнего «сколько пришлёт гость».
+        //
+        // Сегмент РОВНО на self.ack пропускаем всегда, даже сверх предела: он
+        // закрывает дыру и тут же уходит наверх. Дропнуть его = вечный тупик
+        // (пир ретрансмитит — мы дропаем — буфер не пустеет).
+        if seq != self.ack && self.unordered_bytes.saturating_add(buf.len()) > self.read_buffer_size {
+            #[rustfmt::skip]
+            log::debug!("{:?}: reassembly buffer full ({} B), dropping out-of-order seq {seq}, len = {}", self.state, self.unordered_bytes, buf.len());
+            return; // TCP восстановит: пир ретрансмитит после нашего dup-ACK
+        }
+        self.unordered_bytes += buf.len();
+        if let Some(old) = self.unordered_packets.insert(seq, buf) {
+            self.unordered_bytes -= old.len(); // тот же seq пришёл повторно
+        }
     }
     pub(super) fn get_available_read_buffer_size(&self) -> usize {
-        self.read_buffer_size.saturating_sub(self.get_unordered_packets_total_len())
+        self.read_buffer_size
+            .saturating_sub(self.unordered_bytes)
+            .saturating_sub(self.upstream_queued)
     }
     #[inline]
     pub(crate) fn get_unordered_packets_total_len(&self) -> usize {
-        self.unordered_packets.values().map(|p| p.len()).sum()
+        self.unordered_bytes
+    }
+    /// BeMyVPN fork: данные ушли в очередь наверх — занимают приёмный буфер,
+    /// пока приложение их не прочитает (см. `release_upstream_queued`).
+    pub(super) fn reserve_upstream_queued(&mut self, len: usize) {
+        self.upstream_queued = self.upstream_queued.saturating_add(len);
+    }
+    /// BeMyVPN fork: приложение прочитало — место в приёмном буфере вернулось.
+    pub(super) fn release_upstream_queued(&mut self, len: usize) {
+        self.upstream_queued = self.upstream_queued.saturating_sub(len);
     }
 
     pub(super) fn consume_unordered_packets(&mut self, max_bytes: usize) -> Option<Vec<u8>> {
@@ -191,12 +238,14 @@ impl Tcb {
                     // current packet can be fully extracted
                     data.extend(payload);
                     self.ack += payload_len as u32;
+                    self.unordered_bytes -= payload_len;
                     remaining_bytes -= payload_len;
                 } else {
                     // current packet can only be partially extracted
                     let remaining_payload = payload.split_off(remaining_bytes);
                     data.extend_from_slice(&payload);
                     self.ack += remaining_bytes as u32;
+                    self.unordered_bytes -= remaining_bytes;
                     self.unordered_packets.insert(self.ack, remaining_payload);
                     break;
                 }
@@ -255,13 +304,27 @@ impl Tcb {
     pub(super) fn get_send_window(&self) -> u32 {
         (self.send_window as u32) << self.snd_wnd_shift
     }
-    /// Значение window-ПОЛЯ для наших исходящих пакетов: доступный приёмный
-    /// буфер (минимум MTU, чтобы не объявлять silly window), поделённый на наш
-    /// масштаб. При включённом wscale буфер >64КБ теперь виден пиру целиком.
+    /// Значение window-ПОЛЯ для наших исходящих пакетов: свободный приёмный
+    /// буфер, поделённый на наш масштаб. При включённом wscale буфер >64КБ
+    /// теперь виден пиру целиком.
+    ///
+    /// BeMyVPN fork: раньше здесь стоял `avail.max(self.mtu)` — окно НИКОГДА не
+    /// закрывалось, то есть обратной связи по приёмнику не существовало вовсе:
+    /// быстрый гость лил во весь канал, а очередь наверх (unbounded) росла.
+    /// Теперь окно честно доходит до нуля. По RFC 1122 §4.2.3.3 (silly window
+    /// syndrome на приёмнике) объявляем либо ноль, либо хотя бы сегмент —
+    /// дробных окон пир не увидит. Порог берём min(MTU, буфер/2), иначе при
+    /// read_buffer_size < MTU окно залипло бы в нуле навсегда.
     pub(super) fn get_recv_window(&self) -> u16 {
-        let avail = self.get_available_read_buffer_size().max(self.mtu as usize);
-        let field = avail >> self.rcv_wnd_shift;
-        field.try_into().unwrap_or(u16::MAX).max(1)
+        let avail = self.get_available_read_buffer_size();
+        let threshold = (self.mtu as usize).min(self.read_buffer_size / 2).max(1);
+        if avail < threshold {
+            return 0;
+        }
+        // `.max(1)`: место есть, значит объявлять ноль НЕЛЬЗЯ — пир ушёл бы в
+        // persist навсегда (мы бы отвечали нулём на каждый зонд). Округление в
+        // ноль возможно лишь при абсурдно большом сдвиге (буфер сотни МБ).
+        (avail >> self.rcv_wnd_shift).try_into().unwrap_or(u16::MAX).max(1)
     }
     // #[inline(always)]
     // pub(super) fn buffer_size(&self, payload_len: u16) -> u16 {
@@ -644,6 +707,127 @@ mod tests {
         tcb.update_inflight_packet_queue(r + 1);
         assert!(!tcb.in_recovery, "recovery завершилась");
         assert!(tcb.enter_fast_recovery(), "новая потеря → снова можно снизить");
+    }
+
+    /// Компактный Tcb для тестов буфера пересборки: MTU 1400, буфер `buf`.
+    fn tcb_with_read_buffer(buf: usize) -> Tcb {
+        let mut tcb = Tcb::new(SeqNum(1000), 1400, MAX_UNACK, buf, MAX_COUNT_FOR_DUP_ACK, RTO, MAX_RETRANSMIT_COUNT);
+        tcb.change_state(TcpState::Established);
+        tcb
+    }
+
+    #[test]
+    fn unordered_buffer_is_bounded_by_read_buffer_size() {
+        // BeMyVPN fork (OOM): гость шлёт сегменты С ПРОПУСКОМ (дыра на self.ack
+        // никогда не закрывается) — раньше они копились БЕЗ ВЕРХНЕГО ПРЕДЕЛА и
+        // навсегда закрепляли память хоста. Один гость = сколько угодно памяти.
+        let buf = 16 * 1024;
+        let mut tcb = tcb_with_read_buffer(buf);
+        // Дыра: первый байт (seq 1000) не приходит НИКОГДА.
+        for k in 0..1000u32 {
+            tcb.add_unordered_packet(SeqNum(1001 + k * 1360), vec![0u8; 1360]);
+        }
+        let total = tcb.get_unordered_packets_total_len();
+        assert!(total <= buf, "буфер пересборки разросся до {total} при пределе {buf}");
+    }
+
+    #[test]
+    fn in_order_segment_is_accepted_even_when_buffer_is_full() {
+        // Предел НЕ должен ронять сегмент, закрывающий дыру: иначе пир будет
+        // вечно его ретрансмитить, а мы вечно дропать — соединение мертво.
+        let buf = 4096;
+        let mut tcb = tcb_with_read_buffer(buf);
+        for k in 0..10u32 {
+            tcb.add_unordered_packet(SeqNum(1001 + k * 1360), vec![0u8; 1360]);
+        }
+        assert!(tcb.get_unordered_packets_total_len() >= buf - 1360, "буфер должен быть заполнен");
+        tcb.add_unordered_packet(SeqNum(1000), vec![7u8; 1]); // ровно на self.ack
+        let data = tcb.consume_unordered_packets(64 * 1024).expect("дыра закрыта — данные обязаны пойти наверх");
+        assert_eq!(data[0], 7, "очередной сегмент отброшен пределом → вечный тупик");
+    }
+
+    #[test]
+    fn unordered_bytes_counter_stays_in_sync() {
+        // Счётчик — источник правды для приёмного окна; рассинхрон = либо
+        // вечно нулевое окно (столл), либо неограниченный буфер (OOM).
+        let mut tcb = tcb_with_read_buffer(64 * 1024);
+        tcb.add_unordered_packet(SeqNum(1000), vec![1; 500]);
+        tcb.add_unordered_packet(SeqNum(1500), vec![2; 500]);
+        assert_eq!(tcb.get_unordered_packets_total_len(), 1000);
+        tcb.consume_unordered_packets(700); // частичное потребление со сплитом
+        assert_eq!(tcb.get_unordered_packets_total_len(), 300);
+        assert_eq!(
+            tcb.get_unordered_packets_total_len(),
+            tcb.unordered_packets.values().map(|p| p.len()).sum::<usize>()
+        );
+        tcb.consume_unordered_packets(64 * 1024);
+        assert_eq!(tcb.get_unordered_packets_total_len(), 0);
+    }
+
+    #[test]
+    fn recv_window_closes_when_upstream_is_backlogged() {
+        // BeMyVPN fork: раньше окно НИКОГДА не закрывалось (`avail.max(mtu)`),
+        // и байты, уже отданные наверх, в нём не учитывались вовсе — притормозить
+        // быстрого гостя было нечем, очередь наверх (unbounded) росла без границ.
+        let mut tcb = tcb_with_read_buffer(16 * 1024);
+        assert!(tcb.get_recv_window() > 0, "пустой буфер → окно открыто");
+        tcb.reserve_upstream_queued(16 * 1024); // приложение не читает
+        assert_eq!(tcb.get_recv_window(), 0, "очередь наверх забита, а окно всё ещё открыто");
+        tcb.release_upstream_queued(16 * 1024); // приложение прочитало
+        assert!(tcb.get_recv_window() > 0, "окно обязано открыться обратно");
+    }
+
+    #[test]
+    fn window_scaling_multiplies_peer_window_and_divides_ours() {
+        // ГЛАВНАЯ фича форка. Ошибка на единицу в сдвиге молча делит скорость
+        // вдвое, поэтому проверяем обе стороны масштаба явными числами.
+        let mut tcb = tcb_with_read_buffer(1024 * 1024);
+        assert!(!tcb.is_wscale_negotiated());
+        tcb.update_send_window(1000);
+        assert_eq!(tcb.get_send_window(), 1000, "без wscale окно пира = сырое поле");
+
+        tcb.set_window_shifts(7, 5);
+        assert!(tcb.is_wscale_negotiated());
+        assert_eq!(tcb.get_rcv_wnd_shift(), 5);
+        assert_eq!(tcb.get_send_window(), 1000 << 7, "окно пира = поле × 2^snd_shift");
+
+        // Наше окно: 1 МБ при сдвиге 5 = поле 32768, и оно ВЛЕЗАЕТ в u16.
+        assert_eq!(tcb.get_recv_window() as usize, (1024 * 1024) >> 5);
+        assert_eq!((tcb.get_recv_window() as usize) << 5, 1024 * 1024, "масштаб теряет байты приёмного буфера");
+
+        // RFC 7323: сдвиг больше 14 запрещён — обязаны зажимать.
+        tcb.set_window_shifts(30, 30);
+        assert_eq!(tcb.get_rcv_wnd_shift(), 14);
+    }
+
+    #[test]
+    fn check_pkt_type_across_seq_wraparound() {
+        // Переход через 2^32: сравнения seq/ack модульные, и «меньше» рядом с
+        // границей должно означать «раньше», а не «астрономически больше».
+        let mut tcb = tcb_with_read_buffer(64 * 1024);
+        tcb.seq = SeqNum(u32::MAX - 5);
+        tcb.ack = SeqNum(u32::MAX - 5);
+        tcb.last_received_ack = SeqNum(u32::MAX - 5);
+        tcb.add_inflight_packet(vec![0u8; 20]).unwrap(); // seq уходит за 2^32 → 14
+
+        let mk = |ack: u32, seq: u32| {
+            let mut h = TcpHeader::new(1, 2, seq, 100);
+            h.acknowledgment_number = ack;
+            h.ack = true;
+            h
+        };
+
+        // ACK «за оборотом» подтверждает данные, отправленные ДО оборота.
+        assert_eq!(tcb.check_pkt_type(&mk(14, 0), &[]), PacketType::Ack);
+        // Данные с seq за оборотом — новый пакет, а не мусор.
+        assert_eq!(tcb.check_pkt_type(&mk(14, u32::MAX - 5), &[1, 2, 3]), PacketType::NewPacket);
+        // ACK на то, чего мы не отправляли (за пределом seq) — невалиден.
+        assert_eq!(tcb.check_pkt_type(&mk(100, 0), &[]), PacketType::Invalid);
+        // Устаревший ACK до оборота — невалиден.
+        assert_eq!(tcb.check_pkt_type(&mk(u32::MAX - 100, 0), &[]), PacketType::Invalid);
+        // Keep-alive: seq = ack-1 (за оборотом), нагрузки не больше байта,
+        // ACK повторяет последний виденный.
+        assert_eq!(tcb.check_pkt_type(&mk(u32::MAX - 5, u32::MAX - 6), &[0]), PacketType::KeepAlive);
     }
 
     #[test]

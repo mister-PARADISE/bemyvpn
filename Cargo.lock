@@ -914,7 +914,6 @@ dependencies = [
  "hyper-rustls",
  "hyper-util",
  "rand 0.8.6",
- "ring",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
@@ -973,6 +972,10 @@ name = "bmv-desktop"
 version = "1.0.0"
 dependencies = [
  "bmv-common",
+ "bmv-config",
+ "bmv-core",
+ "bmv-net",
+ "bmv-signal",
  "bmv-tunnel",
  "tokio",
  "tun",
@@ -982,6 +985,7 @@ dependencies = [
 name = "bmv-ffi"
 version = "1.0.0"
 dependencies = [
+ "async-trait",
  "bmv-common",
  "bmv-config",
  "bmv-core",
@@ -991,6 +995,7 @@ dependencies = [
  "libc",
  "log",
  "once_cell",
+ "parking_lot",
  "serde_json",
  "tokio",
 ]
@@ -1012,6 +1017,7 @@ dependencies = [
  "flate2",
  "image",
  "include_dir",
+ "libc",
  "qrcode",
  "rand 0.8.6",
  "slint",
@@ -1051,6 +1057,7 @@ version = "1.0.0"
 dependencies = [
  "bmv-common",
  "futures-util",
+ "parking_lot",
  "rustls",
  "serde",
  "serde_json",
