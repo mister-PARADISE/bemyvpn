@@ -94,7 +94,14 @@ impl Default for ServerConfig {
 pub struct GuestConfig {
     /// DNS всегда через туннель (анти-утечка). Менять только осознанно.
     pub dns: String, // "tunnel" | "1.1.1.1" | "system"
-    pub kill_switch: bool,
+    // Здесь был `kill_switch: bool` — объявленный, задокументированный и НИГДЕ не
+    // реализованный. Защитная ручка, которая ничего не делает, хуже отсутствующей:
+    // человек её включает и считает себя защищённым. Настоящий рубильник — это
+    // правила брандмауэра на десктопе (и застрявшее правило оставит машину вообще
+    // без сети), а на Android приложение его в принципе не включит: это системная
+    // настройка «блокировать соединения без VPN». Делать — отдельным заходом и
+    // целиком, а не половиной. Старые конфиги со строкой kill_switch читаются
+    // по-прежнему: неизвестные поля serde молча пропускает.
     pub ipv6: String, // "route" | "block"
     pub auto_reconnect: bool,
 }
@@ -219,7 +226,6 @@ impl Default for GuestConfig {
     fn default() -> Self {
         GuestConfig {
             dns: "tunnel".into(),
-            kill_switch: false,
             ipv6: "block".into(),
             auto_reconnect: true,
         }

@@ -168,7 +168,14 @@ Link → userspace-стек (smoltcp) → терминируем TCP/UDP → о�
 - кросс-платформенно одинаково (Windows/Android/Linux/mac — везде просто сокеты);
 - нет возни с ICS/iptables/RRAS.
 
-Забота туннеля также: **DNS принудительно через туннель** (анти-утечка; opt-out только вручную), **kill-switch** (опц.), **IPv6** (вести или блокировать), **MTU** (считать корректно). Всё это — на стороне гостя, в `bmv-tunnel`.
+Забота туннеля также: **DNS принудительно через туннель** (анти-утечка; opt-out только вручную), **IPv6** (вести или блокировать), **MTU** (считать корректно). Всё это — на стороне гостя, в `bmv-tunnel`.
+
+> **Рубильника (kill-switch) НЕТ.** Ручка `kill_switch` в конфиге была объявлена и
+> нигде не реализована — убрана, чтобы не обещать защиту, которой нет. Настоящий
+> рубильник — это правила брандмауэра на десктопе (и застрявшее правило оставит
+> машину вовсе без сети), а на Android приложение его в принципе не включит:
+> «блокировать соединения без VPN» — системная настройка. Делать целиком и
+> отдельным заходом либо не делать вовсе.
 
 > Риск: userspace-стек сложнее и чуть медленнее kernel-forwarding. Это осознанный размен ради «хост без прав» и переносимости. `smoltcp` — зрелая Rust-реализация.
 
@@ -197,7 +204,6 @@ default_protocol = "reality"          # plain | wireguard | webrtc | reality
 [guest]                                # когда я подключаюсь
 # DNS всегда идёт через туннель (анти-утечка). Менять только если знаешь зачем.
 dns          = "tunnel"                # tunnel (по умолч., принудительно) | 1.1.1.1 | system
-kill_switch  = false                   # рубить трафик мимо туннеля при обрыве
 ipv6         = "block"                 # route | block
 auto_reconnect = true
 
@@ -249,7 +255,7 @@ bemyvpn/
 │  │   └─ reality.rs          #   через внешний sing-box
 │  ├─ bmv-net/                # ЗНАКОМСТВО/NAT: STUN-пул, hole-punch, сырой путь
 │  ├─ bmv-signal/             # клиент координатора: каталог/announce/connect + фолбэк pub-sub
-│  ├─ bmv-tunnel/             # САМ VPN: TUN (гость) + userspace-стек (хост) + DNS/kill-switch/MTU
+│  ├─ bmv-tunnel/             # САМ VPN: TUN (гость) + userspace-стек (хост) + DNS/MTU
 │  ├─ bmv-config/             # ЕДИНСТВЕННОЕ место дефолтов + чтение bemyvpn.toml
 │  └─ bmv-common/             # общее: типы, ошибки, коды-приглашения, логи, id
 ├─ bindings/
@@ -351,7 +357,7 @@ impl BmvEngine {
 ## 15. Дорожная карта
 
 - **Фаза 0 — Каркас.** Workspace, `bmv-core`, `bmv-config` (один toml), `bmv-protocol` (`plain` + `wireguard`), `bmv-net` (STUN+hole-punch), `bmv-signal` (мин. координатор), `bmv-tunnel` (guest-TUN + host-netstack). Цель: два пира, туннель по коду, реальный сайт открывается.
-- **Фаза 1 — MVP: Windows + Android.** Wintun + VpnService, каталог хостов, `webrtc`-протокол, DNS/kill-switch. Цель: рабочий VPN на P0-платформах.
+- **Фаза 1 — MVP: Windows + Android.** Wintun + VpnService, каталог хостов, `webrtc`-протокол, DNS. Цель: рабочий VPN на P0-платформах.
 - **Фаза 2 — Жёсткая цензура + Linux.** `reality` (sing-box), авто-фолбэк протоколов, pub-sub фолбэк, приватные хосты. Linux-клиент/хост.
 - **Фаза 3 — Apple.** iOS/macOS через `bmv-ffi`, Tauri GUI, подготовка к сторам.
 - **Фаза 4 — Экосистема.** Self-hosting docs, авто-апдейт, CI-подпись, (опц.) relay-модуль, учёт трафика хоста.

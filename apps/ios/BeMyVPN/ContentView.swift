@@ -393,6 +393,26 @@ struct PinnedPanel<Content: View>: View {
             // счёт собственного градиента и рамки в цвет состояния.
             .background(Theme.bg)
             .zIndex(1)
+            // Смена состояния меняет ЦЕЛУЮ ВЕТКУ разметки (при связи — цифры, без
+            // связи — крупный круг), а SwiftUI играет такую подмену переходом по
+            // умолчанию: старая ветка растворяется, новая проявляется, и надпись
+            // статуса едет вбок из строки в центр и обратно. Гасим анимацию для
+            // всей панели — и ту, что задавали модификатором на месте вызова, и
+            // ту, что приходит транзакцией снаружи (в AppState добрая половина
+            // переключений состояния завёрнута в `withAnimation`).
+            //
+            // Модификатор стоит ПОСЛЕДНИМ намеренно: раньше он накрывал только
+            // содержимое, и рамка в цвет состояния продолжала переливаться из
+            // зелёной в синюю отдельно от текста. `.background` навешен выше по
+            // цепочке, так что накрыть его можно только снаружи.
+            //
+            // Гасится ВСЁ поддерево, без исключений: перебить это изнутри своим
+            // `.animation(_:value:)` не выходит — проверено на пульсе круга, он
+            // замирал. Поэтому всё, что внутри панели обязано продолжать
+            // двигаться, привязано не к анимации состояния, а к часам
+            // (`TimelineView` в HeroCircle). Вспышка «Скопировано» у плиток
+            // внутри панели теперь просто мгновенная — ровно то, что и просили.
+            .transaction { $0.animation = nil }
     }
 }
 
@@ -402,12 +422,22 @@ struct HeroCircle: View {
     let tint: Color
     var pulsing = false
     var glowing = false
-    @State private var wave = false
     var body: some View {
         ZStack {
             if pulsing {
-                Circle().stroke(tint.opacity(0.5), lineWidth: 2).frame(width: 72, height: 72)
-                    .scaleEffect(wave ? 1.28 : 1).opacity(wave ? 0 : 0.7)
+                // Фаза волны считается от ЧАСОВ, а не от анимации состояния.
+                // Круг живёт внутри прижатой панели, а та гасит анимацию у всего
+                // поддерева (см. PinnedPanel) — и `withAnimation`, и
+                // `.animation(_:value:)` там просто не проигрываются, кольцо
+                // замирало бы на первом кадре. TimelineView от транзакций не
+                // зависит вовсе. Ровно так же пульс сделан на десктопе
+                // (animation-tick) и на Android (rememberInfiniteTransition).
+                TimelineView(.animation) { ctx in
+                    let t = ctx.date.timeIntervalSinceReferenceDate
+                        .truncatingRemainder(dividingBy: 1.2) / 1.2
+                    Circle().stroke(tint.opacity(0.5), lineWidth: 2).frame(width: 72, height: 72)
+                        .scaleEffect(1 + 0.28 * t).opacity(0.7 * (1 - t))
+                }
             }
             Circle().fill(tint.opacity(0.13)).frame(width: 72, height: 72)
             Circle().stroke(tint.opacity(0.3), lineWidth: 1).frame(width: 72, height: 72)
@@ -415,7 +445,6 @@ struct HeroCircle: View {
         }
         .frame(height: 74)
         .shadow(color: tint.opacity(glowing ? 0.32 : 0), radius: 16)
-        .onAppear { withAnimation(.easeOut(duration: 1.2).repeatForever(autoreverses: false)) { wave = true } }
     }
 }
 
@@ -767,7 +796,6 @@ struct ServerTab: View {
                 Text(addr).foregroundColor(Theme.dim).font(.system(size: 13, design: .monospaced))
             }
         }
-        .animation(.easeInOut(duration: 0.3), value: app.serverOnline)
     }
 }
 
@@ -987,7 +1015,6 @@ struct VPNHero: View {
                 }
             }
         }
-        .animation(.easeInOut(duration: 0.3), value: app.vpnState)
     }
 }
 
@@ -1221,7 +1248,6 @@ struct HostTab: View {
                     .font(.system(size: 13)).multilineTextAlignment(.center)
             }
         }
-        .animation(.easeInOut(duration: 0.3), value: app.hosting)
     }
 
     private var scrollBody: some View {
