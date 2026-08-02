@@ -130,8 +130,16 @@ class AppState private constructor(val ctx: Context) {
     var connectedTo by mutableStateOf<String?>(null)
     var connectedSince by mutableStateOf<Long?>(null)
     var resolvedHost by mutableStateOf<Host?>(null)
-    /** Текст ошибки подключения для карточки VPN (null — ошибки нет). */
+    /** Разовое сообщение под карточкой VPN (null — сообщения нет). */
     var vpnError by mutableStateOf<String?>(null)
+    /**
+     * Сообщение СПОКОЙНОЕ, а не отказ — показывать приглушённым, не красным.
+     *
+     * Конец сеанса бывает двух совершенно разных сортов: «не смогли подключиться»
+     * (отказ) и «хост сам выключил раздачу» (всё сработало правильно). Красным по
+     * второму человек читает поломку там, где её нет, и идёт чинить исправное.
+     */
+    var vpnNoticeCalm by mutableStateOf(false)
     private var vpnErrorJob: Job? = null
 
     /**
@@ -143,8 +151,9 @@ class AppState private constructor(val ctx: Context) {
      * замечал, либо, наоборот, залипала навсегда. Сообщение живёт отдельно от
      * состояния — со своим таймером и без драки с опросом.
      */
-    private fun showVpnError(text: String) {
+    private fun showVpnError(text: String, calm: Boolean = false) {
         vpnError = text
+        vpnNoticeCalm = calm
         vpnErrorJob?.cancel()
         vpnErrorJob = scope.launch { delay(5000); vpnError = null }
     }
@@ -350,6 +359,17 @@ class AppState private constructor(val ctx: Context) {
                 // ядро пока отдаёт 0 — не сбрасываем оптимистичный статус UI.
                 val grace = System.currentTimeMillis() - lastConnectTapAt < 6000
                 if (!grace && vpnState != 0) {
+                    // ПОЧЕМУ сеанс кончился. Хост, выключивший раздачу, — это не
+                    // поломка: карточка просто гаснет, а словами объясняем, что
+                    // произошло и что делать. Спрашиваем ядро именно здесь, на
+                    // переходе в «выключено», и ровно один раз.
+                    //
+                    // Статус к этому моменту может быть уже 0, а не 3: сторож в
+                    // BmvVpnService гасит сервис, едва увидев 3. Поэтому смотрим
+                    // на причину, а не на статус — она держится до следующей
+                    // попытки подключения.
+                    val why = try { Native.nativeStopReason() } catch (_: Throwable) { 0 }
+                    if (why == 1) showVpnError("Хост завершил раздачу — выберите другой", calm = true)
                     vpnState = 0; connectedTo = null; connectedSince = null
                 }
             }

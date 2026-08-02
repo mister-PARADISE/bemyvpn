@@ -20,6 +20,21 @@ final class TunnelManager {
     private var manager: NETunnelProviderManager?
     private var observer: NSObjectProtocol?
 
+    /// Домен ошибок, которыми расширение объясняет САМОСТОЯТЕЛЬНЫЙ конец сеанса.
+    /// БЛИЗНЕЦ этой строки живёт в PacketTunnelProvider.swift — расширение и
+    /// приложение это разные цели сборки, общего файла у них нет. Меняешь здесь —
+    /// меняй и там, иначе объяснение молча перестанет доходить.
+    static let stopDomain = "org.bemyvpn.stop"
+
+    /// Чем кончился прошлый сеанс, по словам расширения (nil — оно ничего не
+    /// сказало: значит выключили мы сами). Работает только на устройстве.
+    func lastDisconnectError() async -> Error? {
+        guard let conn = manager?.connection else { return nil }
+        return await withCheckedContinuation { cont in
+            conn.fetchLastDisconnectError { cont.resume(returning: $0) }
+        }
+    }
+
     /// Зовётся при смене статуса системного VPN (main-поток).
     var onStatus: ((NEVPNStatus) -> Void)?
 

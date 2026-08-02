@@ -76,7 +76,7 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
                 let started = bmv_start_tunnel(owned, true)
                 tlog.notice("bmv_start_tunnel → \(started ? "OK" : "FAIL", privacy: .public)")
                 if !started { close(owned) }
-                if started { self.startPathMonitor() }
+                if started { self.startPathMonitor(); self.startCoreWatchdog() }
                 completionHandler(started ? nil : TunnelError.connectFailed)
             }
         }
@@ -98,6 +98,41 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
             bmv_send_bye()
         }
         completionHandler?(nil)
+    }
+
+    /// Домен ошибок, которыми объясняем приложению САМОСТОЯТЕЛЬНЫЙ конец сеанса.
+    /// БЛИЗНЕЦ живёт в TunnelManager.swift (см. `stopDomain`): расширение и
+    /// приложение — разные цели сборки, общего файла у них нет.
+    private static let stopDomain = "org.bemyvpn.stop"
+
+    /// Сторож ядра: сеанс кончился САМ — гасим системный туннель и говорим ПОЧЕМУ.
+    ///
+    /// Без него iOS продолжала считать VPN подключённым после конца сеанса: ядро
+    /// уже сдалось, а utun остался на месте — весь трафик уходил в мёртвый канал.
+    /// На экране при этом висело «Подключено». Тот же сторож давно есть на
+    /// Android (BmvVpnService.startMonitor), здесь его просто не было.
+    ///
+    /// Причину кладём в ошибку `cancelTunnelWithError`: приложение прочитает её
+    /// через `fetchLastDisconnectError`. Другого пути нет — к моменту, когда
+    /// приложение заметит разрыв, этого процесса уже не существует.
+    private func startCoreWatchdog() {
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            while true {
+                Thread.sleep(forTimeInterval: 1)
+                guard let self else { return }
+                guard bmv_vpn_status() == 3 else { continue }
+                // 1 — хост завершил раздачу (ошибки НЕТ), иначе связь потеряна.
+                let hostLeft = bmv_stop_reason() == 1
+                let text = hostLeft ? "Хост завершил раздачу" : "Связь с хостом потеряна"
+                tlog.notice("ядро завершило сеанс (\(text, privacy: .public)) — гашу туннель")
+                self.cancelTunnelWithError(NSError(
+                    domain: Self.stopDomain,
+                    code: hostLeft ? 1 : 2,
+                    userInfo: [NSLocalizedDescriptionKey: hostLeft ? "Хост завершил раздачу — выберите другой" : text]
+                ))
+                return
+            }
+        }
     }
 
     /// Наблюдение за сетью: при смене активного интерфейса дёргаем ядро на

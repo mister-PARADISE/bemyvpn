@@ -302,10 +302,17 @@ private fun VpnHero(app: AppState, showInvite: (String) -> Unit) {
                         color = Theme.dim, fontSize = 13.sp, textAlign = TextAlign.Center,
                     )
                 }
-                // Разовое сообщение об отказе: отдельно от vpnState, иначе фоновый
-                // опрос статуса ядра его затирает (или оставляет навсегда).
+                // Разовое сообщение: отдельно от vpnState, иначе фоновый опрос
+                // статуса ядра его затирает (или оставляет навсегда). Красный —
+                // только для настоящего отказа; штатно завершённая раздача идёт
+                // тем же приглушённым цветом, что и строка над ней.
                 app.vpnError?.let { err ->
-                    Text(err, color = Theme.red, fontSize = 13.sp, textAlign = TextAlign.Center)
+                    Text(
+                        err,
+                        color = if (app.vpnNoticeCalm) Theme.dim else Theme.red,
+                        fontSize = 13.sp,
+                        textAlign = TextAlign.Center,
+                    )
                 }
             }
         }

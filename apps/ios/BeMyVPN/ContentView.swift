@@ -978,8 +978,11 @@ struct VPNHero: View {
                     .multilineTextAlignment(.center)
                 // Разовое сообщение об отказе: отдельно от vpnState, иначе фоновый
                 // опрос статуса ядра его затирает (или оставляет навсегда).
+                // Красный — только для настоящего отказа. Штатно завершённая
+                // раздача идёт тем же приглушённым цветом, что и строка над ней:
+                // ошибки нет, объяснять нужно спокойно.
                 if let err = app.vpnError {
-                    Text(err).foregroundColor(Theme.red).font(.system(size: 13))
+                    Text(err).foregroundColor(app.vpnNoticeCalm ? Theme.dim : Theme.red).font(.system(size: 13))
                         .multilineTextAlignment(.center)
                 }
             }

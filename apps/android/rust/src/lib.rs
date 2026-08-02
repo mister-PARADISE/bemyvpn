@@ -135,6 +135,14 @@ pub extern "system" fn Java_org_bemyvpn_Native_nativeVpnStatus(_env: JNIEnv, _c:
     bmv_ffi::bmv_vpn_status()
 }
 
+/// Почему сеанс кончился сам: 0 — не кончался, 1 — хост завершил раздачу,
+/// 2 — связь потеряна. Экран читает вместе с концом сеанса, чтобы не показывать
+/// отказ там, где всё сработало правильно.
+#[no_mangle]
+pub extern "system" fn Java_org_bemyvpn_Native_nativeStopReason(_env: JNIEnv, _c: JClass) -> jint {
+    bmv_ffi::bmv_stop_reason()
+}
+
 #[no_mangle]
 pub extern "system" fn Java_org_bemyvpn_Native_nativeStop(_env: JNIEnv, _c: JClass) {
     // Синхронно шлёт BYE хосту на живом канале и гасит сессию (как на iOS).

@@ -433,6 +433,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let _ = store::add_recent(&coord_full.lock().unwrap(), &id);
                     }
                     3 => { ui.set_vpn_state(3); ui.set_vpn_status(if err.is_empty() { "не удалось подключиться".into() } else { err.clone().into() }); ui.set_vpn_sub(err.into()); }
+                    // ХОСТ ЗАВЕРШИЛ РАЗДАЧУ. Состояние — обычное «выключено» (0), то
+                    // есть спокойный синий круг, а не красная карточка отказа:
+                    // ошибки здесь нет, всё сработало правильно. Меняются только
+                    // слова — вместо «VPN выключен» человек читает, что случилось и
+                    // что делать дальше.
+                    4 => {
+                        ui.set_vpn_state(0);
+                        ui.set_vpn_host_id("".into());
+                        ui.set_vpn_status("Хост завершил раздачу".into());
+                        ui.set_vpn_sub("Выберите другой хост или нажмите «Старт»".into());
+                    }
                     _ => { ui.set_vpn_state(0); ui.set_vpn_host_id("".into()); ui.set_vpn_status("VPN выключен".into()); ui.set_vpn_sub("".into()); }
                 }
             });

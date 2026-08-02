@@ -116,8 +116,14 @@ final class AppState: ObservableObject {
     @Published var connectedTo: String? = nil
     @Published var connectedSince: Date? = nil
     @Published var resolvedHost: Host? = nil
-    /// Текст ошибки подключения для карточки VPN (nil — ошибки нет).
+    /// Разовое сообщение под карточкой VPN (nil — сообщения нет).
     @Published var vpnError: String? = nil
+    /// Сообщение СПОКОЙНОЕ, а не отказ — показывать приглушённым, не красным.
+    ///
+    /// Конец сеанса бывает двух совершенно разных сортов: «не смогли
+    /// подключиться» (отказ) и «хост сам выключил раздачу» (всё сработало
+    /// правильно). Красным по второму человек читает поломку там, где её нет.
+    @Published var vpnNoticeCalm = false
     private var vpnErrorTask: Task<Void, Never>?
 
     /// Показать разовое сообщение об отказе — и убрать его само через несколько секунд.
@@ -127,8 +133,9 @@ final class AppState: ObservableObject {
     /// подключались), поэтому на iOS «ошибка» залипала навсегда, а на Android
     /// мигала меньше секунды. Сообщение живёт отдельно от состояния — со своим
     /// таймером и без драки с опросом.
-    private func showVpnError(_ text: String) {
+    private func showVpnError(_ text: String, calm: Bool = false) {
         vpnError = text
+        vpnNoticeCalm = calm
         vpnErrorTask?.cancel()
         vpnErrorTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 5_000_000_000)
@@ -266,6 +273,11 @@ final class AppState: ObservableObject {
                 // гостей (и весь список) обновляется с задержкой на reconnect.
                 startWatch()
             case .disconnected, .invalid:
+                // Сеанс кончился НЕ по нашей команде (мы были подключены или
+                // подключались) — спросим у расширения, почему. Хост, погасивший
+                // раздачу, — это не поломка: карточка просто гаснет, а словами
+                // объясняем, что произошло и что делать дальше.
+                if vpnState != 0 { explainUnexpectedDisconnect() }
                 vpnState = 0; connectedTo = nil; connectedSince = nil
                 startWatch()   // и обратно на прямой маршрут
             case .disconnecting:
@@ -273,6 +285,24 @@ final class AppState: ObservableObject {
             @unknown default:
                 break
             }
+        }
+    }
+
+    /// Почему туннель погас сам — из ошибки, с которой расширение позвало
+    /// `cancelTunnelWithError` (см. PacketTunnelProvider).
+    ///
+    /// Спросить само расширение нельзя: к этому моменту оно уже мертво.
+    /// `fetchLastDisconnectError` — единственный канал, по которому его последнее
+    /// слово доходит до приложения. Ошибки не нашей чеканки (сбои самой NE,
+    /// отказ на старте) пропускаем: их текст пишет система, и человеку он
+    /// ничего не объясняет.
+    private func explainUnexpectedDisconnect() {
+        guard TunnelManager.available else { return }
+        Task { [weak self] in
+            guard let self, let err = await self.tunnel.lastDisconnectError() as NSError? else { return }
+            guard err.domain == TunnelManager.stopDomain else { return }
+            // code 1 — «хост завершил раздачу»: спокойно, не красным.
+            self.showVpnError(err.localizedDescription, calm: err.code == 1)
         }
     }
 
@@ -314,7 +344,15 @@ final class AppState: ObservableObject {
         statusTask = Task {
             while !Task.isCancelled {
                 let s = await bg { Core.vpnStatus() }
-                if s == 3 { vpnState = 0; connectedTo = nil; connectedSince = nil }
+                // Только на ПЕРЕХОДЕ в «выключено»: тройка из ядра не рассасывается
+                // сама, и без этой проверки объяснение переписывалось бы каждые
+                // 0.9с, а его собственный таймер не истекал бы никогда.
+                if s == 3 && vpnState != 0 {
+                    if await bg({ Core.stopReason() }) == 1 {
+                        showVpnError("Хост завершил раздачу — выберите другой", calm: true)
+                    }
+                    vpnState = 0; connectedTo = nil; connectedSince = nil
+                }
                 try? await Task.sleep(nanoseconds: 900_000_000)
             }
         }

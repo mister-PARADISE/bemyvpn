@@ -313,12 +313,27 @@ export component VpnPage inherits Rectangle {
                             color: Theme.fg; font-size: 21px; font-weight: 800;
                             horizontal-alignment: center; overflow: elide;
                         }
+                        // ЗДЕСЬ ПОКАЗЫВАЕТСЯ ИМЯ ХОСТА («к ЙОШКАР-ОЛА»), а имя
+                        // приходит по сети — с любыми буквами.
+                        //
+                        // `overflow: elide` тут не про многоточие, а про НАДСТРОЧНЫЕ
+                        // ЗНАКИ. Slint обрезает текст по прямоугольнику самого Text
+                        // ТОЛЬКО при `overflow: clip` (значение по умолчанию), и
+                        // высота этого прямоугольника кончается на верхней линии
+                        // шрифта — а у ЗАГЛАВНЫХ «Й» и «Ё» знак стоит выше неё.
+                        // Проверено на настоящем окне: «к ЙОШКАР-ОЛА ЁЖ» рисовалось
+                        // как «к ИОШКАР-ОЛА ЕЖ» — без серпика и без точек.
+                        //
+                        // Почему не запас высоты, как у подписей плиток (`TileLabel`):
+                        // окно подгоняет свою высоту под содержимое, и лишние пиксели
+                        // здесь двигают ВСЁ окно. `elide` же не меняет ни одной
+                        // величины разметки — только снимает обрезку.
                         if root.vpn-state != 2: Text {
                             text: root.vpn-sub != "" ? root.vpn-sub
                                 : (root.host-count == 0 ? "Введите код сети или поднимите свой хост"
                                    : "Доступно хостов: " + root.host-count + " · выберите ниже или жмите «Старт»");
                             color: Theme.dim; font-size: 13px;
-                            horizontal-alignment: center; wrap: word-wrap;
+                            horizontal-alignment: center; wrap: word-wrap; overflow: elide;
                         }
                     }
                 }

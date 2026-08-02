@@ -15,7 +15,9 @@
 //!   GUI → хелпер:  CONNECT\t<coord>\t<host>\t<pw>\t<proto>
 //!                  QUICK\t<coord>\t<host1>\t<proto1>\t<host2>\t<proto2>…
 //!                  STOP
-//!   хелпер → GUI:  STATE\t<n>\t<id>\t<err>     (n: 0 выкл·1 подключаюсь·2 готово·3 ошибка)
+//!   хелпер → GUI:  STATE\t<n>\t<id>\t<err>
+//!                  (n: 0 выкл · 1 подключаюсь · 2 готово · 3 ошибка ·
+//!                      4 хост завершил раздачу — конец сеанса БЕЗ ошибки)
 //!
 //! Хелпер обслуживает ОДНУ УДОСТОВЕРЕННУЮ управляющую сессию (это приложение),
 //! но подключения принимает В ЦИКЛЕ: неудачная попытка соседа больше не роняет
@@ -30,6 +32,24 @@ use std::time::Duration;
 use bmv_desktop::tunnel::{self, State};
 
 // ── Root-сторона: сам хелпер ─────────────────────────────────────────────────
+
+/// Сколько root-помощник ждёт СВОЁ окно, прежде чем уйти сам.
+///
+/// Без предела помощник жил вечно: не сумев прочитать файл порта (была ошибка
+/// прав), окно уходило с ошибкой, а помощник продолжал крутить приём в ожидании
+/// клиента, которого уже не будет. Каждая неудачная попытка оставляла на машине
+/// ещё один бессмертный root-процесс.
+///
+/// Щедро НАРОЧНО. Пароль спрашивают ДО запуска помощника (osascript/pkexec
+/// возвращаются, уже подняв root-процесс), поэтому в норме окно подключается за
+/// доли секунды — но уходить раньше самого окна нельзя: оно ждёт файл порта до
+/// 120 секунд, и помощник, исчезнувший на 119-й, превратил бы редкую заминку в
+/// стабильный отказ. Три минуты перекрывают его ожидание с запасом.
+///
+/// Срок относится ТОЛЬКО к ожиданию клиента: как только сессия удостоверена,
+/// помощник живёт ровно столько, сколько живёт окно, — хоть сутки.
+#[cfg(not(windows))]
+const CLAIM_WINDOW: Duration = Duration::from_secs(180);
 
 /// Годится ли предъявленный токен.
 ///
@@ -77,16 +97,7 @@ pub fn run_helper(port_file: &str, token_file: &str, up_file: &str) -> ! {
             // Окно теперь ждёт впустую все 120 секунд — пусть хотя бы знает, почему.
             Err(e) => eprintln!("хелпер: порт {port} не записался в {port_file}: {e}"),
         }
-        // ЦИКЛ, а не одно соединение. Раньше хелпер принимал ровно первое
-        // подключение: сосед по машине, успевший подключиться раньше нашего GUI
-        // и приславший мусор вместо токена, ронял хелпера — и VPN не поднимался
-        // вовсе, причём выглядело это как «не сработал запрос пароля».
-        // Выходим только когда закончилась НАСТОЯЩАЯ сессия (GUI закрылся).
-        while let Ok((conn, _)) = listener.accept().await {
-            if serve(conn, &token, up_file.clone()).await {
-                break;
-            }
-        }
+        accept_until(listener, &token, up_file.clone(), tokio::time::Instant::now() + CLAIM_WINDOW).await;
         let _ = std::fs::remove_file(&up_file);
     });
     std::process::exit(0);
@@ -193,6 +204,46 @@ pub fn private_dir() -> std::path::PathBuf {
     dir
 }
 
+/// Принимать соединения, пока не отработает НАСТОЯЩАЯ сессия — либо пока не
+/// истёк `deadline` (окно так и не пришло).
+///
+/// ЦИКЛ, а не одно соединение: раньше хелпер обслуживал ровно первое подключение,
+/// и сосед по машине, успевший подключиться раньше нашего окна и приславший
+/// мусор вместо токена, ронял хелпера — VPN не поднимался вовсе, а выглядело это
+/// как «не сработал запрос пароля».
+///
+/// Срок АБСОЛЮТНЫЙ (`timeout_at` от общего момента), а не «столько-то на каждый
+/// accept»: иначе тот же сосед, стучащийся раз в минуту, продлевал бы жизнь
+/// root-процесса бесконечно.
+///
+/// Отдельной функцией — чтобы это можно было проверить тестом: `run_helper`
+/// возвращает `!` и зовёт `exit`, внутри теста его не запустить.
+#[cfg(not(windows))]
+async fn accept_until(
+    listener: tokio::net::TcpListener,
+    token: &str,
+    up_file: String,
+    deadline: tokio::time::Instant,
+) {
+    loop {
+        match tokio::time::timeout_at(deadline, listener.accept()).await {
+            Err(_) => {
+                eprintln!("хелпер: окно не подключилось в срок — выхожу, чтобы не висеть root-процессом");
+                return;
+            }
+            Ok(Err(e)) => {
+                eprintln!("хелпер: accept не работает ({e}) — выхожу");
+                return;
+            }
+            Ok(Ok((conn, _))) => {
+                if serve(conn, token, up_file.clone()).await {
+                    return;
+                }
+            }
+        }
+    }
+}
+
 /// Обслужить одно управляющее соединение. `true` — это была НАША сессия (можно
 /// выходить), `false` — не удостоверился, ждём следующего.
 #[cfg(not(windows))]
@@ -209,7 +260,7 @@ async fn serve(conn: tokio::net::TcpStream, token: &str, up_file: String) -> boo
 
     // Канал исходящих STATE-строк (пишут туннель-задачи, дренит этот цикл).
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
-    let mut current: Option<Arc<tokio::sync::Notify>> = None;
+    let mut current: Current = None;
 
     loop {
         tokio::select! {
@@ -220,24 +271,24 @@ async fn serve(conn: tokio::net::TcpStream, token: &str, up_file: String) -> boo
                     Some("CONNECT") if f.len() >= 5 => {
                         stop_current(&mut current).await;
                         let stop = Arc::new(tokio::sync::Notify::new());
-                        current = Some(stop.clone());
                         let (coord, host, pw, proto) = (f[1].to_string(), f[2].to_string(), f[3].to_string(), f[4].to_string());
-                        let tx = tx.clone();
-                        tokio::spawn(async move {
+                        let (tx, stop2) = (tx.clone(), stop.clone());
+                        let h = tokio::spawn(async move {
                             let cands = vec![(host, pw, proto)];
-                            tunnel::run_candidates(guest_config(coord), cands, move |s| { let _ = tx.send(state_line(&s)); }, stop).await;
+                            tunnel::run_candidates(guest_config(coord), cands, move |s| { let _ = tx.send(state_line(&s)); }, stop2).await;
                         });
+                        current = Some((stop, h));
                     }
                     Some("QUICK") if f.len() >= 4 => {
                         stop_current(&mut current).await;
                         let stop = Arc::new(tokio::sync::Notify::new());
-                        current = Some(stop.clone());
                         let coord = f[1].to_string();
                         let cands = parse_quick(&f);
-                        let tx = tx.clone();
-                        tokio::spawn(async move {
-                            tunnel::run_candidates(guest_config(coord), cands, move |s| { let _ = tx.send(state_line(&s)); }, stop).await;
+                        let (tx, stop2) = (tx.clone(), stop.clone());
+                        let h = tokio::spawn(async move {
+                            tunnel::run_candidates(guest_config(coord), cands, move |s| { let _ = tx.send(state_line(&s)); }, stop2).await;
                         });
+                        current = Some((stop, h));
                     }
                     Some("STOP") => {
                         stop_current(&mut current).await;
@@ -253,11 +304,13 @@ async fn serve(conn: tokio::net::TcpStream, token: &str, up_file: String) -> boo
             }
         }
     }
-    // GUI закрылся → гасим туннель (BYE + откат маршрутов происходит в задаче).
+    // ЕДИНСТВЕННЫЙ выход из цикла — соединение с окном кончилось: окно закрыли,
+    // окно упало, окно убили. Разбираться, что именно, незачем: управлять
+    // помощником больше некому, и жить ему дальше не для кого. Гасим туннель и
+    // ЖДЁМ, пока задача попрощается и откатит маршруты (stop_current), — только
+    // после этого возвращаем true, по которому процесс выходит.
     stop_current(&mut current).await;
     let _ = std::fs::remove_file(&up_file);
-    // Небольшая пауза, чтобы BYE успел уйти до выхода процесса.
-    tokio::time::sleep(Duration::from_millis(250)).await;
     true
 }
 
@@ -274,6 +327,9 @@ fn state_line(s: &State) -> String {
         State::Connecting(id) => format!("STATE\t1\t{id}\t"),
         State::Up(id) => format!("STATE\t2\t{id}\t"),
         State::Off => "STATE\t0\t\t".to_string(),
+        // 4, а не 0 с текстом: хост завершил раздачу — окно должно сказать
+        // человеку, что произошло, но БЕЗ вида ошибки (для этого есть 3).
+        State::HostLeft => "STATE\t4\t\t".to_string(),
         State::Failed(e) => format!("STATE\t3\t\t{e}"),
     }
 }
@@ -289,12 +345,22 @@ fn parse_quick(f: &[&str]) -> Vec<(String, String, String)> {
     cands
 }
 
-async fn stop_current(current: &mut Option<Arc<tokio::sync::Notify>>) {
-    if let Some(stop) = current.take() {
-        stop.notify_waiters();
-        // Дать задаче закрыть канал (BYE) и снять RouteGuard.
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
+/// Текущая туннель-задача: её «стоп» И её хэндл.
+///
+/// Хэндл нужен, чтобы ДОЖДАТЬСЯ конца задачи, а не спать наугад: перед выходом
+/// она шлёт BYE (до 600мс) и откатывает маршруты с DNS, а на macOS откат — это
+/// `networksetup`, то есть ещё до секунды. Раньше здесь спали 50мс, а `serve` в
+/// конце — ещё 250мс, после чего root-процесс выходил. Когда окно ПАДАЛО с
+/// поднятым туннелем, помощник успевал исчезнуть раньше отката, и машина
+/// оставалась с дефолтным маршрутом в мёртвый TUN — то есть без интернета.
+type Current = Option<(Arc<tokio::sync::Notify>, tokio::task::JoinHandle<()>)>;
+
+async fn stop_current(current: &mut Current) {
+    let Some((stop, handle)) = current.take() else { return };
+    stop.notify_waiters();
+    // Предел на случай залипшей задачи: вечно висящий root-процесс хуже, чем
+    // недооткаченный маршрут (его чинит следующий запуск).
+    let _ = tokio::time::timeout(Duration::from_secs(5), handle).await;
 }
 
 // ── Клиентская сторона (в GUI под пользователем) ─────────────────────────────
@@ -389,7 +455,7 @@ async fn inproc_serve(
     up_file: String,
 ) {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
-    let mut current: Option<Arc<tokio::sync::Notify>> = None;
+    let mut current: Current = None;
     loop {
         tokio::select! {
             cmd = cmd_rx.recv() => {
@@ -399,23 +465,23 @@ async fn inproc_serve(
                     Some("CONNECT") if f.len() >= 5 => {
                         stop_current(&mut current).await;
                         let stop = Arc::new(tokio::sync::Notify::new());
-                        current = Some(stop.clone());
                         let (coord, host, pw, proto) = (f[1].to_string(), f[2].to_string(), f[3].to_string(), f[4].to_string());
-                        let tx = tx.clone();
-                        tokio::spawn(async move {
-                            tunnel::run_candidates(guest_config(coord), vec![(host, pw, proto)], move |s| { let _ = tx.send(state_line(&s)); }, stop).await;
+                        let (tx, stop2) = (tx.clone(), stop.clone());
+                        let h = tokio::spawn(async move {
+                            tunnel::run_candidates(guest_config(coord), vec![(host, pw, proto)], move |s| { let _ = tx.send(state_line(&s)); }, stop2).await;
                         });
+                        current = Some((stop, h));
                     }
                     Some("QUICK") if f.len() >= 4 => {
                         stop_current(&mut current).await;
                         let stop = Arc::new(tokio::sync::Notify::new());
-                        current = Some(stop.clone());
                         let coord = f[1].to_string();
                         let cands = parse_quick(&f);
-                        let tx = tx.clone();
-                        tokio::spawn(async move {
-                            tunnel::run_candidates(guest_config(coord), cands, move |s| { let _ = tx.send(state_line(&s)); }, stop).await;
+                        let (tx, stop2) = (tx.clone(), stop.clone());
+                        let h = tokio::spawn(async move {
+                            tunnel::run_candidates(guest_config(coord), cands, move |s| { let _ = tx.send(state_line(&s)); }, stop2).await;
                         });
+                        current = Some((stop, h));
                     }
                     Some("STOP") => {
                         stop_current(&mut current).await;
@@ -437,9 +503,10 @@ async fn inproc_serve(
             }
         }
     }
-    stop_current(&mut current).await; // откат маршрутов при закрытии GUI
+    // Канал команд оборвался — окно ушло (на Windows туннель крутится в его же
+    // процессе, поэтому дождаться отката маршрутов тем более обязательно).
+    stop_current(&mut current).await;
     let _ = std::fs::remove_file(&up_file);
-    tokio::time::sleep(Duration::from_millis(250)).await;
 }
 
 /// Фоновый воркер: держит соединение к root-хелперу, гонит команды из канала,
@@ -757,6 +824,60 @@ mod tests {
         let _ = std::fs::remove_dir_all(&other);
     }
 
+    /// ROOT-ПОМОЩНИК, К КОТОРОМУ НИКТО НЕ ПРИШЁЛ, ОБЯЗАН УЙТИ САМ.
+    ///
+    /// Живая улика: на машине разработчика нашлись ТРИ процесса
+    /// `bemyvpn-gui --tunnel-helper` от root, каждый старше часа. Все три —
+    /// остатки неудачных попыток: окно не смогло прочитать файл порта (была
+    /// ошибка прав) и ушло, а помощник остался крутить приём в ожидании клиента,
+    /// которого больше не будет. Цикл приёма был `while let Ok(..) = accept()`,
+    /// то есть без выхода вообще.
+    ///
+    /// Проверяем ровно это: соединения приходят (сосед по машине стучится с
+    /// мусором вместо токена — такие не считаются), а НАШЕЙ сессии нет. Функция
+    /// обязана вернуться сама. На старом коде тест не заканчивается никогда и
+    /// падает по внешнему сроку.
+    #[cfg(not(windows))]
+    #[tokio::test]
+    async fn a_helper_nobody_ever_claims_must_not_live_forever() {
+        use tokio::io::AsyncWriteExt;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        // Чужие стуки идут ВЕСЬ срок и должны не продлевать его, а лишь мешать.
+        let knocker = tokio::spawn(async move {
+            for _ in 0..10 {
+                if let Ok(mut s) = tokio::net::TcpStream::connect(("127.0.0.1", port)).await {
+                    let _ = s.write_all("не токен\n".as_bytes()).await;
+                }
+                tokio::time::sleep(Duration::from_millis(60)).await;
+            }
+        });
+
+        let dir = private_dir();
+        let up = dir.join("up").to_string_lossy().to_string();
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(400);
+        let done = tokio::time::timeout(Duration::from_secs(10), accept_until(listener, "секрет", up, deadline)).await;
+        knocker.abort();
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert!(done.is_ok(), "помощник остался ждать клиента, которого не будет, — это и есть вечный root-процесс");
+    }
+
+    /// Помощник не имеет права сдаться РАНЬШЕ, чем сдастся окно.
+    ///
+    /// Окно ждёт файл порта 1200 × 100мс = 120 секунд (см. `spawn_and_connect`).
+    /// Урезав `CLAIM_WINDOW` до чего-нибудь «поаккуратнее», получим ровно
+    /// обратную поломку: редкая заминка при вводе пароля превратится в
+    /// стабильный отказ, потому что помощник умрёт за секунду до прихода окна.
+    #[cfg(not(windows))]
+    #[test]
+    fn the_helper_never_gives_up_before_the_window_does() {
+        assert!(
+            CLAIM_WINDOW > Duration::from_millis(100) * 1200,
+            "помощник уходит раньше, чем окно перестаёт его ждать",
+        );
+    }
+
     /// Разделители протокола не должны приезжать внутри поля.
     ///
     /// Поля разделяются табом, команды — переводом строки, и эти же строки
@@ -806,6 +927,16 @@ mod tests {
         assert_eq!(state_line(&State::Up("AB12".into())), "STATE\t2\tAB12\t");
         assert_eq!(state_line(&State::Off), "STATE\t0\t\t");
         assert_eq!(state_line(&State::Failed("нет NAT".into())), "STATE\t3\t\tнет NAT");
+        // Конец раздачи — СВОЙ код. Скатится он в 0 — человек увидит беспричинно
+        // погасший VPN; скатится в 3 — увидит ошибку там, где всё сработало.
+        assert_eq!(state_line(&State::HostLeft), "STATE\t4\t\t");
+        // И маркер «туннель поднят» при этом снимается, как на любом не-2.
+        let dir = private_dir();
+        let up = dir.join("up");
+        mirror_state(&up.to_string_lossy(), "STATE\t2\tAB12\t");
+        mirror_state(&up.to_string_lossy(), &state_line(&State::HostLeft));
+        assert!(!up.exists(), "хост ушёл, а маркер остался — часы сеанса продолжат тикать");
+        let _ = std::fs::remove_dir_all(&dir);
 
         let f: Vec<&str> = "QUICK\thttps://s\tH1\tnoise\tH2\tnoise-obfs".split('\t').collect();
         assert_eq!(

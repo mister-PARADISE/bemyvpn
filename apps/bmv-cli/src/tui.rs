@@ -57,6 +57,10 @@ enum Vpn {
     Off,
     Connecting(String),
     On { id: String, name: String, since: Instant },
+    /// Хост сам погасил раздачу. Отдельно от `Off` и от `Failed`: выключили не
+    /// мы, но и не сломалось ничего — сеанс просто окончен, и надо взять другой
+    /// хост. С `Off` это выглядело как VPN, погасший сам по себе.
+    Ended,
     Failed(String),
 }
 
@@ -935,6 +939,12 @@ fn connect_queue(engine: &EngineSlot, app: &Shared, vpn_task: &mut VpnTask, cand
                         }
                         a.vpn = Vpn::Off;
                     }
+                    // Хост выключил раздачу — говорим об этом словами и без
+                    // красного: подключение сработало, просто хоста больше нет.
+                    bmv_desktop::tunnel::State::HostLeft => {
+                        a.toast("Хост завершил раздачу");
+                        a.vpn = Vpn::Ended;
+                    }
                     bmv_desktop::tunnel::State::Failed(e) => {
                         a.vpn = Vpn::Failed(if had_password {
                             format!("{e} (неверный пароль?)")
@@ -1396,6 +1406,13 @@ fn vpn_tab(f: &mut Frame, area: Rect, a: &App) {
                 Line::from(Span::styled(format!("🌍 {ip}    👥 {guests}    {proto}"), Style::default().fg(DIM))),
             ]
         }
+        // Тот же тихий серый, что и у «Отключено»: конец раздачи — не отказ.
+        // Подсказка в той же строке, потому что без неё «завершил» звучит как
+        // приговор, а на деле рядом стоят другие хосты.
+        Vpn::Ended => vec![Line::from(Span::styled(
+            format!("{} Хост завершил раздачу — выберите другой (c — «Старт»)", dot_off()),
+            Style::default().fg(DIM),
+        ))],
         Vpn::Failed(e) => vec![Line::from(Span::styled(format!("{} {e}", dot_err()), Style::default().fg(Color::Red)))],
     };
     f.render_widget(Paragraph::new(status).wrap(Wrap { trim: true }).block(card(" Статус ")), rows[0]);

@@ -79,6 +79,9 @@ enum Core {
         bmv_connect(coord, host, password, proto)
     }
     static func vpnStatus() -> Int32 { bmv_vpn_status() }
+    /// Почему сеанс кончился сам: 0 — не кончался, 1 — хост завершил раздачу,
+    /// 2 — связь потеряна. Единица — не ошибка, а штатный конец раздачи.
+    static func stopReason() -> Int32 { bmv_stop_reason() }
     static func stop() { bmv_stop() }
 
     // ── хост ──

@@ -70,6 +70,14 @@ pub enum State {
     Up(String),
     /// Туннеля нет (штатная остановка либо обрыв).
     Off,
+    /// ХОСТ САМ ПОГАСИЛ РАЗДАЧУ (прислал BYE) — сеанс окончен, и это НЕ ошибка.
+    ///
+    /// Отдельно от `Off` и от `Failed`, потому что человеку тут нужно разное:
+    /// после «Стоп» он и так знает, что выключил VPN сам; после отказа — что
+    /// подключиться не вышло; а здесь всё сработало правильно, просто хост ушёл,
+    /// и надо предложить выбрать другой. Со сплошным `Off` конец раздачи выглядел
+    /// как беспричинно погасший VPN.
+    HostLeft,
     /// Не получилось; текст — для человека.
     Failed(String),
 }
@@ -161,19 +169,22 @@ async fn run_tunnel<F>(
     };
     on_state(State::Up(host.to_string()));
     let link_arc: Arc<dyn bmv_common::Link> = Arc::from(link);
-    tokio::select! {
-        _ = bmv_tunnel::run_guest(device, link_arc.clone()) => {}
-        _ = stop.notified() => {}
+    // Кто завершил сеанс? Прощание хоста читаем ЗДЕСЬ, до `close()`: дальше свой
+    // BYE шлём уже мы, и разбираться, чей он был, поздно.
+    let host_left = tokio::select! {
+        _ = bmv_tunnel::run_guest(device, link_arc.clone()) => link_arc.peer_said_bye(),
+        _ = stop.notified() => false,
         // Подсказки координатора «проверь соседа» — на всё время туннеля: хост
         // мог быть убит, и прощание по UDP послать было некому. Ретранслятор сам
         // не завершается, ветка нужна только чтобы он крутился рядом.
-        _ = BmvEngine::relay_peer_checks(&*link_arc, hints) => {}
-    }
+        _ = BmvEngine::relay_peer_checks(&*link_arc, hints) => false,
+    };
     // ВСЕГДА прощаемся (BYE) — и при «Стоп», и если run_guest завершился сам
     // (обрыв/ошибка). Хост увидит EOF сразу и снимет гостя из счётчика, не ожидая
     // keepalive-таймаута (8с). BYE идёт ДО снятия RouteGuard (_guard жив до конца).
     let _ = tokio::time::timeout(Duration::from_millis(600), link_arc.close()).await;
-    on_state(State::Off); // guard снимется здесь (Drop) — маршруты откатятся
+    // guard снимется здесь (Drop) — маршруты откатятся
+    on_state(if host_left { State::HostLeft } else { State::Off });
 }
 
 #[cfg(test)]
