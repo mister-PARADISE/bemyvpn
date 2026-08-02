@@ -102,6 +102,51 @@ fn the_helper_publishes_its_port_and_answers_an_authenticated_session() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// ПУТЬ К НАСТРОЙКАМ ДОЕЗЖАЕТ ДО ROOT-ПОМОЩНИКА.
+///
+/// Помощник — отдельный процесс с ЧУЖИМ HOME (`/var/root`, `/root`), сам файл
+/// настроек он не найдёт: путь ищет окно под пользователем и передаёт пятым
+/// аргументом. Пока этого не было, помощник крутил туннель на умолчаниях, то
+/// есть молча игнорировал и STUN-серверы, и протокол, и `guest.ipv6`.
+///
+/// Проверяем на НАСТОЯЩЕМ бинаре, потому что ломается это ровно на границе
+/// процессов: перепутанный порядок аргументов внутри одного файла не заметен.
+#[test]
+fn the_helper_is_told_where_the_users_settings_live() {
+    let dir = temp_dir();
+    let (port_file, token_file, up_file) = (dir.join("port"), dir.join("token"), dir.join("up"));
+    let cfg_file = dir.join("config.toml");
+    std::fs::write(&token_file, "0123456789abcdef0123456789abcdef").unwrap();
+    std::fs::write(&cfg_file, "[guest]\nipv6 = \"allow\"\n").unwrap();
+
+    let child = std::process::Command::new(EXE)
+        .arg("--tunnel-helper")
+        .arg(&port_file)
+        .arg(&token_file)
+        .arg(&up_file)
+        .arg(&cfg_file)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    // Лишний аргумент не должен ломать рукопожатие: порт публикуется как обычно.
+    let port = wait_port(&port_file, Duration::from_secs(20));
+    assert_ne!(port, 0, "пятый аргумент сбил разбор командной строки");
+
+    let mut sock = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+    writeln!(sock, "0123456789abcdef0123456789abcdef").unwrap();
+    drop(sock);
+    let out = child.wait_with_output().unwrap();
+    let log = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        log.contains(&*cfg_file.to_string_lossy()),
+        "помощник не взял путь к настройкам — туннель поедет на умолчаниях: {log}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// Токен не прочитался → хелпер обязан выйти с ошибкой, а не встать root-ом,
 /// принимающим команды от кого угодно. И обязан СКАЗАТЬ об этом в журнал:
 /// иначе окно две минуты ждёт порт и объявляет «привилегии не получены».

@@ -85,6 +85,17 @@ pub fn run_helper(port_file: &str, token_file: &str, up_file: &str) -> ! {
         eprintln!("хелпер: токен пуст — выходим, туннеля не будет");
         std::process::exit(1);
     }
+    // Путь к настройкам — ПЯТЫЙ аргумент, и читаем мы его ЗДЕСЬ, а не в main.rs:
+    // командную строку помощника собирает `elevate_launch` из этого же файла, и
+    // оба конца договорённости должны лежать рядом. Пусто/нет — файла настроек у
+    // человека нет вовсе, тогда правда в умолчаниях (см. `guest_config`).
+    let cfg_file = std::env::args().nth(5).filter(|s| !s.is_empty()).map(std::path::PathBuf::from);
+    // В журнал — иначе «настройки не доехали» выглядит как «настройки не работают»,
+    // а отличить одно от другого в root-процессе больше нечем.
+    match &cfg_file {
+        Some(p) => eprintln!("хелпер: настройки беру из {}", p.display()),
+        None => eprintln!("хелпер: файла настроек нет — беру стандартные"),
+    }
     let up_file = up_file.to_string();
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().expect("rt");
     rt.block_on(async move {
@@ -97,7 +108,7 @@ pub fn run_helper(port_file: &str, token_file: &str, up_file: &str) -> ! {
             // Окно теперь ждёт впустую все 120 секунд — пусть хотя бы знает, почему.
             Err(e) => eprintln!("хелпер: порт {port} не записался в {port_file}: {e}"),
         }
-        accept_until(listener, &token, up_file.clone(), tokio::time::Instant::now() + CLAIM_WINDOW).await;
+        accept_until(listener, &token, up_file.clone(), cfg_file, tokio::time::Instant::now() + CLAIM_WINDOW).await;
         let _ = std::fs::remove_file(&up_file);
     });
     std::process::exit(0);
@@ -223,6 +234,7 @@ async fn accept_until(
     listener: tokio::net::TcpListener,
     token: &str,
     up_file: String,
+    cfg_file: Option<std::path::PathBuf>,
     deadline: tokio::time::Instant,
 ) {
     loop {
@@ -236,7 +248,7 @@ async fn accept_until(
                 return;
             }
             Ok(Ok((conn, _))) => {
-                if serve(conn, token, up_file.clone()).await {
+                if serve(conn, token, up_file.clone(), cfg_file.clone()).await {
                     return;
                 }
             }
@@ -247,7 +259,7 @@ async fn accept_until(
 /// Обслужить одно управляющее соединение. `true` — это была НАША сессия (можно
 /// выходить), `false` — не удостоверился, ждём следующего.
 #[cfg(not(windows))]
-async fn serve(conn: tokio::net::TcpStream, token: &str, up_file: String) -> bool {
+async fn serve(conn: tokio::net::TcpStream, token: &str, up_file: String, cfg_file: Option<std::path::PathBuf>) -> bool {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader as ABufReader};
     let (rd, mut wr) = conn.into_split();
     let mut lines = ABufReader::new(rd).lines();
@@ -272,10 +284,10 @@ async fn serve(conn: tokio::net::TcpStream, token: &str, up_file: String) -> boo
                         stop_current(&mut current).await;
                         let stop = Arc::new(tokio::sync::Notify::new());
                         let (coord, host, pw, proto) = (f[1].to_string(), f[2].to_string(), f[3].to_string(), f[4].to_string());
-                        let (tx, stop2) = (tx.clone(), stop.clone());
+                        let (tx, stop2, cfg) = (tx.clone(), stop.clone(), cfg_file.clone());
                         let h = tokio::spawn(async move {
                             let cands = vec![(host, pw, proto)];
-                            tunnel::run_candidates(guest_config(coord), cands, move |s| { let _ = tx.send(state_line(&s)); }, stop2).await;
+                            tunnel::run_candidates(guest_config(cfg.as_deref(), coord), cands, move |s| { let _ = tx.send(state_line(&s)); }, stop2).await;
                         });
                         current = Some((stop, h));
                     }
@@ -284,9 +296,9 @@ async fn serve(conn: tokio::net::TcpStream, token: &str, up_file: String) -> boo
                         let stop = Arc::new(tokio::sync::Notify::new());
                         let coord = f[1].to_string();
                         let cands = parse_quick(&f);
-                        let (tx, stop2) = (tx.clone(), stop.clone());
+                        let (tx, stop2, cfg) = (tx.clone(), stop.clone(), cfg_file.clone());
                         let h = tokio::spawn(async move {
-                            tunnel::run_candidates(guest_config(coord), cands, move |s| { let _ = tx.send(state_line(&s)); }, stop2).await;
+                            tunnel::run_candidates(guest_config(cfg.as_deref(), coord), cands, move |s| { let _ = tx.send(state_line(&s)); }, stop2).await;
                         });
                         current = Some((stop, h));
                     }
@@ -314,11 +326,37 @@ async fn serve(conn: tokio::net::TcpStream, token: &str, up_file: String) -> boo
     true
 }
 
-/// Конфиг гостя для хелпера: кроме адреса координатора у него ничего и нет —
-/// root-процесс запускается с пустым окружением и файл настроек пользователя не
-/// читает (да и не должен: это чужой файл под другими правами).
-fn guest_config(coord: String) -> bmv_config::Config {
-    bmv_config::Config { coordinators: vec![coord], ..Default::default() }
+/// Конфиг гостя для туннеля — НАСТОЯЩИЙ файл настроек, а не умолчания.
+///
+/// Здесь стояло `Config::default()` с одним подставленным координатором, и всё
+/// остальное, что человек прописал в файле, до туннеля не доезжало МОЛЧА: свой
+/// список STUN-серверов, настройки протоколов и `guest.ipv6`. Последнее означало,
+/// что снять блокировку IPv6 из окна было в принципе невозможно — а она нужна
+/// там, где v6 единственный транспорт (NAT64/464XLAT), иначе человек остаётся не
+/// «без VPN», а вообще без интернета. TUI ту же беду уже прошёл, см. `connect_queue`
+/// в apps/bmv-cli/src/tui.rs.
+///
+/// Путь ПРИХОДИТ ИЗВНЕ, а не ищется здесь: на Unix эта функция крутится в
+/// root-процессе с чужим HOME (`/var/root`, `/root`), и автопоиск нашёл бы там не
+/// тот файл или ничего. Ищет его сторона пользователя (`spawn_and_connect`).
+/// `None` — файла нет вовсе, тогда умолчания и есть правда.
+///
+/// Координатор всё равно подменяем: в окне его меняют, не сохраняя, и адрес из
+/// поля должен побеждать записанный в файле.
+///
+/// ОШИБКУ РАЗБОРА НЕ ПЕРЕСКАЗЫВАЕМ. Текст ошибки toml несёт в себе кусок самого
+/// файла, а открывает файл здесь root — по пути, пришедшему снаружи. Показать
+/// такую ошибку значило бы чужими руками читать чужие root-овые файлы.
+fn guest_config(cfg_path: Option<&std::path::Path>, coord: String) -> bmv_config::Config {
+    let mut cfg = cfg_path
+        .and_then(|p| {
+            bmv_config::Config::from_file(p)
+                .map_err(|_| eprintln!("хелпер: настройки {} не прочитались — беру стандартные", p.display()))
+                .ok()
+        })
+        .unwrap_or_default();
+    cfg.coordinators = vec![coord];
+    cfg
 }
 
 /// Состояние туннеля → строка проводного протокола `STATE\t<n>\t<id>\t<err>`.
@@ -420,9 +458,13 @@ impl Helper {
     pub fn new(on_state: Arc<dyn Fn(i32, String, String) + Send + Sync>, up_file: std::path::PathBuf) -> Self {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<String>();
         let up = up_file.to_string_lossy().to_string();
+        // Здесь туннель крутится в ЭТОМ ЖЕ процессе (под тем же пользователем),
+        // поэтому путь к настройкам ищется прямо тут — отдельного root-процесса,
+        // которому его пришлось бы передавать, на Windows нет.
+        let cfg_file = bmv_config::Config::path();
         std::thread::spawn(move || {
             let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().expect("rt");
-            rt.block_on(inproc_serve(rx, on_state, up));
+            rt.block_on(inproc_serve(rx, on_state, up, cfg_file));
         });
         Self { tx }
     }
@@ -453,6 +495,7 @@ async fn inproc_serve(
     mut cmd_rx: tokio::sync::mpsc::UnboundedReceiver<String>,
     on_state: Arc<dyn Fn(i32, String, String) + Send + Sync>,
     up_file: String,
+    cfg_file: Option<std::path::PathBuf>,
 ) {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
     let mut current: Current = None;
@@ -466,9 +509,9 @@ async fn inproc_serve(
                         stop_current(&mut current).await;
                         let stop = Arc::new(tokio::sync::Notify::new());
                         let (coord, host, pw, proto) = (f[1].to_string(), f[2].to_string(), f[3].to_string(), f[4].to_string());
-                        let (tx, stop2) = (tx.clone(), stop.clone());
+                        let (tx, stop2, cfg) = (tx.clone(), stop.clone(), cfg_file.clone());
                         let h = tokio::spawn(async move {
-                            tunnel::run_candidates(guest_config(coord), vec![(host, pw, proto)], move |s| { let _ = tx.send(state_line(&s)); }, stop2).await;
+                            tunnel::run_candidates(guest_config(cfg.as_deref(), coord), vec![(host, pw, proto)], move |s| { let _ = tx.send(state_line(&s)); }, stop2).await;
                         });
                         current = Some((stop, h));
                     }
@@ -477,9 +520,9 @@ async fn inproc_serve(
                         let stop = Arc::new(tokio::sync::Notify::new());
                         let coord = f[1].to_string();
                         let cands = parse_quick(&f);
-                        let (tx, stop2) = (tx.clone(), stop.clone());
+                        let (tx, stop2, cfg) = (tx.clone(), stop.clone(), cfg_file.clone());
                         let h = tokio::spawn(async move {
-                            tunnel::run_candidates(guest_config(coord), cands, move |s| { let _ = tx.send(state_line(&s)); }, stop2).await;
+                            tunnel::run_candidates(guest_config(cfg.as_deref(), coord), cands, move |s| { let _ = tx.send(state_line(&s)); }, stop2).await;
                         });
                         current = Some((stop, h));
                     }
@@ -569,7 +612,15 @@ fn spawn_and_connect(on_state: Arc<dyn Fn(i32, String, String) + Send + Sync>, u
     // которой не читался файл порта.
     let _ = std::fs::File::create(helper_log(&port_file));
 
-    elevate_launch(&exe, &port_file, &token_file, up_file)?;
+    // Путь к настройкам ищем ЗДЕСЬ, под пользователем, и отдаём помощнику готовым:
+    // у root свой HOME (`/var/root`, `/root`), и сам он нашёл бы не тот файл или
+    // ничего (см. `guest_config`). Абсолютный — рабочий каталог root-процесса не
+    // наш, а поиск умеет возвращать относительный `bemyvpn.toml`. Пусто — файла
+    // нет вовсе, помощник возьмёт умолчания.
+    let cfg_file = bmv_config::Config::path()
+        .map(|p| std::fs::canonicalize(&p).unwrap_or(p))
+        .unwrap_or_default();
+    elevate_launch(&exe, &port_file, &token_file, up_file, &cfg_file)?;
 
     // Ждём, пока хелпер (после ввода пароля) напишет порт (до 120с).
     //
@@ -677,12 +728,14 @@ pub fn sh_quote(p: &std::path::Path) -> String {
 }
 
 #[cfg(target_os = "macos")]
-fn elevate_launch(exe: &std::path::Path, port_file: &std::path::Path, token_file: &std::path::Path, up_file: &std::path::Path) -> Result<(), String> {
+fn elevate_launch(exe: &std::path::Path, port_file: &std::path::Path, token_file: &std::path::Path, up_file: &std::path::Path, cfg_file: &std::path::Path) -> Result<(), String> {
     // Шелл-команда в одинарных кавычках (пути с пробелами ок), фоном (&) —
     // osascript вернётся сразу после ввода пароля. AppleScript-строка в двойных.
+    // Переменные окружения помощнику не передать (osascript и pkexec их не несут),
+    // поэтому путь к настройкам идёт ПЯТЫМ аргументом; читает его `run_helper`.
     let sh = format!(
-        "{} --tunnel-helper {} {} {} >{} 2>&1 &",
-        sh_quote(exe), sh_quote(port_file), sh_quote(token_file), sh_quote(up_file),
+        "{} --tunnel-helper {} {} {} {} >{} 2>&1 &",
+        sh_quote(exe), sh_quote(port_file), sh_quote(token_file), sh_quote(up_file), sh_quote(cfg_file),
         sh_quote(&helper_log(port_file))
     );
     let script = format!("do shell script \"{}\" with administrator privileges", sh.replace('\\', "\\\\").replace('"', "\\\""));
@@ -691,12 +744,15 @@ fn elevate_launch(exe: &std::path::Path, port_file: &std::path::Path, token_file
 }
 
 #[cfg(target_os = "linux")]
-fn elevate_launch(exe: &std::path::Path, port_file: &std::path::Path, token_file: &std::path::Path, up_file: &std::path::Path) -> Result<(), String> {
+fn elevate_launch(exe: &std::path::Path, port_file: &std::path::Path, token_file: &std::path::Path, up_file: &std::path::Path, cfg_file: &std::path::Path) -> Result<(), String> {
     // pkexec показывает графический запрос пароля (нужен polkit-агент рабочего стола).
     // Вывод — в тот же журнал, что и на macOS: из-под ярлыка рабочего стола stderr
     // родителя не видит никто, и молчаливая смерть root-процесса необъяснима.
+    //
+    // Путь к настройкам — АРГУМЕНТОМ, а не через окружение: pkexec окружение
+    // вычищает нарочно, и `BEMYVPN_CONFIG` до помощника бы не доехал.
     let mut cmd = std::process::Command::new("pkexec");
-    cmd.arg(exe).arg("--tunnel-helper").arg(port_file).arg(token_file).arg(up_file);
+    cmd.arg(exe).arg("--tunnel-helper").arg(port_file).arg(token_file).arg(up_file).arg(cfg_file);
     // Файл создаём МЫ (пользователь) и отдаём дескриптором: так root не создаёт
     // его сам и путь не переоткрывается по нашу сторону.
     if let Ok(f) = std::fs::File::create(helper_log(port_file)) {
@@ -856,7 +912,7 @@ mod tests {
         let dir = private_dir();
         let up = dir.join("up").to_string_lossy().to_string();
         let deadline = tokio::time::Instant::now() + Duration::from_millis(400);
-        let done = tokio::time::timeout(Duration::from_secs(10), accept_until(listener, "секрет", up, deadline)).await;
+        let done = tokio::time::timeout(Duration::from_secs(10), accept_until(listener, "секрет", up, None, deadline)).await;
         knocker.abort();
         let _ = std::fs::remove_dir_all(&dir);
 
@@ -916,6 +972,48 @@ mod tests {
         mirror_state(&path, "STATE\t2\tEF56\t");
         mirror_state(&path, "ЧУШЬ\t2\t\t");
         assert_eq!(std::fs::read_to_string(&up).unwrap(), "EF56");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// НАСТРОЙКИ ЧЕЛОВЕКА ОБЯЗАНЫ ДОЕХАТЬ ДО ТУННЕЛЯ.
+    ///
+    /// Здесь строился `Config::default()` с одним подставленным координатором, и
+    /// всё остальное из файла молча заменялось умолчаниями: свои STUN-серверы,
+    /// протокол, `guest.ipv6`. Последнее означало, что снять блокировку IPv6 из
+    /// окна было НЕВОЗМОЖНО — а без неё в сетях NAT64/464XLAT человек остаётся не
+    /// «без VPN», а вообще без интернета.
+    #[test]
+    fn the_users_own_settings_reach_the_tunnel() {
+        let dir = private_dir();
+        let path = dir.join("config.toml");
+        std::fs::write(
+            &path,
+            "coordinators = [\"https://из-файла\"]\n\
+             default_protocol = \"noise-obfs\"\n\
+             [guest]\nipv6 = \"allow\"\n\
+             [stun]\nservers = [\"stun.свой:3478\"]\n",
+        )
+        .unwrap();
+
+        let cfg = guest_config(Some(&path), "https://из-окна".into());
+        assert_eq!(cfg.guest.ipv6_mode(), bmv_config::Ipv6Mode::Allow, "решение человека про IPv6 до маршрутов не доехало");
+        assert_eq!(cfg.stun.servers, vec!["stun.свой:3478".to_string()], "STUN-пул подменён умолчаниями");
+        assert_eq!(cfg.default_protocol, "noise-obfs", "протокол подменён умолчанием");
+        // А вот координатор — ИЗ ОКНА: там его меняют, не сохраняя в файл.
+        assert_eq!(cfg.coordinators, vec!["https://из-окна".to_string()]);
+
+        // Файла нет вовсе → умолчания, и IPv6 при этом БЛОКИРУЕТСЯ.
+        let cfg = guest_config(None, "https://из-окна".into());
+        assert_eq!(cfg.guest.ipv6_mode(), bmv_config::Ipv6Mode::Block);
+        assert_eq!(cfg.coordinators, vec!["https://из-окна".to_string()]);
+
+        // Битый файл не роняет туннель и падает в защиту, а не в утечку.
+        let bad = dir.join("bad.toml");
+        std::fs::write(&bad, "это не toml =").unwrap();
+        let cfg = guest_config(Some(&bad), "https://из-окна".into());
+        assert_eq!(cfg.guest.ipv6_mode(), bmv_config::Ipv6Mode::Block);
+        assert_eq!(cfg.coordinators, vec!["https://из-окна".to_string()]);
 
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -458,12 +458,30 @@ async fn run_guest(
                 // Полный туннель: split-default заворачивает ВЕСЬ трафик через хост,
                 // хост пинуется через реальный шлюз (анти-петля), DNS → 8.8.8.8.
                 // Снимается на Drop (тот же RouteGuard, что и в GUI). Ctrl+C → откат.
-                let _guard = match bmv_desktop::RouteGuard::install(peer.ip(), &ifname) {
+                // Режим IPv6 берём ИЗ КОНФИГА, а не подразумеваем. Здесь стоял
+                // `install()`, у которого он всегда «блокировать», и прописанное
+                // человеком `guest.ipv6 = "allow"` до маршрутов не доезжало — а оно
+                // нужно там, где v6 единственный транспорт (NAT64/464XLAT): глухая
+                // блокировка оставляет не «без VPN», а вообще без интернета.
+                let _guard = match bmv_desktop::RouteGuard::install_with(
+                    peer.ip(),
+                    &ifname,
+                    engine.config().guest.ipv6_mode(),
+                ) {
                     Ok(g) => g,
                     Err(e) => fail(format!("не настроить маршруты (нужен root/sudo): {e}")),
                 };
                 println!("  соединён с {peer}. Весь трафик идёт через хост (интерфейс {ifname}).");
-                if let Err(e) = bmv_tunnel::run_guest(device, std::sync::Arc::from(link)).await {
+                let link: std::sync::Arc<dyn bmv_common::Link> = std::sync::Arc::from(link);
+                // Подсказки координатора «проверь соседа» — ТРЕТИЙ слой обнаружения
+                // разрыва (первые два: прощание хоста и таймаут тишины). В TUI и в
+                // окне он есть, здесь его не было: убитый хост, не успевший послать
+                // BYE по UDP, оставлял этот туннель качать в пустоту.
+                let res = tokio::select! {
+                    r = bmv_tunnel::run_guest(device, link.clone()) => r,
+                    _ = BmvEngine::relay_peer_checks(&*link, engine.peer_check()) => unreachable!(),
+                };
+                if let Err(e) = res {
                     fail(format!("туннель оборвался: {e}"));
                 }
                 println!("  туннель завершён.");
