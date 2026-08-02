@@ -357,7 +357,7 @@ class AppState private constructor(val ctx: Context) {
     }
 
     private var serverWatchJob: Job? = null
-    private val SERVER_POLL_MS = 3_000L
+    private val SERVER_POLL_MS = 1_000L
 
     /**
      * Держать пинг координатора живым — ВСЕГДА, как на десктопе и iOS.

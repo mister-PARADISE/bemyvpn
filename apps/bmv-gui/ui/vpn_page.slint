@@ -6,7 +6,7 @@
 // полке (app.slint), под большим пальцем.
 import { Theme } from "theme.slint";
 import { HostRow, Card, StatTile, PingTile, CopyTile, SectionLabel, Field,
-         Badge, StatusLine, StateChip, ShareButton } from "components.slint";
+         Badge, StatusLine, StateChip, ShareButton, CalmButton } from "components.slint";
 import { IconShield, IconShieldCheck, IconShieldSlash, IconShieldLock, IconMask, IconLock, IconLockOpen,
          IconPeople, IconCopy, IconCheck, IconClose, IconQr, IconScan, IconPaste, IconArrowRight, IconChevronRight, IconChevronUp } from "icons.slint";
 import { ScrollView } from "std-widgets.slint";
@@ -62,35 +62,37 @@ component HostCard inherits Rectangle {
                     alignment: center;
                     spacing: 5px;
                     horizontal-stretch: 1;
-                    Text {
-                        text: h.name; color: Theme.fg; font-size: 16px; font-weight: 600; overflow: elide;
-                    }
-                    // Подпись: значок протокола + страна и гости.
+                    // ЗНАЧОК ПРОТОКОЛА — В СТРОКЕ ИМЕНИ, ПЕРЕД НИМ.
                     //
-                    // ЗНАЧОК ТЕПЕРЬ У КАЖДОГО ПРОТОКОЛА. Раньше он появлялся
-                    // только у «Маскировки», и отсутствие значка означало сразу
-                    // две противоположные вещи: «Обычный» (шифр есть) и «Без
-                    // шифра» (шифра нет). Хуже всего доставалось именно
-                    // опасному случаю — незащищённый хост выглядел в списке
-                    // ровно как защищённый. Перегруза нет: слов не прибавилось,
-                    // прибавилось 13 точек ширины, а строка как была одна, так
-                    // и осталась.
+                    // Значок есть У КАЖДОГО протокола: раньше он был только у
+                    // «Маскировки», и его отсутствие означало сразу две
+                    // противоположные вещи — «Обычный» (шифр есть) и «Без
+                    // шифра» (шифра нет). Хуже всего доставалось опасному
+                    // случаю: незащищённый хост выглядел в списке ровно как
+                    // защищённый.
                     //
-                    // ПЕРВЫМ, а не в хвосте. У значка ширина фиксированная, у
-                    // подписи — сжимаемая (overflow: elide), и когда окно узкое,
-                    // layout ужимает именно подпись (в пределе — до многоточия).
-                    // Значок в хвосте оказывался бы прижат к огрызку подписи и
-                    // выглядел бы поломкой; слева же значки выстраиваются в
-                    // ровный столбец, а многоточие съедает хвост подписи — как
-                    // многоточию и положено.
+                    // Стоял он в строке ПОДПИСИ, под именем; теперь — рядом с
+                    // самим именем, потому что защита относится к хосту, а не к
+                    // счётчику гостей. Первым, а не в хвосте: у значка ширина
+                    // фиксированная, у имени — сжимаемая (overflow: elide), и
+                    // узкое окно ужимает именно имя. Значок в хвосте прижимался
+                    // бы к огрызку имени; слева же значки выстраиваются в ровный
+                    // столбец, а многоточие съедает хвост имени — как ему и
+                    // положено.
                     HorizontalLayout {
-                        spacing: 4px;
+                        spacing: 5px;
                         VerticalLayout {
                             alignment: center;   // иначе значок липнет к верху строки
-                            ProtoIcon { id: h.proto-id; width: 13px; height: 13px; }
+                            ProtoIcon { id: h.proto-id; width: 14px; height: 14px; }
                         }
-                        Text { text: h.subtitle; color: Theme.dim; font-size: 13px; overflow: elide; vertical-alignment: center; }
+                        Text {
+                            text: h.name; color: Theme.fg; font-size: 16px; font-weight: 600;
+                            overflow: elide; min-width: 0px; vertical-alignment: center;
+                        }
                     }
+                    // Подпись: страна и гости. Значка здесь больше нет — он
+                    // переехал к имени.
+                    Text { text: h.subtitle; color: Theme.dim; font-size: 13px; overflow: elide; }
                     // Полоса заполненности.
                     Rectangle {
                         height: 3px;
@@ -148,25 +150,12 @@ component HostCard inherits Rectangle {
                     }
                 }
                 if h.locked: Field { placeholder: "Пароль"; secure: true; text <=> root.guest-password; }
-                // Спокойная кнопка: подкраска + рамка + цветной текст — тот же
-                // приём, что у ShareButton и у действующей ячейки нав-бара.
-                // Сплошной градиент здесь кричал: карточка раскрывается прямо в
-                // списке, и синяя плашка во всю ширину перетягивала внимание с
-                // самих цифр хоста, ради которых карточку и раскрывают.
-                Rectangle {
-                    height: 50px;
-                    border-radius: 14px;
-                    background: connect-ta.has-hover ? Theme.accent.with-alpha(0.22) : Theme.accent.with-alpha(0.15);
-                    border-width: 1px;
-                    border-color: Theme.accent.with-alpha(0.4);
-                    opacity: h.usable ? 1.0 : 0.5;
-                    animate background { duration: 160ms; easing: ease-out; }
-                    Text {
-                        text: "Подключить"; color: Theme.accent; font-size: 16px; font-weight: 700;
-                        horizontal-alignment: center; vertical-alignment: center;
-                        width: 100%; height: 100%;
-                    }
-                    connect-ta := TouchArea { enabled: h.usable; clicked => { root.connect(root.index); } }
+                // Та же спокойная кнопка, что и на остальных экранах — теперь
+                // общий компонент, а не её копия здесь.
+                CalmButton {
+                    title: "Подключить";
+                    enabled: h.usable;
+                    clicked => { root.connect(root.index); }
                 }
             }
         }

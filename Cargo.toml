@@ -17,12 +17,17 @@ members = [
 ]
 # Самодостаточные крейты (свои зависимости/цели, собираются отдельно):
 # координатор (axum) и Android-FFI (cdylib под aarch64 через cargo-ndk).
-exclude = ["server/coordinator", "apps/android/rust", "vendor/ipstack"]
+exclude = ["server/coordinator", "apps/android/rust", "vendor/ipstack", "vendor/wintun"]
 
 # ФОРК ipstack (vendor/ipstack): window scaling (RFC 7323) + RTO-таймер + MSS.
 # Без него окно TCP ≤64КБ → потолок 64КБ/RTT на соединение. См. vendor/ipstack/Cargo.toml.
 [patch.crates-io]
 ipstack = { path = "vendor/ipstack" }
+# ФОРК wintun (vendor/wintun): единственная правка — `netsh` запускается с
+# CREATE_NO_WINDOW, иначе при подключении под Windows трижды мигает чёрное окно
+# консоли. Крейт наш код не подключает — он приходит транзитивно из `tun` под
+# Windows, поэтому убрать окна можно только форком. См. vendor/wintun/Cargo.toml.
+wintun = { path = "vendor/wintun" }
 
 [workspace.package]
 version = "1.0.0"
@@ -49,7 +54,15 @@ clap = { version = "4", features = ["derive"] }
 rand = "0.8"
 serde_json = "1"
 snow = "0.9"
-tun = { version = "0.8", features = ["async"] }
+# НЕ ПОДНИМАТЬ БЕЗ ЖИВОЙ ПРОВЕРКИ НА WINDOWS. Версия 0.8 уже выпускалась (82a6ebf)
+# и сломала VPN на Windows у живого пользователя: там весь Windows-путь переписан —
+# адрес ставится CreateUnicastIpAddressEntry вместо `netsh … source=static`
+# (интерфейс остаётся в режиме DHCP), добавлено ожидание IPv4-интерфейса, MTU
+# впервые реально применяется к адаптеру, асинхронное чтение переехало на
+# WaitForMultipleObjects. Какая из этих правок ломает — по исходникам не
+# устанавливается, поэтому держим 0.6: она проверена в бою. Окна консоли,
+# ради которых поднимали, убраны форком wintun (см. [patch.crates-io] выше).
+tun = { version = "0.6", features = ["async"] }
 ipstack = "1"
 
 # внутренние крейты

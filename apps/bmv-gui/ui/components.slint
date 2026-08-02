@@ -285,18 +285,30 @@ export component CardButton inherits Rectangle {
     ta := TouchArea { clicked => { if (root.feedback) { root.did = true; } root.clicked(); } }
 }
 
-// Главная градиентная кнопка.
-export component GradientButton inherits Rectangle {
+/// Главная кнопка страницы. СПОКОЙНАЯ: подкраска ~15% + рамка ~40% + цветной
+/// текст — тот же приём, что у ShareButton, у действующей ячейки нав-бара и у
+/// «Подключить» в карточке хоста.
+///
+/// Был сплошной градиент во всю ширину. Он кричал громче всего на экране и
+/// перетягивал внимание с того, ради чего на экран смотрят: на вкладке
+/// «Сервер» синяя плашка «Сохранить и проверить» была заметнее и адреса, и
+/// состояния связи. Один стиль на все кнопки — ещё и способ не выбирать
+/// каждый раз заново, что здесь «главнее».
+export component CalmButton inherits Rectangle {
     in property <string> title;
     in property <bool> enabled: true;
     in property <length> corner: 14px;
+    in property <color> hue: Theme.accent;
     callback clicked;
     height: 50px;
     border-radius: root.corner;
-    background: @linear-gradient(90deg, Theme.accent 0%, Theme.accent2 100%);
-    opacity: root.enabled ? (ta.has-hover ? 0.92 : 1.0) : 0.5;
+    background: ta.has-hover ? root.hue.with-alpha(0.22) : root.hue.with-alpha(0.15);
+    border-width: 1px;
+    border-color: root.hue.with-alpha(0.4);
+    opacity: root.enabled ? 1.0 : 0.5;
+    animate background { duration: 160ms; easing: ease-out; }
     Text {
-        text: root.title; color: white; font-size: 16px; font-weight: 700;
+        text: root.title; color: root.hue; font-size: 16px; font-weight: 700;
         horizontal-alignment: center; vertical-alignment: center;
         width: 100%; height: 100%;
     }
@@ -361,18 +373,23 @@ export component BigChip inherits Rectangle {
     callback clicked;
     height: 64px;
     border-radius: 14px;
+    // Выбранный чип — тот же спокойный приём, что и у кнопок: подкраска +
+    // рамка + цветной текст. Сплошной градиент во всю плитку кричал сильнее
+    // самого выбора: на вкладке «Хост» таких чипов подряд шесть, и экран из
+    // них выходил в синих плашках.
     background: root.on
-        ? @linear-gradient(180deg, Theme.accent 0%, Theme.accent2 100%)
+        ? (ta.has-hover ? Theme.accent.with-alpha(0.22) : Theme.accent.with-alpha(0.15))
         : (ta.has-hover ? Theme.card.brighter(0.15) : Theme.card);
     border-width: 1px;
-    border-color: root.on ? transparent : #FFFFFF12;
+    border-color: root.on ? Theme.accent.with-alpha(0.4) : #FFFFFF12;
+    animate background, border-color { duration: 160ms; easing: ease-out; }
     VerticalLayout {
         alignment: center;
         spacing: 5px;
         HorizontalLayout { alignment: center; @children }
         Text {
             text: root.name;
-            color: root.on ? white : Theme.dim;
+            color: root.on ? Theme.accent : Theme.dim;
             font-size: 13px; font-weight: 700;
             horizontal-alignment: center;
             overflow: elide;

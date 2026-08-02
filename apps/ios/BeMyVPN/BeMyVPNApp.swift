@@ -334,7 +334,7 @@ final class AppState: ObservableObject {
     ///
     /// Пауза берётся ПОСЛЕ проверки: на мёртвом сервере health висит до
     /// таймаута, и запуск новой поверх незавершённой копил бы их.
-    static let serverPoll: UInt64 = 3_000_000_000
+    static let serverPoll: UInt64 = 1_000_000_000
 
     func watchServer() {
         serverWatchTask?.cancel()

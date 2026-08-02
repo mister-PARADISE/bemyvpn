@@ -451,7 +451,9 @@ struct CardButton: View {
     }
 }
 
-/// Крупная кнопка «скопировать» — вид тот же, что был, добавлено подтверждение.
+/// Крупная кнопка «скопировать» под QR-кодом. Спокойная, как и все остальные:
+/// подкраска + рамка + цветной текст. Сплошной градиент был единственным ярким
+/// пятном на почти пустом экране и перетягивал взгляд с самого кода.
 struct BigCopyButton: View {
     let value: String
     @State private var copied = false
@@ -467,12 +469,14 @@ struct BigCopyButton: View {
                 Image(systemName: copied ? "checkmark" : "doc.on.doc").font(.system(size: 15, weight: .bold))
                 Text(copied ? "Скопировано" : "Скопировать код").fontWeight(.bold)
             }
-            .foregroundColor(.white)
+            .foregroundColor(copied ? Theme.green : Theme.accent)
             .frame(maxWidth: .infinity).padding(.vertical, 15)
-            .background(copied ? AnyShapeStyle(Theme.green)
-                               : AnyShapeStyle(LinearGradient(colors: [Theme.accent, Theme.accent2],
-                                                              startPoint: .leading, endPoint: .trailing)))
-            .cornerRadius(14)
+            .background(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill((copied ? Theme.green : Theme.accent).opacity(0.15))
+                    .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .stroke((copied ? Theme.green : Theme.accent).opacity(0.4), lineWidth: 1))
+            )
         }.buttonStyle(PressStyle())
     }
 }
@@ -596,17 +600,15 @@ func tabHeader(_ icon: String, _ title: String) -> some View {
     }
 }
 extension View { func navPadding() -> some View { self.padding(.bottom, 96) } }
-func gradientButton(_ title: String) -> some View {
-    Text(title).fontWeight(.bold).foregroundColor(.white)
-        .frame(maxWidth: .infinity).padding(.vertical, 15)
-        .background(LinearGradient(colors: [Theme.accent, Theme.accent2], startPoint: .leading, endPoint: .trailing))
-        .cornerRadius(14)
-}
-/// Спокойная главная кнопка: подкраска + рамка + цветной текст — тот же приём,
-/// что у ShareButtons и у действующей ячейки нав-бара. Для действий ВНУТРИ
-/// списка: карточка раскрывается прямо в нём, и сплошная синяя плашка во всю
-/// ширину перетягивала внимание с самих цифр хоста, ради которых карточку и
-/// раскрывают.
+/// Главная кнопка — ОДНА НА ВСЁ ПРИЛОЖЕНИЕ, спокойная: подкраска + рамка +
+/// цветной текст, тот же приём, что у ShareButtons и у действующей ячейки
+/// нав-бара.
+///
+/// Градиентного близнеца здесь больше нет. Сплошная синяя плашка во всю ширину
+/// кричала громче всего на экране и перетягивала внимание с того, ради чего на
+/// экран смотрят: в карточке хоста — с его же цифр, на вкладке «Сервер» — с
+/// адреса и состояния связи. Один стиль на все кнопки — ещё и способ не решать
+/// каждый раз заново, какая из них «главнее».
 func calmButton(_ title: String) -> some View {
     Text(title).fontWeight(.bold).foregroundColor(Theme.accent)
         .frame(maxWidth: .infinity).padding(.vertical, 15)
@@ -630,19 +632,15 @@ func hostFlag(_ h: Host) -> String {
 /// там под него отдельная плитка. Счётчик гостей есть ВСЕГДА — это и делает
 /// подпись непустой при любых данных.
 ///
-/// ЗНАЧОК ПРОТОКОЛА — У КАЖДОГО ПРОТОКОЛА И ПЕРВЫМ. Раньше он был только у
-/// «Маскировки», и его отсутствие означало сразу две противоположные вещи:
-/// «Обычный» (шифр есть) и «Без шифра» (шифра нет) — незащищённый хост
-/// выглядел в списке ровно как защищённый. Строку это не перегружает: слов не
-/// прибавилось, строка как была одна, так и осталась. Первым, а не в хвосте,
-/// потому что хвост — то, что съедает многоточие: знак защиты пропадал бы
-/// ровно там, где строке не хватило ширины.
+/// Значка протокола здесь НЕТ: он переехал в строку с именем хоста (см.
+/// `HostCard`), потому что защита относится к самому хосту, а не к счётчику
+/// гостей.
 func hostSubtitle(_ h: Host) -> Text {
     var parts: [String] = []
     if let cc = GeoFlags.countryOf(h.ip) { parts.append(cc) }
     // Потолок хост может и не объявить (0) — дробь «1/0» в этом случае врёт.
     parts.append(h.max > 0 ? "гостей \(h.guests)/\(h.max)" : "гостей \(h.guests)")
-    return symbolText(protoIcon(h.proto), parts.joined(separator: " · "))
+    return Text(parts.joined(separator: " · "))
 }
 
 // ── ВКЛАДКА «СЕРВЕР» ─────────────────────────────────────────────────────────
@@ -696,7 +694,7 @@ struct ServerTab: View {
                     .foregroundColor(Theme.fg).autocorrectionDisabled().textInputAutocapitalization(.never)
                     .padding(14).background(Theme.card).cornerRadius(14)
 
-                Button { app.saveCoordinator(coordField.isEmpty ? app.coordinator : coordField) } label: { gradientButton("Сохранить и проверить") }
+                Button { app.saveCoordinator(coordField.isEmpty ? app.coordinator : coordField) } label: { calmButton("Сохранить и проверить") }
                 if app.coordinator != Core.defaultCoordinator {
                     Button { coordField = Core.defaultCoordinator; app.saveCoordinator(Core.defaultCoordinator) } label: {
                         Text("Вернуть стандартный сервер").foregroundColor(Theme.dim).font(.system(size: 13)).frame(maxWidth: .infinity)
@@ -731,7 +729,7 @@ struct ServerTab: View {
                 Text(addr).foregroundColor(Theme.dim).font(.system(size: 13, design: .monospaced))
                     .frame(maxWidth: .infinity, alignment: .leading)
                 HStack(spacing: 8) {
-                    // Обычная плитка, а не кнопка: проверка идёт сама каждые 3
+                    // Обычная плитка, а не кнопка: проверка идёт сама каждую секунду
                     // секунды, и нажатие экономило бы в лучшем случае их же.
                     StatTile(label: "ПИНГ", value: "\(app.ping) мс", tint: pingColor)
                     StatTile(label: "ХОСТОВ", value: "\(app.hosts.count)")
@@ -983,9 +981,27 @@ struct HostCard: View {
                 HStack(spacing: 12) {
                     flagAvatar
                     VStack(alignment: .leading, spacing: 5) {
-                        Text(host.name.isEmpty ? host.id : host.name)
-                            .foregroundColor(Theme.fg).font(.system(size: 16, weight: .semibold))
-                            .lineLimit(1).minimumScaleFactor(0.8)
+                        // ЗНАЧОК ПРОТОКОЛА — ПЕРЕД ИМЕНЕМ, в одной строке с ним.
+                        //
+                        // Значок есть у КАЖДОГО протокола: раньше он был только
+                        // у «Маскировки», и его отсутствие означало сразу две
+                        // противоположные вещи — «Обычный» (шифр есть) и «Без
+                        // шифра» (шифра нет); незащищённый хост выглядел ровно
+                        // как защищённый. Стоял он в подписи, под именем; теперь
+                        // рядом с самим именем — защита относится к хосту, а не
+                        // к счётчику гостей.
+                        //
+                        // Первым, а не в хвосте: хвост съедает многоточие, и
+                        // знак защиты пропадал бы ровно там, где строке не
+                        // хватило ширины. Ужимается имя (lineLimit(1)), значок
+                        // фиксированный — выдавить его нечем.
+                        HStack(spacing: 5) {
+                            Image(systemName: protoIcon(host.proto))
+                                .foregroundColor(Theme.dim).font(.system(size: 12, weight: .semibold))
+                            Text(host.name.isEmpty ? host.id : host.name)
+                                .foregroundColor(Theme.fg).font(.system(size: 16, weight: .semibold))
+                                .lineLimit(1).minimumScaleFactor(0.8)
+                        }
                         hostSubtitle(host).foregroundColor(Theme.dim).font(.system(size: 13)).lineLimit(1)
                         capacityBar
                     }
@@ -1226,12 +1242,18 @@ struct HostTab: View {
                 Slider(value: Binding(get: { Double(app.hostMax) }, set: { app.hostMax = Int($0) }), in: 1...256, step: 1,
                        onEditingChanged: { editing in if !editing { app.applyHostNow() } })
                     .tint(Theme.accent)
+                // Выбранное значение — той же спокойной подкраской с рамкой, что
+                // и остальные кнопки: сплошная синяя плашка на шести кнопках
+                // подряд кричала громче, чем стоит выбор числа.
                 HStack(spacing: 6) {
                     ForEach([4, 8, 16, 32, 64, 128], id: \.self) { v in
                         Button { app.hostMax = v; app.applyHostNow() } label: {
-                            Text("\(v)").font(.system(size: 13, weight: .bold)).foregroundColor(app.hostMax == v ? .white : Theme.dim)
+                            Text("\(v)").font(.system(size: 13, weight: .bold)).foregroundColor(app.hostMax == v ? Theme.accent : Theme.dim)
                                 .frame(maxWidth: .infinity).padding(.vertical, 8)
-                                .background(app.hostMax == v ? AnyShapeStyle(Theme.accent) : AnyShapeStyle(Theme.cardSel)).cornerRadius(10)
+                                .background(app.hostMax == v ? AnyShapeStyle(Theme.accent.opacity(0.15)) : AnyShapeStyle(Theme.cardSel))
+                                .cornerRadius(10)
+                                .overlay(RoundedRectangle(cornerRadius: 10)
+                                    .stroke(app.hostMax == v ? Theme.accent.opacity(0.4) : Color.clear, lineWidth: 1))
                         }
                     }
                 }
@@ -1261,18 +1283,22 @@ struct HostTab: View {
     }
 
     /// Толстый чип: значок сверху, название снизу — палец попадает не глядя.
+    ///
+    /// Выбранный — тем же спокойным приёмом, что и кнопки: подкраска + рамка +
+    /// цветной текст. Сплошной градиент со свечением кричал сильнее самого
+    /// выбора: таких чипов на вкладке подряд шесть, и экран из них выходил в
+    /// синих плашках.
     private func bigChip(_ icon: String, _ name: String, on: Bool, _ tap: @escaping () -> Void) -> some View {
         VStack(spacing: 5) {
-            Image(systemName: icon).font(.system(size: 18, weight: .semibold)).foregroundColor(on ? .white : Theme.dim)
-            Text(name).font(.system(size: 13, weight: .bold)).foregroundColor(on ? .white : Theme.dim)
+            Image(systemName: icon).font(.system(size: 18, weight: .semibold)).foregroundColor(on ? Theme.accent : Theme.dim)
+            Text(name).font(.system(size: 13, weight: .bold)).foregroundColor(on ? Theme.accent : Theme.dim)
                 .lineLimit(1).minimumScaleFactor(0.8)
         }
         .frame(maxWidth: .infinity).padding(.vertical, 14)
-        .background(on ? AnyShapeStyle(LinearGradient(colors: [Theme.accent, Theme.accent2], startPoint: .top, endPoint: .bottom))
-                       : AnyShapeStyle(Theme.card))
+        .background(on ? AnyShapeStyle(Theme.accent.opacity(0.15)) : AnyShapeStyle(Theme.card))
         .cornerRadius(14)
-        .overlay(RoundedRectangle(cornerRadius: 14).stroke(on ? Color.clear : Color.white.opacity(0.07), lineWidth: 1))
-        .shadow(color: on ? Theme.accent.opacity(0.3) : .clear, radius: 8, y: 3)
+        .overlay(RoundedRectangle(cornerRadius: 14)
+            .stroke(on ? Theme.accent.opacity(0.4) : Color.white.opacity(0.07), lineWidth: 1))
         .contentShape(Rectangle())
         .onTapGesture { UIImpactFeedbackGenerator(style: .light).impactOccurred(); tap() }
     }

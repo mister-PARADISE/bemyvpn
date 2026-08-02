@@ -8,7 +8,7 @@
 // Адрес показывается доменом, без «https://»: схема у нас всегда одна, и шесть
 // символов перед каждым адресом ничего не сообщают.
 import { Theme } from "theme.slint";
-import { StatTile, CopyTile, SectionLabel, GradientButton, Field, Badge, StatusLine } from "components.slint";
+import { StatTile, CopyTile, SectionLabel, CalmButton, Field, Badge, StatusLine } from "components.slint";
 import { IconAntenna, IconAntennaOff } from "icons.slint";
 import { ScrollView } from "std-widgets.slint";
 
@@ -71,7 +71,7 @@ export component ServerPage inherits Rectangle {
                             spacing: 8px;
                             StatTile {
                                 // Обычная плитка, а не кнопка: проверка идёт сама
-                                // каждые 3 секунды, и нажатие экономило бы в лучшем
+                                // каждую секунду, и нажатие экономило бы в лучшем
                                 // случае их же.
                                 label: "ПИНГ"; value: root.coord-ping + " мс";
                                 tint: root.ping-color; horizontal-stretch: 1;
@@ -146,7 +146,7 @@ export component ServerPage inherits Rectangle {
 
                 SectionLabel { text: "Другой адрес сервера"; }
                 Field { placeholder: "адрес сервера"; text <=> root.coord-field; accepted => { root.set-coord(root.coord-field); } }
-                GradientButton { title: "Сохранить и проверить"; clicked => { root.set-coord(root.coord-field); } }
+                CalmButton { title: "Сохранить и проверить"; clicked => { root.set-coord(root.coord-field); } }
                 if !root.coord-is-default: Text {
                     text: "Вернуть стандартный сервер";
                     color: Theme.dim; font-size: 13px; horizontal-alignment: center;

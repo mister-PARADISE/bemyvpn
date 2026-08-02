@@ -35,8 +35,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
-import androidx.compose.ui.draw.shadow
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
@@ -190,17 +188,21 @@ fun HostTab(app: AppState, bottomPad: Dp) {
                 inactiveTrackColor = Color.White.copy(alpha = 0.12f),
             ),
         )
+        // Выбранное значение — той же спокойной подкраской с рамкой, что и
+        // остальные кнопки: сплошная синяя плашка на шести кнопках подряд
+        // кричала громче, чем стоит выбор числа.
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             listOf(4, 8, 16, 32, 64, 128).forEach { v ->
                 val on = app.hostMax == v
                 Box(
                     Modifier.weight(1f)
-                        .background(if (on) Theme.accent else Theme.cardSel, RoundedCornerShape(10.dp))
+                        .background(if (on) Theme.accent.copy(alpha = 0.15f) else Theme.cardSel, RoundedCornerShape(10.dp))
+                        .border(1.dp, if (on) Theme.accent.copy(alpha = 0.4f) else Color.Transparent, RoundedCornerShape(10.dp))
                         .tappable { app.hostMax = v; app.applyHostNow() }
                         .padding(vertical = 8.dp),
                     contentAlignment = Alignment.Center,
                 ) {
-                    Text("$v", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = if (on) Color.White else Theme.dim)
+                    Text("$v", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = if (on) Theme.accent else Theme.dim)
                 }
             }
         }
@@ -234,20 +236,24 @@ fun HostTab(app: AppState, bottomPad: Dp) {
     if (showQR) QrSheet(code = app.hostCode) { showQR = false }
 }
 
-/** Толстый чип: значок сверху, название снизу — палец попадает не глядя. */
+/** Толстый чип: значок сверху, название снизу — палец попадает не глядя.
+ *
+ *  Выбранный — тем же спокойным приёмом, что и кнопки: подкраска + рамка +
+ *  цветной текст. Сплошной градиент со свечением кричал сильнее самого выбора:
+ *  таких чипов на вкладке подряд шесть, и экран из них выходил в синих
+ *  плашках. */
 @Composable
 private fun BigChip(icon: ImageVector, name: String, on: Boolean, modifier: Modifier, tap: () -> Unit) {
     val ctx = LocalContext.current
-    val tint = if (on) Color.White else Theme.dim
+    val tint = if (on) Theme.accent else Theme.dim
     Column(
         modifier
-            .then(if (on) Modifier.shadow(8.dp, RoundedCornerShape(14.dp), spotColor = Theme.accent.copy(alpha = 0.3f)) else Modifier)
-            .background(
-                if (on) Brush.verticalGradient(listOf(Theme.accent, Theme.accent2))
-                else androidx.compose.ui.graphics.SolidColor(Theme.card),
+            .background(if (on) Theme.accent.copy(alpha = 0.15f) else Theme.card, RoundedCornerShape(14.dp))
+            .border(
+                1.dp,
+                if (on) Theme.accent.copy(alpha = 0.4f) else Color.White.copy(alpha = 0.07f),
                 RoundedCornerShape(14.dp),
             )
-            .border(1.dp, if (on) Color.Transparent else Color.White.copy(alpha = 0.07f), RoundedCornerShape(14.dp))
             .tappable { Haptics.tap(ctx); tap() }
             .padding(vertical = 14.dp),
         horizontalAlignment = Alignment.CenterHorizontally,

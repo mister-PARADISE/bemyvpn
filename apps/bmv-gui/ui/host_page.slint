@@ -11,7 +11,7 @@
 // Код сети НЕ показывается, пока раздача выключена: давать его некому.
 // Копирование и QR живут на нижней полке (app.slint) — под большим пальцем.
 import { Theme } from "theme.slint";
-import { Card, StatTile, CopyTile, CardButton, GradientButton, SectionLabel, Field, BigChip,
+import { Card, StatTile, CopyTile, CardButton, SectionLabel, Field, BigChip,
          Badge, StatusLine, BigCode, QuietButton, ShareButton } from "components.slint";
 import { IconRouter, IconRenew, IconCopy, IconQr, IconGlobe, IconEyeOff, IconPeople, IconWarning,
          IconShieldLock, IconMask, IconShieldSlash } from "icons.slint";
@@ -20,10 +20,12 @@ import { ScrollView, Slider } from "std-widgets.slint";
 component ProtoChipIcon inherits Rectangle {
     in property <string> id;
     in property <bool> on: false;
-    property <color> tint: on ? white : Theme.dim;
-    if id == "noise": IconShieldLock { width: 100%; height: 100%; tint: root.tint; hole: on ? Theme.accent2 : Theme.card; }
+    // Выбранный — акцентом, а не белым по градиенту: чипы стали спокойными
+    // (подкраска + рамка), и белый значок на светлой подкраске пропадал бы.
+    property <color> tint: on ? Theme.accent : Theme.dim;
+    if id == "noise": IconShieldLock { width: 100%; height: 100%; tint: root.tint; hole: Theme.card; }
     if id == "noise-obfs": IconMask { width: 100%; height: 100%; tint: root.tint; }
-    if id == "plain": IconShieldSlash { width: 100%; height: 100%; tint: root.tint; hole: on ? Theme.accent2 : Theme.card; }
+    if id == "plain": IconShieldSlash { width: 100%; height: 100%; tint: root.tint; hole: Theme.card; }
 }
 
 export component HostPage inherits Rectangle {
@@ -230,10 +232,10 @@ export component HostPage inherits Rectangle {
                     BigChip { name: "Публичный"; on: root.host-public && !root.locked-hidden; horizontal-stretch: 1;
                         opacity: root.locked-hidden ? 0.4 : 1.0;
                         clicked => { if (!root.locked-hidden) { root.host-public = true; root.apply-host(); } }
-                        IconGlobe { width: 20px; height: 20px; tint: (root.host-public && !root.locked-hidden) ? white : Theme.dim; } }
+                        IconGlobe { width: 20px; height: 20px; tint: (root.host-public && !root.locked-hidden) ? Theme.accent : Theme.dim; } }
                     BigChip { name: "Скрытый"; on: !root.host-public || root.locked-hidden; horizontal-stretch: 1;
                         clicked => { root.host-public = false; root.apply-host(); }
-                        IconEyeOff { width: 20px; height: 20px; tint: (!root.host-public || root.locked-hidden) ? white : Theme.dim; } }
+                        IconEyeOff { width: 20px; height: 20px; tint: (!root.host-public || root.locked-hidden) ? Theme.accent : Theme.dim; } }
                 }
                 Text {
                     text: root.locked-hidden
@@ -255,12 +257,18 @@ export component HostPage inherits Rectangle {
                 }
                 HorizontalLayout {
                     spacing: 6px;
+                    // Тот же спокойный приём, что и у кнопок с чипами: выбранное
+                    // значение — подкраска + рамка + цветная цифра. Сплошная
+                    // синяя плашка на шести кнопках подряд кричала громче, чем
+                    // стоит выбор числа.
                     for v in [4, 8, 16, 32, 64, 128]: Rectangle {
                         height: 34px;
                         horizontal-stretch: 1;
                         border-radius: 10px;
-                        background: root.host-max == v ? Theme.accent : Theme.card-sel;
-                        Text { text: v; color: root.host-max == v ? white : Theme.dim; font-size: 13px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; }
+                        background: root.host-max == v ? Theme.accent.with-alpha(0.15) : Theme.card-sel;
+                        border-width: 1px;
+                        border-color: root.host-max == v ? Theme.accent.with-alpha(0.4) : transparent;
+                        Text { text: v; color: root.host-max == v ? Theme.accent : Theme.dim; font-size: 13px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; }
                         TouchArea { clicked => { root.host-max = v; root.apply-host(); } }
                     }
                 }

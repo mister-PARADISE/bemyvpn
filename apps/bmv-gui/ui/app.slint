@@ -3,7 +3,7 @@
 // центральной ячейкой (Старт/Стоп). Всё состояние — входные свойства, действия —
 // колбэки; заполняет их Rust (main.rs).
 import { Theme } from "theme.slint";
-import { HostRow } from "components.slint";
+import { HostRow, CalmButton } from "components.slint";
 import { IconServer, IconRouter, IconShield, IconBolt, IconX, IconQr, IconRenew, IconPower } from "icons.slint";
 import { VpnPage } from "vpn_page.slint";
 import { HostPage } from "host_page.slint";
@@ -79,21 +79,25 @@ export component AppWindow inherits Window {
     title: "BeMyVPN";
     default-font-size: 14px;
     background: Theme.bg;
-    // РАЗМЕР ЗАДАЁТ RUST, окно тянуть мышью нельзя (min == max).
-    //
-    // Пропорция всегда 400:820 — макет рассчитан на неё, и растягивание мышью
-    // его ломало. Но и прибивать 820 намертво нельзя: на ноутбуке с экраном в
-    // 800 точек окно не помещалось и уезжало за нижний край вместе с нав-баром.
-    // Поэтому высоту считает Rust — от высоты ЭКРАНА, с запасом на панели
-    // системы, — а ширину выводит из неё по пропорции (см. window_size).
+    // СТАРТОВЫЙ РАЗМЕР ЗАДАЁТ RUST (см. window_size): ширина всегда проектная,
+    // 400 точек, высота — от высоты ЭКРАНА, с запасом на системные панели.
     in property <length> win-w: 400px;
     in property <length> win-h: 820px;
+    // Можно ли тянуть окно мышью. Только Windows: там окно живёт среди
+    // изменяемых окон, и намертво прибитый размер читается как поломка.
+    // На macOS и Linux окно остаётся фиксированным — макет свёрстан под одну
+    // ширину, и растягивание его разгоняет.
+    in property <bool> resizable: false;
     preferred-width: root.win-w;
     preferred-height: root.win-h;
-    min-width: root.win-w;
-    max-width: root.win-w;
-    min-height: root.win-h;
-    max-height: root.win-h;
+    // Минимум, ниже которого макет разваливается: список хостов вырождается в
+    // щель, а плитки в карточке налезают друг на друга.
+    min-width: root.resizable ? 360px : root.win-w;
+    min-height: root.resizable ? 420px : root.win-h;
+    // Потолка у растягивания нет. Отдельного «бесконечно» в Slint не завезли,
+    // поэтому заведомо недостижимая величина.
+    max-width: root.resizable ? 100000px : root.win-w;
+    max-height: root.resizable ? 100000px : root.win-h;
 
     // ── интерфейс для Rust (VPN) ──
     in property <[HostRow]> hosts;
@@ -351,12 +355,14 @@ export component AppWindow inherits Window {
             Text { text: "Отсканируйте, чтобы подключиться к этой сети"; color: Theme.dim; font-size: 13px; horizontal-alignment: center; }
             HorizontalLayout {
                 alignment: center;
-                Rectangle {
-                    width: 220px; height: 50px;
-                    border-radius: 14px;
-                    background: @linear-gradient(90deg, Theme.accent 0%, Theme.accent2 100%);
-                    Text { text: "Закрыть"; color: white; font-size: 16px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; width: 100%; height: 100%; }
-                    TouchArea { clicked => { root.qr-overlay = ""; } }
+                // Та же спокойная кнопка, что и везде. Сплошной градиент здесь
+                // был единственным ярким пятном на почти пустом экране и
+                // перетягивал взгляд с самого QR-кода, ради которого экран и
+                // открыли.
+                CalmButton {
+                    width: 220px;
+                    title: "Закрыть";
+                    clicked => { root.qr-overlay = ""; }
                 }
             }
         }

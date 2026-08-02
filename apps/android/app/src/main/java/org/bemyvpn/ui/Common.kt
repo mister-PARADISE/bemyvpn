@@ -268,48 +268,40 @@ fun CardButton(icon: ImageVector, title: String, modifier: Modifier = Modifier, 
     }
 }
 
-/** Крупная кнопка «скопировать» — градиент, подтверждение зелёным. */
+/** Крупная кнопка «скопировать» под QR-кодом. Спокойная, как и все остальные:
+ *  подкраска + рамка + цветной текст. Сплошной градиент был единственным ярким
+ *  пятном на почти пустом экране и перетягивал взгляд с самого кода. */
 @Composable
 fun BigCopyButton(value: String, modifier: Modifier = Modifier) {
     val clipboard = LocalClipboardManager.current
     val ctx = LocalContext.current
     var copied by remember { mutableStateOf(false) }
     LaunchedEffect(copied) { if (copied) { delay(1400); copied = false } }
-    val bg = if (copied) Modifier.background(Theme.green, RoundedCornerShape(14.dp))
-    else Modifier.background(Brush.horizontalGradient(listOf(Theme.accent, Theme.accent2)), RoundedCornerShape(14.dp))
+    val hue = if (copied) Theme.green else Theme.accent
     Row(
-        modifier.then(bg).pressable {
-            if (value.isNotEmpty()) { clipboard.setText(AnnotatedString(value)); Haptics.success(ctx); copied = true }
-        }.padding(vertical = 15.dp),
+        modifier
+            .background(hue.copy(alpha = 0.15f), RoundedCornerShape(14.dp))
+            .border(1.dp, hue.copy(alpha = 0.4f), RoundedCornerShape(14.dp))
+            .pressable {
+                if (value.isNotEmpty()) { clipboard.setText(AnnotatedString(value)); Haptics.success(ctx); copied = true }
+            }.padding(vertical = 15.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Icon(if (copied) Icons.Filled.Check else Icons.Filled.ContentCopy, null, Modifier.size(17.dp), tint = Color.White)
-        Text(if (copied) "Скопировано" else "Скопировать код", color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+        Icon(if (copied) Icons.Filled.Check else Icons.Filled.ContentCopy, null, Modifier.size(17.dp), tint = hue)
+        Text(if (copied) "Скопировано" else "Скопировать код", color = hue, fontSize = 16.sp, fontWeight = FontWeight.Bold)
     }
 }
 
-/** Градиентная главная кнопка (текст по центру). */
-@Composable
-fun GradientButton(title: String, modifier: Modifier = Modifier, enabled: Boolean = true, onTap: () -> Unit) {
-    Box(
-        modifier
-            .fillMaxWidth()
-            .alpha(if (enabled) 1f else 0.5f)
-            .background(Brush.horizontalGradient(listOf(Theme.accent, Theme.accent2)), RoundedCornerShape(14.dp))
-            .pressable(enabled = enabled, onTap = onTap)
-            .padding(vertical = 15.dp),
-        contentAlignment = Alignment.Center,
-    ) {
-        Text(title, color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Bold)
-    }
-}
-
-/** Спокойная главная кнопка: подкраска + рамка + цветной текст — тот же приём,
- *  что у ShareButton и у действующей ячейки нав-бара. Для действий ВНУТРИ
- *  списка: карточка раскрывается прямо в нём, и сплошная синяя плашка во всю
- *  ширину перетягивала внимание с самих цифр хоста, ради которых карточку и
- *  раскрывают. */
+/** Главная кнопка — ОДНА НА ВСЁ ПРИЛОЖЕНИЕ, спокойная: подкраска + рамка +
+ *  цветной текст, тот же приём, что у ShareButton и у действующей ячейки
+ *  нав-бара.
+ *
+ *  Градиентного близнеца здесь больше нет. Сплошная синяя плашка во всю ширину
+ *  кричала громче всего на экране и перетягивала внимание с того, ради чего на
+ *  экран смотрят: в карточке хоста — с его же цифр, на вкладке «Сервер» — с
+ *  адреса и состояния связи. Один стиль на все кнопки — ещё и способ не решать
+ *  каждый раз заново, какая из них «главнее». */
 @Composable
 fun CalmButton(title: String, modifier: Modifier = Modifier, enabled: Boolean = true, onTap: () -> Unit) {
     Box(

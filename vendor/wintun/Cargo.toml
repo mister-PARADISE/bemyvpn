@@ -1,0 +1,79 @@
+# ФОРК wintun 0.3.2 (MIT, null.black Inc.) для BeMyVPN. Копия дословная,
+# правка ОДНА — `src/adapter.rs`: адрес на TUN-адаптер апстрим ставит через
+# `netsh`, порождая его обычным `Command::new`, без `CREATE_NO_WINDOW`. У
+# GUI-процесса своей консоли нет (`windows_subsystem = "windows"`), поэтому
+# Windows заводит консоль потомку — и при каждом подключении трижды мигает
+# чёрное окно. Здесь `netsh` запускается с этим флагом (функция `netsh` в
+# adapter.rs), больше не изменено ничего.
+#
+# ЗАЧЕМ ФОРК, А НЕ НОВЫЙ `tun`: подъём tun 0.6→0.8 (там Windows-путь идёт мимо
+# netsh) убрал окна, но СЛОМАЛ VPN на Windows на живой машине. Форк возвращает
+# ровно то поведение, которое работало, и при этом гасит окна.
+#
+# Подключается через [patch.crates-io] в корневом Cargo.toml; прямой зависимости
+# нет ни у кого — крейт приходит транзитивно из `tun` под Windows.
+#
+# Из копии убраны dev-dependencies и examples/tests апстрима: как зависимость
+# они не собираются, в дереве только шумят.
+
+[package]
+edition = "2021"
+name = "wintun"
+version = "0.3.2"
+authors = [
+    "null.black Inc. <opensource@null.black>",
+    "Troy Neubauer <troy@null.black>",
+]
+description = "Safe idiomatic bindings to the WinTun C library (BeMyVPN fork: netsh без окна консоли)"
+documentation = "https://docs.rs/wintun/"
+readme = "README.md"
+keywords = [
+    "wintun",
+    "tap",
+    "tun",
+    "vpn",
+    "wireguard",
+]
+categories = ["api-bindings"]
+license = "MIT"
+repository = "https://github.com/nulldotblack/wintun"
+
+[package.metadata.docs.rs]
+default-target = "x86_64-pc-windows-msvc"
+targets = [
+    "aarch64-pc-windows-msvc",
+    "i686-pc-windows-msvc",
+    "x86_64-pc-windows-msvc",
+]
+
+[dependencies.c2rust-bitfields]
+version = "0.18"
+
+[dependencies.libloading]
+version = "0.8"
+
+[dependencies.log]
+version = "0.4"
+
+[dependencies.thiserror]
+version = "1.0"
+
+[dependencies.windows]
+version = "0.51"
+features = [
+    "Win32_System_Diagnostics_Debug",
+    "Win32_System_SystemServices",
+    "Win32_Security_Cryptography",
+    "Win32_NetworkManagement_IpHelper",
+    "Win32_NetworkManagement_Ndis",
+    "Win32_Networking_WinSock",
+    "Win32_System_Threading",
+    "Win32_System_Com",
+    "Win32_Security",
+    "Win32_Foundation",
+    "Win32_System_Ioctl",
+    "Win32_System_IO",
+]
+
+[features]
+panic_on_unsent_packets = []

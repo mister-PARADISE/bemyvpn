@@ -388,32 +388,38 @@ fun HostCard(app: AppState, host: Host) {
             ) { Text(hostFlag(host), fontSize = 29.sp) }
 
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(5.dp)) {
-                Text(
-                    host.name.ifEmpty { host.id }, color = Theme.fg,
-                    fontSize = 16.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis,
-                )
-                // Подпись: значок протокола · страна · гостей N/M.
+                // ЗНАЧОК ПРОТОКОЛА — В СТРОКЕ ИМЕНИ, ПЕРЕД НИМ.
                 //
-                // ЗНАЧОК У КАЖДОГО ПРОТОКОЛА. Раньше он был только у
+                // Значок есть у КАЖДОГО протокола: раньше он был только у
                 // «Маскировки», и его отсутствие означало сразу две
-                // противоположные вещи: «Обычный» (шифр есть) и «Без шифра»
-                // (шифра нет) — незащищённый хост выглядел в списке ровно как
-                // защищённый. Строку это не перегружает: слов не прибавилось,
-                // строка как была одна, так и осталась.
+                // противоположные вещи — «Обычный» (шифр есть) и «Без шифра»
+                // (шифра нет); незащищённый хост выглядел в списке ровно как
+                // защищённый. Стоял он в строке подписи, под именем; теперь
+                // рядом с самим именем — защита относится к хосту, а не к
+                // счётчику гостей.
                 //
                 // ПЕРВЫМ, а не в хвосте: Row меряет детей по порядку, и значок
-                // в конце в узкой строке просто выдавливался бы за край (подпись
-                // с ellipsis успевала бы забрать всю ширину). Слева значки
+                // в конце в узкой строке просто выдавливался бы за край (имя с
+                // ellipsis успевало бы забрать всю ширину). Слева значки
                 // выстраиваются в ровный столбец, а многоточие съедает хвост
-                // подписи — как ему и положено.
+                // имени — как ему и положено. weight(1f, fill = false) на имени
+                // и есть та самая уступка ширины.
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                    Icon(protoIcon(host.proto), null, Modifier.size(14.dp), tint = Theme.dim)
+                    Text(
+                        host.name.ifEmpty { host.id }, color = Theme.fg,
+                        modifier = Modifier.weight(1f, fill = false),
+                        fontSize = 16.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                // Подпись: страна · гостей N/M. Значка здесь больше нет.
                 //
                 // СЫРОГО IP в подписи нет: он стоял первым (когда страна не
                 // определилась) и один занимал всю ширину — до счётчика гостей
                 // многоточие не доходило. Адрес виден в раскрытой карточке, там
                 // под него отдельная плитка. Счётчик гостей есть ВСЕГДА — это и
                 // делает подпись непустой при любых данных.
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Icon(protoIcon(host.proto), null, Modifier.size(13.dp), tint = Theme.dim)
+                run {
                     val cc = org.bemyvpn.GeoFlags.countryOf(host.ip)
                     val parts = buildList {
                         if (cc != null) add(cc)

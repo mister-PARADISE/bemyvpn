@@ -78,7 +78,7 @@ fun ServerTab(app: AppState, bottomPad: androidx.compose.ui.unit.Dp) {
         SectionLabel("Другой адрес сервера")
         BmvTextField(coordField, { coordField = it }, "http://адрес:3330")
 
-        GradientButton("Сохранить и проверить") {
+        CalmButton("Сохранить и проверить") {
             app.saveCoordinator(coordField.ifEmpty { app.coordinator })
         }
         if (app.coordinator != app.defaultCoordinator) {
@@ -138,7 +138,7 @@ private fun ServerHero(app: AppState) {
             StatusLine(icon, statusText, tint)
             Text(addr, color = Theme.dim, fontSize = 13.sp, fontFamily = FontFamily.Monospace)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                // Обычная плитка, а не кнопка: проверка идёт сама каждые 3
+                // Обычная плитка, а не кнопка: проверка идёт сама каждую секунду
                 // секунды, и нажатие экономило бы в лучшем случае их же.
                 StatTile("ПИНГ", "${app.ping} мс", Modifier.weight(1f), tint = pingColor)
                 StatTile("ХОСТОВ", "${app.hosts.size}", Modifier.weight(1f))
