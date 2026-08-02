@@ -49,7 +49,7 @@ clap = { version = "4", features = ["derive"] }
 rand = "0.8"
 serde_json = "1"
 snow = "0.9"
-tun = { version = "0.6", features = ["async"] }
+tun = { version = "0.8", features = ["async"] }
 ipstack = "1"
 
 # внутренние крейты

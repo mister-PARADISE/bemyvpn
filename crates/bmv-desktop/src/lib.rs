@@ -8,11 +8,17 @@
 //! Реализовано для Linux и macOS (обе требуют root); Windows — задел.
 
 use std::net::IpAddr;
-use std::pin::Pin;
-use std::task::{Context, Poll};
 
 use bmv_tunnel::TunParams;
-use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+
+/// TUN-устройство десктопа. С `tun` 0.8 кадрирование под платформу делает САМА
+/// библиотека: на macOS utun оборачивает каждый пакет 4-байтовым заголовком
+/// семейства адресов (AF_INET/AF_INET6), и при `packet_information(true)` крейт
+/// снимает его на чтении и добавляет на записи. Ядру BeMyVPN достаются ЧИСТЫЕ
+/// IP-пакеты — как на Linux/Windows, где заголовка нет вовсе. Своей обёртки с
+/// ручным кадрированием больше нет (была нужна для `tun` 0.6, который отдавал
+/// сырые байты).
+pub type TunDevice = tun::AsyncDevice;
 
 /// Создать десктопный TUN (нужен root/sudo). Android/iOS дают готовый fd мимо этого.
 /// Возвращает устройство И РЕАЛЬНОЕ имя интерфейса: на macOS ядро само выдаёт
@@ -20,108 +26,30 @@ use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 /// ставить надо именно по выданному имени.
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 pub fn make_tun(params: &TunParams) -> Result<(TunDevice, String), String> {
-    use tun::Device; // трейт с .name()
+    use tun::AbstractDevice; // трейт с .tun_name()
     #[cfg(target_os = "windows")]
     ensure_wintun()?; // dll вшита в exe — никакого отдельного файла в релизе
     let mut config = tun::Configuration::default();
     config
         .address(params.address)
         .netmask(params.netmask)
-        .mtu(params.mtu as i32)
+        .mtu(params.mtu)
         .up();
     // Имя задаём только там, где оно валидно. macOS требует формат utunN и сам
     // выберет свободный — навязывать «bmv0» нельзя.
     #[cfg(not(target_os = "macos"))]
-    config.name(&params.name);
-    #[cfg(target_os = "linux")]
-    config.platform(|p| {
-        p.packet_information(false); // чистые IP-пакеты, без 4-байтного заголовка
+    config.tun_name(&params.name);
+    // macOS: явно просим крейт снимать/ставить 4-байтовый AF-заголовок utun. Это
+    // его дефолт, но полагаться на дефолт нельзя: если он когда-нибудь станет
+    // false, заголовок полезет в ядро сырым и туннель порвётся мгновенно.
+    #[cfg(target_os = "macos")]
+    config.platform_config(|p| {
+        p.packet_information(true);
     });
+    // Linux: IFF_NO_PI (чистые IP-пакеты) — дефолт крейта, задавать нечего.
     let dev = tun::create_as_async(&config).map_err(|e| e.to_string())?;
-    let name = dev.get_ref().name().map_err(|e| e.to_string())?;
-    Ok((TunDevice { inner: dev }, name))
-}
-
-/// Обёртка TUN-устройства с корректным кадрированием под платформу.
-///
-/// На macOS utun ВСЕГДА оборачивает каждый пакет 4-байтовым заголовком семейства
-/// адресов (AF_INET/AF_INET6, big-endian). Ядро BeMyVPN качает ЧИСТЫЕ IP-пакеты
-/// (как на Linux и как iOS-FFI с utun=true), поэтому здесь на чтении снимаем эти
-/// 4 байта, на записи — добавляем. Без этого хост получал бы пакет с мусорными
-/// 4 байтами спереди, а запись в utun без заголовка падала бы → туннель рвался
-/// мгновенно. На Linux/Windows — прозрачная передача (там заголовка нет).
-pub struct TunDevice {
-    inner: tun::AsyncDevice,
-}
-
-#[cfg(target_os = "macos")]
-impl AsyncRead for TunDevice {
-    fn poll_read(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut ReadBuf<'_>) -> Poll<std::io::Result<()>> {
-        // Читаем во временный буфер, снимаем 4-байтовый AF-заголовок.
-        let mut tmp = [0u8; 65540];
-        let mut rb = ReadBuf::new(&mut tmp);
-        match Pin::new(&mut self.inner).poll_read(cx, &mut rb) {
-            Poll::Ready(Ok(())) => {
-                let filled = rb.filled();
-                if filled.len() > 4 {
-                    buf.put_slice(&filled[4..]);
-                }
-                Poll::Ready(Ok(()))
-            }
-            other => other,
-        }
-    }
-}
-
-/// 4-байтовый заголовок семейства адресов utun (big-endian u32): AF_INET(2) для
-/// IPv4, AF_INET6(30) для IPv6 — по версии в старшем ниббле первого байта пакета.
-#[cfg(target_os = "macos")]
-fn utun_af_header(data: &[u8]) -> [u8; 4] {
-    let af: u8 = if data.first().map(|b| b >> 4) == Some(6) { 30 } else { 2 };
-    [0, 0, 0, af]
-}
-
-#[cfg(target_os = "macos")]
-impl AsyncWrite for TunDevice {
-    fn poll_write(mut self: Pin<&mut Self>, cx: &mut Context<'_>, data: &[u8]) -> Poll<std::io::Result<usize>> {
-        if data.is_empty() {
-            return Poll::Ready(Ok(0));
-        }
-        let mut framed = Vec::with_capacity(data.len() + 4);
-        framed.extend_from_slice(&utun_af_header(data));
-        framed.extend_from_slice(data);
-        match Pin::new(&mut self.inner).poll_write(cx, &framed) {
-            // utun пишет датаграмму целиком; возвращаем длину ИСХОДНОГО пакета.
-            Poll::Ready(Ok(_)) => Poll::Ready(Ok(data.len())),
-            other => other,
-        }
-    }
-    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
-        Pin::new(&mut self.inner).poll_flush(cx)
-    }
-    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
-        Pin::new(&mut self.inner).poll_shutdown(cx)
-    }
-}
-
-// Linux/Windows: заголовка нет — прозрачно делегируем в устройство.
-#[cfg(not(target_os = "macos"))]
-impl AsyncRead for TunDevice {
-    fn poll_read(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut ReadBuf<'_>) -> Poll<std::io::Result<()>> {
-        Pin::new(&mut self.inner).poll_read(cx, buf)
-    }
-}
-#[cfg(not(target_os = "macos"))]
-impl AsyncWrite for TunDevice {
-    fn poll_write(mut self: Pin<&mut Self>, cx: &mut Context<'_>, data: &[u8]) -> Poll<std::io::Result<usize>> {
-        Pin::new(&mut self.inner).poll_write(cx, data)
-    }
-    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
-        Pin::new(&mut self.inner).poll_flush(cx)
-    }
-    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
-        Pin::new(&mut self.inner).poll_shutdown(cx)
-    }
+    let name = dev.tun_name().map_err(|e| e.to_string())?;
+    Ok((dev, name))
 }
 
 /// Windows: `wintun.dll` вшита в exe (bmv-desktop::ensure_wintun) — распаковываем,
@@ -531,31 +459,6 @@ fn run(cmd: &str, args: &[&str]) -> Result<(), String> {
         Ok(())
     } else {
         Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
-    }
-}
-
-#[cfg(all(test, target_os = "macos"))]
-mod tests {
-    use super::utun_af_header;
-
-    /// Кадрирование utun (macOS) — ИМЕННО из-за него туннель рвался мгновенно:
-    /// ядро качает чистые IP-пакеты, а utun требует 4-байтовый AF-заголовок.
-    /// Проверяем, что заголовок ставится верно по версии IP, и что «снятие» на
-    /// чтении (срез первых 4 байт) возвращает исходный пакет.
-    #[test]
-    fn utun_framing_roundtrip() {
-        // IPv4: старший ниббл первого байта = 4 → AF_INET (2).
-        let ip4 = [0x45u8, 0x00, 0x00, 0x28, 0xDE, 0xAD];
-        assert_eq!(utun_af_header(&ip4), [0, 0, 0, 2]);
-        // IPv6: старший ниббл = 6 → AF_INET6 (30).
-        let ip6 = [0x60u8, 0x00, 0x00, 0x00];
-        assert_eq!(utun_af_header(&ip6), [0, 0, 0, 30]);
-        // На записи добавляем заголовок; на чтении снимаем первые 4 байта.
-        let mut framed = utun_af_header(&ip4).to_vec();
-        framed.extend_from_slice(&ip4);
-        assert_eq!(&framed[4..], &ip4, "снятие 4-байтового заголовка должно вернуть пакет");
-        // Пустой ввод не должен паниковать.
-        assert_eq!(utun_af_header(&[]), [0, 0, 0, 2]);
     }
 }
 

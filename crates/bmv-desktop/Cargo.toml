@@ -14,9 +14,6 @@ bmv-tunnel = { path = "../bmv-tunnel" }
 # Только ради `bmv_common::command` — единой точки порождения процессов
 # (на Windows она гасит мигающее окно консоли у route/netsh).
 bmv-common = { path = "../bmv-common" }
-# Для TunDevice-адаптера (AsyncRead/AsyncWrite поверх tun::AsyncDevice: снятие
-# 4-байтового utun-заголовка на macOS).
-tokio = { workspace = true }
 
 [target.'cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))'.dependencies]
 tun = { workspace = true }
