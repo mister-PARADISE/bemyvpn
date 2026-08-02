@@ -51,10 +51,18 @@ fn token_ok(expected: &str, got: &str) -> bool {
 /// админом (манифест UAC), туннель крутится в нём (см. `inproc_serve`).
 #[cfg(not(windows))]
 pub fn run_helper(port_file: &str, token_file: &str, up_file: &str) -> ! {
-    let token = std::fs::read_to_string(token_file).unwrap_or_default().trim().to_string();
+    // Весь вывод уходит в журнал рядом с файлом порта (см. `helper_log`), и это
+    // ЕДИНСТВЕННОЕ, что видно про root-процесс: окно его не породило напрямую,
+    // ни кода возврата, ни stderr оно не получит.
+    let raw = std::fs::read_to_string(token_file);
+    if let Err(e) = &raw {
+        eprintln!("хелпер: токен {token_file} не прочитался: {e}");
+    }
+    let token = raw.unwrap_or_default().trim().to_string();
     // Нет токена — нет и работы. Продолжить значило бы поднять root-хелпера,
     // который принимает команды от кого угодно.
     if token.is_empty() {
+        eprintln!("хелпер: токен пуст — выходим, туннеля не будет");
         std::process::exit(1);
     }
     let up_file = up_file.to_string();
@@ -62,7 +70,13 @@ pub fn run_helper(port_file: &str, token_file: &str, up_file: &str) -> ! {
     rt.block_on(async move {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
         let port = listener.local_addr().map(|a| a.port()).unwrap_or(0);
-        let _ = write_nofollow(std::path::Path::new(port_file), &port.to_string());
+        // 0644, а НЕ 0600: этот файл пишет root, а читает окно под ОБЫЧНЫМ
+        // пользователем. См. `write_readable`.
+        match write_readable(std::path::Path::new(port_file), &port.to_string()) {
+            Ok(()) => eprintln!("хелпер: слушаю 127.0.0.1:{port}, порт записан в {port_file}"),
+            // Окно теперь ждёт впустую все 120 секунд — пусть хотя бы знает, почему.
+            Err(e) => eprintln!("хелпер: порт {port} не записался в {port_file}: {e}"),
+        }
         // ЦИКЛ, а не одно соединение. Раньше хелпер принимал ровно первое
         // подключение: сосед по машине, успевший подключиться раньше нашего GUI
         // и приславший мусор вместо токена, ронял хелпера — и VPN не поднимался
@@ -91,7 +105,8 @@ fn mirror_state(up_file: &str, msg: &str) {
     let f: Vec<&str> = msg.trim().split('\t').collect();
     if f.first() == Some(&"STATE") {
         if f.get(1) == Some(&"2") {
-            let _ = write_nofollow(std::path::Path::new(up_file), f.get(2).copied().unwrap_or(""));
+            // Тоже 0644: маркер пишет root, а тик-цикл окна читает под пользователем.
+            let _ = write_readable(std::path::Path::new(up_file), f.get(2).copied().unwrap_or(""));
         } else {
             let _ = std::fs::remove_file(up_file);
         }
@@ -111,17 +126,46 @@ fn mirror_state(up_file: &str, msg: &str) {
 /// `private_dir`): открытие ПАДАЕТ, если по пути оказался симлинк, вместо того
 /// чтобы молча писать в чужой файл. На Windows временный каталог и так
 /// пер-пользовательский, флага там нет — пишем обычно.
-fn write_nofollow(path: &std::path::Path, data: &str) -> std::io::Result<()> {
+///
+/// `mode` — права В МОМЕНТ СОЗДАНИЯ (а не chmod'ом после): см. `write_private`
+/// про токен и `write_readable` про файлы, которые пишет root, а читает окно.
+fn write_nofollow(path: &std::path::Path, data: &str, mode: u32) -> std::io::Result<()> {
+    let _ = mode; // на Windows прав POSIX нет
     let mut opts = std::fs::OpenOptions::new();
     opts.write(true).create(true).truncate(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
         opts.custom_flags(libc::O_NOFOLLOW);
-        opts.mode(0o600); // права ставятся В МОМЕНТ создания, а не chmod'ом после
+        opts.mode(mode);
     }
     let mut f = opts.open(path)?;
     f.write_all(data.as_bytes())
+}
+
+/// Файл, который пишет ROOT-ХЕЛПЕР, а читает окно под ОБЫЧНЫМ пользователем:
+/// порт хелпера и маркер «туннель поднят».
+///
+/// РЕГРЕССИЯ, из-за которой на macOS подключение висло на «Подключаюсь…»:
+/// эти два файла создавались с правами 0600 — как токен. Владельцем-то был
+/// root (он их и пишет), и окно под пользователем читало их с EACCES. Порт не
+/// прочитывался НИКОГДА, цикл ожидания вырабатывал все 120 секунд и врал
+/// «привилегии не получены»; маркер по той же причине не читался, и тик-цикл
+/// гасил бы уже поднятый туннель обратно в «VPN выключен». Раньше здесь стоял
+/// `fs::write`, дававший 0644 по umask, — оттого и работало.
+///
+/// Приватность даёт КАТАЛОГ 0700 (`private_dir`), а не права файла: внутрь него
+/// посторонний не войдёт при любом содержимом. Явный chmod следом — потому что
+/// umask root-процесса нам неизвестен, а `open` режет права по нему (при umask
+/// 077 из 0644 вышло бы ровно то же 0600 и ровно то же зависание).
+fn write_readable(path: &std::path::Path, data: &str) -> std::io::Result<()> {
+    write_nofollow(path, data, 0o644)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o644))?;
+    }
+    Ok(())
 }
 
 /// Каталог обмена с root-хелпером — ТОЛЬКО НАШ (0700, случайное имя).
@@ -452,22 +496,52 @@ fn spawn_and_connect(on_state: Arc<dyn Fn(i32, String, String) + Send + Sync>, u
     write_private(&token_file, &token)?;
     let _ = std::fs::remove_file(&port_file);
     let _ = std::fs::remove_file(up_file); // свежий старт: старый маркер не путает GUI
+    // Журнал заводим МЫ, под пользователем: `>` в root-овом шелле существующий
+    // файл только усечёт и владельца не переназначит. Иначе при строгом umask у
+    // root мы не прочитали бы собственную улику — ровно та же ловушка, из-за
+    // которой не читался файл порта.
+    let _ = std::fs::File::create(helper_log(&port_file));
 
     elevate_launch(&exe, &port_file, &token_file, up_file)?;
 
     // Ждём, пока хелпер (после ввода пароля) напишет порт (до 120с).
+    //
+    // ПРИЧИНУ НЕУДАЧИ ЗАПОМИНАЕМ. Раньше здесь стояло `if let Ok(...)`, то есть
+    // ошибка чтения молча приравнивалась к «файла ещё нет», и любая поломка
+    // выглядела одинаково: две минуты «Подключаюсь…», а потом неверное
+    // «привилегии не получены». Ровно так пряталось EACCES на root-овом файле
+    // 0600. «Нет файла» — это ожидание, всё остальное — диагноз.
     let mut port = 0u16;
+    let mut last_err = String::new();
     for _ in 0..1200 {
-        if let Ok(s) = std::fs::read_to_string(&port_file) {
-            if let Ok(p) = s.trim().parse::<u16>() { if p != 0 { port = p; break; } }
+        match std::fs::read_to_string(&port_file) {
+            Ok(s) => {
+                if let Ok(p) = s.trim().parse::<u16>() {
+                    if p != 0 { port = p; break; }
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => last_err = format!("файл порта: {e}"),
         }
         std::thread::sleep(Duration::from_millis(100));
     }
+    // Журнал хелпера читаем ДО уборки каталога — он и есть улика, когда root-процесс
+    // умер молча (не тот путь к бинарю, паника в рантайме, пустой токен → exit 1).
+    let log = std::fs::read_to_string(helper_log(&port_file)).unwrap_or_default();
     let _ = std::fs::remove_file(&token_file);
     let _ = std::fs::remove_file(&port_file);
+    let _ = std::fs::remove_file(helper_log(&port_file));
     let _ = std::fs::remove_dir(&dir);
     if port == 0 {
-        return Err("привилегии не получены (пароль отменён?)".into());
+        let tail: Vec<&str> = log.lines().rev().take(5).collect();
+        let mut msg = "помощник не отдал порт".to_string();
+        if !last_err.is_empty() { msg.push_str(&format!(" ({last_err})")); }
+        if tail.is_empty() {
+            msg.push_str(" — привилегии не получены (пароль отменён?)");
+        } else {
+            msg.push_str(&format!(" — {}", tail.into_iter().rev().collect::<Vec<_>>().join(" | ")));
+        }
+        return Err(msg);
     }
 
     let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).map_err(|e| e.to_string())?;
@@ -509,10 +583,21 @@ fn clean(s: &str) -> String {
 /// машине может просто крутить открытие в цикле.
 #[cfg(not(windows))]
 fn write_private(path: &std::path::Path, data: &str) -> Result<(), String> {
-    write_nofollow(path, data).map_err(|e| e.to_string())
+    // 0600 здесь уместен: пишет пользователь, а читает root — ему прав хватит.
+    write_nofollow(path, data, 0o600).map_err(|e| e.to_string())
 }
 
 // ── Запуск root-процесса с системным запросом пароля ─────────────────────────
+
+/// Куда root-хелпер пишет свой вывод — рядом с файлом порта, в том же каталоге
+/// 0700. Раньше вывод уходил в /dev/null, и молча умерший root-процесс (не тот
+/// путь к бинарю, паника в рантайме, `exit 1` из-за нечитаемого токена) был
+/// неотличим от «человек отменил пароль». В общий /tmp этот файл класть нельзя —
+/// туда сосед по машине подложит симлинк, а пишет по нему root.
+#[cfg(not(windows))]
+fn helper_log(port_file: &std::path::Path) -> std::path::PathBuf {
+    port_file.with_file_name("helper.log")
+}
 
 /// Путь → безопасный аргумент для `/bin/sh`. Одинарные кавычки закрывают пробелы,
 /// но НЕ закрывают саму одинарную кавычку: путь вида `/Users/o'brien/Моё.app`
@@ -529,8 +614,9 @@ fn elevate_launch(exe: &std::path::Path, port_file: &std::path::Path, token_file
     // Шелл-команда в одинарных кавычках (пути с пробелами ок), фоном (&) —
     // osascript вернётся сразу после ввода пароля. AppleScript-строка в двойных.
     let sh = format!(
-        "{} --tunnel-helper {} {} {} >/dev/null 2>&1 &",
-        sh_quote(exe), sh_quote(port_file), sh_quote(token_file), sh_quote(up_file)
+        "{} --tunnel-helper {} {} {} >{} 2>&1 &",
+        sh_quote(exe), sh_quote(port_file), sh_quote(token_file), sh_quote(up_file),
+        sh_quote(&helper_log(port_file))
     );
     let script = format!("do shell script \"{}\" with administrator privileges", sh.replace('\\', "\\\\").replace('"', "\\\""));
     let status = std::process::Command::new("osascript").arg("-e").arg(script).status().map_err(|e| e.to_string())?;
@@ -540,9 +626,18 @@ fn elevate_launch(exe: &std::path::Path, port_file: &std::path::Path, token_file
 #[cfg(target_os = "linux")]
 fn elevate_launch(exe: &std::path::Path, port_file: &std::path::Path, token_file: &std::path::Path, up_file: &std::path::Path) -> Result<(), String> {
     // pkexec показывает графический запрос пароля (нужен polkit-агент рабочего стола).
-    std::process::Command::new("pkexec")
-        .arg(exe).arg("--tunnel-helper").arg(port_file).arg(token_file).arg(up_file)
-        .spawn().map(|_| ()).map_err(|e| format!("pkexec: {e}"))
+    // Вывод — в тот же журнал, что и на macOS: из-под ярлыка рабочего стола stderr
+    // родителя не видит никто, и молчаливая смерть root-процесса необъяснима.
+    let mut cmd = std::process::Command::new("pkexec");
+    cmd.arg(exe).arg("--tunnel-helper").arg(port_file).arg(token_file).arg(up_file);
+    // Файл создаём МЫ (пользователь) и отдаём дескриптором: так root не создаёт
+    // его сам и путь не переоткрывается по нашу сторону.
+    if let Ok(f) = std::fs::File::create(helper_log(port_file)) {
+        if let Ok(dup) = f.try_clone() {
+            cmd.stdout(std::process::Stdio::from(f)).stderr(std::process::Stdio::from(dup));
+        }
+    }
+    cmd.spawn().map(|_| ()).map_err(|e| format!("pkexec: {e}"))
 }
 
 // На Windows отдельного root-процесса нет: приложение уже под админом (манифест
@@ -585,17 +680,64 @@ mod tests {
         let trap = dir.join("маркер");
         std::os::unix::fs::symlink(&victim, &trap).unwrap();
 
-        let res = write_nofollow(&trap, "ABCD1234");
+        let res = write_nofollow(&trap, "ABCD1234", 0o600);
         assert!(res.is_err(), "запись по симлинку обязана падать, а не менять цель");
         assert_eq!(std::fs::read_to_string(&victim).unwrap(), "не трогать");
+        // И через «читаемый» вариант — симлинк там тот же самый капкан.
+        assert!(write_readable(&trap, "ABCD1234").is_err());
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "не трогать");
 
-        // Обычный файл пишется как ни в чём не бывало, и сразу с правами 0600.
-        let plain = dir.join("порт");
-        write_nofollow(&plain, "51234").unwrap();
+        // Обычный файл пишется как ни в чём не бывало, и сразу с запрошенными правами.
+        let plain = dir.join("токен");
+        write_nofollow(&plain, "51234", 0o600).unwrap();
         assert_eq!(std::fs::read_to_string(&plain).unwrap(), "51234");
         use std::os::unix::fs::PermissionsExt;
         let mode = std::fs::metadata(&plain).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600, "файл не должен ни мгновения существовать читаемым всем");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ЧТО ПИШЕТ ROOT — ПОЛЬЗОВАТЕЛЬ ОБЯЗАН ПРОЧЕСТЬ.
+    ///
+    /// Регрессия, из-за которой окно на macOS вставало на «Подключаюсь…»
+    /// намертво: файл порта и маркер «туннель поднят» создавались с правами
+    /// 0600, как токен. Пишет их root-хелпер, значит владелец — root, и окно под
+    /// обычным пользователем читало их с «Permission denied». Порт не
+    /// прочитывался никогда → 120 секунд ожидания и ложное «привилегии не
+    /// получены»; маркер не прочитывался никогда → тик-цикл гасил бы поднятый
+    /// туннель обратно в «VPN выключен».
+    ///
+    /// Проверяем правами, а не вторым пользователем: под одним uid отличить
+    /// 0600 от 0644 чтением нельзя — владельцу оба читаются. Бит чтения «для
+    /// всех остальных» и есть здесь единственный наблюдаемый признак.
+    #[cfg(unix)]
+    #[test]
+    fn what_root_writes_the_user_must_still_be_able_to_read() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = private_dir();
+        let mode_of = |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+
+        // Файл порта — то, чего окно ждёт после запроса пароля.
+        let port = dir.join("port");
+        write_readable(&port, "51234").unwrap();
+        assert_eq!(mode_of(&port), 0o644, "порт от root под пользователем не прочитается");
+
+        // Маркер «туннель поднят» — тем же путём, через настоящий mirror_state.
+        let up = dir.join("up");
+        mirror_state(&up.to_string_lossy(), "STATE\t2\tAB12\t");
+        assert_eq!(mode_of(&up), 0o644, "маркер от root под пользователем не прочитается");
+
+        // Перезапись поверх уже существующего файла прав не роняет.
+        write_readable(&port, "51235").unwrap();
+        assert_eq!(mode_of(&port), 0o644);
+        assert_eq!(std::fs::read_to_string(&port).unwrap(), "51235");
+
+        // А токен — наоборот: его пишет пользователь, читает root, и «для всех»
+        // он открыт быть не должен.
+        let token = dir.join("token");
+        write_private(&token, "секрет").unwrap();
+        assert_eq!(mode_of(&token), 0o600, "токен управления root-хелпером — только владельцу");
 
         let _ = std::fs::remove_dir_all(&dir);
     }

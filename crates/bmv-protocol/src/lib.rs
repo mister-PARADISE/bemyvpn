@@ -15,6 +15,10 @@ use async_trait::async_trait;
 use bmv_common::{Link, Result};
 
 mod noise;
+/// Замороженная предыдущая версия `noise` — эталон провода для тестов
+/// совместимости (см. `noise_v0_frozen` и `wire_compat` в `noise.rs`).
+#[cfg(test)]
+mod noise_v0_frozen;
 mod plain;
 pub use noise::Noise;
 pub use plain::Plain;

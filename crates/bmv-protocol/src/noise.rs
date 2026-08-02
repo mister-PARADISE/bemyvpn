@@ -521,12 +521,31 @@ impl Link for NoiseLink {
 /// Считающий аллокатор — только для теста горячего пути (см. hot_path_barely_allocates).
 #[cfg(test)]
 struct CountingAlloc;
+// Счётчик — ПЕР-ПОТОКОВЫЙ, а не общий на процесс.
+//
+// Тесты `cargo test` идут ПАРАЛЛЕЛЬНО в одном процессе, и общий счётчик считал
+// заодно аллокации соседних тестов: замер горячего пути ловил чужие рукопожатия
+// и падал «в шуме» — тем чаще, чем больше тестов в файле. Аллокатор вызывается
+// на том же потоке, что и аллокация, поэтому пер-потоковый счётчик меряет РОВНО
+// свой тест (`#[tokio::test]` — однопоточный рантайм на потоке теста).
+//
+// `const`-инициализатор обязателен: ленивый TLS сам аллоцирует, а мы находимся
+// ВНУТРИ аллокатора — вышла бы бесконечная рекурсия.
 #[cfg(test)]
-static ALLOC_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+thread_local! {
+    static ALLOCS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+/// Сколько аллокаций сделал ЭТОТ поток с начала процесса.
+#[cfg(test)]
+fn allocs() -> usize {
+    ALLOCS.with(|c| c.get())
+}
 #[cfg(test)]
 unsafe impl std::alloc::GlobalAlloc for CountingAlloc {
     unsafe fn alloc(&self, l: std::alloc::Layout) -> *mut u8 {
-        ALLOC_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        // try_with: при разрушении TLS (конец потока) доступа уже нет — тогда
+        // просто не считаем, ронять аллокатор нельзя.
+        let _ = ALLOCS.try_with(|c| c.set(c.get() + 1));
         std::alloc::System.alloc(l)
     }
     unsafe fn dealloc(&self, p: *mut u8, l: std::alloc::Layout) {
@@ -589,18 +608,18 @@ mod tests {
         let (ra, rb) = bmv_common::wire::memory_pair(64);
         let mut rbuf = Vec::new();
         for _ in 0..8 { ra.send(&data).await.unwrap(); rb.recv_into(&mut rbuf).await.unwrap(); }
-        let base0 = ALLOC_COUNT.load(Ordering::Relaxed);
+        let base0 = allocs();
         for _ in 0..N { ra.send(&data).await.unwrap(); rb.recv_into(&mut rbuf).await.unwrap(); }
-        let baseline = ALLOC_COUNT.load(Ordering::Relaxed) - base0;
+        let baseline = allocs() - base0;
 
         let (a, b) = bmv_common::wire::memory_pair(64);
         let p = Noise::obfs();
         let (host, guest) = tokio::join!(p.connect_host(a), p.connect_guest(b));
         let (host, guest) = (host.unwrap(), guest.unwrap());
         for _ in 0..8 { guest.send(&data).await.unwrap(); host.recv_into(&mut rbuf).await.unwrap(); }
-        let n0 = ALLOC_COUNT.load(Ordering::Relaxed);
+        let n0 = allocs();
         for _ in 0..N { guest.send(&data).await.unwrap(); host.recv_into(&mut rbuf).await.unwrap(); }
-        let noise = ALLOC_COUNT.load(Ordering::Relaxed) - n0;
+        let noise = allocs() - n0;
 
         let per_rt = noise.saturating_sub(baseline) as f64 / N as f64;
         // Здорово: ~2/rt (только Box'ы async_trait). Регрессия буферов: ~6/rt.
@@ -975,6 +994,90 @@ mod tests {
         for payload in [vec![0u8], vec![1u8; 1], vec![7u8; 1300], (0..500u32).flat_map(|i| i.to_le_bytes()).collect::<Vec<u8>>()] {
             guest.send(&payload).await.unwrap();
             assert_eq!(host.recv().await.unwrap(), payload, "паддинг снят неверно для len={}", payload.len());
+        }
+    }
+
+    // ── СОВМЕСТИМОСТЬ ПО ПРОВОДУ СО СТАРОЙ ВЕРСИЕЙ ───────────────────────────
+    //
+    // Всё остальное в этом файле гоняет новый код против нового: такие тесты
+    // докажут самосогласованность и НЕ ЗАМЕТЯТ смены формата кадра. А в жизни
+    // обновляется одна сторона: чужой хост месяцами живёт на старой сборке.
+    // Разойдись формат — рукопожатие не сойдётся, и человек увидит вечное
+    // «Подключаюсь…» вместо ошибки. Поэтому рядом лежит дословная копия
+    // прошлой версии (`crate::noise_v0_frozen`), и мы сводим её с текущей.
+
+    use crate::noise_v0_frozen::Noise as OldNoise;
+
+    /// Что старой версии считать «тем же протоколом», что и новой.
+    fn old_like(new: &Noise) -> OldNoise {
+        if new.pad { OldNoise::obfs() } else { OldNoise::chacha() }
+    }
+
+    /// Прогнать по каналу набор длин В ОБЕ СТОРОНЫ и сверить байты.
+    async fn talk_both_ways(host: &dyn Link, guest: &dyn Link, what: &str) {
+        // 1 байт — keepalive; 1400 — полный MTU оверлея; 0 — пустой кадр
+        // (в маскировке он весь состоит из паддинга и служебного байта).
+        for len in [1usize, 0, 1400, 152, 1399, 3] {
+            let up: Vec<u8> = (0..len).map(|i| (i % 251) as u8 + 1).collect();
+            guest.send(&up).await.unwrap();
+            let got = tokio::time::timeout(Duration::from_secs(5), host.recv())
+                .await
+                .unwrap_or_else(|_| panic!("{what}: хост не дождался пакета len={len}"))
+                .unwrap();
+            assert_eq!(got, up, "{what}: гость→хост исказил кадр len={len}");
+
+            let down: Vec<u8> = (0..len).map(|i| (i % 241) as u8).collect();
+            host.send(&down).await.unwrap();
+            let got = tokio::time::timeout(Duration::from_secs(5), guest.recv())
+                .await
+                .unwrap_or_else(|_| panic!("{what}: гость не дождался пакета len={len}"))
+                .unwrap();
+            assert_eq!(got, down, "{what}: хост→гость исказил кадр len={len}");
+        }
+    }
+
+    /// СТАРЫЙ ХОСТ ↔ НОВЫЙ ГОСТЬ. Ровно случай пользователя: он обновил
+    /// приложение, а машина, к которой он подключается, — чужая и старая.
+    #[tokio::test]
+    async fn new_guest_talks_to_old_host() {
+        for new in [Noise::chacha(), Noise::obfs()] {
+            let old = old_like(&new);
+            let (a, b) = bmv_common::wire::memory_pair(64);
+            let (host, guest) = tokio::join!(old.connect_host(a), new.connect_guest(b));
+            let host = host.unwrap_or_else(|e| panic!("СТАРЫЙ хост не пожал руку новому гостю ({}): {e}", new.name()));
+            let guest = guest.unwrap_or_else(|e| panic!("новый гость не пожал руку СТАРОМУ хосту ({}): {e}", new.name()));
+            talk_both_ways(&*host, &*guest, new.name()).await;
+        }
+    }
+
+    /// НОВЫЙ ХОСТ ↔ СТАРЫЙ ГОСТЬ. Обратная сторона той же медали: наш хост
+    /// обновился, а гости на телефонах — ещё нет.
+    #[tokio::test]
+    async fn old_guest_talks_to_new_host() {
+        for new in [Noise::chacha(), Noise::obfs()] {
+            let old = old_like(&new);
+            let (a, b) = bmv_common::wire::memory_pair(64);
+            let (host, guest) = tokio::join!(new.connect_host(a), old.connect_guest(b));
+            let host = host.unwrap_or_else(|e| panic!("новый хост не пожал руку СТАРОМУ гостю ({}): {e}", new.name()));
+            let guest = guest.unwrap_or_else(|e| panic!("СТАРЫЙ гость не пожал руку новому хосту ({}): {e}", new.name()));
+            talk_both_ways(&*host, &*guest, new.name()).await;
+        }
+    }
+
+    /// МАСКА ШАПКИ-NONCE СЧИТАЕТСЯ ТАК ЖЕ, КАК РАНЬШЕ. Заряженный хэш — это
+    /// оптимизация, а не новый PRF: разойдись он со старым, кадры в маскировке
+    /// расшифровывались бы с чужим nonce и молча дропались. Проверяем прямо,
+    /// а не только через рукопожатие, — тут ошибка стоит дороже всего.
+    #[test]
+    fn nonce_mask_matches_the_previous_version() {
+        for key in [&[7u8; 32][..], &[0u8; 32][..], &b"hash-\x00\xff-tail"[..]] {
+            for ct in [&b""[..], &b"A"[..], &b"AAAAAAAAAAAAAAAA"[..], &[9u8; 1400][..]] {
+                assert_eq!(
+                    nonce_mask(&charge_mask_key(key), ct),
+                    crate::noise_v0_frozen::nonce_mask(key, ct),
+                    "маска nonce разошлась со старой версией"
+                );
+            }
         }
     }
 }
