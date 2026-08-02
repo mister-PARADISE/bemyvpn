@@ -25,8 +25,7 @@ case "${os}:${arch}" in
   Linux:x86_64)          asset="bemyvpn-linux-x86_64-terminal" ;;
   Darwin:arm64)          asset="bemyvpn-macos-arm64-terminal" ;;
   Darwin:x86_64)         die "маки на Intel не поддерживаются — релизы только под Apple Silicon" ;;
-  Linux:aarch64|Linux:arm64)
-    die "под Linux ARM релизы пока не выпускаются (соберите из исходников: cargo build --release -p bmv-cli)" ;;
+  Linux:aarch64|Linux:arm64) asset="bemyvpn-linux-arm64-terminal" ;;
   *) die "неизвестная система ${os} ${arch}" ;;
 esac
 

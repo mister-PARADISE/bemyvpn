@@ -189,11 +189,21 @@ jobs:
           - os: windows-11-arm
             asset: bemyvpn-windows-arm64-terminal.exe
             bin: bemyvpn.exe
-          # Intel-маки. Их пропустили не намеренно: у Apple переход на ARM ещё не
-          # закончен, машин 2020 года и старше на руках много.
-          - os: macos-13
-            asset: bemyvpn-macos-x86_64-terminal
-            bin: bemyvpn
+          # Intel-маков здесь НЕТ, и это осознанно.
+          #
+          # Ярлык macos-13 GitHub вывел из эксплуатации 4 декабря 2025. Задача с
+          # ним не встаёт в очередь за машиной — она уходит В НИКУДА: Actions не
+          # узнаёт метку, считает её чужим самодельным раннером и ждёт вечно
+          # (в ответе API у таких задач пустая группа раннеров и ноль шагов).
+          # Пять релизов подряд, v1.20…v1.24, из-за этого вышли БЕЗ ОПИСАНИЯ:
+          # задача notes ждёт needs: [cli, gui-macos], а те висели вечно.
+          #
+          # Живая замена есть (macos-15-intel, бесплатна до августа 2027), но
+          # брать её сейчас неправильно: Intel-мака у нас нет, запуск проверить
+          # нечем, и мы выложили бы файл, который не исполнил ни один процессор.
+          # Неработающий файл хуже честного «не поддерживается» — install.sh
+          # говорит это прямым текстом. Вернёмся, когда появится живая машина
+          # или хотя бы один пользователь с Intel.
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -209,6 +219,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: ${{ matrix.asset }}
+          fail_on_unmatched_files: true
 
   # macOS GUI как .dmg. Подпись АД-ХОК (сертификата нет и не надо): первый запуск
   # правым кликом → «Открыть». Собирается тут, а не локально — тогда для выпуска
@@ -217,7 +228,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, macos-13]   # Apple Silicon и Intel
+        os: [macos-latest]   # только Apple Silicon — см. комментарий в матрице cli
     runs-on: ${{ matrix.os }}
     env:
       CARGO_PROFILE_RELEASE_LTO: "false"
@@ -235,7 +246,11 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/bemyvpn-macos-arm64.dmg
+          # Маска, а не жёсткое имя: build-app.sh называет файл по архитектуре
+          # машины, и при любой второй архитектуре сюда приезжало бы имя, которого
+          # нет. Без флага ниже такой промах ТИХИЙ — задача «успешна», файла нет.
+          files: dist/*.dmg
+          fail_on_unmatched_files: true
 
   # Android APK (arm64, sideload — ставится файлом, магазин не нужен). Rust-часть
   # собирает cargo-ndk, обёртку — gradle. Раннер чужой, поэтому путей сборочной
@@ -304,6 +319,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: bemyvpn-android-arm64.apk
+          fail_on_unmatched_files: true
 
   # Linux-GUI как ОДИН файл (AppImage) — «APK для Linux»: скачал, chmod +x,
   # запустил, без apt/сервисов/зависимостей. LTO выключен — Slint иначе жрёт память.
@@ -336,6 +352,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: dist/*.AppImage
+          fail_on_unmatched_files: true
 
   # GUI под Windows — голый exe, wintun.dll вшита в бинарь (распаковывается сама).
   # macOS (.dmg) собирается локально на Маке — см. шапку файла (экономия ×10).
@@ -399,3 +416,4 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: bemyvpn-windows-*.exe
+          fail_on_unmatched_files: true
