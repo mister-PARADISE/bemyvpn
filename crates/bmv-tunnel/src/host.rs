@@ -184,8 +184,7 @@ fn tcp_window() -> u32 {
 
 /// ХОСТ: обслуживать гостя, пока канал жив. Открывает реальные сокеты в интернет.
 /// Завершается, когда keepalive обнаружил обрыв (сигнал от `LinkIo`).
-pub async fn run_host(link: Box<dyn Link>) -> Result<()> {
-    let link: std::sync::Arc<dyn Link> = std::sync::Arc::from(link);
+pub async fn run_host(link: Arc<dyn Link>) -> Result<()> {
     let (dead_tx, dead_rx) = tokio::sync::oneshot::channel();
     let device = LinkIo::new(link.clone(), dead_tx);
 
@@ -388,6 +387,40 @@ mod tests {
     use std::net::SocketAddr;
 
     fn a(s: &str) -> SocketAddr { s.parse().unwrap() }
+
+    /// ХОСТ, ПОГАСИВШИЙ РАЗДАЧУ, ОБЯЗАН ПОПРОЩАТЬСЯ С ГОСТЕМ.
+    ///
+    /// Все оболочки выключают раздачу ОТМЕНОЙ задачи (дроп `JoinSet`), а не
+    /// возвратом из `run_host` — значит `link.close()` в конце функции не
+    /// наступает. Пока фоновые задачи `LinkIo` держали `Arc` канала, канал не
+    /// дропался и прощание не уходило: гость висел «подключён» до
+    /// keepalive-таймаута (8с). Здесь раздачу гасят ровно так, как в жизни, и
+    /// гость обязан увидеть EOF ИМЕННО ПО BYE и за доли секунды.
+    #[tokio::test]
+    async fn aborted_hosting_still_says_goodbye_to_the_guest() {
+        use bmv_common::{KeepaliveLink, Link};
+        let (host_raw, guest_raw) = bmv_common::wire::memory_pair(64);
+        let host_link: std::sync::Arc<dyn Link> = std::sync::Arc::new(KeepaliveLink::new(host_raw));
+        let guest = KeepaliveLink::new(guest_raw);
+
+        let session = tokio::spawn(super::run_host(host_link));
+        // Даём стеку подняться (иначе гасим то, чего ещё нет).
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        session.abort(); // ровно это делает дроп JoinSet при «Выключить»
+
+        let mut buf = Vec::new();
+        let r = tokio::time::timeout(std::time::Duration::from_secs(1), guest.recv_into(&mut buf)).await;
+        assert!(
+            !r.expect("гость не увидел разрыв за 1с — хост погасил раздачу молча, гость ждёт keepalive-таймаут (8с)")
+                .unwrap(),
+            "после остановки раздачи канал гостя обязан быть закрыт"
+        );
+        assert!(
+            guest.peer_said_bye(),
+            "разрыв обнаружен по ТИШИНЕ, а не по BYE — прощание с отменённой сессии не ушло",
+        );
+    }
 
     // ── КАТЕГОРИЯ А: обходные пути SSRF-фильтра ───────────────────────────────
     //

@@ -133,7 +133,7 @@ pub async fn run_candidates<F>(
             r = &mut est_fut => r,
         };
         if let Ok(Ok((peer, link))) = est {
-            run_tunnel(&host, peer, link, &on_state, &stop).await;
+            run_tunnel(&host, peer, link, eng.peer_check(), &on_state, &stop).await;
             return;
         }
     }
@@ -144,6 +144,7 @@ async fn run_tunnel<F>(
     host: &str,
     peer: std::net::SocketAddr,
     link: Box<dyn bmv_common::Link>,
+    hints: Option<tokio::sync::watch::Receiver<u64>>,
     on_state: &F,
     stop: &Arc<tokio::sync::Notify>,
 ) where
@@ -163,6 +164,10 @@ async fn run_tunnel<F>(
     tokio::select! {
         _ = bmv_tunnel::run_guest(device, link_arc.clone()) => {}
         _ = stop.notified() => {}
+        // Подсказки координатора «проверь соседа» — на всё время туннеля: хост
+        // мог быть убит, и прощание по UDP послать было некому. Ретранслятор сам
+        // не завершается, ветка нужна только чтобы он крутился рядом.
+        _ = BmvEngine::relay_peer_checks(&*link_arc, hints) => {}
     }
     // ВСЕГДА прощаемся (BYE) — и при «Стоп», и если run_guest завершился сам
     // (обрыв/ошибка). Хост увидит EOF сразу и снимет гостя из счётчика, не ожидая

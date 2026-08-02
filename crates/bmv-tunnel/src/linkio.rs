@@ -75,6 +75,24 @@ pub struct LinkIo {
     /// `recv_into` заполняет его, `poll_read` после копирования в ipstack ВОЗВРАЩАЕТ
     /// буфер сюда → в устоявшемся режиме приём вообще не аллоцирует.
     pool: Arc<std::sync::Mutex<Vec<Vec<u8>>>>,
+    /// Гард отмены фоновых задач (см. `AbortBoth`).
+    _abort: AbortBoth,
+}
+
+/// Абортит фоновые сток и приёмник при уничтожении `LinkIo`.
+///
+/// Без него задачи переживают сессию, ДЕРЖА `Arc<dyn Link>`: приёмник висит в
+/// `recv_into` и замечает смерть `LinkIo` только на СЛЕДУЮЩЕМ пришедшем пакете —
+/// то есть до keepalive-интервала (а если пир уже молчит, то до `DEAD_AFTER`,
+/// восемь секунд). Всё это время канал не дропается, а значит и прощание (BYE) из
+/// его `Drop` не уходит: хост, погасивший раздачу, прощался с гостями с задержкой
+/// в целый таймаут — ровно тогда, когда прощание уже никому не нужно.
+struct AbortBoth(tokio::task::AbortHandle, tokio::task::AbortHandle);
+impl Drop for AbortBoth {
+    fn drop(&mut self) {
+        self.0.abort();
+        self.1.abort();
+    }
 }
 
 impl LinkIo {
@@ -83,7 +101,7 @@ impl LinkIo {
         // Единственный, кто реально зовёт link.send. Пейсинг — на входе в очередь
         // (в poll_write), поэтому здесь просто проталкиваем в сеть по мере сил.
         let sender = link.clone();
-        tokio::spawn(async move {
+        let send_task = tokio::spawn(async move {
             while let Some(pkt) = send_rx.recv().await {
                 if sender.send(&pkt).await.is_err() {
                     break; // канал мёртв; смерть заметит и recv-путь (keepalive)
@@ -97,7 +115,7 @@ impl LinkIo {
         let pool: Arc<std::sync::Mutex<Vec<Vec<u8>>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
         let receiver = link;
         let rpool = pool.clone();
-        tokio::spawn(async move {
+        let recv_task = tokio::spawn(async move {
             loop {
                 // Буфер из пула (или свежий, если пусто/гонка) — заполняем recv_into.
                 let mut buf = rpool.lock().unwrap().pop().unwrap_or_default();
@@ -121,6 +139,7 @@ impl LinkIo {
             dead: Some(dead),
             eof: false,
             pool,
+            _abort: AbortBoth(send_task.abort_handle(), recv_task.abort_handle()),
         }
     }
 

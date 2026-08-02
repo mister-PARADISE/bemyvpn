@@ -217,6 +217,8 @@ struct Shared {
     /// Каталог + сигнал изменения (для directory_watch).
     dir: Mutex<DirState>,
     dir_ver: watch::Sender<u64>,
+    /// Счётчик подсказок «проверь соседа» от координатора (см. `peer_check`).
+    peer_check: watch::Sender<u64>,
     /// Круг до координатора в миллисекундах, 0 — ещё не мерили ИЛИ связи нет
     /// (обнуляем на обрыве: бодрая цифра от мёртвого сокета — враньё на экране).
     ///
@@ -289,6 +291,7 @@ impl Coordinator {
         let (out, out_rx) = mpsc::unbounded_channel();
         let (guest_tx, guest_rx) = mpsc::unbounded_channel();
         let (dir_ver, _) = watch::channel(0u64);
+        let (peer_check, _) = watch::channel(0u64);
         let (connected, _) = watch::channel(false);
         let (closed_tx, closed_rx) = watch::channel(false);
         Ok(Coordinator {
@@ -305,6 +308,7 @@ impl Coordinator {
                 guest_rx: tokio::sync::Mutex::new(guest_rx),
                 dir: Mutex::new(DirState::default()),
                 dir_ver,
+                peer_check,
                 rtt_ms: AtomicU32::new(0),
                 last_announce: Mutex::new(None),
                 watching: Mutex::new(None),
@@ -426,6 +430,23 @@ impl Coordinator {
             Ok(Ok(Err(e))) => Err(e),
             _ => Err(Error::Signal("анонс: координатор не ответил".into())),
         }
+    }
+
+    /// ПОДСКАЗКИ «проверь соседа» от координатора: счётчик растёт на каждую.
+    ///
+    /// Координатор шлёт её, когда сосед по паре отвалился ОТ НЕГО (закрыл сокет
+    /// или прислал `bye`). Ценность в том, что его связь — TCP: он узнаёт об
+    /// уходе даже там, где прямое прощание по UDP послать физически некому
+    /// (приложение убили, процесс упал, сеть исчезла).
+    ///
+    /// Это ПОДСКАЗКА, А НЕ КОМАНДА разорвать сессию: получатель обязан сам
+    /// опросить пира и решить (см. `bmv_common::Link::check_peer_now`). Иначе
+    /// координатор — и всякий, кто сумеет к нему подделаться, — получил бы кнопку
+    /// удалённого отключения чужого туннеля, при том что весь смысл продукта в
+    /// том, что трафик через него не идёт.
+    pub fn peer_check(&self) -> watch::Receiver<u64> {
+        self.ensure_started();
+        self.shared.peer_check.subscribe()
     }
 
     /// Хост координатора (без схемы/порта/пути).
@@ -759,6 +780,12 @@ fn handle_incoming(sh: &Arc<Shared>, txt: &str) {
             if let Some(tx) = ack {
                 let _ = tx.send(Ok(()));
             }
+        }
+        // ПОДСКАЗКА «проверь соседа»: сосед по паре отвалился ОТ КООРДИНАТОРА.
+        // Не команда рвать туннель (см. `Coordinator::peer_check`) — просто повод
+        // немедленно опросить пира.
+        "peercheck" => {
+            sh.peer_check.send_modify(|v| *v += 1);
         }
         "guest" => {
             if let Some(c) = v.get("candidates").and_then(|c| serde_json::from_value::<Vec<String>>(c.clone()).ok()) {

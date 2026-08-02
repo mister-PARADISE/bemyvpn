@@ -21,3 +21,8 @@ hyper = { version = "1", features = ["client", "http1"] }
 hyper-util = { version = "0.1", features = ["client-legacy", "tokio"] }
 hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "webpki-tokio", "ring", "tls12"] }
 http-body-util = "0.1"
+
+[dev-dependencies]
+# Виртуальные часы: сроки тишины здесь измеряются секундами, и без
+# `start_paused` их тесты шли бы восемь секунд каждый.
+tokio = { workspace = true, features = ["test-util"] }

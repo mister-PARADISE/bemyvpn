@@ -340,10 +340,26 @@ fn one() -> u32 {
     1
 }
 
-/// Кому доставлять кандидатов гостя: номер соединения-владельца + сам канал в его
-/// сокет. Номер обязателен: без него уборка старого сокета снимала бы запись,
-/// которую только что создало новое соединение (см. `release_host`).
-type HostChannels = HashMap<String, (u64, tokio::sync::mpsc::Sender<Vec<String>>)>;
+/// Каналы в сокет ХОСТА. Номер соединения обязателен: без него уборка старого
+/// сокета снимала бы запись, которую только что создало новое (см. `release_host`).
+struct HostChan {
+    conn: u64,
+    /// Кандидаты пришедшего гостя — для встречного пробития NAT.
+    cands: tokio::sync::mpsc::Sender<Vec<String>>,
+    /// Общий исходящий канал: по нему уходит подсказка «проверь соседа».
+    out: tokio::sync::mpsc::Sender<WsServerMsg>,
+}
+type HostChannels = HashMap<String, HostChan>;
+
+/// Кого предупредить, когда пара расходится: host_id → каналы в сокеты гостей,
+/// которые просили ЗНАКОМСТВА с этим хостом.
+///
+/// Пару координатор наблюдает САМ, в `connect` — клиент не называет соседа ни
+/// здесь, ни где-либо ещё. Поэтому послать подсказку «мимо своей пары»
+/// невозможно в принципе, и отдельный токен на право подсказки не нужен: право
+/// вытекает из того, что запись сделал сам сервер. Нового о людях сервер при
+/// этом не узнаёт — пару он знал с момента поручительства за адреса пробития.
+type PeerLinks = HashMap<String, HashMap<u64, tokio::sync::mpsc::Sender<WsServerMsg>>>;
 
 /// Запись в реестре координатора.
 struct HostEntry {
@@ -404,6 +420,8 @@ struct AppState {
     /// WS-хосты: host_id → (номер соединения-владельца, канал доставки кандидатов
     /// гостя ПРЯМО в его сокет). Есть запись → хост онлайн по WS.
     ws_hosts: Mutex<HostChannels>,
+    /// Кто с кем знакомился (см. `PeerLinks`) — для подсказки «проверь соседа».
+    peers: Mutex<PeerLinks>,
     /// Счётчик открытых WS-коннектов на КЛЮЧ адреса (см. `conn_key`) — заслон от
     /// исчерпания сокетов флудом.
     ws_conns: std::sync::Mutex<HashMap<IpAddr, u32>>,
@@ -440,6 +458,7 @@ impl AppState {
             code_secret,
             next_seq: std::sync::atomic::AtomicU64::new(1),
             ws_hosts: Mutex::new(HashMap::new()),
+            peers: Mutex::new(HashMap::new()),
             ws_conns: std::sync::Mutex::new(HashMap::new()),
             next_conn: std::sync::atomic::AtomicU64::new(1),
             conns_now: std::sync::atomic::AtomicU64::new(0),
@@ -799,7 +818,7 @@ fn sweep_orphans(
 ) -> usize {
     let before = db.len();
     db.retain(|id, e| {
-        chans.get(id).is_some_and(|(c, _)| *c == e.conn) || e.last_seen.elapsed() < ORPHAN_GRACE
+        chans.get(id).is_some_and(|h| h.conn == e.conn) || e.last_seen.elapsed() < ORPHAN_GRACE
     });
     before - db.len()
 }
@@ -1009,6 +1028,17 @@ enum WsServerMsg {
     Ip { id: u64, addr: String },
     /// Ответ на resolve (найденный хост или null).
     Resolved { id: u64, host: Option<DirectoryItem> },
+    /// ПОДСКАЗКА «проверь соседа»: тот, с кем ты знакомился через нас, отвалился
+    /// ОТ НАС (сокет закрылся или прислал `bye`). Это НЕ команда рвать туннель —
+    /// координатор такого права не имеет и иметь не должен: получатель обязан сам
+    /// опросить пира и решить (см. `Link::check_peer_now`). Полезна там, где
+    /// прямое прощание по UDP послать физически некому: приложение убили, процесс
+    /// упал, сеть исчезла.
+    ///
+    /// Ничего о паре не сообщаем — координатор и так знает её с момента
+    /// знакомства, а получателю адресат не нужен: гость проверяет свою
+    /// единственную сессию, хост — все свои (живые отвечают и не замечают).
+    PeerCheck,
 }
 
 /// Гард WS-коннекта: на Drop уменьшает счётчики (даже при обрыве и панике).
@@ -1092,16 +1122,58 @@ impl Drop for WatcherGuard {
 /// держит его до 8с, и в эту щель хост уже переподключился и перерегистрировался.
 /// Уборка старого сокета без проверки стирала СВЕЖУЮ запись, а вернуть её было
 /// некому — периодического анонса у клиента нет, хост исчезал до перезапуска.
+/// Максимум гостей, о которых помним «знакомился с этим хостом». Заслон памяти:
+/// список чистится сам при уходе соединений, но потолок нужен на случай, когда
+/// кто-то дёргает `connect` на один хост с тысяч сокетов. Больше `max_guests`
+/// хоста тут не нужно, а верхняя граница объявленной вместимости — 256.
+const MAX_PEERS_PER_HOST: usize = 256;
+
+/// Подсказать всем, кто знакомился с `host_id`: «проверь соседа».
+///
+/// Не приказ и не адресное указание — просто сигнал «пара, возможно, распалась»
+/// (см. `WsServerMsg::PeerCheck`). `try_send`: подсказка не стоит того, чтобы
+/// ждать место в чужой очереди, а забитая очередь и так означает, что тому сокету
+/// не до нас.
+async fn hint_peers_of(state: &Db, host_id: &str) {
+    let gone = state.peers.lock().await.remove(host_id);
+    for (_, tx) in gone.into_iter().flatten() {
+        let _ = tx.try_send(WsServerMsg::PeerCheck);
+    }
+}
+
+/// Снять знакомство соединения `conn` с хостом `host_id` и подсказать ХОСТУ
+/// «проверь соседа»: гость отвалился от координатора.
+async fn unpair(state: &Db, host_id: &str, conn: u64) {
+    {
+        let mut pairs = state.peers.lock().await;
+        let Some(slot) = pairs.get_mut(host_id) else { return };
+        if slot.remove(&conn).is_none() {
+            return; // не наша запись — молчим
+        }
+        if slot.is_empty() {
+            pairs.remove(host_id);
+        }
+    }
+    let out = state.ws_hosts.lock().await.get(host_id).map(|h| h.out.clone());
+    if let Some(out) = out {
+        let _ = out.try_send(WsServerMsg::PeerCheck);
+    }
+}
+
 async fn release_host(state: &Db, id: &str, conn: u64) -> bool {
     {
         let mut chans = state.ws_hosts.lock().await;
         match chans.get(id) {
-            Some((c, _)) if *c == conn => {
+            Some(h) if h.conn == conn => {
                 chans.remove(id);
             }
             _ => return false, // каналом владеет другое соединение — не наше дело
         }
     }
+    // Хост ушёл (bye ИЛИ закрытие сокета — для нас это одно событие). Гости, что
+    // знакомились с ним, узнают об этом ДАЖЕ ЕСЛИ прямое прощание по UDP послать
+    // было некому: приложение убили, процесс упал, сеть исчезла.
+    hint_peers_of(state, id).await;
     let removed = {
         let mut db = state.db.lock().await;
         match db.get(id) {
@@ -1124,6 +1196,8 @@ async fn ws_conn(socket: WebSocket, state: Db, ip: IpAddr, _guard: WsConnGuard) 
     // (read-loop и пуш-задачи не дерутся за sink).
     let (out_tx, mut out_rx) = tokio::sync::mpsc::channel::<WsServerMsg>(64);
     let mut host_id: Option<String> = None; // стал ли хостом
+    // С каким хостом это соединение знакомилось как ГОСТЬ (см. `PeerLinks`).
+    let mut paired_host: Option<String> = None;
     let mut watch_task: Option<tokio::task::JoinHandle<()>> = None;
     let mut guest_task: Option<tokio::task::JoinHandle<()>> = None;
     // Ping-часы + отметка последнего Pong. Один цикл: и читаем, и пишем в сокет,
@@ -1188,7 +1262,8 @@ async fn ws_conn(socket: WebSocket, state: Db, ip: IpAddr, _guard: WsConnGuard) 
                         t.abort();
                     }
                     let (cand_tx, mut cand_rx) = tokio::sync::mpsc::channel::<Vec<String>>(32);
-                    state.ws_hosts.lock().await.insert(id.clone(), (conn, cand_tx));
+                    let chan = HostChan { conn, cands: cand_tx, out: out_tx.clone() };
+                    state.ws_hosts.lock().await.insert(id.clone(), chan);
                     let out = out_tx.clone();
                     guest_task = Some(tokio::spawn(async move {
                         while let Some(c) = cand_rx.recv().await {
@@ -1294,8 +1369,22 @@ async fn ws_conn(socket: WebSocket, state: Db, ip: IpAddr, _guard: WsConnGuard) 
                 if !cands.is_empty() {
                     // Хост держит WS (иначе его не было бы в каталоге) → кандидаты
                     // гостя летят прямо в его сокет для встречного пробития NAT.
-                    if let Some((_, tx)) = state.ws_hosts.lock().await.get(&hid).cloned() {
+                    if let Some(tx) = state.ws_hosts.lock().await.get(&hid).map(|h| h.cands.clone()) {
                         let _ = tx.try_send(cands);
+                    }
+                }
+                // Запоминаем ПАРУ (наблюдение сервера, не слова клиента): когда
+                // одна сторона отвалится от координатора, второй уйдёт подсказка
+                // «проверь соседа». Гость знакомится с одним хостом за сеанс;
+                // сменил — прежнюю запись за собой убираем.
+                if paired_host.as_deref() != Some(hid.as_str()) {
+                    if let Some(prev) = paired_host.replace(hid.clone()) {
+                        unpair(&state, &prev, conn).await;
+                    }
+                    let mut pairs = state.peers.lock().await;
+                    let slot = pairs.entry(hid.clone()).or_default();
+                    if slot.len() < MAX_PEERS_PER_HOST || slot.contains_key(&conn) {
+                        slot.insert(conn, out_tx.clone());
                     }
                 }
                 let _ = out_tx.send(WsServerMsg::Connected { id, endpoints }).await;
@@ -1329,6 +1418,12 @@ async fn ws_conn(socket: WebSocket, state: Db, ip: IpAddr, _guard: WsConnGuard) 
         if release_host(&state, &id, conn).await {
             tracing::info!(code = %code_hint(&state.code_secret, &id), "WS-хост ушёл (сокет закрыт)");
         }
+    }
+    // Гость отвалился от нас — подсказываем хосту проверить своих. Это ровно тот
+    // случай, ради которого подсказка и нужна: приложение убили или сеть исчезла,
+    // и прямое прощание по UDP послать физически некому.
+    if let Some(hid) = paired_host {
+        unpair(&state, &hid, conn).await;
     }
     if let Some(t) = watch_task {
         t.abort();
@@ -2135,9 +2230,11 @@ mod tests {
         db.insert("ORPHAN".into(), mk(1, long_ago)); // канала нет вовсе
         db.insert("FRESH".into(), mk(1, Duration::from_secs(0))); // канал ещё не завели
         let (tx, _rx) = tokio::sync::mpsc::channel::<Vec<String>>(1);
+        let (out, _out_rx) = tokio::sync::mpsc::channel::<WsServerMsg>(1);
+        let chan = |conn: u64| HostChan { conn, cands: tx.clone(), out: out.clone() };
         let mut chans = HashMap::new();
-        chans.insert("OWNED".to_string(), (1u64, tx.clone()));
-        chans.insert("STOLEN".to_string(), (2u64, tx));
+        chans.insert("OWNED".to_string(), chan(1));
+        chans.insert("STOLEN".to_string(), chan(2));
 
         assert_eq!(sweep_orphans(&mut db, &chans), 2);
         assert!(db.contains_key("OWNED"), "хост с живым сокетом выкинут из-за тишины");
@@ -2478,6 +2575,119 @@ mod tests {
             assert!(
                 resolvable(addr, "RACEHOST0001").await,
                 "уборка старого сокета стёрла запись, только что созданную новым"
+            );
+        }
+
+        /// Дождаться подсказки «проверь соседа» — с ОГРАНИЧЕННЫМ сроком.
+        ///
+        /// Отдельно от `reply`: тот крутится на служебных кадрах (координатор
+        /// пингует раз в 3с), поэтому без своего дедлайна тест не падал бы, а
+        /// висел — а висящий тест не показывает, что именно сломалось.
+        async fn hint_arrives<S>(ws: &mut S, within: Duration) -> bool
+        where
+            S: StreamExt<Item = std::result::Result<CMsg, tokio_tungstenite::tungstenite::Error>> + Unpin,
+        {
+            let deadline = tokio::time::Instant::now() + within;
+            loop {
+                let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+                if left.is_zero() {
+                    return false;
+                }
+                match tokio::time::timeout(left, ws.next()).await {
+                    Ok(Some(Ok(CMsg::Text(t)))) => {
+                        let v: serde_json::Value = serde_json::from_str(&t).unwrap();
+                        if v["t"] == "peercheck" {
+                            return true;
+                        }
+                    }
+                    Ok(Some(Ok(_))) => continue, // ping/pong
+                    Ok(_) => return false,       // сокет закрылся
+                    Err(_) => return false,      // срок вышел
+                }
+            }
+        }
+
+        /// Познакомить гостя с хостом (`connect`) и дождаться ответа.
+        async fn connect_to<S>(ws: &mut S, host: &str)
+        where
+            S: SinkExt<CMsg, Error = tokio_tungstenite::tungstenite::Error>
+                + StreamExt<Item = std::result::Result<CMsg, tokio_tungstenite::tungstenite::Error>>
+                + Unpin,
+        {
+            let m = serde_json::json!({
+                "t": "connect", "id": 1, "host_id": host, "candidates": ["45.11.22.44:40000"],
+            });
+            ws.send(CMsg::Text(m.to_string())).await.unwrap();
+            loop {
+                match reply(ws).await.as_str() {
+                    "connected" => return,
+                    "guest" | "hostok" => continue,
+                    other => panic!("знакомство не состоялось: {other}"),
+                }
+            }
+        }
+
+        /// ПОДСКАЗКА «ПРОВЕРЬ СОСЕДА», НАПРАВЛЕНИЕ ХОСТ → ГОСТЬ.
+        ///
+        /// Прямое прощание по UDP шлёт САМ уходящий, и там, где его убили
+        /// (`kill`, вылет, пропавшая сеть), послать его физически некому. У
+        /// координатора же связь по TCP: сокет хоста рвётся, и это событие он
+        /// обязан донести до гостя, который с этим хостом знакомился.
+        #[tokio::test]
+        async fn a_dying_host_makes_the_coordinator_hint_its_guest() {
+            let addr = spawn_coord().await;
+            let mut host = client(addr, "45.11.22.33").await;
+            assert_eq!(announce(&mut host, "PAIRHOST0001", "tok").await, "hostok");
+            let mut guest = client(addr, "45.11.22.44").await;
+            connect_to(&mut guest, "PAIRHOST0001").await;
+
+            drop(host); // хост УБИТ: прощания по UDP не будет
+
+            assert!(
+                hint_arrives(&mut guest, Duration::from_secs(5)).await,
+                "гость не получил подсказку об уходе хоста — узнает о разрыве только по тишине",
+            );
+        }
+
+        /// ТО ЖЕ В ОБРАТНУЮ СТОРОНУ: убитый гость → подсказка хосту.
+        /// Хосту это нужно, чтобы освободить место и поправить счётчик гостей в
+        /// каталоге, не дожидаясь keepalive-таймаута.
+        #[tokio::test]
+        async fn a_dying_guest_makes_the_coordinator_hint_its_host() {
+            let addr = spawn_coord().await;
+            let mut host = client(addr, "45.11.22.33").await;
+            assert_eq!(announce(&mut host, "PAIRHOST0002", "tok").await, "hostok");
+            let mut guest = client(addr, "45.11.22.44").await;
+            connect_to(&mut guest, "PAIRHOST0002").await;
+            assert_eq!(reply(&mut host).await, "guest", "хосту не доехали кандидаты гостя");
+
+            drop(guest); // гость УБИТ
+
+            assert!(
+                hint_arrives(&mut host, Duration::from_secs(5)).await,
+                "хост не получил подсказку об уходе гостя — место освободится только по таймауту",
+            );
+        }
+
+        /// ПОДСКАЗКА АДРЕСНАЯ. Посторонний, который с этим хостом НЕ знакомился,
+        /// её не получает: иначе уход одного гостя дёргал бы проверку живости у
+        /// всех подряд, а сам факт «эта пара расходится» утекал бы наблюдателям.
+        #[tokio::test]
+        async fn the_hint_reaches_only_the_pair_it_belongs_to() {
+            let addr = spawn_coord().await;
+            let mut host = client(addr, "45.11.22.33").await;
+            assert_eq!(announce(&mut host, "PAIRHOST0003", "tok").await, "hostok");
+            let mut guest = client(addr, "45.11.22.44").await;
+            connect_to(&mut guest, "PAIRHOST0003").await;
+            // Посторонний: сокет открыт, но знакомства не просил.
+            let mut stranger = client(addr, "45.11.22.55").await;
+
+            drop(host);
+
+            assert!(hint_arrives(&mut guest, Duration::from_secs(5)).await, "своя пара подсказку не получила");
+            assert!(
+                !hint_arrives(&mut stranger, Duration::from_secs(1)).await,
+                "подсказка ушла постороннему: уход гостя дёргал бы проверку живости у всех подряд",
             );
         }
     }

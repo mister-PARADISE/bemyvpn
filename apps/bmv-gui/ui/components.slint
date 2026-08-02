@@ -103,6 +103,34 @@ component TileFrame inherits Rectangle {
     animate border-color { duration: 180ms; easing: ease-out; }
 }
 
+/// Подпись плитки — мелкая, ЗАГЛАВНЫМИ. Один компонент на все три плитки:
+/// раньше эти три строки были скопированы в StatTile, CopyTile и ActionTile, и
+/// починка надстрочных знаков (ниже) в одной из копий тихо разошлась бы с
+/// остальными.
+///
+/// ЗАЧЕМ ЯВНАЯ ВЫСОТА И ВЫРАВНИВАНИЕ ВНИЗ.
+///
+/// Slint (femtovg) обрезает текст по прямоугольнику САМОГО элемента Text, а
+/// неявная высота этого прямоугольника кончается на линии ЗАГЛАВНЫХ букв
+/// (cap-height). Всё, что торчит выше, срезается начисто — а у русских
+/// ЗАГЛАВНЫХ «Й» и «Ё» надстрочный знак стоит именно выше cap-height. Поэтому
+/// «ГОСТЕЙ» рисовалось как «ГОСТЕИ»: не бледно, а вообще без серпика. Строчные
+/// «й» и «ё» не страдают — их знак ниже линии заглавных, он внутри коробки.
+///
+/// Лечится ТОЛЬКО запасом высоты у самого Text, причём запас должен лечь СВЕРХУ:
+/// проверено опытом — ни высота с выравниванием по умолчанию (запас уходит
+/// вниз), ни выравнивание без запаса, ни высокий родитель не помогают, помогает
+/// пара «высота + выравнивание вниз». 14px при кегле 10px даёт 2px сверху —
+/// этого хватает с запасом (знак цел уже при 13px).
+component TileLabel inherits Text {
+    color: Theme.dim;
+    font-size: 10px;
+    font-weight: 900;
+    letter-spacing: 0.7px;
+    height: 14px;
+    vertical-alignment: bottom;
+}
+
 // Плитка-факт. Значок — ПОСЛЕ значения (как копи-значок у CopyTile), значение
 // всегда прижато влево → все плитки в сетке выровнены одинаково.
 export component StatTile inherits TileFrame {
@@ -117,7 +145,7 @@ export component StatTile inherits TileFrame {
         alignment: center;
         padding-left: 11px; padding-right: 11px; padding-top: 8px; padding-bottom: 8px;
         spacing: 3px;
-        Text { text: root.label; color: Theme.dim; font-size: 10px; font-weight: 900; letter-spacing: 0.7px; }
+        TileLabel { text: root.label; }
         // Значение и значок — ПО ЦЕНТРУ ячейки. Раньше текст растягивался
         // (horizontal-stretch), прижимая значок к правому краю, и в соседних
         // плитках значки оказывались по разные стороны — взгляд цеплялся за
@@ -198,7 +226,7 @@ export component CopyTile inherits TileFrame {
         alignment: center;   // см. StatTile: иначе значение проваливается вниз
         padding-left: 11px; padding-right: 11px; padding-top: 8px; padding-bottom: 8px;
         spacing: 3px;
-        Text { text: root.label; color: Theme.dim; font-size: 10px; font-weight: 900; letter-spacing: 0.7px; }
+        TileLabel { text: root.label; }
         HorizontalLayout {
             spacing: 5px;
             Text {
@@ -234,7 +262,7 @@ export component ActionTile inherits TileFrame {
     VerticalLayout {
         padding-left: 11px; padding-right: 11px; padding-top: 9px; padding-bottom: 9px;
         spacing: 4px;
-        Text { text: root.label; color: Theme.dim; font-size: 10px; font-weight: 900; letter-spacing: 0.7px; }
+        TileLabel { text: root.label; }
         HorizontalLayout {
             spacing: 5px;
             Text {

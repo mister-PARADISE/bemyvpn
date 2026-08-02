@@ -173,6 +173,28 @@ impl BmvEngine {
         Ok(self.coord.get().expect("только что установлен").clone())
     }
 
+    /// Подписка на подсказки координатора «проверь соседа» (см.
+    /// `bmv_signal::Coordinator::peer_check`). `None` — координатор не настроен:
+    /// прямое прощание и таймаут тишины работают и без него, это ТРЕТИЙ слой, а
+    /// не единственный.
+    pub fn peer_check(&self) -> Option<tokio::sync::watch::Receiver<u64>> {
+        self.coordinator().ok().map(|c| c.peer_check())
+    }
+
+    /// Гонять подсказки координатора в канал СЕССИИ, пока сессия жива.
+    ///
+    /// Никогда не завершается сама — её место в `tokio::select!` рядом с самой
+    /// сессией: кончилась сессия, кончился и ретранслятор (без spawn'а и без
+    /// парного abort'а, которые пришлось бы гасить руками).
+    pub async fn relay_peer_checks(link: &dyn Link, rx: Option<tokio::sync::watch::Receiver<u64>>) {
+        if let Some(mut rx) = rx {
+            while rx.changed().await.is_ok() {
+                link.check_peer_now();
+            }
+        }
+        std::future::pending::<()>().await
+    }
+
     /// Проверить, что координатор жив.
     pub async fn coordinator_health(&self) -> Result<()> {
         self.coordinator()?.health().await
@@ -559,7 +581,7 @@ impl BmvEngine {
             let _permit = self.handshake_gate.acquire().await.map_err(|_| bmv_common::Error::other("gate закрыт"))?;
             proto.connect_host(raw).await? // рукопожатие ДО учёта
         };
-        let link: Box<dyn Link> = Box::new(bmv_common::KeepaliveLink::new(plink));
+        let link: Arc<dyn Link> = Arc::new(bmv_common::KeepaliveLink::new(plink));
 
         // ПАРОЛЬ: если задан — первый пакет гостя должен быть верным auth-кадром.
         // Неверный/отсутствует → вежливо закрываем, слот не занимаем.
@@ -595,10 +617,19 @@ impl BmvEngine {
         };
         let _ = self.announce_state().await; // каталог видит нового гостя сразу
 
-        let res = if tunnel {
-            bmv_tunnel::run_host(link).await
-        } else {
-            echo_session(link).await
+        // Подсказки координатора «проверь соседа» — на всё время сессии (третий
+        // слой обнаружения ухода: гость мог быть убит, и прощание послать некому).
+        let hints = Self::relay_peer_checks(&*link, self.peer_check());
+        let res = tokio::select! {
+            r = async {
+                if tunnel {
+                    bmv_tunnel::run_host(link.clone()).await
+                } else {
+                    echo_session(&*link).await
+                }
+            } => r,
+            // Ретранслятор не завершается сам — эта ветка недостижима.
+            _ = hints => Ok(()),
         };
 
         drop(_slot); // место освобождаем ДО анонса, чтобы каталог увидел уже новое число
@@ -780,7 +811,7 @@ fn ct_eq(a: &[u8], b: &[u8]) -> bool {
 }
 
 /// Эхо-сессия (проверка связи): вернуть всё, что прислали, до EOF.
-async fn echo_session(link: Box<dyn Link>) -> Result<()> {
+async fn echo_session(link: &dyn Link) -> Result<()> {
     loop {
         let pkt = link.recv().await?;
         if pkt.is_empty() {

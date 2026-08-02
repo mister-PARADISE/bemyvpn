@@ -417,6 +417,9 @@ pub extern "C" fn bmv_start_tunnel(fd: i32, utun: bool) -> bool {
             }
         };
         let params = RECONNECT.lock().clone();
+        // Подсказки координатора «проверь соседа» (второй слой обнаружения ухода:
+        // хоста могли убить, и прощание по UDP послать было некому).
+        let hints = params.as_ref().and_then(|p| sig_engine(&p.coordinator).peer_check());
         let gen = CONNECT_GEN.load(Ordering::SeqCst);
         TUNNEL_FD.store(fd, Ordering::SeqCst); // владелец fd — pump_tunnel, здесь только публикуем номер
         log::info!("bmv_start_tunnel: fd={fd}, utun={utun}, качаю туннель (с авто-реконнектом)");
@@ -442,7 +445,7 @@ pub extern "C" fn bmv_start_tunnel(fd: i32, utun: bool) -> bool {
         });
         let handle = RUNTIME.spawn(async move {
             set_status(2);
-            pump_tunnel(fd, utun, link, reestablish, gen).await;
+            pump_tunnel(fd, utun, link, reestablish, hints, gen).await;
             log::info!("туннель завершён");
         });
         *SESSION.lock() = Some(handle);
@@ -820,6 +823,7 @@ async fn pump_tunnel<F, Fut>(
     utun: bool,
     first_link: Box<dyn bmv_common::Link>,
     reestablish: Option<F>,
+    hints: Option<tokio::sync::watch::Receiver<u64>>,
     gen: u64,
 ) where
     F: Fn() -> Fut + Send,
@@ -889,6 +893,16 @@ async fn pump_tunnel<F, Fut>(
         let started = Instant::now();
         let died = tokio::select! {
             _ = bmv_tunnel::run_guest(device, l_arc.clone()) => {
+                // ХОСТ ПОПРОЩАЛСЯ — это не обрыв пути, а конец сеанса: раздачу
+                // погасили. Переустанавливать канал НЕКУДА, и попытки (20 штук с
+                // бэкоффом) держали бы на экране «подключаюсь» две с половиной
+                // минуты вместо честного «отключено» через секунду.
+                if l_arc.peer_said_bye() {
+                    log::info!("хост попрощался (BYE) — сеанс окончен");
+                    *ACTIVE_LINK.lock() = None;
+                    gave_up = true;
+                    break 'session;
+                }
                 // Канал умер (обрыв пути / хост пропал / нас отвергли) → следующая
                 // итерация переустановит его (link уже None). utun не трогаем.
                 log::info!("канал оборвался — пробую восстановить…");
@@ -905,6 +919,9 @@ async fn pump_tunnel<F, Fut>(
                 *ACTIVE_LINK.lock() = None;
                 break 'session; // BYE уже отправил bmv_stop синхронно
             }
+            // Подсказки координатора «проверь соседа» — крутятся рядом с сессией
+            // и сами не завершаются; ветка нужна только чтобы дать им работать.
+            _ = bmv_core::BmvEngine::relay_peer_checks(&*l_arc, hints.clone()) => unreachable!(),
         };
         // Канал больше не актуален (умер/реконнект) — снимаем публикацию.
         *ACTIVE_LINK.lock() = None;
@@ -927,8 +944,9 @@ async fn pump_tunnel<F, Fut>(
     // добил нас abort'ом и закрыл сам — тут no-op.
     close_tunnel_fd();
     if gave_up {
-        // Честная ошибка вместо тихого «выключено» (см. bmv_vpn_status).
-        log::error!("гостевой туннель сдался после {fails} неудач подряд");
+        // Честная ошибка вместо тихого «выключено» (см. bmv_vpn_status): сеанс
+        // кончился не по воле человека — хост попрощался либо перестал отвечать.
+        log::error!("гостевой туннель завершён извне (неудач подряд: {fails})");
         set_status(3);
     } else {
         let _ = VPN_STATUS.compare_exchange(2, 0, Ordering::SeqCst, Ordering::SeqCst);
@@ -1108,6 +1126,21 @@ mod tests {
         }
     }
 
+    /// Канал, пир которого ПОПРОЩАЛСЯ: EOF плюс явная причина «это был BYE».
+    struct ByeLink;
+    #[async_trait::async_trait]
+    impl bmv_common::Link for ByeLink {
+        async fn send(&self, _p: &[u8]) -> bmv_common::Result<()> {
+            Ok(())
+        }
+        async fn recv_into(&self, _b: &mut Vec<u8>) -> bmv_common::Result<bool> {
+            Ok(false)
+        }
+        fn peer_said_bye(&self) -> bool {
+            true
+        }
+    }
+
     /// Канал, чей `close()` висит: имитирует отправку BYE в живую сеть.
     struct SlowClose;
     #[async_trait::async_trait]
@@ -1204,7 +1237,7 @@ mod tests {
 
         let done = tokio::time::timeout(
             Duration::from_secs(600),
-            pump_tunnel(a, false, Box::new(DeadLink), reestablish, gen),
+            pump_tunnel(a, false, Box::new(DeadLink), reestablish, None, gen),
         )
         .await;
 
@@ -1213,6 +1246,50 @@ mod tests {
         let n = tries.load(Ordering::SeqCst);
         assert!(n < u64::from(MAX_FAILS) + 2, "попыток {n}, а лимит {MAX_FAILS}");
         assert_eq!(TUNNEL_FD.load(Ordering::SeqCst), -1, "качалка обязана закрыть fd за собой");
+        set_status(0);
+        unsafe { libc::close(b) };
+    }
+
+    /// ПОПРОЩАВШИЙСЯ ХОСТ — ЭТО КОНЕЦ СЕАНСА, А НЕ ОБРЫВ ПУТИ.
+    ///
+    /// Обрыв пути на мобильном — обычное дело, поэтому качалка переустанавливает
+    /// канал: до 20 попыток с бэкоффом, две с половиной минуты. Но если хост
+    /// ПОПРОЩАЛСЯ, переустанавливать некуда — раздачу погасили. Пока разницу не
+    /// различали, человек все эти минуты смотрел на «подключаюсь» вместо честного
+    /// «отключено» через секунду: прощание доезжало, а толку от него не было.
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test(start_paused = true)]
+    async fn a_host_goodbye_ends_the_session_without_reconnect_attempts() {
+        let _serial = SERIAL.lock();
+        let (a, b) = socketpair();
+        let tries = Arc::new(AtomicU64::new(0));
+        let counter = tries.clone();
+        let reestablish = Some(move || {
+            let counter = counter.clone();
+            async move {
+                counter.fetch_add(1, Ordering::SeqCst);
+                Some(Box::new(DeadLink) as Box<dyn bmv_common::Link>)
+            }
+        });
+        let gen = CONNECT_GEN.load(Ordering::SeqCst);
+        TUNNEL_FD.store(a, Ordering::SeqCst);
+
+        let done = tokio::time::timeout(
+            Duration::from_secs(30),
+            pump_tunnel(a, false, Box::new(ByeLink), reestablish, None, gen),
+        )
+        .await;
+
+        assert!(
+            done.is_ok(),
+            "качалка не вышла на прощание хоста, а ушла крутить реконнект — это и есть минуты «подключаюсь» вместо «отключено»",
+        );
+        assert_eq!(
+            tries.load(Ordering::SeqCst),
+            0,
+            "после прощания хоста качалка полезла переподключаться — это и есть две минуты «подключаюсь» вместо «отключено»",
+        );
+        assert_eq!(VPN_STATUS.load(Ordering::SeqCst), 3, "конец сеанса обязан быть виден, а не тихо «выключено»");
         set_status(0);
         unsafe { libc::close(b) };
     }
