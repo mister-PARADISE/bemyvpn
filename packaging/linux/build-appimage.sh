@@ -27,8 +27,11 @@ rsvg-convert -w 256 -h 256 "$HERE/bemyvpn.svg" \
 
 cd "$WORK"
 get() { wget -q "$1" -O "$2" && chmod +x "$2"; }
-get https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage linuxdeploy
-get https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage appimagetool
+# Архитектуру берём у машины, а не вбиваем строкой: тот же скрипт собирает и
+# x86_64, и arm64 — инструменты выпускаются под обе.
+ARCH="$(uname -m)"
+get "https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-$ARCH.AppImage" linuxdeploy
+get "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-$ARCH.AppImage" appimagetool
 
 # libxkbcommon и libxkbcommon-x11 грузятся через dlopen (крейт xkbcommon-dl),
 # поэтому ldd их НЕ видит и linuxdeploy сам не вшивает. Без них на минимальных
@@ -46,5 +49,7 @@ done
   --icon-file "$APP/usr/share/icons/hicolor/256x256/apps/bemyvpn.png" \
   "${FORCE_LIBS[@]}"
 
-ARCH=x86_64 ./appimagetool "$APP" "$OUT/bemyvpn-linux-x86_64.AppImage"
-echo "ГОТОВ: $OUT/bemyvpn-linux-x86_64.AppImage ($(du -h "$OUT/bemyvpn-linux-x86_64.AppImage" | cut -f1))"
+# Имя файла — как в таблице самообновления: x86_64 или arm64.
+NAME="bemyvpn-linux-$([ "$ARCH" = aarch64 ] && echo arm64 || echo "$ARCH").AppImage"
+ARCH="$ARCH" ./appimagetool "$APP" "$OUT/$NAME"
+echo "ГОТОВ: $OUT/$NAME ($(du -h "$OUT/$NAME" | cut -f1))"

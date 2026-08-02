@@ -58,7 +58,9 @@ else
 fi
 
 # DMG: один файл. Внутри — .app + ярлык на «Программы» (перетащил и готово).
-DMG="$OUT/bemyvpn-macos-arm64.dmg"
+# Архитектуру берём у машины: тот же скрипт собирает и для Apple Silicon, и для
+# Intel-маков — их на руках ещё много.
+DMG="$OUT/bemyvpn-macos-$([ "$(uname -m)" = arm64 ] && echo arm64 || echo x86_64).dmg"
 DMGROOT="$WORK/dmgroot"; mkdir -p "$DMGROOT"
 cp -R "$APP" "$DMGROOT/BeMyVPN.app"
 ln -s /Applications "$DMGROOT/Applications"

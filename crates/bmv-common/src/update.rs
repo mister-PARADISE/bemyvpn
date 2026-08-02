@@ -22,12 +22,13 @@ pub fn current_asset_name(is_gui: bool) -> Option<&'static str> {
         ("macos", "aarch64", true) => "bemyvpn-macos-arm64.dmg",
         ("windows", "x86_64", false) => "bemyvpn-windows-x86_64-terminal.exe",
         ("windows", "x86_64", true) => "bemyvpn-windows-x86_64.exe",
-        // ARM-машины и Intel-маки: пока только терминальная версия. Оконная для
-        // них не собирается (AppImage под ARM и .dmg под Intel — отдельная
-        // работа), поэтому для GUI здесь честное «нет».
+        // ARM-машины и Intel-маки — и терминальная, и оконная.
         ("linux", "aarch64", false) => "bemyvpn-linux-arm64-terminal",
+        ("linux", "aarch64", true) => "bemyvpn-linux-arm64.AppImage",
         ("windows", "aarch64", false) => "bemyvpn-windows-arm64-terminal.exe",
+        ("windows", "aarch64", true) => "bemyvpn-windows-arm64.exe",
         ("macos", "x86_64", false) => "bemyvpn-macos-x86_64-terminal",
+        ("macos", "x86_64", true) => "bemyvpn-macos-x86_64.dmg",
         // Сборка под платформу, которую мы не выпускаем: обновлять нечем, и
         // честнее сказать «нет», чем подсунуть чужой файл — не та архитектура
         // не запустится вовсе, а не та ОС может и запуститься, натворив дел.
@@ -439,12 +440,15 @@ mod asset_tests {
             "bemyvpn-linux-x86_64-terminal",
             "bemyvpn-linux-x86_64.AppImage",
             "bemyvpn-linux-arm64-terminal",
+            "bemyvpn-linux-arm64.AppImage",
             "bemyvpn-windows-x86_64-terminal.exe",
             "bemyvpn-windows-x86_64.exe",
             "bemyvpn-windows-arm64-terminal.exe",
+            "bemyvpn-windows-arm64.exe",
             "bemyvpn-macos-arm64-terminal",
             "bemyvpn-macos-arm64.dmg",
             "bemyvpn-macos-x86_64-terminal",
+            "bemyvpn-macos-x86_64.dmg",
         ];
         // Своя платформа обязана попадать в этот список — иначе мы собрали
         // приложение, которое не сможет обновиться само.
