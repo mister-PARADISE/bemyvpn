@@ -362,7 +362,7 @@ fn ip(args: &[&str]) -> Result<(), String> {
 
 #[cfg(target_os = "linux")]
 fn default_route_linux() -> Option<(String, String)> {
-    let out = std::process::Command::new("ip").args(["route", "show", "default"]).output().ok()?;
+    let out = bmv_common::command("ip").args(["route", "show", "default"]).output().ok()?;
     let s = String::from_utf8_lossy(&out.stdout);
     let toks: Vec<&str> = s.split_whitespace().collect();
     let (mut gw, mut dev) = (None, None);
@@ -389,7 +389,7 @@ fn networksetup(args: &[&str]) -> Result<(), String> {
 
 #[cfg(target_os = "macos")]
 fn default_route_macos() -> Option<(String, String)> {
-    let out = std::process::Command::new("route").args(["-n", "get", "default"]).output().ok()?;
+    let out = bmv_common::command("route").args(["-n", "get", "default"]).output().ok()?;
     let s = String::from_utf8_lossy(&out.stdout);
     let (mut gw, mut dev) = (None, None);
     for line in s.lines() {
@@ -406,7 +406,7 @@ fn default_route_macos() -> Option<(String, String)> {
 /// Имя сетевого сервиса (напр. «Wi-Fi») по устройству (en0) — для networksetup.
 #[cfg(target_os = "macos")]
 fn dns_service_for_dev(dev: &str) -> Option<String> {
-    let out = std::process::Command::new("networksetup").arg("-listnetworkserviceorder").output().ok()?;
+    let out = bmv_common::command("networksetup").arg("-listnetworkserviceorder").output().ok()?;
     let s = String::from_utf8_lossy(&out.stdout);
     // Блоки вида:
     //   (1) Wi-Fi
@@ -431,7 +431,7 @@ fn dns_service_for_dev(dev: &str) -> Option<String> {
 
 #[cfg(target_os = "macos")]
 fn current_dns(service: &str) -> Vec<String> {
-    let out = std::process::Command::new("networksetup").args(["-getdnsservers", service]).output();
+    let out = bmv_common::command("networksetup").args(["-getdnsservers", service]).output();
     let Ok(out) = out else { return Vec::new() };
     let s = String::from_utf8_lossy(&out.stdout);
     // «There aren't any DNS Servers set on …» → пусто.
@@ -484,15 +484,10 @@ fn windows_net_info(tun: &str) -> Option<(String, String, String)> {
     Some((gw, idx, "10.7.0.2".to_string()))
 }
 
-/// Захват stdout нативной команды (без окна консоли).
+/// Захват stdout нативной команды (без окна консоли — см. `bmv_common::command`).
 #[cfg(target_os = "windows")]
 fn cmd_out(cmd: &str, args: &[&str]) -> Option<String> {
-    use std::os::windows::process::CommandExt;
-    let out = std::process::Command::new(cmd)
-        .args(args)
-        .creation_flags(CREATE_NO_WINDOW)
-        .output()
-        .ok()?;
+    let out = bmv_common::command(cmd).args(args).output().ok()?;
     Some(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
@@ -525,23 +520,13 @@ fn adapter_index_windows(name: &str) -> Option<String> {
     None
 }
 
-// CREATE_NO_WINDOW: не создавать консольное окно для дочернего процесса. Без
-// него route/netsh/powershell мигают чёрным окном cmd при каждом вызове.
-#[cfg(target_os = "windows")]
-const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-
 // ── общий запуск команды ──
+//
+// Через `bmv_common::command`, а не `Command::new`: на Windows он ставит
+// CREATE_NO_WINDOW, без которого каждый route/netsh мигает окном консоли.
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 fn run(cmd: &str, args: &[&str]) -> Result<(), String> {
-    let mut command = std::process::Command::new(cmd);
-    command.args(args);
-    // Windows: без CREATE_NO_WINDOW каждый route/netsh мигает окном cmd.
-    #[cfg(target_os = "windows")]
-    {
-        use std::os::windows::process::CommandExt;
-        command.creation_flags(CREATE_NO_WINDOW);
-    }
-    let out = command.output().map_err(|e| e.to_string())?;
+    let out = bmv_common::command(cmd).args(args).output().map_err(|e| e.to_string())?;
     if out.status.success() {
         Ok(())
     } else {

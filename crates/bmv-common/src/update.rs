@@ -214,7 +214,7 @@ rm -rf "$TMP"
     std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))
         .map_err(|e| Error::Net(format!("права помощника: {e}")))?;
 
-    std::process::Command::new("/bin/sh")
+    crate::command("/bin/sh")
         .arg(&script)
         .spawn()
         .map_err(|e| Error::Net(format!("запуск помощника: {e}")))?;
@@ -240,10 +240,16 @@ pub fn spawn_exe_updater(new_bytes: &[u8]) -> Result<()> {
     let cmd = dir.join("bemyvpn-update.cmd");
     // Скрипт ждёт освобождения файла: пока процесс жив, переименование не
     // проходит, и цикл повторяет попытку. Так надёжнее, чем ждать по таймеру.
+    //
+    // Пауза — через `ping`, а НЕ через `timeout`: помощник запускается без
+    // консоли (см. `crate::command`), а `timeout` без консоли сразу падает с
+    // «Input redirection is not supported». Цикл ожидания тогда крутился бы
+    // вхолостую на полном CPU. `ping -n 2 127.0.0.1` = пауза ~1с и работает
+    // где угодно — старый приём батников, ровно для этого случая.
     let body = format!(
         "@echo off\r\n\
          :wait\r\n\
-         timeout /t 1 /nobreak >nul\r\n\
+         ping -n 2 127.0.0.1 >nul\r\n\
          move /y \"{me}\" \"{bak}\" >nul 2>&1 || goto wait\r\n\
          move /y \"{new}\" \"{me}\" >nul 2>&1 || (move /y \"{bak}\" \"{me}\" >nul & exit /b 1)\r\n\
          start \"\" \"{me}\"\r\n\
@@ -253,8 +259,13 @@ pub fn spawn_exe_updater(new_bytes: &[u8]) -> Result<()> {
         new = new.display()
     );
     std::fs::write(&cmd, body).map_err(|e| Error::Net(format!("помощник: {e}")))?;
-    std::process::Command::new("cmd")
-        .args(["/C", "start", "", "/min"])
+    // Раньше здесь было `cmd /C start "" /min <script>`, и окно консоли мигало
+    // ДВАЖДЫ: сама `cmd` (у GUI консоли нет — Windows заводит потомку новую) и
+    // `start`, который для того и существует, чтобы открыть отдельное окно.
+    // `start` тут не нужен вовсе: `spawn` и так не ждёт потомка, а тот переживает
+    // выход родителя. Остаётся один `cmd /C` под CREATE_NO_WINDOW — невидимый.
+    crate::command("cmd")
+        .arg("/C")
         .arg(&cmd)
         .spawn()
         .map_err(|e| Error::Net(format!("запуск помощника: {e}")))?;

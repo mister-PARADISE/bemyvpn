@@ -5,7 +5,7 @@
 // цифрам (адрес хоста, гости, часы). Копирование кода сети и QR живут на нижней
 // полке (app.slint), под большим пальцем.
 import { Theme } from "theme.slint";
-import { HostRow, Card, StatTile, PingTile, CopyTile, GradientButton, SectionLabel, Field,
+import { HostRow, Card, StatTile, PingTile, CopyTile, SectionLabel, Field,
          Badge, StatusLine, StateChip, ShareButton } from "components.slint";
 import { IconShield, IconShieldCheck, IconShieldSlash, IconShieldLock, IconMask, IconLock, IconLockOpen,
          IconPeople, IconCopy, IconCheck, IconClose, IconQr, IconScan, IconPaste, IconArrowRight, IconChevronRight, IconChevronUp } from "icons.slint";
@@ -17,7 +17,11 @@ component ProtoIcon inherits Rectangle {
     in property <color> tint: Theme.dim;
     if id == "noise" || id == "noise-aes": IconShieldLock { width: 100%; height: 100%; tint: root.tint; hole: Theme.card-hi; }
     if id == "noise-obfs": IconMask { width: 100%; height: 100%; tint: root.tint; }
-    if id == "plain" || id == "": IconShieldSlash { width: 100%; height: 100%; tint: root.tint; hole: Theme.card-hi; }
+    // Последняя ветка — ЛОВИТ ВСЁ ОСТАЛЬНОЕ, а не только "plain"/"": ровно так
+    // же поступает proto_name в main.rs («Без шифра» на всё незнакомое). Значок
+    // теперь стоит в КАЖДОЙ строке списка, и пустое место на месте незнакомого
+    // протокола читалось бы как «тут ничего нет», а не как «мы это не опознали».
+    if id != "noise" && id != "noise-aes" && id != "noise-obfs": IconShieldSlash { width: 100%; height: 100%; tint: root.tint; hole: Theme.card-hi; }
 }
 
 // Карточка хоста: свёрнутый вид + раскрытие (детали + Подключить).
@@ -61,10 +65,31 @@ component HostCard inherits Rectangle {
                     Text {
                         text: h.name; color: Theme.fg; font-size: 16px; font-weight: 600; overflow: elide;
                     }
+                    // Подпись: значок протокола + страна и гости.
+                    //
+                    // ЗНАЧОК ТЕПЕРЬ У КАЖДОГО ПРОТОКОЛА. Раньше он появлялся
+                    // только у «Маскировки», и отсутствие значка означало сразу
+                    // две противоположные вещи: «Обычный» (шифр есть) и «Без
+                    // шифра» (шифра нет). Хуже всего доставалось именно
+                    // опасному случаю — незащищённый хост выглядел в списке
+                    // ровно как защищённый. Перегруза нет: слов не прибавилось,
+                    // прибавилось 13 точек ширины, а строка как была одна, так
+                    // и осталась.
+                    //
+                    // ПЕРВЫМ, а не в хвосте. У значка ширина фиксированная, у
+                    // подписи — сжимаемая (overflow: elide), и когда окно узкое,
+                    // layout ужимает именно подпись (в пределе — до многоточия).
+                    // Значок в хвосте оказывался бы прижат к огрызку подписи и
+                    // выглядел бы поломкой; слева же значки выстраиваются в
+                    // ровный столбец, а многоточие съедает хвост подписи — как
+                    // многоточию и положено.
                     HorizontalLayout {
                         spacing: 4px;
+                        VerticalLayout {
+                            alignment: center;   // иначе значок липнет к верху строки
+                            ProtoIcon { id: h.proto-id; width: 13px; height: 13px; }
+                        }
                         Text { text: h.subtitle; color: Theme.dim; font-size: 13px; overflow: elide; vertical-alignment: center; }
-                        if h.obfs: ProtoIcon { id: h.proto-id; width: 13px; height: 13px; }
                     }
                     // Полоса заполненности.
                     Rectangle {
@@ -123,7 +148,26 @@ component HostCard inherits Rectangle {
                     }
                 }
                 if h.locked: Field { placeholder: "Пароль"; secure: true; text <=> root.guest-password; }
-                GradientButton { title: "Подключить"; enabled: h.usable; clicked => { root.connect(root.index); } }
+                // Спокойная кнопка: подкраска + рамка + цветной текст — тот же
+                // приём, что у ShareButton и у действующей ячейки нав-бара.
+                // Сплошной градиент здесь кричал: карточка раскрывается прямо в
+                // списке, и синяя плашка во всю ширину перетягивала внимание с
+                // самих цифр хоста, ради которых карточку и раскрывают.
+                Rectangle {
+                    height: 50px;
+                    border-radius: 14px;
+                    background: connect-ta.has-hover ? Theme.accent.with-alpha(0.22) : Theme.accent.with-alpha(0.15);
+                    border-width: 1px;
+                    border-color: Theme.accent.with-alpha(0.4);
+                    opacity: h.usable ? 1.0 : 0.5;
+                    animate background { duration: 160ms; easing: ease-out; }
+                    Text {
+                        text: "Подключить"; color: Theme.accent; font-size: 16px; font-weight: 700;
+                        horizontal-alignment: center; vertical-alignment: center;
+                        width: 100%; height: 100%;
+                    }
+                    connect-ta := TouchArea { enabled: h.usable; clicked => { root.connect(root.index); } }
+                }
             }
         }
     }

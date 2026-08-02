@@ -602,20 +602,47 @@ func gradientButton(_ title: String) -> some View {
         .background(LinearGradient(colors: [Theme.accent, Theme.accent2], startPoint: .leading, endPoint: .trailing))
         .cornerRadius(14)
 }
+/// Спокойная главная кнопка: подкраска + рамка + цветной текст — тот же приём,
+/// что у ShareButtons и у действующей ячейки нав-бара. Для действий ВНУТРИ
+/// списка: карточка раскрывается прямо в нём, и сплошная синяя плашка во всю
+/// ширину перетягивала внимание с самих цифр хоста, ради которых карточку и
+/// раскрывают.
+func calmButton(_ title: String) -> some View {
+    Text(title).fontWeight(.bold).foregroundColor(Theme.accent)
+        .frame(maxWidth: .infinity).padding(.vertical, 15)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Theme.accent.opacity(0.15))
+                .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .stroke(Theme.accent.opacity(0.4), lineWidth: 1))
+        )
+}
 /// Флаг для «аватарки» слева в списке (🌍 если страна не определилась).
 func hostFlag(_ h: Host) -> String {
     GeoFlags.countryOf(h.ip).map { GeoFlags.flagOfCc($0) } ?? "🌍"
 }
 
 /// Подпись под именем. Флаг сюда НЕ кладём — он теперь аватарка слева.
+///
+/// В строке места мало и хвост уходит под многоточие, поэтому здесь остаётся
+/// только то, ради чего на строку смотрят. СЫРОГО IP тут нет: он стоял первым
+/// (когда страна не определилась) и один занимал всю ширину — до счётчика
+/// гостей многоточие просто не доходило. Адрес виден в раскрытой карточке,
+/// там под него отдельная плитка. Счётчик гостей есть ВСЕГДА — это и делает
+/// подпись непустой при любых данных.
+///
+/// ЗНАЧОК ПРОТОКОЛА — У КАЖДОГО ПРОТОКОЛА И ПЕРВЫМ. Раньше он был только у
+/// «Маскировки», и его отсутствие означало сразу две противоположные вещи:
+/// «Обычный» (шифр есть) и «Без шифра» (шифра нет) — незащищённый хост
+/// выглядел в списке ровно как защищённый. Строку это не перегружает: слов не
+/// прибавилось, строка как была одна, так и осталась. Первым, а не в хвосте,
+/// потому что хвост — то, что съедает многоточие: знак защиты пропадал бы
+/// ровно там, где строке не хватило ширины.
 func hostSubtitle(_ h: Host) -> Text {
     var parts: [String] = []
     if let cc = GeoFlags.countryOf(h.ip) { parts.append(cc) }
-    else if !h.ip.isEmpty { parts.append(h.ip) }
-    parts.append("гостей \(h.guests)/\(h.max)")
-    let base = Text(parts.joined(separator: " · "))
-    // «Маскировку» отмечаем значком прямо в подписи — видно, не раскрывая карточку.
-    return h.proto == "noise-obfs" ? base + Text(" · ") + Text(Image(systemName: protoIcon(h.proto))) : base
+    // Потолок хост может и не объявить (0) — дробь «1/0» в этом случае врёт.
+    parts.append(h.max > 0 ? "гостей \(h.guests)/\(h.max)" : "гостей \(h.guests)")
+    return symbolText(protoIcon(h.proto), parts.joined(separator: " · "))
 }
 
 // ── ВКЛАДКА «СЕРВЕР» ─────────────────────────────────────────────────────────
@@ -999,7 +1026,7 @@ struct HostCard: View {
                     SecureField("Пароль", text: $password).foregroundColor(Theme.fg)
                         .padding(12).background(Theme.tile).cornerRadius(11)
                 }
-                Button { app.connect(host, password: password) } label: { gradientButton("Подключить") }
+                Button { app.connect(host, password: password) } label: { calmButton("Подключить") }
                     .disabled(!host.usable).opacity(host.usable ? 1 : 0.5)
                 }
                 .transition(.asymmetric(

@@ -63,6 +63,37 @@ pub fn default_host_name(country_code: Option<&str>) -> String {
         .unwrap_or_else(|| "Хост".to_string())
 }
 
+/// `std::process::Command`, который на Windows НЕ мигает окном консоли.
+///
+/// ЗАЧЕМ: GUI собран с `windows_subsystem = "windows"` — у процесса нет своей
+/// консоли. Когда такой процесс запускает КОНСОЛЬНУЮ программу (netsh, route,
+/// cmd), Windows заводит потомку НОВУЮ консоль — и на экране мигает чёрный
+/// прямоугольник. Живёт он доли секунды, но посреди подключения к VPN выглядит
+/// как «что-то запустилось само», и людей это отпугивает. У терминального
+/// `bemyvpn` этой беды нет: консоль у него своя, потомки её наследуют.
+///
+/// `CREATE_NO_WINDOW` запрещает создание этой консоли и НИЧЕГО больше не меняет:
+/// stdout/stderr по-прежнему перехватываются через `.output()`.
+///
+/// Заведено здесь, а не копией в каждом месте, чтобы правило было одно:
+/// процессы порождаем ТОЛЬКО через эту функцию. На не-Windows — обычный
+/// `Command::new`.
+///
+/// Осторожно с батниками: без консоли `timeout` в них падает («Input redirection
+/// is not supported»), спать надо через `ping -n`. См. `update.rs`.
+pub fn command(program: impl AsRef<std::ffi::OsStr>) -> std::process::Command {
+    #[allow(unused_mut)] // mut нужен только ветке Windows ниже
+    let mut cmd = std::process::Command::new(program);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        /// CREATE_NO_WINDOW — не заводить консольное окно дочернему процессу.
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    cmd
+}
+
 #[cfg(test)]
 mod host_name_tests {
     use super::*;

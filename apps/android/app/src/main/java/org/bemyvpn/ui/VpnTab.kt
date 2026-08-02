@@ -392,18 +392,35 @@ fun HostCard(app: AppState, host: Host) {
                     host.name.ifEmpty { host.id }, color = Theme.fg,
                     fontSize = 16.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis,
                 )
-                // Подпись: страна/IP · гостей N/M (+ значок «Скрытного»).
+                // Подпись: значок протокола · страна · гостей N/M.
+                //
+                // ЗНАЧОК У КАЖДОГО ПРОТОКОЛА. Раньше он был только у
+                // «Маскировки», и его отсутствие означало сразу две
+                // противоположные вещи: «Обычный» (шифр есть) и «Без шифра»
+                // (шифра нет) — незащищённый хост выглядел в списке ровно как
+                // защищённый. Строку это не перегружает: слов не прибавилось,
+                // строка как была одна, так и осталась.
+                //
+                // ПЕРВЫМ, а не в хвосте: Row меряет детей по порядку, и значок
+                // в конце в узкой строке просто выдавливался бы за край (подпись
+                // с ellipsis успевала бы забрать всю ширину). Слева значки
+                // выстраиваются в ровный столбец, а многоточие съедает хвост
+                // подписи — как ему и положено.
+                //
+                // СЫРОГО IP в подписи нет: он стоял первым (когда страна не
+                // определилась) и один занимал всю ширину — до счётчика гостей
+                // многоточие не доходило. Адрес виден в раскрытой карточке, там
+                // под него отдельная плитка. Счётчик гостей есть ВСЕГДА — это и
+                // делает подпись непустой при любых данных.
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Icon(protoIcon(host.proto), null, Modifier.size(13.dp), tint = Theme.dim)
                     val cc = org.bemyvpn.GeoFlags.countryOf(host.ip)
                     val parts = buildList {
-                        if (cc != null) add(cc) else if (host.ip.isNotEmpty()) add(host.ip)
-                        add("гостей ${host.guests}/${host.max}")
+                        if (cc != null) add(cc)
+                        // Потолок хост может и не объявить (0) — дробь «1/0» врёт.
+                        add(if (host.max > 0) "гостей ${host.guests}/${host.max}" else "гостей ${host.guests}")
                     }
                     Text(parts.joinToString(" · "), color = Theme.dim, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    if (host.proto == "noise-obfs") {
-                        Text("·", color = Theme.dim, fontSize = 13.sp)
-                        Icon(protoIcon(host.proto), null, Modifier.size(13.dp), tint = Theme.dim)
-                    }
                 }
                 CapacityBar(host)
             }
@@ -443,7 +460,7 @@ fun HostCard(app: AppState, host: Host) {
                         BmvTextField(password, { password = it }, "Пароль", secure = true, boxed = false)
                     }
                 }
-                GradientButton("Подключить", enabled = host.usable) { app.connect(host, password) }
+                CalmButton("Подключить", enabled = host.usable) { app.connect(host, password) }
             }
         }
     }

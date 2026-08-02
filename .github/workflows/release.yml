@@ -343,7 +343,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, windows-11-arm]
+        include:
+          - os: windows-latest
+            arch: x86_64
+            pe: x86_64
+          - os: windows-11-arm
+            arch: arm64
+            pe: ARM64
     runs-on: ${{ matrix.os }}
     env:
       CARGO_PROFILE_RELEASE_LTO: "false"
@@ -354,16 +360,32 @@ jobs:
       - name: Build GUI
         shell: bash
         run: BMV_VERSION="${GITHUB_REF_NAME#v}" cargo build --release -p bmv-gui
-      # Имя по архитектуре РАННЕРА, а не строкой: та же задача собирает и
-      # x86_64, и arm64, и имена обязаны совпасть с таблицей самообновления.
+      # Имя берём ИЗ МАТРИЦЫ, а не из `uname -m`.
+      #
+      # На Windows-ARM оболочка работает через эмуляцию и честно отвечает
+      # «x86_64» — проверка по uname провалилась молча, ARM-сборка назвалась
+      # именем x86_64 и поехала в релиз поверх настоящей x86_64. Уцелело чудом:
+      # какая задача успела последней, та и осталась. Матрица знает архитектуру
+      # достоверно, гадать по среде незачем.
       - name: Rename exe
         shell: bash
+        run: cp target/release/bemyvpn-gui.exe "bemyvpn-windows-${{ matrix.arch }}.exe"
+      # Страховка от повторения: сверяем, что в заголовке PE та архитектура,
+      # которую обещает имя файла. Ошибись мы снова — задача упадёт здесь, а не
+      # у человека, скачавшего нерабочий файл.
+      - name: Verify architecture
+        shell: bash
         run: |
-          case "$(uname -m)" in
-            aarch64|arm64) A=arm64 ;;
-            *)             A=x86_64 ;;
-          esac
-          cp target/release/bemyvpn-gui.exe "bemyvpn-windows-$A.exe"
+          python -c "
+          import struct, sys
+          d = open('bemyvpn-windows-${{ matrix.arch }}.exe','rb').read(0x200)
+          pe = struct.unpack('<I', d[0x3c:0x40])[0]
+          m = struct.unpack('<H', d[pe+4:pe+6])[0]
+          got = {0x8664:'x86_64', 0xAA64:'ARM64'}.get(m, hex(m))
+          want = '${{ matrix.pe }}'
+          print(f'в файле {got}, ожидали {want}')
+          sys.exit(0 if got == want else 1)
+          "
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:

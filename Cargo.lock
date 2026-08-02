@@ -972,6 +972,7 @@ dependencies = [
 name = "bmv-desktop"
 version = "1.0.0"
 dependencies = [
+ "bmv-common",
  "bmv-tunnel",
  "tokio",
  "tun",

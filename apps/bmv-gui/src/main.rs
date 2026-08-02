@@ -120,16 +120,55 @@ fn fill_vpn_card(ui: &AppWindow, h: &HostInfo) {
 /// экране.
 fn window_size() -> (f32, f32) {
     const RATIO: f32 = 400.0 / 820.0;
-    // height здесь УЖЕ в логических точках — тех же, в которых считает Slint.
-    // Делить его на scale_factor нельзя: на Retina окно выходило ровно вдвое
-    // ниже и упиралось в нижний предел.
     let screen_h = display_info::DisplayInfo::all()
         .ok()
-        .and_then(|list| list.iter().find(|d| d.is_primary).or(list.first()).map(|d| d.height as f32))
+        .and_then(|list| {
+            list.iter()
+                .find(|d| d.is_primary)
+                .or(list.first())
+                .map(|d| logical_screen_h(d.height as f32, d.scale_factor, SCREEN_H_IS_PHYSICAL))
+        })
         .unwrap_or(1080.0);
 
     let h = fit_height(screen_h);
     ((h * RATIO).round(), h.round())
+}
+
+/// Отдаёт ли `display-info` высоту экрана в ФИЗИЧЕСКИХ пикселях (а не в точках).
+///
+/// Крейт единиц не документирует, и они у него РАЗНЫЕ по платформам — проверено
+/// по его исходникам (display-info 0.5.9):
+///
+/// * macOS (`src/macos/mod.rs`): высота = `CGDisplayBounds(id).size.height`, то
+///   есть ТОЧКИ; сам `scale_factor` там и считается как
+///   `pixel_width / bounds.width`. Retina 2214×2 отдаёт 1107 — делить нельзя.
+/// * Linux/xorg (`src/linux/xorg.rs`): крейт САМ делит на `scale_factor` —
+///   тоже точки.
+/// * Windows (`src/windows/mod.rs`): высота = `dmPelsHeight` из
+///   `EnumDisplaySettingsW`, а «Pels» — это пиксели РЕЖИМА монитора, масштаб
+///   Windows в них не заложен вообще.
+///
+/// Отсюда и брался слишком высокий экран на Windows: FullHD при масштабе 150%
+/// даёт `height = 1080`, `scale_factor = 1.5` (наш манифест объявляет
+/// PerMonitorV2, поэтому крейт берёт настоящий `GetDpiForMonitor`), а Slint
+/// рисует в 1080/1.5 = 720 точках. Мы просили 0.75·1080 = 770 точек контента —
+/// то есть окно ВЫШЕ всего экрана, а не три четверти от него.
+const SCREEN_H_IS_PHYSICAL: bool = cfg!(windows);
+
+/// Высота экрана в ЛОГИЧЕСКИХ точках — тех же, в которых считает Slint.
+///
+/// Флаг `physical` передаётся аргументом, а не читается из `cfg!` внутри, чтобы
+/// тест мог проверить ОБЕ ветки на любой машине: разницу единиц между macOS и
+/// Windows иначе видно только на самой Windows.
+fn logical_screen_h(height: f32, scale_factor: f32, physical: bool) -> f32 {
+    // Масштаб приходит из чужого кода. Ноль или NaN дали бы бесконечную «высоту
+    // экрана», а из неё — окно размером с бесконечность; лучше считать, что
+    // масштаба нет.
+    if physical && scale_factor.is_finite() && scale_factor > 0.0 {
+        height / scale_factor
+    } else {
+        height
+    }
 }
 
 /// Высота содержимого окна по высоте экрана.
@@ -539,10 +578,29 @@ fn host_row(h: &HostInfo, pings: &Pings) -> HostRow {
     let usable = h.online && h.guests < h.max_guests;
     let cc = host_cc(h);
     let flag_img = cc.as_deref().and_then(flags::flag);
+    // Подпись под именем. В свёрнутой строке места мало и она ужимается
+    // многоточием с ХВОСТА, поэтому здесь остаётся только то, ради чего на
+    // строку смотрят.
+    //
+    // СЫРОГО IP тут больше нет. Он стоял первым (когда страна не определилась)
+    // и один занимал всю ширину — до счётчика гостей, самого полезного в
+    // строке, многоточие просто не доходило. Увидеть адрес можно в раскрытой
+    // карточке: там под него отдельная плитка, и она копируется тапом.
+    //
+    // Счётчик гостей есть ВСЕГДА — это и делает подпись непустой при любых
+    // данных: страна может не определиться, адрес может не прийти, связь с
+    // координатором может оборваться (тогда список остаётся прошлый, только
+    // приглушённый), а «гостей …» останется на месте.
     let sub = {
         let mut parts: Vec<String> = Vec::new();
-        if let Some(c) = &cc { parts.push(c.clone()); } else if !h.ip.is_empty() { parts.push(h.ip.clone()); }
-        parts.push(format!("гостей {}/{}", h.guests, h.max_guests));
+        if let Some(c) = &cc { parts.push(c.clone()); }
+        // Потолок хост может и не объявить (0). Дробь «1/0» в этом случае врёт
+        // — честнее без знаменателя.
+        parts.push(if h.max_guests > 0 {
+            format!("гостей {}/{}", h.guests, h.max_guests)
+        } else {
+            format!("гостей {}", h.guests)
+        });
         parts.join(" · ")
     };
     let fill = if h.max_guests > 0 { (h.guests as f32 / h.max_guests as f32).clamp(0.0, 1.0) } else { 0.0 };
@@ -552,7 +610,6 @@ fn host_row(h: &HostInfo, pings: &Pings) -> HostRow {
         flag_img: flag_img.clone().unwrap_or_default(),
         has_flag: flag_img.is_some(),
         subtitle: sub.into(),
-        obfs: (h.protocol == "noise-obfs"),
         locked: h.has_password,
         usable,
         fill,
@@ -1245,6 +1302,45 @@ mod tests {
 
         // На крошечном экране долю нарушаем: лучше вылезти, чем показать щель.
         assert_eq!(fit_height(400.0), 520.0);
+    }
+
+    /// Высота экрана приводится к ЛОГИЧЕСКИМ точкам — и на Windows тоже.
+    ///
+    /// Регрессия на баг, из-за которого на Windows окно выходило ВЫШЕ экрана:
+    /// `display-info` отдаёт там физические пиксели (`dmPelsHeight`), а на
+    /// macOS/Linux — точки. Раньше мы одинаково брали `height` как точки, и при
+    /// масштабе 150% просили 810 точек полного окна на экране высотой 720.
+    ///
+    /// Тест гоняет ОБЕ ветки на любой машине: единицы задаются аргументом.
+    #[test]
+    fn screen_height_is_measured_in_logical_points_on_every_os() {
+        const TITLE_BAR: f32 = 40.0;
+
+        // macOS/Linux: крейт уже отдал точки — трогать их нельзя. Retina 2214
+        // физических пикселей приходят как 1107 точек при масштабе 2.
+        assert_eq!(logical_screen_h(1107.0, 2.0, false), 1107.0);
+        assert_eq!(logical_screen_h(800.0, 1.0, false), 800.0);
+
+        // Windows: пришли пиксели — переводим в точки по масштабу.
+        assert_eq!(logical_screen_h(1080.0, 1.5, true), 720.0); // FullHD @ 150%
+        assert_eq!(logical_screen_h(2160.0, 2.0, true), 1080.0); // 4K @ 200%
+        assert_eq!(logical_screen_h(1920.0, 1.0, true), 1920.0); // без масштаба
+
+        // Мусорный масштаб не должен превращаться в бесконечное окно.
+        for bad in [0.0_f32, -1.0, f32::NAN, f32::INFINITY] {
+            assert_eq!(logical_screen_h(1080.0, bad, true), 1080.0, "масштаб {bad}");
+        }
+
+        // Главное: на реальных конфигурациях Windows окно ЦЕЛИКОМ помещается на
+        // экран. Именно это и ломалось — проверяем результат, а не деление.
+        for (pixels, scale) in [(1080.0_f32, 1.5_f32), (1080.0, 1.25), (2160.0, 2.0), (1440.0, 1.0), (768.0, 1.0)] {
+            let screen = logical_screen_h(pixels, scale, true);
+            let on_screen = fit_height(screen) + TITLE_BAR;
+            assert!(
+                on_screen <= screen,
+                "экран {pixels}px @{scale}: это {screen} точек, а окно просит {on_screen}",
+            );
+        }
     }
 
     #[test]

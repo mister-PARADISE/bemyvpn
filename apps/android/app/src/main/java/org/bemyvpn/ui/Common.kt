@@ -305,6 +305,27 @@ fun GradientButton(title: String, modifier: Modifier = Modifier, enabled: Boolea
     }
 }
 
+/** Спокойная главная кнопка: подкраска + рамка + цветной текст — тот же приём,
+ *  что у ShareButton и у действующей ячейки нав-бара. Для действий ВНУТРИ
+ *  списка: карточка раскрывается прямо в нём, и сплошная синяя плашка во всю
+ *  ширину перетягивала внимание с самих цифр хоста, ради которых карточку и
+ *  раскрывают. */
+@Composable
+fun CalmButton(title: String, modifier: Modifier = Modifier, enabled: Boolean = true, onTap: () -> Unit) {
+    Box(
+        modifier
+            .fillMaxWidth()
+            .alpha(if (enabled) 1f else 0.5f)
+            .background(Theme.accent.copy(alpha = 0.15f), RoundedCornerShape(14.dp))
+            .border(1.dp, Theme.accent.copy(alpha = 0.4f), RoundedCornerShape(14.dp))
+            .pressable(enabled = enabled, onTap = onTap)
+            .padding(vertical = 15.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(title, color = Theme.accent, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+    }
+}
+
 // ── Карточка и подписи ───────────────────────────────────────────────────────
 
 @Composable
