@@ -109,7 +109,13 @@ private fun Cell(
             androidx.compose.foundation.layout.Box(Modifier.height(iconBox), contentAlignment = Alignment.Center) {
                 Icon(icon, null, Modifier.size(21.dp), tint = tint)
             }
-            Text(label, color = tint, fontSize = 11.sp, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
+            // Одна строка: подпись у ячейки МЕНЯЕТСЯ («Хост» → «Раздать»), и без
+            // ограничения длинная переносилась бы на вторую строку, меняя высоту
+            // бара при переключении вкладок.
+            Text(
+                label, color = tint, fontSize = 11.sp, maxLines = 1,
+                fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
+            )
         }
         if (live != null) {
             androidx.compose.foundation.layout.Box(

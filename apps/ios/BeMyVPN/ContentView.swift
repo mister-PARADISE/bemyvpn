@@ -131,7 +131,11 @@ struct NavBar: View {
             Image(systemName: icon).font(.system(size: 19, weight: .semibold))
                 .frame(height: iconBox)
                 .foregroundColor(active ? Theme.accent : Theme.dim)
+            // Одна строка и ужимание: подпись у ячейки МЕНЯЕТСЯ («Хост» →
+            // «Раздать»), и без этого длинная могла бы распереть свою треть,
+            // сдвинув границы соседних — бар «скачет» при переключении вкладок.
             Text(label).font(.system(size: 11, weight: .bold)).foregroundColor(active ? Theme.accent : Theme.dim)
+                .lineLimit(1).minimumScaleFactor(0.8)
         }
         .frame(maxWidth: .infinity).padding(.vertical, 8)
         .background(active ? RoundedRectangle(cornerRadius: innerR, style: .continuous).fill(Theme.accent.opacity(0.16)) : nil)
