@@ -180,6 +180,20 @@ jobs:
           - os: macos-latest
             asset: bemyvpn-macos-arm64-terminal
             bin: bemyvpn
+          # ── ARM-машины. Собираем на РОДНЫХ ARM-раннерах, а не кросс-компиляцией:
+          # у нас в зависимостях есть Си (rustls, кольцо), и кросс-сборка тянула бы
+          # чужие тулчейны ради того, что бесплатный ARM-раннер делает сам.
+          - os: ubuntu-24.04-arm
+            asset: bemyvpn-linux-arm64-terminal
+            bin: bemyvpn
+          - os: windows-11-arm
+            asset: bemyvpn-windows-arm64-terminal.exe
+            bin: bemyvpn.exe
+          # Intel-маки. Их пропустили не намеренно: у Apple переход на ARM ещё не
+          # закончен, машин 2020 года и старше на руках много.
+          - os: macos-13
+            asset: bemyvpn-macos-x86_64-terminal
+            bin: bemyvpn
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4

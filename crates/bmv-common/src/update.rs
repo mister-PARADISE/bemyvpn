@@ -22,8 +22,15 @@ pub fn current_asset_name(is_gui: bool) -> Option<&'static str> {
         ("macos", "aarch64", true) => "bemyvpn-macos-arm64.dmg",
         ("windows", "x86_64", false) => "bemyvpn-windows-x86_64-terminal.exe",
         ("windows", "x86_64", true) => "bemyvpn-windows-x86_64.exe",
-        // Сборка под платформу, которую мы не выпускаем (например linux-aarch64):
-        // обновлять нечем, и честнее сказать «нет», чем подсунуть чужой файл.
+        // ARM-машины и Intel-маки: пока только терминальная версия. Оконная для
+        // них не собирается (AppImage под ARM и .dmg под Intel — отдельная
+        // работа), поэтому для GUI здесь честное «нет».
+        ("linux", "aarch64", false) => "bemyvpn-linux-arm64-terminal",
+        ("windows", "aarch64", false) => "bemyvpn-windows-arm64-terminal.exe",
+        ("macos", "x86_64", false) => "bemyvpn-macos-x86_64-terminal",
+        // Сборка под платформу, которую мы не выпускаем: обновлять нечем, и
+        // честнее сказать «нет», чем подсунуть чужой файл — не та архитектура
+        // не запустится вовсе, а не та ОС может и запуститься, натворив дел.
         _ => return None,
     })
 }
@@ -412,5 +419,42 @@ mod tests {
 
         // Обрезанный ответ (оборвалась загрузка) — не «почти разобрали», а отказ.
         assert_eq!(tag_from_release_json(r#"{"tag_name":"v1."#), None);
+    }
+}
+
+#[cfg(test)]
+mod asset_tests {
+    use super::current_asset_name;
+
+    /// Каждая выпускаемая платформа обязана знать своё имя файла — и наоборот.
+    ///
+    /// Это стык двух разных мест: матрица сборки в .github/workflows/release.yml
+    /// и таблица здесь. Разъедутся — обновление либо тихо скажет «нечем
+    /// обновляться» на платформе, для которой файл есть, либо полезет за файлом,
+    /// которого нет. Тест держит список в одном месте, чтобы забыть было сложнее.
+    #[test]
+    fn every_released_platform_knows_its_asset() {
+        // Ровно те имена, что публикует релизная сборка.
+        let released = [
+            "bemyvpn-linux-x86_64-terminal",
+            "bemyvpn-linux-x86_64.AppImage",
+            "bemyvpn-linux-arm64-terminal",
+            "bemyvpn-windows-x86_64-terminal.exe",
+            "bemyvpn-windows-x86_64.exe",
+            "bemyvpn-windows-arm64-terminal.exe",
+            "bemyvpn-macos-arm64-terminal",
+            "bemyvpn-macos-arm64.dmg",
+            "bemyvpn-macos-x86_64-terminal",
+        ];
+        // Своя платформа обязана попадать в этот список — иначе мы собрали
+        // приложение, которое не сможет обновиться само.
+        if let Some(mine) = current_asset_name(false) {
+            assert!(released.contains(&mine), "терминальный файл {mine} не выпускается");
+        }
+        if let Some(mine) = current_asset_name(true) {
+            assert!(released.contains(&mine), "оконный файл {mine} не выпускается");
+        }
+        // Терминальная версия есть на КАЖДОЙ платформе, которую мы собираем.
+        assert!(current_asset_name(false).is_some(), "нет терминального файла для этой платформы");
     }
 }
