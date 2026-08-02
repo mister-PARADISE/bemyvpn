@@ -116,6 +116,9 @@ pub async fn run_candidates<F>(
 ) where
     F: Fn(State) + Send + Sync,
 {
+    // Режим IPv6 достаём ДО того, как конфиг уедет в движок: заворачивание
+    // трафика — забота этого слоя, движок про маршруты не знает.
+    let ipv6 = cfg.guest.ipv6_mode();
     let eng = Arc::new(BmvEngine::from_config(cfg));
 
     let total = cands.len();
@@ -141,7 +144,7 @@ pub async fn run_candidates<F>(
             r = &mut est_fut => r,
         };
         if let Ok(Ok((peer, link))) = est {
-            run_tunnel(&host, peer, link, eng.peer_check(), &on_state, &stop).await;
+            run_tunnel(&host, peer, link, eng.peer_check(), ipv6, &on_state, &stop).await;
             return;
         }
     }
@@ -153,6 +156,7 @@ async fn run_tunnel<F>(
     peer: std::net::SocketAddr,
     link: Box<dyn bmv_common::Link>,
     hints: Option<tokio::sync::watch::Receiver<u64>>,
+    ipv6: bmv_config::Ipv6Mode,
     on_state: &F,
     stop: &Arc<tokio::sync::Notify>,
 ) where
@@ -163,7 +167,7 @@ async fn run_tunnel<F>(
         Ok(d) => d,
         Err(e) => return on_state(State::Failed(format!("TUN: {e}"))),
     };
-    let _guard = match crate::RouteGuard::install(peer.ip(), &ifname) {
+    let _guard = match crate::RouteGuard::install_with(peer.ip(), &ifname, ipv6) {
         Ok(g) => g,
         Err(e) => return on_state(State::Failed(format!("маршрут: {e}"))),
     };

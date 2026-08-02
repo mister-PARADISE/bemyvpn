@@ -6,11 +6,16 @@
 //! перекрывает дефолтный маршрут НЕ удаляя его; сам хост пинуется через реальный
 //! шлюз (иначе шифрованные пакеты зациклятся). `RouteGuard::drop` всё откатывает.
 //! Реализовано для Linux и macOS (обе требуют root); Windows — задел.
+//!
+//! ТОЧНО ТАК ЖЕ ПЕРЕКРЫВАЕТСЯ IPv6 — `::/1` + `8000::/1` (см. `IPV6_HALVES`).
+//! Без этого туннель на IPv4 «подключён», а весь v6-трафик уходит мимо него
+//! напрямую, и настоящий адрес человека виден сайтам.
 
 use std::net::IpAddr;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
+use bmv_config::Ipv6Mode;
 use bmv_tunnel::TunParams;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
@@ -221,19 +226,30 @@ fn ensure_wintun() -> Result<(), String> {
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 const DNS_CRUMB: &str = "/etc/bemyvpn-dns.bak";
 
-/// Вернуть DNS, если прошлый запуск умер, не откатившись. Тихо, без ошибок:
-/// нет крошки — нечего чинить; нет прав — мы и туннель поднять не сможем.
+/// Вернуть DNS и IPv6, если прошлый запуск умер, не откатившись. Тихо, без
+/// ошибок: нет крошки — нечего чинить; нет прав — мы и туннель поднять не сможем.
+///
+/// IPv6-маршруты чинятся ЗДЕСЬ ЖЕ и по той же причине, что DNS: они отвергающие,
+/// а значит НЕ привязаны к нашему интерфейсу и вместе с ним не исчезают. Ctrl-C,
+/// `kill`, падение — и машина остаётся без IPv6 навсегда. Это тот же тихий вид
+/// поломки, только наизнанку: не «утекает незаметно», а «половина интернета
+/// незаметно недоступна».
 #[cfg(target_os = "linux")]
-fn recover_dns_after_crash() {
+fn recover_after_crash() {
     if let Ok(old) = std::fs::read(DNS_CRUMB) {
-        let _ = std::fs::write("/etc/resolv.conf", old);
+        // Пустая крошка = resolv.conf в прошлый раз не прочитался. Записать
+        // пустоту значило бы стереть настоящий резолвер.
+        if !old.is_empty() {
+            let _ = std::fs::write("/etc/resolv.conf", old);
+        }
+        ipv6_unblock();
         let _ = std::fs::remove_file(DNS_CRUMB);
     }
 }
 
 /// macOS: в крошке строки «сервис», затем прежние серверы (пусто = было «авто»).
 #[cfg(target_os = "macos")]
-fn recover_dns_after_crash() {
+fn recover_after_crash() {
     let Ok(txt) = std::fs::read_to_string(DNS_CRUMB) else { return };
     let mut lines = txt.lines();
     if let Some(svc) = lines.next().filter(|s| !s.is_empty()) {
@@ -246,7 +262,73 @@ fn recover_dns_after_crash() {
         }
         let _ = networksetup(&a);
     }
+    ipv6_unblock(); // см. пояснение в linux-ветке: маршруты переживают процесс
     let _ = std::fs::remove_file(DNS_CRUMB);
+}
+
+// ── блокировка IPv6 (по половине адресного пространства на команду) ──────────
+
+/// Linux: `unreachable` — ядро сразу отдаёт приложению ENETUNREACH, и оно берёт
+/// IPv4 без паузы. Привязки к устройству нет намеренно: маршрут обязан работать
+/// и в тот момент, когда tun-интерфейс уже снят, а сеанс ещё не закрыт.
+#[cfg(target_os = "linux")]
+fn ipv6_block(_tun: &str) -> Result<(), String> {
+    for half in IPV6_HALVES {
+        ip(&["-6", "route", "add", "unreachable", half])?;
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn ipv6_unblock() {
+    for half in IPV6_HALVES {
+        // Без слова `unreachable`: удаление обязано пройти НАВЕРНЯКА. Не удалить
+        // — значит оставить машину без IPv6 до перезагрузки, и человек не поймёт,
+        // почему половина интернета отвалилась после того, как он выключил VPN.
+        let _ = ip(&["-6", "route", "del", half]);
+    }
+}
+
+/// macOS: `-reject` = RTF_REJECT, ICMP unreachable в ответ (см. route(8)).
+/// Шлюзом ставим `::1`: сам он никуда не ведёт, флаг отвергает всё раньше.
+#[cfg(target_os = "macos")]
+fn ipv6_block(_tun: &str) -> Result<(), String> {
+    for half in IPV6_HALVES {
+        route(&["-n", "add", "-inet6", "-net", half, "::1", "-reject"])?;
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn ipv6_unblock() {
+    for half in IPV6_HALVES {
+        let _ = route(&["-n", "delete", "-inet6", "-net", half]);
+    }
+}
+
+/// Windows: отвергающих маршрутов у netsh нет, поэтому IPv6 заворачивается В
+/// ТУННЕЛЬ — а там его добивает ядро (`bmv_tunnel::to_host_allowed`). Утечки нет
+/// так же надёжно, но приложение узнаёт об этом не мгновенно, а по таймауту.
+///
+/// `store=active` обязателен: без него netsh пишет маршрут в ПОСТОЯННУЮ
+/// конфигурацию, и он переживёт перезагрузку — то есть машина останется без
+/// IPv6 навсегда.
+/// ponytail: потолок — таймауты вместо мгновенного отката на IPv4; чинится
+/// отвергающим маршрутом через API маршрутизации (CreateIpForwardEntry2 с
+/// нулевым next hop), а это уже windows-sys в зависимостях.
+#[cfg(target_os = "windows")]
+fn ipv6_block(tun_idx: &str) -> Result<(), String> {
+    for half in IPV6_HALVES {
+        netsh(&["interface", "ipv6", "add", "route", half, &format!("interface={tun_idx}"), "store=active"])?;
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn ipv6_unblock(tun_idx: &str) {
+    for half in IPV6_HALVES {
+        let _ = netsh(&["interface", "ipv6", "delete", "route", half, &format!("interface={tun_idx}")]);
+    }
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -263,6 +345,80 @@ fn write_dns_crumb(data: &str) {
         .open(DNS_CRUMB);
     if let Ok(mut f) = f {
         let _ = f.write_all(data.as_bytes());
+    }
+}
+
+/// ДВЕ ПОЛОВИНЫ IPv6 вместо `::/0` — тот же приём, что `0.0.0.0/1` +
+/// `128.0.0.0/1` у IPv4: маршрут длиной /1 бьёт провайдерский /0 по длине
+/// префикса, поэтому перекрывает его НЕ удаляя (и откат не зависит от того,
+/// каким был дефолт).
+///
+/// Обе половины обязаны стоять вместе: `::/1` — это адреса, начинающиеся с
+/// нулевого бита (весь глобальный `2000::/3`), `8000::/1` — с единичного
+/// (link-local `fe80::/10`, ULA `fc00::/7`, мультикаст `ff00::/8`). Оставить
+/// одну — значит оставить открытой половину адресного пространства.
+///
+/// Маршруты ОТВЕРГАЮЩИЕ (reject/unreachable), а не «в никуда» (blackhole): по
+/// ним `connect()` падает МГНОВЕННО с «сеть недостижима», и приложение сразу
+/// берёт IPv4 (Happy Eyeballs, RFC 8305). Чёрная дыра вместо этого дала бы
+/// таймауты — на глаз это «интернет тормозит», хотя IPv4 рядом и работает.
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+const IPV6_HALVES: [&str; 2] = ["::/1", "8000::/1"];
+
+/// Есть ли на машине РАБОЧИЙ выход в интернет по IPv6 прямо сейчас.
+///
+/// `connect` у UDP не шлёт ни байта — он лишь просит ядро выбрать маршрут и
+/// адрес источника. Ошибка (или источник вида `fe80::`, то есть только внутри
+/// сегмента) значит, что наружу по IPv6 не выйти.
+///
+/// Нужно РОВНО для одного решения: считать ли провал блокировки смертельным.
+/// На машине без IPv6 команды блокировки могут не пройти (стек v6 выключен
+/// целиком) — и это не повод отказывать в подключении: утекать нечему.
+/// Спрашивать НАДО ДО блокировки: после неё ответ, разумеется, «нет».
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+fn has_ipv6() -> bool {
+    let Ok(s) = std::net::UdpSocket::bind("[::]:0") else { return false };
+    if s.connect("[2001:4860:4860::8888]:53").is_err() {
+        return false;
+    }
+    match s.local_addr().map(|a| a.ip()) {
+        Ok(IpAddr::V6(a)) => {
+            !(a.is_loopback() || a.is_unspecified() || (a.segments()[0] & 0xffc0) == 0xfe80)
+        }
+        _ => false,
+    }
+}
+
+/// Решить судьбу IPv6 и привести решение в исполнение.
+///
+/// `Err` — IPv6 на машине ЖИВОЙ, а заглушить его не вышло. Подключаться в таком
+/// виде нельзя: человек увидит «Защищено», а часть трафика пойдёт мимо туннеля
+/// со своим настоящим адресом. Лучше честный отказ, чем тихая утечка.
+///
+/// Убирать за собой не нужно даже при ошибке (одна половина могла встать, вторая
+/// нет): вызывающий заводит guard ДО этого вызова, и его `Drop` стирает обе.
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+fn apply_ipv6_policy(mode: Ipv6Mode, tun: &str) -> Result<(), String> {
+    if mode == Ipv6Mode::Allow {
+        tracing::warn!("IPv6 НЕ блокируется (guest.ipv6 = \"allow\"): v6-трафик пойдёт МИМО туннеля");
+        return Ok(());
+    }
+    let live = has_ipv6(); // спрашиваем ДО блокировки — потом ответ всегда «нет»
+    match ipv6_block(tun) {
+        Ok(()) => {
+            tracing::info!("IPv6 заглушён на время сеанса ({})", IPV6_HALVES.join(" + "));
+            Ok(())
+        }
+        Err(e) if live => Err(format!(
+            "IPv6 работает, но заглушить его не удалось ({e}). Подключение отменено: \
+             иначе часть трафика ушла бы мимо туннеля вместе с настоящим адресом. \
+             Если IPv6 у вас единственный способ выйти в сеть — поставьте в bemyvpn.toml \
+             [guest] ipv6 = \"allow\" и знайте, что защиты по IPv6 не будет"
+        )),
+        Err(e) => {
+            tracing::debug!("IPv6 не заглушён ({e}), но и выхода по IPv6 на машине нет — утекать нечему");
+            Ok(())
+        }
     }
 }
 
@@ -283,26 +439,48 @@ pub struct RouteGuard {
     host_ip: String,
     #[cfg(target_os = "windows")]
     tun_name: String,
+    #[cfg(target_os = "windows")]
+    tun_idx: String,
+    /// Ставили ли блокировку IPv6 — значит, её надо снять в `Drop`. Лишнее
+    /// удаление безобидно (маршрута нет → ошибка, которую мы игнорируем), а вот
+    /// стереть чужой `::/1` у человека, выбравшего `ipv6 = "allow"`, — нет.
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+    ipv6_blocked: bool,
 }
 
 impl RouteGuard {
+    /// Как `install_with`, но с блокировкой IPv6 — это безопасное умолчание.
+    ///
+    /// Отдельный вход нужен оболочкам, у которых под рукой нет конфига (терминал
+    /// поднимает туннель напрямую). Умолчание тут не «как получится», а самая
+    /// защищённая ветка: забыть про IPv6 — значит молча утечь.
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+    pub fn install(host_ip: IpAddr, tun: &str) -> Result<Self, String> {
+        Self::install_with(host_ip, tun, Ipv6Mode::Block)
+    }
+
     // ── Linux ──
     #[cfg(target_os = "linux")]
-    pub fn install(host_ip: IpAddr, tun: &str) -> Result<Self, String> {
+    pub fn install_with(host_ip: IpAddr, tun: &str, ipv6: Ipv6Mode) -> Result<Self, String> {
         // ПЕРВЫМ делом — доесть крошку прошлого запуска, иначе снимком «текущего»
         // DNS окажется наш же 8.8.8.8, и настоящий резолвер потеряется навсегда.
-        recover_dns_after_crash();
+        recover_after_crash();
         let (gw, dev) = default_route_linux().ok_or("не найден шлюз по умолчанию")?;
         let hip = host_ip.to_string();
         let _ = ip(&["route", "add", &format!("{hip}/32"), "via", &gw, "dev", &dev]);
         ip(&["route", "add", "0.0.0.0/1", "dev", tun])?;
         ip(&["route", "add", "128.0.0.0/1", "dev", tun])?;
         let resolv = std::fs::read("/etc/resolv.conf").ok();
-        if let Some(r) = &resolv {
-            write_dns_crumb(&String::from_utf8_lossy(r));
-        }
+        // Крошку пишем ВСЕГДА, даже если resolv.conf не прочитался: по ней же
+        // чинятся v6-маршруты после смерти процесса, а они переживают её и
+        // без DNS (см. recover_after_crash).
+        write_dns_crumb(&resolv.as_deref().map(String::from_utf8_lossy).unwrap_or_default());
         let _ = std::fs::write("/etc/resolv.conf", "nameserver 8.8.8.8\n");
-        Ok(Self { host_ip: hip, resolv })
+        // Guard заводим ДО блокировки IPv6: если она сорвётся на полпути,
+        // возврат ошибки дропнет его и откатит уже поставленное.
+        let guard = Self { host_ip: hip, resolv, ipv6_blocked: ipv6 == Ipv6Mode::Block };
+        apply_ipv6_policy(ipv6, tun)?;
+        Ok(guard)
     }
 
     // ── macOS ──
@@ -310,10 +488,10 @@ impl RouteGuard {
     // DNS переставляем на 8.8.8.8 у активного сетевого сервиса (иначе резолв ушёл
     // бы к LAN-DNS мимо туннеля). Всё откатывается в Drop.
     #[cfg(target_os = "macos")]
-    pub fn install(host_ip: IpAddr, tun: &str) -> Result<Self, String> {
+    pub fn install_with(host_ip: IpAddr, tun: &str, ipv6: Ipv6Mode) -> Result<Self, String> {
         // Первым делом — доесть крошку прошлого запуска (см. DNS_CRUMB): иначе
         // «прежними» серверами запомнится наш же 8.8.8.8.
-        recover_dns_after_crash();
+        recover_after_crash();
         let (gw, dev) = default_route_macos().ok_or("не найден шлюз по умолчанию")?;
         let hip = host_ip.to_string();
         // Хост-пин через реальный шлюз, чтобы шифрованные UDP не зациклились в туннель.
@@ -322,6 +500,8 @@ impl RouteGuard {
         route(&["-n", "add", "-net", "0.0.0.0/1", "-interface", tun])?;
         route(&["-n", "add", "-net", "128.0.0.0/1", "-interface", tun])?;
         // DNS → 8.8.8.8 (через туннель). Запоминаем сервис и старые серверы.
+        // networksetup меняет СПИСОК сервиса целиком, то есть заодно убирает и
+        // v6-резолверы — отдельной возни с ними не нужно.
         let (dns_service, dns_old) = match dns_service_for_dev(&dev) {
             Some(svc) => {
                 let old = current_dns(&svc);
@@ -329,9 +509,17 @@ impl RouteGuard {
                 let _ = networksetup(&["-setdnsservers", &svc, "8.8.8.8"]);
                 (Some(svc), old)
             }
-            None => (None, Vec::new()),
+            // Крошка нужна и здесь: по ней чинятся v6-маршруты после смерти
+            // процесса. Пустая первая строка = «DNS чинить нечего».
+            None => {
+                write_dns_crumb("");
+                (None, Vec::new())
+            }
         };
-        Ok(Self { host_ip: hip, dns_service, dns_old })
+        // Guard заводим ДО блокировки IPv6 — см. пояснение в linux-ветке.
+        let guard = Self { host_ip: hip, dns_service, dns_old, ipv6_blocked: ipv6 == Ipv6Mode::Block };
+        apply_ipv6_policy(ipv6, tun)?;
+        Ok(guard)
     }
 
     // ── Windows ──
@@ -340,7 +528,7 @@ impl RouteGuard {
     // резолв ушёл бы к LAN-DNS мимо туннеля. Всё требует админ-прав (процесс поднят
     // с манифестом requireAdministrator — один процесс, без отдельного хелпера).
     #[cfg(target_os = "windows")]
-    pub fn install(host_ip: IpAddr, tun: &str) -> Result<Self, String> {
+    pub fn install_with(host_ip: IpAddr, tun: &str, ipv6: Ipv6Mode) -> Result<Self, String> {
         // Сетевые параметры (шлюз, индекс и IP tun-адаптера) — нативными route/netsh,
         // без PowerShell (он грузится ~15с на холодную → ощущается как зависание).
         let (gw, tun_idx, tun_ip) = windows_net_info(tun).ok_or("не удалось получить сетевые параметры")?;
@@ -356,12 +544,28 @@ impl RouteGuard {
         route(&["add", "128.0.0.0", "mask", "128.0.0.0", &tun_ip, "metric", "1", "if", &tun_idx])?;
         // 4) DNS → 8.8.8.8 на tun-адаптере.
         let _ = netsh(&["interface", "ipv4", "set", "dnsservers", &format!("name={tun}"), "static", "8.8.8.8", "primary"]);
-        Ok(Self { host_ip: hip, tun_name: tun.to_string() })
+        // Guard заводим ДО блокировки IPv6 — см. пояснение в linux-ветке.
+        let guard = Self {
+            host_ip: hip,
+            tun_name: tun.to_string(),
+            tun_idx: tun_idx.clone(),
+            ipv6_blocked: ipv6 == Ipv6Mode::Block,
+        };
+        apply_ipv6_policy(ipv6, &tun_idx)?;
+        Ok(guard)
     }
 }
 
 impl Drop for RouteGuard {
     fn drop(&mut self) {
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        if self.ipv6_blocked {
+            ipv6_unblock();
+        }
+        #[cfg(target_os = "windows")]
+        if self.ipv6_blocked {
+            ipv6_unblock(&self.tun_idx);
+        }
         #[cfg(target_os = "linux")]
         {
             let _ = ip(&["route", "del", "0.0.0.0/1"]);
@@ -576,6 +780,72 @@ fn run(cmd: &str, args: &[&str]) -> Result<(), String> {
         Ok(())
     } else {
         Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
+    }
+}
+
+#[cfg(all(test, any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+mod ipv6_tests {
+    use super::{has_ipv6, IPV6_HALVES};
+    use std::net::Ipv6Addr;
+
+    /// «::/1» → (адрес сети, длина префикса).
+    fn parse(p: &str) -> (Ipv6Addr, u32) {
+        let (addr, len) = p.split_once('/').unwrap_or_else(|| panic!("префикс без длины: {p}"));
+        (
+            addr.parse().unwrap_or_else(|e| panic!("{p}: не IPv6-адрес ({e})")),
+            len.parse().unwrap_or_else(|e| panic!("{p}: не длина префикса ({e})")),
+        )
+    }
+
+    /// БЛОКИРОВКА ОБЯЗАНА ЗАКРЫВАТЬ ВСЁ АДРЕСНОЕ ПРОСТРАНСТВО IPv6 ЦЕЛИКОМ.
+    ///
+    /// Это ровно та проверка, которую человеку самому не сделать: дыра в
+    /// покрытии выглядит как полностью рабочий VPN — просто часть сайтов
+    /// (те, чьи адреса попали в незакрытую половину) видит настоящий адрес.
+    /// Поэтому проверяем не «похоже на правду», а замощение отрезка
+    /// [0, 2^128): первый префикс начинается с нуля, каждый следующий — сразу
+    /// за предыдущим, последний кончается на максимуме. Ни щели, ни нахлёста.
+    #[test]
+    fn the_two_halves_tile_the_entire_ipv6_space() {
+        let mut spans: Vec<(u128, u128)> = IPV6_HALVES
+            .iter()
+            .map(|p| {
+                let (net, len) = parse(p);
+                // /0 закрыл бы всё одной строкой, но проиграл бы маршруту
+                // провайдера: у того тоже /0, а побеждает САМЫЙ ДЛИННЫЙ.
+                assert!((1..=128).contains(&len), "{p}: длина префикса должна быть 1..=128, иначе дефолт провайдера победит");
+                let first = u128::from(net);
+                let size = 1u128 << (128 - len);
+                assert_eq!(first % size, 0, "{p}: адрес не выровнен по своей же длине префикса");
+                (first, first + (size - 1))
+            })
+            .collect();
+        spans.sort_unstable();
+
+        assert_eq!(spans.first().expect("список половин пуст").0, 0, "начало IPv6 не закрыто");
+        for w in spans.windows(2) {
+            assert_eq!(w[1].0, w[0].1 + 1, "между {:?} и {:?} щель или нахлёст", w[0], w[1]);
+        }
+        assert_eq!(spans.last().expect("список половин пуст").1, u128::MAX, "конец IPv6 не закрыт");
+
+        // Точечно — по одному живому адресу из каждой половины, чтобы поломка
+        // читалась глазами, а не только через арифметику выше.
+        let hit = |a: &str| {
+            let addr = u128::from(a.parse::<Ipv6Addr>().unwrap());
+            spans.iter().filter(|(lo, hi)| (*lo..=*hi).contains(&addr)).count()
+        };
+        for a in ["2001:4860:4860::8888", "2606:4700::1111", "::1", "fe80::1", "fc00::1", "ff02::1"] {
+            assert_eq!(hit(a), 1, "{a} закрыт не ровно одной половиной");
+        }
+    }
+
+    /// Проба на живой IPv6 не должна ни падать, ни зависать: она стоит на пути
+    /// КАЖДОГО подключения, и её отказ решает, пускать человека или нет.
+    #[test]
+    fn the_ipv6_probe_is_harmless_without_network() {
+        let t = std::time::Instant::now();
+        let _ = has_ipv6(); // ответ зависит от машины; важно, что он есть и быстро
+        assert!(t.elapsed() < std::time::Duration::from_secs(1), "проба IPv6 подвисает: {:?}", t.elapsed());
     }
 }
 
