@@ -214,22 +214,25 @@ export component VpnPage inherits Rectangle {
             // на пол-экрана, разгоняя строки друг от друга.
             vertical-stretch: 0;
             height: panel-box.preferred-height;
-            // Подложка РОВНО цвета страницы и БЕЗ тени. Тень рисовала под
-            // панелью тёмную прямоугольную полосу во всю ширину, и рядом со
-            // скруглённой карточкой она читалась как второй, лишний «блок»
-            // позади шапки. Убрать подложку совсем нельзя: это она не даёт
-            // прокручиваемому тексту просвечивать в зазорах по бокам карточки.
-            // Совпадая с фоном страницы, подложка невидима, а панель остаётся
-            // отдельным компонентом за счёт градиента и рамки в цвет состояния.
-            background: Theme.bg;
+            // У ПАНЕЛИ НЕТ НИ ФОНА, НИ ТЕНИ — только контур.
+            //
+            // Сначала убрали тень (она рисовала тёмную полосу во всю ширину и
+            // читалась как второй «блок» позади шапки), затем и заливку карточки
+            // — именно она и осталась тем самым «блоком». Очерченность держит
+            // РАМКА в цвет состояния, поэтому она плотнее прежней: 0.2 терялось
+            // без заливки под ней.
+            //
+            // Подложка в цвет страницы тоже снята. Она стояла из опасения, что
+            // прокручиваемый текст просвечивает в зазорах, — опасение неверное:
+            // панель и ScrollView здесь СОСЕДИ по VerticalLayout, прокрутка
+            // обрезает себя по своей верхней границе и под панель не заходит.
             panel-box := VerticalLayout {
                 padding: Theme.pad;
                 padding-bottom: 12px;
                 Rectangle {
                     border-radius: 22px;
-                    background: @linear-gradient(180deg, Theme.panel 0%, Theme.card 100%);
                     border-width: 1px;
-                    border-color: root.tint.with-alpha(0.2);
+                    border-color: root.tint.with-alpha(0.45);
                     VerticalLayout {
                         alignment: start;   // иначе строки разъезжаются по высоте
                         padding-top: 16px; padding-bottom: 18px;
@@ -241,7 +244,7 @@ export component VpnPage inherits Rectangle {
                             name: "Подключено";
                             clock: root.vpn-elapsed;
                             tint: root.tint;
-                            IconShieldCheck { width: 19px; height: 19px; tint: root.tint; hole: Theme.panel; }
+                            IconShieldCheck { width: 19px; height: 19px; tint: root.tint; hole: Theme.bg; }
                         }
                         if root.vpn-state == 2: Text {
                             text: root.vpn-country + "  ·  " + root.vpn-proto;
@@ -301,9 +304,9 @@ export component VpnPage inherits Rectangle {
                                     alignment: center;
                                     VerticalLayout {
                                         alignment: center;
-                                        if root.vpn-state == 0: IconShieldSlash { width: 32px; height: 32px; tint: root.tint; hole: Theme.card; }
+                                        if root.vpn-state == 0: IconShieldSlash { width: 32px; height: 32px; tint: root.tint; hole: Theme.bg; }
                                         if root.vpn-state == 1: IconShield { width: 32px; height: 32px; tint: root.tint; }
-                                        if root.vpn-state == 3: IconShieldSlash { width: 32px; height: 32px; tint: Theme.red; hole: Theme.card; }
+                                        if root.vpn-state == 3: IconShieldSlash { width: 32px; height: 32px; tint: Theme.red; hole: Theme.bg; }
                                     }
                                 }
                             }

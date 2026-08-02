@@ -45,7 +45,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.composed
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
@@ -408,22 +407,29 @@ fun BmvTextField(
  */
 @Composable
 fun PinnedPanel(tint: Color, content: @Composable ColumnScope.() -> Unit) {
+    // ФОНА У ПАНЕЛИ НЕТ — только контур. Заливка (был градиент panel→card) и
+    // читалась как «блок» позади шапки. Очерченность держит РАМКА, поэтому она
+    // плотнее прежней (0.2 терялось без заливки под ней) и берёт цвет
+    // состояния. Внешней подложки в цвет страницы тоже нет: панель и прокрутка
+    // — СОСЕДИ в `Column`, прокрутка под панель не заходит, просвечивать нечему,
+    // а фон страницы и так красит корневой Box в App.kt.
     Box(
         Modifier
             .fillMaxWidth()
-            .background(Theme.bg)
             .padding(start = 20.dp, end = 20.dp, top = 20.dp, bottom = 12.dp),
     ) {
         Column(
             Modifier
                 .fillMaxWidth()
-                .background(
-                    Brush.verticalGradient(listOf(Theme.panel, Theme.card)),
-                    RoundedCornerShape(22.dp),
-                )
-                .border(1.dp, tint.copy(alpha = 0.2f), RoundedCornerShape(22.dp))
-                .padding(vertical = 16.dp, horizontal = 18.dp)
-                .animateContentSize(),
+                .border(1.dp, tint.copy(alpha = 0.45f), RoundedCornerShape(22.dp))
+                .padding(vertical = 16.dp, horizontal = 18.dp),
+            // БЕЗ `animateContentSize()`. Смена состояния меняет высоту панели
+            // (у ветки со связью — цифры, без связи — крупный круг и текст в две
+            // строки), а `animateContentSize` тянет эту высоту плавно И ОБРЕЗАЕТ
+            // содержимое по текущему размеру. На записи видно, как нижняя строка
+            // статуса («Старт») режется краем панели пополам и проявляется
+            // постепенно. Панель висит на экране постоянно, статус в ней должен
+            // меняться НА МЕСТЕ и целиком — как на iOS и на десктопе.
             verticalArrangement = Arrangement.spacedBy(8.dp),
             content = content,
         )

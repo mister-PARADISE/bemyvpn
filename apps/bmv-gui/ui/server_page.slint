@@ -15,6 +15,8 @@ import { ScrollView } from "std-widgets.slint";
 export component ServerPage inherits Rectangle {
     in property <string> coord-url;     // уже без схемы (Rust её срезает)
     in property <int> coord-state;      // 0 проверяю · 1 на связи · 2 нет связи
+    // Нужен ровно для одного: подписать, что пинг снят ИЗНУТРИ туннеля.
+    in property <int> vpn-state;        // 2 = туннель поднят
     in property <int> coord-ping;       // мс
     in property <int> coord-hosts;
     in property <string> coord-ip;
@@ -43,22 +45,25 @@ export component ServerPage inherits Rectangle {
             // на пол-экрана, разгоняя строки друг от друга.
             vertical-stretch: 0;
             height: panel-box.preferred-height;
-            // Подложка РОВНО цвета страницы и БЕЗ тени. Тень рисовала под
-            // панелью тёмную прямоугольную полосу во всю ширину, и рядом со
-            // скруглённой карточкой она читалась как второй, лишний «блок»
-            // позади шапки. Убрать подложку совсем нельзя: это она не даёт
-            // прокручиваемому тексту просвечивать в зазорах по бокам карточки.
-            // Совпадая с фоном страницы, подложка невидима, а панель остаётся
-            // отдельным компонентом за счёт градиента и рамки в цвет состояния.
-            background: Theme.bg;
+            // У ПАНЕЛИ НЕТ НИ ФОНА, НИ ТЕНИ — только контур.
+            //
+            // Сначала убрали тень (она рисовала тёмную полосу во всю ширину и
+            // читалась как второй «блок» позади шапки), затем и заливку карточки
+            // — именно она и осталась тем самым «блоком». Очерченность держит
+            // РАМКА в цвет состояния, поэтому она плотнее прежней: 0.2 терялось
+            // без заливки под ней.
+            //
+            // Подложка в цвет страницы тоже снята. Она стояла из опасения, что
+            // прокручиваемый текст просвечивает в зазорах, — опасение неверное:
+            // панель и ScrollView здесь СОСЕДИ по VerticalLayout, прокрутка
+            // обрезает себя по своей верхней границе и под панель не заходит.
             panel-box := VerticalLayout {
                 padding: Theme.pad;
                 padding-bottom: 12px;
                 Rectangle {
                     border-radius: 22px;
-                    background: @linear-gradient(180deg, Theme.panel 0%, Theme.card 100%);
                     border-width: 1px;
-                    border-color: root.tint.with-alpha(0.2);
+                    border-color: root.tint.with-alpha(0.45);
                     VerticalLayout {
                         alignment: start;   // иначе строки разъезжаются по высоте
                         padding-top: 16px; padding-bottom: 18px;
@@ -90,6 +95,17 @@ export component ServerPage inherits Rectangle {
                             label: "ВАШ IP"; value: root.coord-ip == "" ? "—" : root.coord-ip;
                             copy(t) => { root.copy-text(t); }
                         }
+                        // Когда туннель поднят, замер до координатора идёт ИЗНУТРИ
+                        // него: окно ходит в сеть через свой же VPN. То есть цифра
+                        // — «туннель + координатор», а не путь до сервера, о
+                        // котором человек думает, глядя на слово «ПИНГ».
+                        // На Android такой подписи нет и не нужно: там приложение
+                        // исключено из туннеля целиком, и цифра честная сама по себе.
+                        if root.coord-state == 1 && root.vpn-state == 2: Text {
+                            text: "Пинг измерен через туннель — в него входит и путь до хоста";
+                            color: Theme.dim; font-size: 11px;
+                            horizontal-alignment: center; wrap: word-wrap;
+                        }
 
                         // ── связи нет или проверяем: крупный круг ──
                         if root.coord-state != 1: Rectangle {
@@ -117,7 +133,7 @@ export component ServerPage inherits Rectangle {
                                     VerticalLayout {
                                         alignment: center;
                                         if root.coord-state == 0: IconAntenna { width: 32px; height: 32px; tint: root.tint; }
-                                        if root.coord-state == 2: IconAntennaOff { width: 32px; height: 32px; tint: root.tint; hole: Theme.card; }
+                                        if root.coord-state == 2: IconAntennaOff { width: 32px; height: 32px; tint: root.tint; hole: Theme.bg; }
                                     }
                                 }
                             }
