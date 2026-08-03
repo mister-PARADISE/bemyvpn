@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -59,15 +60,16 @@ fun ServerTab(app: AppState, bottomPad: androidx.compose.ui.unit.Dp) {
     // Сам цикл живёт всегда (см. watchServer), как на десктопе и iOS.
     LaunchedEffect(Unit) { app.checkServer() }
 
-    Column(Modifier.fillMaxWidth()) {
-    // Панель ВНЕ прокрутки: статус не уезжает при листании.
-    ServerHero(app)
+    // Панель — НАЛОЖЕНИЕ поверх прокрутки: настройки идут во всю высоту и
+    // уходят ПОД неё (см. FloatingPanelLayout).
+    FloatingPanelLayout(panel = { ServerHero(app) }) { panelH ->
     Column(
         Modifier
-            .fillMaxWidth()
+            .fillMaxSize()
             .verticalScroll(rememberScrollState())
             .padding(horizontal = 20.dp)
-            .padding(top = 2.dp, bottom = bottomPad),
+            // Отступ РОВНО в высоту панели: содержимое начинается сразу под ней.
+            .padding(top = panelH + 2.dp, bottom = bottomPad),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
         Text(

@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -67,7 +68,9 @@ fun HostTab(app: AppState, bottomPad: Dp) {
         app.hostError != null -> Theme.red
         else -> Theme.accent
     }
-    Column(Modifier.fillMaxWidth()) {
+    // Панель — НАЛОЖЕНИЕ поверх прокрутки: настройки идут во всю высоту и
+    // уходят ПОД неё (см. FloatingPanelLayout).
+    FloatingPanelLayout(panel = {
     PinnedPanel(tint) {
         if (app.hosting) {
             rememberSecondTick()
@@ -127,12 +130,14 @@ fun HostTab(app: AppState, bottomPad: Dp) {
             }
         }
     }
+    }) { panelH ->
     Column(
         Modifier
-            .fillMaxWidth()
+            .fillMaxSize()
             .verticalScroll(rememberScrollState())
             .padding(horizontal = 20.dp)
-            .padding(top = 2.dp, bottom = bottomPad),
+            // Отступ РОВНО в высоту панели: содержимое начинается сразу под ней.
+            .padding(top = panelH + 2.dp, bottom = bottomPad),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
         Text(

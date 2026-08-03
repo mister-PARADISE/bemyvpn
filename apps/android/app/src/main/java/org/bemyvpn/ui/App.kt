@@ -23,8 +23,9 @@ import org.bemyvpn.Theme
 @Composable
 fun App(app: AppState, openScanner: () -> Unit) {
     val navInset = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
-    // Контент не должен прятаться под плавающим баром (navPadding на iOS = 96pt).
-    val bottomPad = navInset + 96.dp
+    // Контент не должен прятаться под плавающим баром (navPadding на iOS = 104pt).
+    // Бар приподняли на 8dp — отступ подрос на ту же величину.
+    val bottomPad = navInset + 104.dp
     Box(Modifier.fillMaxSize().background(Theme.bg)) {
         Box(Modifier.fillMaxSize().statusBarsPadding()) {
             when (app.tab) {
@@ -33,7 +34,9 @@ fun App(app: AppState, openScanner: () -> Unit) {
                 Tab.HOST -> HostTab(app, bottomPad)
             }
         }
-        // Бар приподнят над краем (как 34pt на iOS), но уважает системную панель.
-        NavBar(app, Modifier.align(Alignment.BottomCenter).padding(bottom = navInset + 10.dp))
+        // Бар приподнят над краем (как 42pt на iOS), но уважает системную панель:
+        // прибавка идёт СВЕРХ безопасной зоны, поэтому на устройствах с
+        // индикатором и без него ощущение одно.
+        NavBar(app, Modifier.align(Alignment.BottomCenter).padding(bottom = navInset + 18.dp))
     }
 }

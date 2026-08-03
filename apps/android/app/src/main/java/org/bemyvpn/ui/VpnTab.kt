@@ -26,6 +26,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -96,15 +97,16 @@ fun VpnTab(app: AppState, bottomPad: Dp, openScanner: () -> Unit) {
     var code by remember { mutableStateOf("") }
     var inviteCode by remember { mutableStateOf<String?>(null) }
 
-    Column(Modifier.fillMaxWidth()) {
-    // Панель ВНЕ прокрутки: статус не уезжает, содержимое уходит под неё.
-    VpnHero(app) { inviteCode = it }
+    // Панель — НАЛОЖЕНИЕ поверх прокрутки: список хостов идёт во всю высоту и
+    // уходит ПОД неё (см. FloatingPanelLayout).
+    FloatingPanelLayout(panel = { VpnHero(app) { inviteCode = it } }) { panelH ->
     Column(
         Modifier
-            .fillMaxWidth()
+            .fillMaxSize()
             .verticalScroll(rememberScrollState())
             .padding(horizontal = 20.dp)
-            .padding(top = 2.dp, bottom = bottomPad),
+            // Отступ РОВНО в высоту панели: содержимое начинается сразу под ней.
+            .padding(top = panelH + 2.dp, bottom = bottomPad),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
         UpdateBanner(app)

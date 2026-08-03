@@ -25,7 +25,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
@@ -50,10 +49,10 @@ fun NavBar(app: AppState, modifier: Modifier = Modifier) {
     Row(
         modifier
             .padding(horizontal = 18.dp)
-            // Тень плотнее и глубже: ближний край + отрыв от страницы.
-            .shadow(22.dp, RoundedCornerShape(28.dp), spotColor = Color.Black.copy(alpha = 0.85f), ambientColor = Color.White.copy(alpha = 0.10f))
-            .background(Color(0xFF161C2B).copy(alpha = 0.98f), RoundedCornerShape(28.dp))
-            .border(1.dp, Color.White.copy(alpha = 0.06f), RoundedCornerShape(28.dp))
+            // ВТОРОЙ ПАРЯЩИЙ СЛОЙ: фон и тень — те же, что у панели состояния
+            // (floatSurface). Свой цвет, подобранный на глаз, разошёлся бы с
+            // панелью при первой же правке темы.
+            .floatSurface(28.dp, Color.White.copy(alpha = 0.06f))
             .padding(6.dp),
         horizontalArrangement = Arrangement.spacedBy(4.dp),
     ) {

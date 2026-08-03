@@ -280,6 +280,37 @@ export component ActionTile inherits TileFrame {
     TouchArea { clicked => { root.action(); } }
 }
 
+/// ПАРЯЩИЙ БЛОК — панель состояния и нав-бар. Один фон, одна тень: два слоя
+/// над страницей читаются как один язык, а не как две разные плашки.
+///
+/// ТЕНЬ ЗДЕСЬ ОБЯЗАТЕЛЬНА. Её однажды убирали — но убирали у НЕПРОЗРАЧНОЙ
+/// ЛЕНТЫ во всю ширину с острыми углами: там она рисовала тёмную полосу и
+/// читалась лишним слоем. У скруглённого блока, под которым едет содержимое,
+/// тень делает ровно обратное — говорит, что блок лежит НАД страницей. Без неё
+/// он выглядит дыркой, вырезанной в списке.
+///
+/// Слоёв два: ближний даёт край, дальний мягко отрывает блок от страницы. Одна
+/// широкая размывалась в грязь, и блок «лежал» на списке.
+export component FloatCard inherits Rectangle {
+    in property <length> radius: 22px;
+    in property <color> stroke: #FFFFFF10;
+    // У внешней коробки фона нет — она носит только дальнюю тень.
+    background: transparent;
+    drop-shadow-blur: 30px;
+    drop-shadow-color: #000000CC;
+    drop-shadow-offset-y: 14px;
+    Rectangle {
+        border-radius: root.radius;
+        background: Theme.float-bg;
+        border-width: 1px;
+        border-color: root.stroke;
+        drop-shadow-blur: 6px;
+        drop-shadow-color: #000000A6;
+        drop-shadow-offset-y: 2px;
+        @children
+    }
+}
+
 // ── Кнопки ───────────────────────────────────────────────────────────────────
 
 // Кнопка в карточке: значок + подпись на приподнятой плитке (CardButton iOS).

@@ -94,23 +94,22 @@ struct NavBar: View {
             hostCell
         }
         .padding(6)
+        // ВТОРОЙ ПАРЯЩИЙ СЛОЙ: фон и тень — те же, что у панели состояния
+        // (floatFill/floatShadow). Свой цвет, подобранный на глаз, разошёлся бы
+        // с панелью при первой же правке темы.
         .background(
             RoundedRectangle(cornerRadius: 28, style: .continuous)
-                .fill(Color(hex: 0x161C2B).opacity(0.98))
+                .fill(floatFill)
                 .overlay(RoundedRectangle(cornerRadius: 28, style: .continuous).stroke(Color.white.opacity(0.06), lineWidth: 1))
         )
-        // Тень на почти-чёрном фоне: чёрная тень СЛИВАЕТСЯ с фоном (#0B0E14) и
-        // не видна. Поэтому «подъём» бара делаем СВЕТЛЫМ ореолом сверху (тонкая
-        // белёсая тень вверх) + плотной чёрной снизу под баром.
-        .shadow(color: .black.opacity(0.65), radius: 5, x: 0, y: 2)
-        .shadow(color: .black.opacity(0.8), radius: 22, x: 0, y: 12)
-        .shadow(color: .white.opacity(0.10), radius: 14, x: 0, y: -6)
+        .floatShadow()
         .padding(.horizontal, 18)
         // safe-area пробита на корне (ContentView), поэтому зазор снизу задаём
         // руками. Нужно ОДНОВРЕМЕННО: (1) не влезать в зону home-indicator внизу
-        // и (2) не «висеть» высоко над краем. 34pt — бар заметно приподнят над
-        // краем, но не отрывается. Выверено на симуляторе.
-        .padding(.bottom, 34)
+        // и (2) не «висеть» высоко над краем. 42pt (было 34) — бар заметно
+        // приподнят над краем, но не отрывается. Прибавка идёт СВЕРХ безопасной
+        // зоны, поэтому на устройствах с индикатором и без него ощущение одно.
+        .padding(.bottom, 42)
     }
 
     /// Радиус внутренней таблетки. Концентричность: внешний R − отступ.
@@ -367,8 +366,14 @@ struct StateChip: View {
     }
 }
 
-/// Обёртка прижатой панели: она лежит ВНЕ ScrollView, поэтому статус не уезжает
-/// при прокрутке, а содержимое уходит под неё.
+/// ПАРЯЩАЯ ПАНЕЛЬ состояния: наложение поверх прокрутки (`.safeAreaInset` на
+/// месте вызова), а не сосед сверху. Список идёт во всю высоту ПОД ней и виден
+/// в зазорах вокруг карточки; статус при этом не уезжает.
+///
+/// Соседом в `VStack` панель занимала собственную полосу во всю ширину: список
+/// упирался в её низ, а по бокам от скруглённой карточки стояла пустая полоса
+/// цвета страницы — тот самый «квадрат с фоном как у основы», на который
+/// жаловались.
 struct PinnedPanel<Content: View>: View {
     let tint: Color
     @ViewBuilder let content: Content
@@ -376,26 +381,30 @@ struct PinnedPanel<Content: View>: View {
         VStack(spacing: 8) { content }
             .frame(maxWidth: .infinity)
             .padding(.vertical, 16).padding(.horizontal, 18)
-            // ФОНА У ПАНЕЛИ НЕТ — только контур.
+            // ФОН И ТЕНЬ — ТЕ ЖЕ, ЧТО У НАВ-БАРА (floatFill/floatShadow): два
+            // парящих слоя должны читаться одним языком.
             //
-            // Заливка (был градиент panel→card) и читалась как тот самый «блок»
-            // позади шапки, на который жаловались: убрали тень — остался
-            // залитый прямоугольник. Очерченность держит РАМКА, а не фон,
-            // поэтому она заметно плотнее прежней (0.2 терялось без заливки под
-            // ней) и по-прежнему берёт цвет состояния — на «нет связи» контур
-            // красный, и панель читается как отдельный компонент в обеих темах.
+            // Фон нужен ПЛОТНЫЙ: под панелью едет список с флагами стран и
+            // цветными значками, и сквозь редкую заливку светлое пятно лезло бы
+            // в текст. Рамка по-прежнему берёт цвет состояния — на «нет связи»
+            // контур красный.
             //
-            // Внешней подложки в цвет страницы тоже больше нет. Она стояла из
-            // опасения, что прокручиваемое содержимое просвечивает по бокам и
-            // сверху, — опасение неверное: панель и прокрутка СОСЕДИ в
-            // `VStack(spacing: 0)`, прокрутка обрезает себя по своей верхней
-            // границе и под панель не заходит. Просвечивать нечему.
+            // Тень навешена ВНУТРИ `.background`, на саму фигуру: снаружи она
+            // легла бы и на текст панели. Однажды тень отсюда убирали — но
+            // убирали у НЕПРОЗРАЧНОЙ ЛЕНТЫ во всю ширину: там она рисовала
+            // тёмную полосу и читалась лишним слоем. У скруглённого блока, под
+            // которым едет содержимое, она делает обратное — говорит, что блок
+            // лежит НАД страницей.
             .background(
                 RoundedRectangle(cornerRadius: 22, style: .continuous)
-                    .stroke(tint.opacity(0.45), lineWidth: 1)
+                    .fill(floatFill)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 22, style: .continuous)
+                            .stroke(tint.opacity(0.45), lineWidth: 1)
+                    )
+                    .floatShadow()
             )
             .padding(.horizontal, 20).padding(.top, 20).padding(.bottom, 12)
-            .zIndex(1)
             // Смена состояния меняет ЦЕЛУЮ ВЕТКУ разметки (при связи — цифры, без
             // связи — крупный круг), а SwiftUI играет такую подмену переходом по
             // умолчанию: старая ветка растворяется, новая проявляется, и надпись
@@ -656,7 +665,39 @@ func tabHeader(_ icon: String, _ title: String) -> some View {
         Text(title).font(.system(size: 26, weight: .heavy)).foregroundColor(Theme.fg)
     }
 }
-extension View { func navPadding() -> some View { self.padding(.bottom, 96) } }
+/// ОТДЕЛКА ПАРЯЩИХ СЛОЁВ — панели состояния и нав-бара.
+///
+/// Фон у обоих ОДИН: над страницей висят два блока, и разъехаться в цвете им
+/// нельзя — свой оттенок, подобранный на глаз, разошёлся бы с соседом при
+/// первой же правке темы.
+///
+/// Плотность 0.97 — НЕ «стекло». Под слоями едет пёстрый список (флаги стран,
+/// цветные значки, белые подписи), и это ПОДОБРАНО ПО СНИМКУ В ПРОКРУТКЕ: на
+/// 0.92 сквозь панель и бар читался текст списка. Родного `.ultraThinMaterial`
+/// здесь намеренно нет: он даёт
+/// заметно более прозрачную подложку, и одна платформа выглядела бы иначе, чем
+/// две другие, где размытия под элементом нет вовсе. Ощущение парения несут
+/// ТЕНЬ и содержимое, видимое по бокам, а не прозрачность самой карточки.
+let floatFill = Color(hex: 0x161C2B).opacity(0.97)
+
+/// Тень парящего слоя — та же у панели и у бара.
+///
+/// На почти-чёрном фоне (#0B0E14) чёрная тень СЛИВАЕТСЯ с фоном, поэтому
+/// «подъём» держат три слоя: плотная ближняя, глубокая дальняя и светлый ореол
+/// сверху. Тень тут не украшение: под блоком едет содержимое, и без неё блок
+/// читается не как парящий, а как дырка, вырезанная в списке.
+extension View {
+    func floatShadow() -> some View {
+        self
+            .shadow(color: .black.opacity(0.65), radius: 5, x: 0, y: 2)
+            .shadow(color: .black.opacity(0.8), radius: 22, x: 0, y: 12)
+            .shadow(color: .white.opacity(0.10), radius: 14, x: 0, y: -6)
+    }
+}
+
+// Ниже плавает нав-бар; он приподнят над краем на 42pt (было 34), поэтому
+// отступ подрос на ту же величину — иначе последняя карточка пряталась бы.
+extension View { func navPadding() -> some View { self.padding(.bottom, 104) } }
 /// Главная кнопка — ОДНА НА ВСЁ ПРИЛОЖЕНИЕ, спокойная: подкраска + рамка +
 /// цветной текст, тот же приём, что у ShareButtons и у действующей ячейки
 /// нав-бара.
@@ -730,13 +771,16 @@ struct ServerTab: View {
     private var addr: String { app.coordinator.replacingOccurrences(of: "https://", with: "").replacingOccurrences(of: "http://", with: "") }
 
     var body: some View {
-        VStack(spacing: 0) {
-            hero
-            scrollBody
-        }
-        // Открыли вкладку — сразу свежая цифра, не дожидаясь очередного круга.
-        // Сам цикл живёт всегда (см. watchServer), как на десктопе.
-        .onAppear { coordField = addr; app.checkServer() }
+        // Панель — НАЛОЖЕНИЕ поверх прокрутки: `safeAreaInset` заводит её выше
+        // содержимого и ровно на её высоту отодвигает начало прокрутки, а само
+        // содержимое продолжает ездить ПОД ней. Соседом в `VStack` панель
+        // занимала непрозрачную полосу во всю ширину, и список обрывался о её
+        // нижний край.
+        scrollBody
+            .safeAreaInset(edge: .top, spacing: 0) { hero }
+            // Открыли вкладку — сразу свежая цифра, не дожидаясь очередного круга.
+            // Сам цикл живёт всегда (см. watchServer), как на десктопе.
+            .onAppear { coordField = addr; app.checkServer() }
     }
 
     private var scrollBody: some View {
@@ -851,15 +895,14 @@ struct VPNTab: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            // Панель ВНЕ прокрутки: статус не уезжает, содержимое уходит под неё.
-            VPNHero(inviteCode: $inviteCode)
-            scrollBody
-        }
-        .sheet(isPresented: $showScanner) { ScannerSheet { handleScanned($0) } }
-        .sheet(item: Binding(get: { inviteCode.map { IdentifiedString($0) } }, set: { inviteCode = $0?.value })) { item in
-            QRSheet(code: item.value)
-        }
+        // Панель — НАЛОЖЕНИЕ поверх прокрутки (см. PinnedPanel): список хостов
+        // идёт во всю высоту и уходит ПОД неё.
+        scrollBody
+            .safeAreaInset(edge: .top, spacing: 0) { VPNHero(inviteCode: $inviteCode) }
+            .sheet(isPresented: $showScanner) { ScannerSheet { handleScanned($0) } }
+            .sheet(item: Binding(get: { inviteCode.map { IdentifiedString($0) } }, set: { inviteCode = $0?.value })) { item in
+                QRSheet(code: item.value)
+            }
     }
 
     private var scrollBody: some View {
@@ -1216,14 +1259,14 @@ struct HostTab: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            hero
-            scrollBody
-        }
-        .onAppear { app.ensureHostCode() }
-        .sheet(item: Binding(get: { qrCode.map { IdentifiedString($0) } }, set: { qrCode = $0?.value })) { item in
-            QRSheet(code: item.value)
-        }
+        // Панель — НАЛОЖЕНИЕ поверх прокрутки (см. PinnedPanel): настройки
+        // идут во всю высоту и уходят ПОД неё.
+        scrollBody
+            .safeAreaInset(edge: .top, spacing: 0) { hero }
+            .onAppear { app.ensureHostCode() }
+            .sheet(item: Binding(get: { qrCode.map { IdentifiedString($0) } }, set: { qrCode = $0?.value })) { item in
+                QRSheet(code: item.value)
+            }
     }
 
     /// Прижатая панель хост-режима — тот же язык, что у VPN и сервера.

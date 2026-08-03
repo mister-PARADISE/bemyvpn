@@ -3,7 +3,7 @@
 // центральной ячейкой (Старт/Стоп). Всё состояние — входные свойства, действия —
 // колбэки; заполняет их Rust (main.rs).
 import { Theme } from "theme.slint";
-import { HostRow, CalmButton } from "components.slint";
+import { HostRow, CalmButton, FloatCard } from "components.slint";
 import { IconServer, IconRouter, IconShield, IconBolt, IconX, IconQr, IconRenew, IconPower } from "icons.slint";
 import { VpnPage } from "vpn_page.slint";
 import { HostPage } from "host_page.slint";
@@ -250,85 +250,79 @@ export component AppWindow inherits Window {
     }
 
     // ── Плавающий нав-бар (поверх страницы, как ZStack .bottom на iOS) ──
-    // Тень в два слоя: ближняя даёт край, дальняя мягко отрывает бар от
-    // страницы. Одна широкая размывалась в грязь, и бар «лежал» на списке.
-    Rectangle {
+    //
+    // ВТОРОЙ ПАРЯЩИЙ СЛОЙ, отделка та же, что у панели состояния: общий
+    // FloatCard — один фон, одна тень. Свой цвет, подобранный на глаз, разошёлся
+    // бы с панелью при первой же правке темы.
+    //
+    // Приподнят над нижним краем на 30px (было 22): бар и так парит, а лишние
+    // несколько точек воздуха под ним читаются как «лежит поверх», а не
+    // «приклеен к краю». Нижний отступ прокрутки на страницах подрос на ту же
+    // величину (116px), иначе последняя карточка списка пряталась бы под баром.
+    FloatCard {
+        radius: 28px;
         x: 18px;
-        y: parent.height - self.height - 22px;
+        y: parent.height - self.height - 30px;
         width: parent.width - 36px;
         height: 66px;
-        border-radius: 28px;
-        background: transparent;
-        drop-shadow-blur: 30px;
-        drop-shadow-color: #000000CC;
-        drop-shadow-offset-y: 14px;
-        Rectangle {
-            border-radius: 28px;
-            background: #161C2B.with-alpha(0.98);
-            border-width: 1px;
-            border-color: #FFFFFF10;
-            drop-shadow-blur: 6px;
-            drop-shadow-color: #000000A6;
-            drop-shadow-offset-y: 2px;
-            HorizontalLayout {
-                padding: 6px;
-                spacing: 4px;
-                // «Сервер» — навигация всегда: у вкладки нет своего включателя.
-                // Зато на ней горит состояние связи, видное С ЛЮБОЙ вкладки:
-                // красная точка «нет связи», жёлтая «проверяю». Когда всё
-                // хорошо — точки нет: молчание и есть «ок». Раньше об обрыве
-                // кричала оранжевая полоса на вкладке VPN.
-                NavCell {
-                    horizontal-stretch: 1;
-                    label: "Сервер";
-                    current: tab == 2;
-                    tint: tab == 2 ? Theme.accent : Theme.dim;
-                    live: coord-state != 1;
-                    live-tint: coord-state == 2 ? Theme.red : Theme.amber;
-                    clicked => { tab = 2; }
-                    IconServer { width: 21px; height: 21px; tint: tab == 2 ? Theme.accent : Theme.dim; }
+        HorizontalLayout {
+            padding: 6px;
+            spacing: 4px;
+            // «Сервер» — навигация всегда: у вкладки нет своего включателя.
+            // Зато на ней горит состояние связи, видное С ЛЮБОЙ вкладки:
+            // красная точка «нет связи», жёлтая «проверяю». Когда всё
+            // хорошо — точки нет: молчание и есть «ок». Раньше об обрыве
+            // кричала оранжевая полоса на вкладке VPN.
+            NavCell {
+                horizontal-stretch: 1;
+                label: "Сервер";
+                current: tab == 2;
+                tint: tab == 2 ? Theme.accent : Theme.dim;
+                live: coord-state != 1;
+                live-tint: coord-state == 2 ? Theme.red : Theme.amber;
+                clicked => { tab = 2; }
+                IconServer { width: 21px; height: 21px; tint: tab == 2 ? Theme.accent : Theme.dim; }
+            }
+            // Центр: переход на VPN, а на самой вкладке — Старт/Стоп.
+            NavCell {
+                horizontal-stretch: 1;
+                label: tab != 0 ? "VPN"
+                     : (vpn-state == 0 ? "Старт" : vpn-state == 1 ? "Отмена" : vpn-state == 3 ? "Ещё раз" : "Стоп");
+                acting: tab == 0;
+                hue: (vpn-state == 0 || vpn-state == 3) ? Theme.green : Theme.red;
+                tint: tab != 0 ? Theme.dim
+                    : ((vpn-state == 0 || vpn-state == 3) ? Theme.green : Theme.red);
+                live: tab != 0 && vpn-state != 0;
+                live-tint: vpn-state == 2 ? Theme.green : vpn-state == 3 ? Theme.red : Theme.amber;
+                clicked => {
+                    if (tab != 0) { tab = 0; }
+                    else if (vpn-state == 0 || vpn-state == 3) { root.quick-connect(); }
+                    else { root.disconnect(); }
                 }
-                // Центр: переход на VPN, а на самой вкладке — Старт/Стоп.
-                NavCell {
-                    horizontal-stretch: 1;
-                    label: tab != 0 ? "VPN"
-                         : (vpn-state == 0 ? "Старт" : vpn-state == 1 ? "Отмена" : vpn-state == 3 ? "Ещё раз" : "Стоп");
-                    acting: tab == 0;
-                    hue: (vpn-state == 0 || vpn-state == 3) ? Theme.green : Theme.red;
-                    tint: tab != 0 ? Theme.dim
-                        : ((vpn-state == 0 || vpn-state == 3) ? Theme.green : Theme.red);
-                    live: tab != 0 && vpn-state != 0;
-                    live-tint: vpn-state == 2 ? Theme.green : vpn-state == 3 ? Theme.red : Theme.amber;
-                    clicked => {
-                        if (tab != 0) { tab = 0; }
-                        else if (vpn-state == 0 || vpn-state == 3) { root.quick-connect(); }
-                        else { root.disconnect(); }
-                    }
-                    if tab != 0: IconShield { width: 21px; height: 21px; tint: Theme.dim; }
-                    if tab == 0 && vpn-state == 0: IconBolt { width: 21px; height: 21px; tint: Theme.green; }
-                    if tab == 0 && vpn-state == 3: IconRenew { width: 21px; height: 21px; tint: Theme.green; }
-                    if tab == 0 && (vpn-state == 1 || vpn-state == 2): IconX { width: 21px; height: 21px; tint: Theme.red; }
+                if tab != 0: IconShield { width: 21px; height: 21px; tint: Theme.dim; }
+                if tab == 0 && vpn-state == 0: IconBolt { width: 21px; height: 21px; tint: Theme.green; }
+                if tab == 0 && vpn-state == 3: IconRenew { width: 21px; height: 21px; tint: Theme.green; }
+                if tab == 0 && (vpn-state == 1 || vpn-state == 2): IconX { width: 21px; height: 21px; tint: Theme.red; }
+            }
+            // «Хост» — по тому же правилу, что и центр.
+            NavCell {
+                horizontal-stretch: 1;
+                label: tab != 1 ? "Хост"
+                     : (host-state == 0 ? "Раздать" : host-state == 1 ? "Отмена" : host-state == 3 ? "Ещё раз" : "Стоп");
+                acting: tab == 1;
+                hue: (host-state == 0 || host-state == 3) ? Theme.green : Theme.red;
+                tint: tab != 1 ? Theme.dim
+                    : ((host-state == 0 || host-state == 3) ? Theme.green : Theme.red);
+                live: tab != 1 && host-state != 0;
+                live-tint: host-state == 2 ? Theme.green : host-state == 3 ? Theme.red : Theme.amber;
+                clicked => {
+                    if (tab != 1) { tab = 1; }
+                    else { root.toggle-host(); }
                 }
-                // «Хост» — по тому же правилу, что и центр.
-                NavCell {
-                    horizontal-stretch: 1;
-                    label: tab != 1 ? "Хост"
-                         : (host-state == 0 ? "Раздать" : host-state == 1 ? "Отмена" : host-state == 3 ? "Ещё раз" : "Стоп");
-                    acting: tab == 1;
-                    hue: (host-state == 0 || host-state == 3) ? Theme.green : Theme.red;
-                    tint: tab != 1 ? Theme.dim
-                        : ((host-state == 0 || host-state == 3) ? Theme.green : Theme.red);
-                    live: tab != 1 && host-state != 0;
-                    live-tint: host-state == 2 ? Theme.green : host-state == 3 ? Theme.red : Theme.amber;
-                    clicked => {
-                        if (tab != 1) { tab = 1; }
-                        else { root.toggle-host(); }
-                    }
-                    if tab != 1: IconRouter { width: 21px; height: 21px; tint: Theme.dim; }
-                    if tab == 1 && host-state == 0: IconPower { width: 21px; height: 21px; tint: Theme.green; }
-                    if tab == 1 && host-state == 3: IconRenew { width: 21px; height: 21px; tint: Theme.green; }
-                    if tab == 1 && (host-state == 1 || host-state == 2): IconX { width: 21px; height: 21px; tint: Theme.red; }
-                }
+                if tab != 1: IconRouter { width: 21px; height: 21px; tint: Theme.dim; }
+                if tab == 1 && host-state == 0: IconPower { width: 21px; height: 21px; tint: Theme.green; }
+                if tab == 1 && host-state == 3: IconRenew { width: 21px; height: 21px; tint: Theme.green; }
+                if tab == 1 && (host-state == 1 || host-state == 2): IconX { width: 21px; height: 21px; tint: Theme.red; }
             }
         }
     }
