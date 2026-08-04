@@ -31,12 +31,22 @@ const HOME: &str = "crates/bmv-common/src/view.rs";
 ///
 /// Признак выбран так, чтобы его нельзя было не написать, переписывая правило
 /// заново: подпись, из которой правило состоит, или сравнение, в котором вся его
-/// суть.
+/// суть. Признаки пишем В НИЖНЕМ РЕГИСТРЕ — сравнение регистр не различает,
+/// потому что копия в терминале разошлась с тремя другими оболочками ровно на
+/// нём («нет связи» против «Нет связи»), и грепалка с учётом регистра такую
+/// копию не видела.
 type Rule = (&'static str, &'static [&'static str], &'static [&'static str]);
 const RULES: &[Rule] = &[
     // Подпись протокола: заново её пишут только вместе с этим словом. Без
     // кавычек — оболочка вольна приклеить к подписи свой значок («🎭 Маскировка»).
-    ("имя протокола (view::proto_name)", &["Маскировка"], &[]),
+    (
+        "имя протокола (view::proto_name)",
+        &["маскировка"],
+        // Терминал принимает это слово КАК ВВОД («--protocol маскировка») и
+        // переводит его в идентификатор протокола. Направление обратное показу:
+        // человек → машина, а не машина → экран. Из справочника такое не берут.
+        &["apps/bmv-cli/src/main.rs"],
+    ),
     ("часы сеанса (view::session_clock)", &["% 3600"], &[]),
     ("подпись пинга (view::ping)", &["мс\""], &[]),
     ("годен ли хост (view::host_usable)", &[".guests <"], &[]),
@@ -49,9 +59,68 @@ const RULES: &[Rule] = &[
         &["crates/bmv-signal/src/lib.rs"],
     ),
     ("имя хоста (view::host_display_name)", &["name.is_empty()", "id"], &[]),
+    // ── связь с координатором и состояние VPN ──
+    // Три состояния связи лежали ЧЕТЫРЬМЯ копиями, и четвёртая уже разошлась.
+    ("состояние связи (view::link_state)", &["на связи"], &[]),
+    ("состояние связи (view::link_state)", &["проверяю связ"], &[]),
+    (
+        "состояние связи (view::link_state)",
+        &["восстанавлива"],
+        // bmv-signal сообщает об ОШИБКЕ операции («сокет не поднят»), а не
+        // рисует строку состояния: это ответ на конкретный запрос, а не то, что
+        // висит на экране постоянно.
+        &["crates/bmv-signal/src/lib.rs"],
+    ),
+    ("пустой каталог (view::empty_directory_hint)", &["хостов пока нет"], &[]),
+    ("состояние VPN (view::vpn_text)", &["vpn выключен"], &[]),
+    ("состояние VPN (view::vpn_text)", &["подключаюсь"], &[]),
+    ("состояние VPN (view::vpn_text)", &["переподключение"], &[]),
+    ("состояние VPN (view::vpn_text)", &["завершил раздачу"], &[]),
+    ("состояние VPN (view::vpn_text)", &["связь с хостом пропала"], &[]),
 ];
 
-fn rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
+/// ПЕРЕЕЗД В РАБОТЕ — копии, которые ещё не позвали справочник.
+///
+/// Правило въехало в `view.rs` целиком и с тестами; оболочки на него переводит
+/// человек, потому что три из четырёх написаны не на Rust. Пока копия жива, она
+/// перечислена здесь — и тест ТРЕБУЕТ, чтобы она и правда была на месте: убрали
+/// копию, но забыли вычеркнуть строку → тест падает и напоминает. Так список не
+/// превращается в вечное разрешение писать правило вторым местом.
+///
+/// ПУСТОЙ СПИСОК — ЦЕЛЬ. Пополнять его новыми строками нельзя: новая копия — это
+/// то самое расхождение, ради поимки которого здесь всё и стоит.
+const MIGRATING: &[(&str, &str)] = &[
+    // Терминал: своя тройка состояний связи, разошедшаяся с тремя другими
+    // оболочками регистром и многоточием, и свой набор подписей VPN.
+    ("apps/bmv-cli/src/tui.rs", "на связи"),
+    ("apps/bmv-cli/src/tui.rs", "восстанавлива"),
+    ("apps/bmv-cli/src/tui.rs", "vpn выключен"),
+    ("apps/bmv-cli/src/tui.rs", "подключаюсь"),
+    ("apps/bmv-cli/src/tui.rs", "завершил раздачу"),
+    ("apps/bmv-cli/src/main.rs", "завершил раздачу"),
+    // Окно: подписи состояния VPN раздаются из Rust в разметку строками.
+    ("apps/bmv-gui/src/main.rs", "vpn выключен"),
+    ("apps/bmv-gui/src/main.rs", "подключаюсь"),
+    ("apps/bmv-gui/src/main.rs", "завершил раздачу"),
+];
+
+/// ГРЕПАЛКА ВИДИТ ТОЛЬКО RUST — И ЭТО ЕЁ ИЗВЕСТНЫЙ ПОТОЛОК.
+///
+/// Правила показа рисуют четыре оболочки, но три из них написаны не на Rust
+/// (Kotlin, Swift, разметка окна), и позвать `view.rs` оттуда сегодня НЕЧЕМ:
+/// моста для этих правил нет. Разовый прогон по `kt/swift/slint` показал 24
+/// копии уже переехавших правил (подпись протокола, пинг, часы сеанса, адрес
+/// координатора) — то есть телефоны и окно живут на собственных копиях всего
+/// справочника, а не только тех строк, что здесь перечислены.
+///
+/// Включать эти расширения ЗДЕСЬ бессмысленно, пока копию нечем заменить: тест
+/// стал бы вечно красным списком того, что запрещено чинить. Дверь открывает
+/// мост `bmv-ffi` (`bmv_proto_name`, `bmv_ping_text`, `bmv_session_clock`,
+/// `bmv_coordinator_url`, …); когда оболочка на него перейдёт, добавь сюда её
+/// расширение — и копия больше не заведётся.
+const EXTS: [&str; 1] = ["rs"];
+
+fn source_files(dir: &Path, out: &mut Vec<PathBuf>) {
     let Ok(entries) = std::fs::read_dir(dir) else { return };
     for e in entries.flatten() {
         let p = e.path();
@@ -61,9 +130,9 @@ fn rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
             // Каталоги `tests` мимо: в тесте оболочки повторить подпись законно —
             // тест как раз и проверяет, что оболочка показывает ровно её.
             if !matches!(&*name, "target" | "tests" | "build" | ".git" | "vendor" | "node_modules") {
-                rs_files(&p, out);
+                source_files(&p, out);
             }
-        } else if p.extension().is_some_and(|x| x == "rs") {
+        } else if p.extension().is_some_and(|x| EXTS.iter().any(|e| *e == x)) {
             out.push(p);
         }
     }
@@ -78,7 +147,7 @@ fn a_display_rule_exists_in_exactly_one_place() {
     let root = repo_root();
     let mut files = Vec::new();
     for r in ROOTS {
-        rs_files(&root.join(r), &mut files);
+        source_files(&root.join(r), &mut files);
     }
     assert!(files.len() > 20, "грепалка ничего не нашла — сломан обход каталогов ({})", root.display());
 
@@ -86,26 +155,38 @@ fn a_display_rule_exists_in_exactly_one_place() {
     assert!(home.exists(), "справочник правил переехал — поправь HOME в этом тесте");
 
     let mut guilty = Vec::new();
+    // Строки переезда, которые НЕ НАШЛИСЬ: копию убрали, а запись осталась.
+    let mut stale: Vec<&(&str, &str)> = MIGRATING.iter().collect();
     for f in &files {
         if *f == home {
             continue; // дом правила
         }
-        let rel = f.strip_prefix(&root).unwrap_or(f).display().to_string();
+        let rel = f.strip_prefix(&root).unwrap_or(f).display().to_string().replace('\\', "/");
         let Ok(src) = std::fs::read_to_string(f) else { continue };
         // Всё после `#[cfg(test)]` — тесты: там повтор подписи законен.
         let code = src.split("#[cfg(test)]").next().unwrap_or("");
         for (i, line) in code.lines().enumerate() {
-            let t = line.trim_start();
+            let t = line.trim_start().to_lowercase();
             if t.starts_with("//") {
                 continue; // комментарии как раз ОБЪЯСНЯЮТ правило, а не повторяют
             }
             for (rule, needles, allowed) in RULES {
-                if allowed.iter().any(|a| rel.replace('\\', "/") == *a) {
+                if allowed.contains(&&*rel) {
                     continue;
                 }
-                if needles.iter().all(|n| t.contains(n)) {
-                    guilty.push(format!("{rel}:{}: {rule}\n      {t}", i + 1));
+                if !needles.iter().all(|n| t.contains(n)) {
+                    continue;
                 }
+                // Копия, которую владелец переводит руками: отмечаем найденной и
+                // не виним. Всё, чего нет в списке, — виновно.
+                if let Some(k) = stale.iter().position(|(p, n)| *p == rel && needles.contains(n)) {
+                    stale.swap_remove(k);
+                    continue;
+                }
+                if MIGRATING.iter().any(|(p, n)| *p == rel && needles.contains(n)) {
+                    continue; // та же копия на второй строке того же файла
+                }
+                guilty.push(format!("{rel}:{}: {rule}\n      {}", i + 1, line.trim_start()));
             }
         }
     }
@@ -115,6 +196,12 @@ fn a_display_rule_exists_in_exactly_one_place() {
         "правило показа заведено вторым местом — рано или поздно эти двое разойдутся:\n  {}\n\
          Правило живёт в {HOME} целиком; оболочка его ЗОВЁТ, а не повторяет.",
         guilty.join("\n  ")
+    );
+    assert!(
+        stale.is_empty(),
+        "переезд состоялся, а список не убран — эти строки MIGRATING больше ничего не прикрывают:\n  {}\n\
+         Вычеркни их: пока они здесь, на этом месте можно молча завести копию заново.",
+        stale.iter().map(|(p, n)| format!("{p} — «{n}»")).collect::<Vec<_>>().join("\n  ")
     );
 }
 

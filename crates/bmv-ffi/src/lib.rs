@@ -207,6 +207,140 @@ pub unsafe extern "C" fn bmv_free_string(p: *mut c_char) {
     }
 }
 
+// ── ПРАВИЛА ПОКАЗА: мост к справочнику `bmv_common::view` ─────────────────────
+//
+// Справочник — чистые функции без сети и без памяти, но телефоны позвать его не
+// могли ВООБЩЕ: Swift и Kotlin в Rust не ходят иначе как через этот файл.
+// Поэтому каждое правило там жило ещё и своей копией здесь, на двух чужих
+// языках, и копии разошлись — молча, потому что грепалка
+// `crates/bmv-common/tests/one_place_per_rule.rs` читает только `.rs`.
+//
+// Дороже всех обошёлся адрес координатора: на телефоне его разбирал сам шелл
+// (`if !u.startsWith("http") return`), и «bemyvpn.net» без схемы просто НЕ
+// СОХРАНЯЛСЯ — кнопка нажата, ничего не записано, ничего не сказано.
+//
+// УРОВНИ ОТДАЮТСЯ ЧИСЛОМ, А НЕ ЦВЕТОМ И НЕ ИМЕНЕМ ЗНАЧКА: наборы значков у
+// оболочек разные и общего имени у них нет (см. шапку `view.rs`). Числа — это
+// номера вариантов перечислений справочника, они там проставлены явно.
+//
+// Функции этого блока ЧИСТЫЕ: ни рантайма, ни сети, ни блокировок — их можно
+// звать прямо с UI-потока, в отличие от всего остального в этом файле.
+
+/// Трёхзначное «на связи» с границы C: 1 — да, 0 — нет, всё прочее (обычно -1) —
+/// ещё не знаем. Третье значение обязано быть: без него «ещё не проверяли»
+/// сливается с «связи нет», и свежезапущенное приложение обвиняет сеть.
+fn tri(v: i32) -> Option<bool> {
+    match v {
+        1 => Some(true),
+        0 => Some(false),
+        _ => None,
+    }
+}
+
+/// Пинг с границы C: отрицательное — ответа не было.
+fn ping_ms(ms: i32) -> Option<u32> {
+    (ms >= 0).then_some(ms as u32)
+}
+
+/// Набранный человеком адрес координатора → пригодный для работы.
+/// ПУСТАЯ СТРОКА — ОТКАЗ, о котором оболочка обязана сказать вслух.
+#[no_mangle]
+pub extern "C" fn bmv_coordinator_url(input: *const c_char) -> *mut c_char {
+    ffi!(std::ptr::null_mut(), {
+        let s = unsafe { cstr(input) };
+        to_c(bmv_common::view::coordinator_url(&s).unwrap_or_default())
+    })
+}
+
+/// Адрес координатора ДЛЯ ПОКАЗА — без схемы и без хвостового слэша.
+#[no_mangle]
+pub extern "C" fn bmv_display_coordinator(url: *const c_char) -> *mut c_char {
+    ffi!(std::ptr::null_mut(), {
+        let s = unsafe { cstr(url) };
+        to_c(bmv_common::view::without_scheme(&s))
+    })
+}
+
+/// Уровень защиты по имени протокола: 0 шифр · 1 маскировка · 2 без шифра ·
+/// 3 неизвестно (номера — варианты `view::Protection`).
+#[no_mangle]
+pub extern "C" fn bmv_protection(protocol: *const c_char) -> i32 {
+    ffi!(bmv_common::view::Protection::Unknown as i32, {
+        let p = unsafe { cstr(protocol) };
+        bmv_common::view::protection(&p) as i32
+    })
+}
+
+/// Часы сеанса: `MM:SS`, после часа `H:MM:SS`.
+#[no_mangle]
+pub extern "C" fn bmv_session_clock(seconds: u64) -> *mut c_char {
+    ffi!(std::ptr::null_mut(), { to_c(bmv_common::view::session_clock(seconds)) })
+}
+
+/// Подпись пинга («24 мс» или прочерк). Отрицательное `ms` — ответа не было.
+#[no_mangle]
+pub extern "C" fn bmv_ping_text(ms: i32) -> *mut c_char {
+    ffi!(std::ptr::null_mut(), { to_c(bmv_common::view::ping(ping_ms(ms)).0) })
+}
+
+/// Тревожность пинга: 0 спокойно · 1 янтарь · 2 красный · 3 приглушённо
+/// (номера — варианты `view::Alarm`). Пороги живут в справочнике.
+#[no_mangle]
+pub extern "C" fn bmv_ping_alarm(ms: i32) -> i32 {
+    ffi!(bmv_common::view::Alarm::Muted as i32, { bmv_common::view::ping(ping_ms(ms)).1 as i32 })
+}
+
+/// Годен ли хост для подключения (живой и есть место) — на этом гасится кнопка.
+#[no_mangle]
+pub extern "C" fn bmv_host_usable(online: bool, guests: u32, max_guests: u32) -> bool {
+    ffi!(false, { bmv_common::view::host_usable(online, guests, max_guests) })
+}
+
+/// Подпись состояния связи с координатором. `online`: 1 да · 0 нет · -1 не знаем.
+#[no_mangle]
+pub extern "C" fn bmv_link_text(online: i32) -> *mut c_char {
+    ffi!(std::ptr::null_mut(), { to_c(bmv_common::view::link_state(tri(online)).0.to_string()) })
+}
+
+/// Тревожность состояния связи (номера — варианты `view::Alarm`).
+/// Обрыв — ЯНТАРЬ: сокет чинит супервизор сам, красным тут пугать нечем.
+#[no_mangle]
+pub extern "C" fn bmv_link_alarm(online: i32) -> i32 {
+    ffi!(bmv_common::view::Alarm::Muted as i32, { bmv_common::view::link_state(tri(online)).1 as i32 })
+}
+
+/// Что написать на месте ПУСТОГО списка хостов: ждать связи или действовать.
+#[no_mangle]
+pub extern "C" fn bmv_empty_directory_hint(online: i32) -> *mut c_char {
+    ffi!(std::ptr::null_mut(), { to_c(bmv_common::view::empty_directory_hint(tri(online)).to_string()) })
+}
+
+/// Состояние VPN числом: 0 выкл · 1 подключаюсь · 2 переподключение · 3 работает ·
+/// 4 хост завершил раздачу · 5 связь потеряна (варианты `view::Vpn`).
+///
+/// На входе — ровно то, что уже отдают `bmv_vpn_status` и `bmv_stop_reason`, плюс
+/// «сеанс уже был» (у оболочки есть отметка начала). Склеивать эти три числа
+/// каждая оболочка раньше училась сама, и получалось по-разному: окно и терминал
+/// не отличают авто-реконнект от первого подключения и пишут «Подключаюсь…»
+/// человеку, у которого VPN и не выключался.
+#[no_mangle]
+pub extern "C" fn bmv_vpn_kind(status: i32, stop_reason: i32, was_connected: bool) -> i32 {
+    ffi!(bmv_common::view::Vpn::Off as i32, {
+        bmv_common::view::vpn_state(status, stop_reason, was_connected) as i32
+    })
+}
+
+/// Подпись состояния VPN. Аргументы те же, что у `bmv_vpn_kind` — обратного
+/// перевода числа в состояние нарочно нет: иначе номера пришлось бы разбирать
+/// ВТОРОЙ раз, уже здесь.
+#[no_mangle]
+pub extern "C" fn bmv_vpn_text(status: i32, stop_reason: i32, was_connected: bool) -> *mut c_char {
+    ffi!(std::ptr::null_mut(), {
+        let v = bmv_common::view::vpn_state(status, stop_reason, was_connected);
+        to_c(bmv_common::view::vpn_text(v).to_string())
+    })
+}
+
 // ── сигналинг (каталог / коды / IP / связь) ──────────────────────────────────
 
 /// Живой каталог: since из прошлого ответа. JSON `{"version":N,"hosts":[...]}`.
@@ -703,7 +837,9 @@ pub extern "C" fn bmv_host_start(
             let beat_hub = hub.clone();
             tasks.spawn(async move {
                 loop {
-                    tokio::time::sleep(Duration::from_secs(10)).await;
+                    // Тик ОДИН на все три дерева задач хоста — раньше это число
+                    // было вписано в каждое отдельно.
+                    tokio::time::sleep(bmv_core::HOST_HEARTBEAT).await;
                     let _ = beat.host_heartbeat(&beat_hub).await;
                 }
             });
@@ -1471,6 +1607,117 @@ mod tests {
             libc::close(a);
             libc::close(b);
         }
+    }
+
+    // ── мост к справочнику: смотрим ГЛАЗАМИ ТЕЛЕФОНА ─────────────────────────
+    //
+    // Тесты зовут `bmv_*` ровно так, как их зовёт Swift и Kotlin: строка на вход
+    // сырым указателем, ответ читается и освобождается `bmv_free_string`. Именно
+    // на этой границе правило и терялось: в справочнике оно есть и покрыто
+    // тестами, а до телефона не доезжало.
+
+    /// C-строка на вход (живёт до конца выражения — как у вызывающего).
+    fn c_in(s: &str) -> CString {
+        CString::new(s).unwrap()
+    }
+
+    /// Прочитать и ОСВОБОДИТЬ ответ моста — как обязана делать оболочка.
+    fn c_out(p: *mut c_char) -> String {
+        assert!(!p.is_null(), "мост вернул NULL вместо строки");
+        let s = unsafe { CStr::from_ptr(p) }.to_str().unwrap().to_string();
+        unsafe { bmv_free_string(p) };
+        s
+    }
+
+    /// АДРЕС БЕЗ СХЕМЫ ОБЯЗАН СОХРАНЯТЬСЯ. Телефон разбирал адрес сам
+    /// (`if !u.startsWith("http") return`) и на «bemyvpn.net» молча выходил из
+    /// настройки: кнопка нажата, ничего не записано, ничего не сказано. Правило
+    /// в справочнике это чинит с самого начала — не хватало только двери.
+    #[test]
+    fn a_phone_can_finally_type_the_address_without_its_scheme() {
+        assert_eq!(c_out(bmv_coordinator_url(c_in("bemyvpn.net").as_ptr())), "https://bemyvpn.net");
+        assert_eq!(c_out(bmv_coordinator_url(c_in("  bemyvpn.net/ ").as_ptr())), "https://bemyvpn.net");
+        // Явную схему не трогаем — в том числе незашифрованную.
+        assert_eq!(c_out(bmv_coordinator_url(c_in("http://10.0.0.5:3330").as_ptr())), "http://10.0.0.5:3330");
+        // ОТКАЗ приезжает пустой строкой, а не молчанием: оболочке есть что сказать.
+        assert_eq!(c_out(bmv_coordinator_url(c_in("   ").as_ptr())), "");
+        assert_eq!(c_out(bmv_coordinator_url(c_in("https://").as_ptr())), "", "схема без адреса — не адрес");
+        assert_eq!(c_out(bmv_coordinator_url(std::ptr::null())), "", "null не должен ронять границу C");
+
+        // Показ и работа: с экрана схема уходит вместе с хвостовым слэшем (свои
+        // копии на телефонах слэш оставляли), а обратно приезжает рабочий адрес.
+        assert_eq!(c_out(bmv_display_coordinator(c_in("https://bemyvpn.net/").as_ptr())), "bemyvpn.net");
+        let shown = c_out(bmv_display_coordinator(c_in("https://свой.сервер:8443").as_ptr()));
+        assert_eq!(c_out(bmv_coordinator_url(c_in(&shown).as_ptr())), "https://свой.сервер:8443");
+    }
+
+    /// Уровни едут ЧИСЛОМ, и номера совпадают со справочником — на них телефон
+    /// вешает свой значок и свой цвет.
+    #[test]
+    fn levels_cross_the_border_as_numbers() {
+        use bmv_common::view::{Alarm, Protection};
+        assert_eq!(bmv_protection(c_in("").as_ptr()), Protection::Encrypted as i32, "хост без протокола шифрует");
+        assert_eq!(bmv_protection(c_in("noise-obfs").as_ptr()), Protection::Masked as i32);
+        assert_eq!(bmv_protection(c_in("plain").as_ptr()), Protection::Plain as i32);
+        assert_eq!(bmv_protection(c_in("wireguard").as_ptr()), Protection::Unknown as i32);
+
+        // Пороги пинга — из справочника, второй линейки на телефоне быть не должно.
+        assert_eq!(bmv_ping_alarm(249), Alarm::Calm as i32);
+        assert_eq!(bmv_ping_alarm(250), Alarm::Amber as i32);
+        assert_eq!(bmv_ping_alarm(501), Alarm::Red as i32);
+        assert_eq!(bmv_ping_alarm(-1), Alarm::Muted as i32, "нет ответа — тревожить нечем");
+        assert_eq!(c_out(bmv_ping_text(24)), "24 мс");
+        assert_eq!(c_out(bmv_ping_text(-1)), bmv_common::view::PING_NO_ANSWER);
+
+        // Обрыв связи — янтарь, а не красный: его чинит супервизор сам.
+        assert_eq!(bmv_link_alarm(0), Alarm::Amber as i32);
+        assert_ne!(bmv_link_alarm(0), Alarm::Red as i32);
+        assert_eq!(bmv_link_alarm(1), Alarm::Calm as i32);
+        assert_eq!(bmv_link_alarm(-1), Alarm::Muted as i32);
+        assert_eq!(c_out(bmv_link_text(1)), "На связи");
+        assert_eq!(c_out(bmv_link_text(0)), "Нет связи — восстанавливаю…");
+        // «Ещё не знаем» — ОТДЕЛЬНОЕ третье состояние, а не «связи нет».
+        assert_eq!(c_out(bmv_link_text(-1)), "Проверяю связь…");
+        assert_ne!(c_out(bmv_link_text(-1)), c_out(bmv_link_text(0)));
+        // Любое неожиданное число с границы C — тоже «не знаем», а не паника.
+        assert_eq!(c_out(bmv_link_text(42)), c_out(bmv_link_text(-1)));
+    }
+
+    /// Часы тикают секундами, и забитый хост не предлагается.
+    #[test]
+    fn the_clock_ticks_and_a_full_host_is_not_offered() {
+        assert_eq!(c_out(bmv_session_clock(75)), "01:15");
+        assert_eq!(c_out(bmv_session_clock(3661)), "1:01:01");
+        // Каждая секунда видна — минутная подпись читается как зависшая программа.
+        assert_ne!(c_out(bmv_session_clock(61)), c_out(bmv_session_clock(62)));
+
+        assert!(bmv_host_usable(true, 7, 8));
+        assert!(!bmv_host_usable(true, 8, 8), "мест нет — подключаться некуда");
+        assert!(!bmv_host_usable(false, 0, 8), "офлайн — не годен даже пустой");
+        assert!(!bmv_host_usable(true, 0, 0), "потолок не объявлен — мест не обещано");
+    }
+
+    /// Три числа моста складываются в одно состояние — и конец раздачи не отказ.
+    #[test]
+    fn a_finished_share_crosses_the_border_as_its_own_state() {
+        use bmv_common::view::Vpn;
+        // Авто-реконнект отличается от первого подключения ТОЛЬКО этим флагом.
+        assert_eq!(bmv_vpn_kind(1, 0, false), Vpn::Connecting as i32);
+        assert_eq!(bmv_vpn_kind(1, 0, true), Vpn::Reconnecting as i32);
+        assert_eq!(c_out(bmv_vpn_text(1, 0, true)), "Переподключение…");
+        assert_ne!(c_out(bmv_vpn_text(1, 0, true)), c_out(bmv_vpn_text(1, 0, false)));
+
+        assert_eq!(bmv_vpn_kind(2, 0, true), Vpn::On as i32);
+        // Хост попрощался — это не поломка, и не важно, куда ушёл статус.
+        assert_eq!(bmv_vpn_kind(0, 1, true), Vpn::Ended as i32);
+        assert_eq!(bmv_vpn_kind(3, 1, true), Vpn::Ended as i32);
+        assert_eq!(c_out(bmv_vpn_text(3, 1, true)), "Хост завершил раздачу — выберите другой");
+        assert_eq!(bmv_vpn_kind(3, 2, true), Vpn::Lost as i32);
+        // Выключили сами — причины нет, объяснять нечего.
+        assert_eq!(bmv_vpn_kind(3, 0, true), Vpn::Off as i32);
+
+        assert_eq!(c_out(bmv_empty_directory_hint(0)).lines().next().unwrap(), "Нет связи с сервером — восстанавливаю.");
+        assert!(c_out(bmv_empty_directory_hint(1)).starts_with("Хостов пока нет"));
     }
 
     /// Имя хоста приходит с ЧУЖОЙ машины: внутренний нуль не должен обнулять

@@ -14,13 +14,13 @@
 //! отмена (или просто `abort()`) внешней задачи гасит дерево целиком.
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use bmv_core::BmvEngine;
 use tokio::task::JoinSet;
 
-/// Как часто чинить запись в каталоге и держать NAT-дырку хаба открытой.
-const HEARTBEAT: Duration = Duration::from_secs(10);
+/// Как часто чинить запись в каталоге и держать NAT-дырку хаба открытой —
+/// ЧИСЛО ОБЩЕЕ С ОСТАЛЬНЫМИ ДВУМЯ ДЕРЕВЬЯМИ ХОСТА (см. `bmv_core::HOST_HEARTBEAT`).
+use bmv_core::HOST_HEARTBEAT as HEARTBEAT;
 
 /// Крутить раздачу до обрыва хаба или до отмены внешней задачи.
 ///
@@ -60,6 +60,7 @@ pub async fn serve_host(eng: Arc<BmvEngine>, hub: Arc<bmv_net::UdpHub>) {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::Duration;
 
     /// Гость, принятый раздачей, обязан умереть ВМЕСТЕ с ней.
     ///

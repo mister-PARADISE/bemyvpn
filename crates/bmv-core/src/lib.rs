@@ -82,6 +82,20 @@ const HANDSHAKE_CONCURRENCY: usize = 64;
 /// «не отвечает», а не «далеко». Ждать больше значит подвесить список.
 const PROBE_TIMEOUT: Duration = Duration::from_millis(1500);
 
+/// Как часто хост чинит запись в каталоге и держит NAT-дырку хаба открытой.
+///
+/// ЗДЕСЬ, а не у каждого, кто крутит цикл: дерево задач хоста написано ТРИЖДЫ
+/// (десктоп — `bmv_desktop::hosting::serve_host`, телефоны — `bmv_host_start`,
+/// терминал без экрана — свой цикл), и число было вписано в каждое место
+/// отдельно. Рядом же стояло обещание «звать раз в ~15с», которого не выполнял
+/// никто из троих: проверить его было не с чем, потому что сравнивать было не с
+/// чем.
+///
+/// Тик держит две вещи сразу, и обе ломаются молча: реже — хост за NAT
+/// становится недостижим для новых гостей (дырка закрылась), а его карточка в
+/// каталоге показывает вчерашнее число гостей.
+pub const HOST_HEARTBEAT: Duration = Duration::from_secs(10);
+
 /// Пауза перед отказом на неверном пароле — тормоз перебора.
 /// Секунда незаметна тому, кто просто опечатался, но подбор из миллиона
 /// вариантов растягивает с часов на годы даже при полной загрузке ворот.
@@ -264,16 +278,9 @@ impl BmvEngine {
         // пробьёт нам навстречу (без этого его не достать).
         let ep = UdpEndpoint::bind("0.0.0.0:0".parse().unwrap()).await?;
         let port = ep.local_addr()?.port();
-        let mut candidates: Vec<String> = Vec::new();
-        if let Some(ip) = bmv_net::local_ip() {
-            candidates.push(format!("{ip}:{port}"));
-        }
         let servers = self.config.stun.resolve();
-        if let Ok(ext) = ep.reflexive(&servers, Duration::from_secs(3)).await {
-            candidates.push(ext.to_string());
-        }
-        candidates.sort();
-        candidates.dedup();
+        let reflexive = ep.reflexive(&servers, Duration::from_secs(3)).await.ok();
+        let candidates = my_endpoints(port, reflexive);
         log::info!("ГОСТЬ: мои кандидаты для хоста: {:?}", candidates);
 
         let resp = coord
@@ -358,17 +365,7 @@ impl BmvEngine {
         )
         .await?;
         let port = hub.local_addr()?.port();
-
-        let mut endpoints: Vec<String> = Vec::new();
-        if let Some(ip) = bmv_net::local_ip() {
-            endpoints.push(format!("{ip}:{port}"));
-        }
-        match reflexive {
-            Some(ext) => endpoints.push(ext.to_string()),
-            None => tracing::warn!("STUN не удался, анонсирую без внешнего адреса"),
-        }
-        endpoints.sort();
-        endpoints.dedup();
+        let endpoints = my_endpoints(port, reflexive);
 
         // Запоминаем адреса — по ним пойдут все ре-анонсы (heartbeat + при
         // изменении числа гостей).
@@ -498,7 +495,7 @@ impl BmvEngine {
 
     /// ХОСТ: периодический тик — держит NAT-дырку hub-сокета открытой (иначе
     /// хост за NAT становится недостижим для новых гостей) и обновляет запись в
-    /// каталоге. Звать раз в ~15с из цикла приёма гостей.
+    /// каталоге. Звать раз в `HOST_HEARTBEAT` из цикла приёма гостей.
     pub async fn host_heartbeat(&self, hub: &bmv_net::UdpHub) -> Result<()> {
         hub.nat_keepalive(&self.config.stun.resolve()).await;
         self.announce_state().await
@@ -747,6 +744,32 @@ impl Drop for GuestSlot {
     }
 }
 
+/// КАК УЗЕЛ НАЗЫВАЕТ СЕБЯ ВТОРОЙ СТОРОНЕ: домашний адрес плюс внешний, если STUN
+/// его добыл. Без хвостов и без повторов.
+///
+/// Одно правило на обе стороны. Хост объявляет этот список каталогом, гость
+/// отдаёт его координатору для встречного пробития — дело одно и то же, а
+/// написано было дважды, и копии успели разойтись: у хоста провал STUN писался в
+/// журнал, у гостя проглатывался молча. А это ровно тот случай, который потом
+/// выглядит как «пробитие не работает у половины людей»: без внешнего адреса
+/// узел за NAT недостижим, и знать об этом надо ОБОИМ.
+///
+/// `None` в `reflexive` — STUN не ответил. Список от этого не пустеет: домашний
+/// адрес остаётся, и пир в той же локальной сети достучится.
+fn my_endpoints(port: u16, reflexive: Option<SocketAddr>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    if let Some(ip) = bmv_net::local_ip() {
+        out.push(format!("{ip}:{port}"));
+    }
+    match reflexive {
+        Some(ext) => out.push(ext.to_string()),
+        None => tracing::warn!("STUN не удался — называю себя без внешнего адреса, из интернета меня не достать"),
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
 /// Сколько адресов одного пира вообще имеет смысл пробивать. У живого участника
 /// их два (домашний и внешний), координатор режет список до восьми. Свой потолок
 /// нужен на случай ЧУЖОГО координатора: по каждому адресу уходит 48 пачек UDP с
@@ -981,6 +1004,32 @@ mod announce_tests {
         );
         let _ = session.await;
         guest.abort();
+    }
+
+    /// КАК УЗЕЛ НАЗЫВАЕТ СЕБЯ — ОДИНАКОВО У ХОСТА И У ГОСТЯ. Список писался
+    /// дважды, и копии разошлись: провал STUN у хоста попадал в журнал, у гостя
+    /// исчезал молча. Хвост без внешнего адреса означает «из интернета меня не
+    /// достать» для обоих одинаково.
+    #[test]
+    fn a_node_names_itself_the_same_way_on_both_sides() {
+        let ext: SocketAddr = "45.11.22.33:40000".parse().unwrap();
+        let with = my_endpoints(40000, Some(ext));
+        assert!(with.contains(&ext.to_string()), "внешний адрес обязан попасть в список: {with:?}");
+
+        // Без STUN список НЕ пустеет: домашний адрес остаётся, пир из той же
+        // локальной сети достучится.
+        let without = my_endpoints(40000, None);
+        assert!(!without.contains(&ext.to_string()));
+        assert_eq!(with.len(), without.len() + 1, "провал STUN обязан стоить ровно один адрес");
+
+        // ПОВТОР ОБЯЗАН СХЛОПЫВАТЬСЯ. Узел без NAT (машина с белым адресом)
+        // видит из STUN РОВНО СВОЙ адрес — и тогда он называл бы себя дважды.
+        // Каждый лишний адрес в списке стоит второй стороне 12 секунд UDP-пачек
+        // в никуда, а хост получает их по числу гостей.
+        if let Some(ip) = bmv_net::local_ip() {
+            let same: SocketAddr = format!("{ip}:40000").parse().unwrap();
+            assert_eq!(my_endpoints(40000, Some(same)), vec![same.to_string()], "свой же адрес назван дважды");
+        }
     }
 
     /// ЦЕЛИ ПРОБИВАНИЯ — НЕ ПО ЧУЖИМ СЛОВАМ. Адреса приходят от гостя (и от хоста
