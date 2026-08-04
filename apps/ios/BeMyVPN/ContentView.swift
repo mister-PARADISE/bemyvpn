@@ -147,7 +147,7 @@ struct NavBar: View {
         // ВТОРОЙ ПАРЯЩИЙ СЛОЙ: отделка та же, что у панели состояния
         // (floatSurface). Свой цвет, подобранный на глаз, разошёлся бы с
         // панелью при первой же правке темы. `up` — бар прижат снизу.
-        .background(floatSurface(radius: 28, stroke: Color.white.opacity(0.05), up: true))
+        .background(floatSurface(radius: 28, stroke: Theme.hairlineFloat, up: true))
         .padding(.horizontal, 18)
         // safe-area пробита на корне (ContentView), поэтому зазор снизу задаём
         // руками. Нужно ОДНОВРЕМЕННО: (1) не влезать в зону home-indicator внизу
@@ -191,7 +191,7 @@ struct NavBar: View {
         // Рамка появилась затем, чтобы «я на этой вкладке» отличалось не одним
         // лишь цветом: раньше у ячейки-перехода её не было вовсе.
         .background(active ? RoundedRectangle(cornerRadius: innerR, style: .continuous).fill(Theme.picked())
-            .overlay(RoundedRectangle(cornerRadius: innerR, style: .continuous).stroke(Theme.accent.opacity(0.4), lineWidth: 1)) : nil)
+            .overlay(RoundedRectangle(cornerRadius: innerR, style: .continuous).stroke(Theme.edge(), lineWidth: 1)) : nil)
         .overlay(alignment: .top) {
             if let live {
                 Circle().fill(live).frame(width: 7, height: 7)
@@ -216,7 +216,7 @@ struct NavBar: View {
         .frame(maxWidth: .infinity).padding(.vertical, 8)
         .background(
             RoundedRectangle(cornerRadius: innerR, style: .continuous).fill(Theme.picked(hue))
-                .overlay(RoundedRectangle(cornerRadius: innerR, style: .continuous).stroke(hue.opacity(0.4), lineWidth: 1))
+                .overlay(RoundedRectangle(cornerRadius: innerR, style: .continuous).stroke(Theme.edge(hue), lineWidth: 1))
         )
         .contentShape(Rectangle())
         .onTapGesture(perform: tap)
@@ -264,14 +264,42 @@ struct NavBar: View {
 
 // ── переиспользуемое ──────────────────────────────────────────────────────────
 
-struct Dot: View {
-    let color: Color
-    var pulse = false
-    @State private var on = false
+/// ДИСК СОСТОЯНИЯ — ОДНА ДЕТАЛЬ НА ВСЕ РАЗМЕРЫ.
+///
+/// Заливка `discFill` плюс кольцо `discRing` были написаны девятью копиями с
+/// диаметрами 38/72/74/84/88 — по одной на каждое место, где диск понадобился.
+///
+/// Размер здесь ЕДИНСТВЕННЫЙ параметр — `d`. Ни своей заливки, ни толщины
+/// кольца, ни тени: как только у диска появится второй способ выглядеть,
+/// начнётся вторая копия. Значок кладёт вызывающий.
+struct StateDisc<Icon: View>: View {
+    let tint: Color
+    var d: CGFloat = 38
+    /// Расходящаяся волна — «идёт процесс». Всегда 1.2с и ×1.28.
+    var pulsing = false
+    @ViewBuilder let icon: Icon
     var body: some View {
-        Circle().fill(color).frame(width: 11, height: 11)
-            .opacity(pulse && on ? 0.35 : 1)
-            .onAppear { if pulse { withAnimation(.easeInOut(duration: 1).repeatForever()) { on = true } } }
+        ZStack {
+            if pulsing {
+                // Фаза волны считается от ЧАСОВ, а не от анимации состояния.
+                // Диск живёт внутри прижатой панели, а та гасит анимацию у всего
+                // поддерева (см. PinnedPanel) — и `withAnimation`, и
+                // `.animation(_:value:)` там просто не проигрываются, кольцо
+                // замирало бы на первом кадре. TimelineView от транзакций не
+                // зависит вовсе. Ровно так же пульс сделан на десктопе
+                // (animation-tick) и на Android (rememberInfiniteTransition).
+                TimelineView(.animation) { ctx in
+                    let t = ctx.date.timeIntervalSinceReferenceDate
+                        .truncatingRemainder(dividingBy: 1.2) / 1.2
+                    Circle().stroke(tint.opacity(0.5), lineWidth: 2)
+                        .scaleEffect(1 + 0.28 * t).opacity(0.7 * (1 - t))
+                }
+            }
+            Circle().fill(Theme.discFill(tint))
+            Circle().stroke(Theme.discRing(tint), lineWidth: 1)
+            icon
+        }
+        .frame(width: d, height: d)
     }
 }
 
@@ -330,14 +358,15 @@ private func tileBackground(_ accent: Color?) -> some View {
     RoundedRectangle(cornerRadius: 12, style: .continuous)
         .fill(Theme.tile)
         .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous)
-            .stroke(accent ?? Color.white.opacity(0.07), lineWidth: 1))
+            .stroke(accent ?? Theme.hairline, lineWidth: 1))
 }
 
 /// Строка состояния для РАБОТАЮЩЕГО режима: значок кружком, название, часы.
 ///
-/// Значок никуда не девается и в работе — он опознаёт экран с одного взгляда.
-/// Но держать 84pt картинки там, где нужны код и цифры, расточительно: панель
-/// прижата к верху и висит на экране постоянно.
+/// Диск здесь вчетверо меньше геройского — тот же `StateDisc`, только с другим
+/// `d`. Значок никуда не девается и в работе: он опознаёт экран с одного
+/// взгляда. Но держать 72pt картинки там, где нужны код и цифры, расточительно:
+/// панель прижата к верху и висит на экране постоянно.
 struct StatusLine: View {
     let icon: String
     let title: String
@@ -345,12 +374,9 @@ struct StatusLine: View {
     let tint: Color
     var body: some View {
         HStack(spacing: 10) {
-            ZStack {
-                Circle().fill(tint.opacity(0.13))
-                Circle().stroke(tint.opacity(0.3), lineWidth: 1)
+            StateDisc(tint: tint) {
                 Image(systemName: icon).font(.system(size: 17, weight: .semibold)).foregroundColor(tint)
             }
-            .frame(width: 38, height: 38)
             Text(title).foregroundColor(Theme.fg).font(.system(size: 17, weight: .heavy))
                 .lineLimit(1).minimumScaleFactor(0.7)
             Spacer(minLength: 6)
@@ -376,7 +402,7 @@ struct ShareButtons: View {
                 UIPasteboard.general.string = code
                 UINotificationFeedbackGenerator().notificationOccurred(.success)
                 withAnimation(.easeOut(duration: 0.15)) { copied = true }
-                DispatchQueue.main.asyncAfter(deadline: .now() + 1.3) { withAnimation { copied = false } }
+                DispatchQueue.main.asyncAfter(deadline: .now() + Theme.copiedMs) { withAnimation { copied = false } }
             }
             button("qrcode", "QR-код", done: false) { qrCode = code }
         }
@@ -396,7 +422,7 @@ struct ShareButtons: View {
             // в components.slint).
             .background(RoundedRectangle(cornerRadius: 15, style: .continuous).fill(Theme.tile)
                 .overlay(RoundedRectangle(cornerRadius: 15, style: .continuous)
-                    .stroke(Theme.accent.opacity(done ? 0.5 : 0.24), lineWidth: 1)))
+                    .stroke(done ? Theme.edgeDone() : Theme.accent.opacity(0.24), lineWidth: 1)))
         }.buttonStyle(PressStyle())
     }
 }
@@ -411,7 +437,7 @@ struct QuietButton: View {
         Button {
             action()
             withAnimation(.easeOut(duration: 0.15)) { did = true }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.3) { withAnimation { did = false } }
+            DispatchQueue.main.asyncAfter(deadline: .now() + Theme.copiedMs) { withAnimation { did = false } }
         } label: {
             HStack(spacing: 6) {
                 Image(systemName: did ? "checkmark" : icon).font(.system(size: 12, weight: .bold))
@@ -420,7 +446,7 @@ struct QuietButton: View {
             .foregroundColor(did ? Theme.accent : Theme.dim)
             .frame(maxWidth: .infinity).frame(height: 34)
             .background(RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .stroke(did ? Theme.accent.opacity(0.5) : Color.white.opacity(0.08), lineWidth: 1))
+                .stroke(did ? Theme.edgeDone() : Theme.hairline, lineWidth: 1))
         }.buttonStyle(PressStyle())
     }
 }
@@ -491,34 +517,21 @@ struct PinnedPanel<Content: View>: View {
 }
 
 /// Крупный круг статуса — для состояний, где показывать больше нечего.
+/// Тот же `StateDisc`, что и в строке состояния, только вдвое крупнее.
+///
+/// Свечения здесь больше нет: параметр `glowing` не передавался НИ РАЗУ, то есть
+/// тень всегда рисовалась прозрачной.
 struct HeroCircle: View {
     let icon: String
     let tint: Color
     var pulsing = false
-    var glowing = false
     var body: some View {
-        ZStack {
-            if pulsing {
-                // Фаза волны считается от ЧАСОВ, а не от анимации состояния.
-                // Круг живёт внутри прижатой панели, а та гасит анимацию у всего
-                // поддерева (см. PinnedPanel) — и `withAnimation`, и
-                // `.animation(_:value:)` там просто не проигрываются, кольцо
-                // замирало бы на первом кадре. TimelineView от транзакций не
-                // зависит вовсе. Ровно так же пульс сделан на десктопе
-                // (animation-tick) и на Android (rememberInfiniteTransition).
-                TimelineView(.animation) { ctx in
-                    let t = ctx.date.timeIntervalSinceReferenceDate
-                        .truncatingRemainder(dividingBy: 1.2) / 1.2
-                    Circle().stroke(tint.opacity(0.5), lineWidth: 2).frame(width: 72, height: 72)
-                        .scaleEffect(1 + 0.28 * t).opacity(0.7 * (1 - t))
-                }
-            }
-            Circle().fill(tint.opacity(0.13)).frame(width: 72, height: 72)
-            Circle().stroke(tint.opacity(0.3), lineWidth: 1).frame(width: 72, height: 72)
+        StateDisc(tint: tint, d: 72, pulsing: pulsing) {
             Image(systemName: icon).font(.system(size: 30, weight: .semibold)).foregroundColor(tint)
         }
+        // 74, а не 72: два пикселя воздуха вокруг диска были и раньше — панель
+        // считает по ним свою высоту.
         .frame(height: 74)
-        .shadow(color: tint.opacity(glowing ? 0.32 : 0), radius: 16)
     }
 }
 
@@ -528,47 +541,6 @@ struct PressStyle: ButtonStyle {
         configuration.label
             .scaleEffect(configuration.isPressed ? 0.97 : 1)
             .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
-    }
-}
-
-/// Кнопка в карточке: значок + подпись, приподнятая поверхность, отклик на палец.
-/// Если задан `copy`, кладёт его в буфер и на 1.3с превращается в «Скопировано ✓» —
-/// без этого тап по «копировать» ощущается как несработавшая кнопка.
-struct CardButton: View {
-    let icon: String
-    let title: String
-    var copy: String? = nil
-    var action: (() -> Void)? = nil
-    @State private var copied = false
-
-    var body: some View {
-        Button {
-            if let c = copy {
-                guard !c.isEmpty else { return }
-                UIPasteboard.general.string = c
-                UINotificationFeedbackGenerator().notificationOccurred(.success)
-                withAnimation(.easeOut(duration: 0.15)) { copied = true }
-                DispatchQueue.main.asyncAfter(deadline: .now() + 1.3) { withAnimation { copied = false } }
-            } else {
-                UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                action?()
-            }
-        } label: {
-            HStack(spacing: 7) {
-                Image(systemName: copied ? "checkmark" : icon).font(.system(size: 13, weight: .bold))
-                    .foregroundColor(Theme.accent)
-                Text(copied ? "Скопировано" : title).font(.system(size: 14, weight: .bold))
-                    .foregroundColor(copied ? Theme.accent : Theme.fg)
-                    .lineLimit(1).minimumScaleFactor(0.8)
-            }
-            .frame(maxWidth: .infinity).padding(.vertical, 12)
-            .background(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .fill(Theme.tile)
-                    .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .stroke(copied ? Theme.accent.opacity(0.5) : Color.white.opacity(0.08), lineWidth: 1))
-            )
-        }.buttonStyle(PressStyle())
     }
 }
 
@@ -584,7 +556,7 @@ struct BigCopyButton: View {
             UIPasteboard.general.string = value
             UINotificationFeedbackGenerator().notificationOccurred(.success)
             withAnimation(.easeOut(duration: 0.15)) { copied = true }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) { withAnimation { copied = false } }
+            DispatchQueue.main.asyncAfter(deadline: .now() + Theme.copiedMs) { withAnimation { copied = false } }
         } label: {
             HStack(spacing: 8) {
                 Image(systemName: copied ? "checkmark" : "doc.on.doc").font(.system(size: 15, weight: .bold))
@@ -596,7 +568,7 @@ struct BigCopyButton: View {
                 RoundedRectangle(cornerRadius: 14, style: .continuous)
                     .fill(Theme.picked())
                     .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .stroke(Theme.accent.opacity(copied ? 0.7 : 0.4), lineWidth: 1))
+                        .stroke(Theme.edge(bright: copied), lineWidth: 1))
             )
         }.buttonStyle(PressStyle())
     }
@@ -662,29 +634,6 @@ struct StatTile: View {
     }
 }
 
-/// Плитка-кнопка: тап запускает действие (например, перепроверить пинг).
-/// Иконка акцентом — тот же намёк «меня можно тыкнуть», что и у копирования,
-/// но другая: круговая стрелка вместо листков.
-struct ActionTile: View {
-    let label: String; let value: String
-    var tint: Color = Theme.fg
-    let icon: String
-    var busy = false
-    let action: () -> Void
-    var body: some View {
-        Button {
-            UIImpactFeedbackGenerator(style: .light).impactOccurred()
-            action()
-        } label: {
-            TileBody(label: label, value: busy ? "проверяю…" : value, valueColor: busy ? Theme.dim : tint) {
-                if busy { ProgressView().controlSize(.mini).tint(Theme.accent) }
-                else { Image(systemName: icon).font(.system(size: 11, weight: .bold)).foregroundColor(Theme.accent) }
-            }
-            .background(tileBackground(nil))
-        }.buttonStyle(PressStyle())
-    }
-}
-
 /// Плитка со значением, которое копируется тапом (код, IP).
 /// От обычной отличается только акцентной иконкой — не рамкой и не фоном,
 /// иначе плитки в одном блоке выглядят разнородными.
@@ -698,7 +647,7 @@ struct CopyTile: View {
             UIPasteboard.general.string = value
             UIImpactFeedbackGenerator(style: .light).impactOccurred()
             withAnimation(.easeOut(duration: 0.15)) { copied = true }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.3) { withAnimation { copied = false } }
+            DispatchQueue.main.asyncAfter(deadline: .now() + Theme.copiedMs) { withAnimation { copied = false } }
         } label: {
             TileBody(label: label, value: copied ? "Скопировано" : value,
                      valueColor: copied ? Theme.accent : Theme.fg, mono: !copied) {
@@ -707,29 +656,14 @@ struct CopyTile: View {
                         .foregroundColor(Theme.accent).font(.system(size: 11, weight: .bold))
                 }
             }
-            .background(tileBackground(copied ? Theme.accent.opacity(0.5) : nil))
+            .background(tileBackground(copied ? Theme.edgeDone() : nil))
         }.buttonStyle(.plain)
-    }
-}
-
-struct Card<Content: View>: View {
-    @ViewBuilder let content: Content
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) { content }
-            .padding(16).frame(maxWidth: .infinity, alignment: .leading)
-            .background(Theme.card).cornerRadius(16)
     }
 }
 
 func sectionLabel(_ t: String) -> some View {
     Text(t).foregroundColor(Theme.dim).font(.system(size: 13, weight: .bold))
         .frame(maxWidth: .infinity, alignment: .leading).padding(.top, 6)
-}
-func tabHeader(_ icon: String, _ title: String) -> some View {
-    HStack(spacing: 10) {
-        Image(systemName: icon).font(.system(size: 23, weight: .semibold)).foregroundColor(Theme.accent)
-        Text(title).font(.system(size: 26, weight: .heavy)).foregroundColor(Theme.fg)
-    }
 }
 /// Вылет гашения от контура парящего блока наружу. Отступы прокрутки считаются
 /// ОТ НЕГО — покоящееся содержимое не должно попадать в зону гашения, иначе оно
@@ -888,7 +822,7 @@ func calmButton(_ title: String) -> some View {
             // L*) и читалась вдавленной.
             RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Theme.picked())
                 .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .stroke(Theme.accent.opacity(0.4), lineWidth: 1))
+                    .stroke(Theme.edge(), lineWidth: 1))
         )
 }
 /// Флаг для «аватарки» слева в списке (🌍 если страна не определилась).
@@ -921,8 +855,6 @@ func hostSubtitle(_ h: Host) -> Text {
 struct ServerTab: View {
     @EnvironmentObject var app: AppState
     @State private var coordField = ""
-
-    @State private var pulsing = false
 
     // Кольцо отвечает на «сервер доступен?» — это ДА/НЕТ. Качество связи
     // показывает пинг отдельной плиткой. Раньше кольцо краснело от медленного
@@ -1073,7 +1005,7 @@ struct VPNTab: View {
             RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .fill(highlighted ? Theme.picked() : Theme.card)
                 .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .stroke(highlighted ? Theme.accent.opacity(0.4) : Color.clear, lineWidth: 1))
+                    .stroke(highlighted ? Theme.edge() : Color.clear, lineWidth: 1))
         )
         .contentShape(Rectangle())
         .onTapGesture { if app.vpnState == 0 { app.connectByCode(id) } }
@@ -1101,7 +1033,7 @@ struct VPNTab: View {
                         Image(systemName: "doc.on.clipboard").font(.system(size: 17, weight: .semibold)).foregroundColor(Theme.dim)
                             .frame(width: 44, height: 44)
                             .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Theme.cardHi)
-                                .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(Color.white.opacity(0.08), lineWidth: 1)))
+                                .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(Theme.hairline, lineWidth: 1)))
                     }
                     // Подкраска вместо сплошного синего: он спорил с акцентом
                     // всего экрана. Стрелка крупнее соседней — здесь она главная.
@@ -1109,7 +1041,7 @@ struct VPNTab: View {
                         Image(systemName: "arrow.right").font(.system(size: 21, weight: .bold))
                             .foregroundColor(Theme.accent).frame(width: 52, height: 44)
                             .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Theme.picked())
-                                .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(Theme.accent.opacity(0.4), lineWidth: 1)))
+                                .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(Theme.edge(), lineWidth: 1)))
                     }
                 }
                 .padding(5).background(Theme.card).cornerRadius(14)
@@ -1121,7 +1053,7 @@ struct VPNTab: View {
                     }
                     .frame(maxWidth: .infinity).padding(.vertical, 13)
                     .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Theme.tile)
-                        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(Color.white.opacity(0.08), lineWidth: 1)))
+                        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(Theme.hairline, lineWidth: 1)))
                 }
 
                 // Недавние показываем ТОЛЬКО пока они онлайн (есть в живом
@@ -1187,8 +1119,6 @@ struct VPNTab: View {
 struct VPNHero: View {
     @EnvironmentObject var app: AppState
     @Binding var inviteCode: String?
-    @State private var pulsing = false
-    @State private var copiedInvite = false
 
     private var tint: Color {
         // ЦВЕТ СОСТОЯНИЯ, А НЕ ЦВЕТ ЭКРАНА. Выключено — dim: раньше здесь стоял
@@ -1374,7 +1304,7 @@ struct HostCard: View {
             RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .fill(expanded ? Theme.touched() : Theme.card)
                 .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .stroke(expanded ? Theme.accent.opacity(0.28) : Color.white.opacity(0.05), lineWidth: 1))
+                    .stroke(expanded ? Theme.edgeSoft() : Theme.hairline, lineWidth: 1))
         )
         // Фон и рамка ПЕРЕТЕКАЮТ, а не переключаются рывком (на Android это
         // animateColorAsState). Без этого подсветка раскрытой карточки
@@ -1398,7 +1328,7 @@ struct HostCard: View {
     private var flagAvatar: some View {
         ZStack {
             RoundedRectangle(cornerRadius: 14, style: .continuous).fill(expanded ? Theme.tile : Theme.cardHi)
-            RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(Color.white.opacity(0.08), lineWidth: 1)
+            RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(Theme.hairline, lineWidth: 1)
             Text(hostFlag(host)).font(.system(size: 29)).opacity(0.85)
         }
         .frame(width: 56, height: 56)
@@ -1583,7 +1513,7 @@ struct HostTab: View {
                                 .background(app.hostMax == v ? Theme.picked() : Theme.card)
                                 .cornerRadius(10)
                                 .overlay(RoundedRectangle(cornerRadius: 10)
-                                    .stroke(app.hostMax == v ? Theme.accent.opacity(0.4) : Color.clear, lineWidth: 1))
+                                    .stroke(app.hostMax == v ? Theme.edge() : Color.clear, lineWidth: 1))
                         }
                     }
                 }
@@ -1632,7 +1562,7 @@ struct HostTab: View {
         .background(on ? Theme.picked() : Theme.card)
         .cornerRadius(14)
         .overlay(RoundedRectangle(cornerRadius: 14)
-            .stroke(on ? Theme.accent.opacity(0.4) : Color.white.opacity(0.07), lineWidth: 1))
+            .stroke(on ? Theme.edge() : Theme.hairline, lineWidth: 1))
         .contentShape(Rectangle())
         .onTapGesture { UIImpactFeedbackGenerator(style: .light).impactOccurred(); tap() }
     }

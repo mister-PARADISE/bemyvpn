@@ -56,7 +56,7 @@ fun NavBar(app: AppState, modifier: Modifier = Modifier) {
             // ВТОРОЙ ПАРЯЩИЙ СЛОЙ: фон и тень — те же, что у панели состояния
             // (floatSurface). Свой цвет, подобранный на глаз, разошёлся бы с
             // панелью при первой же правке темы.
-            .floatSurface(28.dp, Color.White.copy(alpha = 0.05f))
+            .floatSurface(28.dp, Theme.hairlineFloat)
             .padding(6.dp),
         horizontalArrangement = Arrangement.spacedBy(4.dp),
     ) {
@@ -104,7 +104,7 @@ private fun Cell(
         tween(180), label = "pill",
     )
     val edge by animateColorAsState(
-        if (active) Theme.accent.copy(alpha = 0.4f) else Color.Transparent,
+        if (active) Theme.edge() else Color.Transparent,
         tween(180), label = "pillEdge",
     )
     val tint = if (active) Theme.accent else Theme.dim
@@ -188,7 +188,7 @@ private fun Action(modifier: Modifier, icon: ImageVector, label: String, hue: Co
     Column(
         modifier
             .background(Theme.picked(hue), RoundedCornerShape(innerR))
-            .border(1.dp, hue.copy(alpha = 0.4f), RoundedCornerShape(innerR))
+            .border(1.dp, Theme.edge(hue), RoundedCornerShape(innerR))
             .tappable(tap)
             .padding(vertical = 8.dp),
         horizontalAlignment = Alignment.CenterHorizontally,

@@ -8,7 +8,7 @@
 // Адрес показывается доменом, без «https://»: схема у нас всегда одна, и шесть
 // символов перед каждым адресом ничего не сообщают.
 import { Theme } from "theme.slint";
-import { StatTile, CopyTile, SectionLabel, CalmButton, Field, Badge, StatusLine, FloatCard, FloatHalo } from "components.slint";
+import { StatTile, CopyTile, SectionLabel, CalmButton, Field, StateDisc, StatusLine, FloatCard, FloatHalo } from "components.slint";
 import { IconAntenna, IconAntennaOff } from "icons.slint";
 import { ScrollView } from "std-widgets.slint";
 
@@ -192,32 +192,14 @@ export component ServerPage inherits Rectangle {
                     // ── связи нет или проверяем: крупный круг ──
                     if root.coord-state != 1: Rectangle {
                         height: 74px;
-                        if root.coord-state == 0: Rectangle {
-                            property <float> t: Math.mod(animation-tick() / 1ms, 1200) / 1200;
-                            property <length> d: 72px * (1 + 0.28 * self.t);
-                            x: (parent.width - self.d) / 2;
-                            y: (74px - self.d) / 2;
-                            width: self.d; height: self.d;
-                            border-radius: self.d / 2;
-                            border-width: 2px;
-                            border-color: root.tint.with-alpha(0.5 * (1 - self.t));
-                        }
-                        Rectangle {
-                            x: (parent.width - 72px) / 2;
+                        StateDisc {
+                            x: (parent.width - self.width) / 2;
                             y: 1px;
-                            width: 72px; height: 72px;
-                            border-radius: 36px;
-                            background: root.tint.with-alpha(0.13);
-                            border-width: 1px;
-                            border-color: root.tint.with-alpha(0.3);
-                            HorizontalLayout {
-                                alignment: center;
-                                VerticalLayout {
-                                    alignment: center;
-                                    if root.coord-state == 0: IconAntenna { width: 32px; height: 32px; tint: root.tint; }
-                                    if root.coord-state == 2: IconAntennaOff { width: 32px; height: 32px; tint: root.tint; hole: Theme.bg; }
-                                }
-                            }
+                            d: 72px;
+                            tint: root.tint;
+                            pulsing: root.coord-state == 0;
+                            if root.coord-state == 0: IconAntenna { width: 32px; height: 32px; tint: root.tint; }
+                            if root.coord-state == 2: IconAntennaOff { width: 32px; height: 32px; tint: root.tint; hole: Theme.bg; }
                         }
                     }
                     if root.coord-state != 1: Text {

@@ -1,6 +1,7 @@
 package org.bemyvpn.ui
 
 import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.EaseOut
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
@@ -136,15 +137,70 @@ fun Modifier.tappable(onTap: () -> Unit): Modifier = composed {
     clickable(interactionSource = remember { MutableInteractionSource() }, indication = null, onClick = onTap)
 }
 
-// ── Точка статуса (с пульсом) ────────────────────────────────────────────────
+/**
+ * ДИСК СОСТОЯНИЯ — ОДНА ДЕТАЛЬ НА ВСЕ РАЗМЕРЫ.
+ *
+ * Заливка `discFill` плюс кольцо `discRing` были написаны девятью копиями с
+ * диаметрами 38/72/74/84/88 — по одной на каждое место, где диск понадобился.
+ *
+ * Размер здесь ЕДИНСТВЕННЫЙ параметр — `d`. Ни своей заливки, ни толщины кольца,
+ * ни тени: как только у диска появится второй способ выглядеть, начнётся вторая
+ * копия. Значок кладёт вызывающий.
+ */
 @Composable
-fun Dot(color: Color, pulse: Boolean = false) {
-    val alpha = if (pulse) {
-        val inf = rememberInfiniteTransition(label = "dot")
-        val a by inf.animateFloat(1f, 0.35f, infiniteRepeatable(tween(1000), RepeatMode.Reverse), label = "dotA")
-        a
-    } else 1f
-    Box(Modifier.size(11.dp).alpha(alpha).background(color, CircleShape))
+fun StateDisc(
+    tint: Color,
+    d: Dp = 38.dp,
+    /** Расходящаяся волна — «идёт процесс». Всегда 1200мс и ×1.28. */
+    pulsing: Boolean = false,
+    icon: @Composable () -> Unit,
+) {
+    Box(Modifier.size(d), contentAlignment = Alignment.Center) {
+        if (pulsing) {
+            val inf = rememberInfiniteTransition(label = "disc")
+            val p by inf.animateFloat(
+                0f, 1f,
+                infiniteRepeatable(tween(1200, easing = EaseOut), RepeatMode.Restart),
+                label = "discP",
+            )
+            // scale+alpha одним слоем: `Modifier.scale` сюда не позвать — имя
+            // `scale` в этом файле уже занято рисовальным (см. `floatHalo`), а
+            // оба модификатора всё равно раскладываются ровно в этот вызов.
+            Box(
+                Modifier
+                    .size(d)
+                    .graphicsLayer {
+                        scaleX = 1f + 0.28f * p
+                        scaleY = 1f + 0.28f * p
+                        alpha = 0.7f * (1f - p)
+                    }
+                    .border(2.dp, tint.copy(alpha = 0.5f), CircleShape),
+            )
+        }
+        Box(
+            Modifier
+                .size(d)
+                .background(Theme.discFill(tint), CircleShape)
+                .border(1.dp, Theme.discRing(tint), CircleShape),
+            contentAlignment = Alignment.Center,
+        ) { icon() }
+    }
+}
+
+/**
+ * Круг героя: диск состояния в геройском размере плюс волна, пока идёт процесс
+ * (проверка/пробитие). Общий для всех трёх вкладок — оттого и живёт здесь, а не
+ * в файле одной из них, как раньше.
+ */
+@Composable
+fun HeroCircle(tint: Color, icon: ImageVector, pulsing: Boolean) {
+    // Контейнер 108dp вмещает расходящееся кольцо ЦЕЛИКОМ — иначе герой-Column с
+    // animateContentSize обрезает верх кольца («заезжает под блок»).
+    Box(Modifier.size(108.dp), contentAlignment = Alignment.Center) {
+        // 72, а не 84: панель прижата и висит на экране постоянно — каждый лишний
+        // десяток пикселей забирается у содержимого.
+        StateDisc(tint, 72.dp, pulsing) { Icon(icon, null, Modifier.size(31.dp), tint = tint) }
+    }
 }
 
 // ── Секундный тикер (аналог TimelineView .periodic 1с) ───────────────────────
@@ -160,7 +216,7 @@ fun rememberSecondTick(): Long {
 /** Фон плитки: единый для всех — разница только в содержимом, не в оформлении. */
 fun Modifier.tileBackground(accent: Color? = null): Modifier = this
     .background(Theme.tile, RoundedCornerShape(12.dp))
-    .border(1.dp, accent ?: Color.White.copy(alpha = 0.07f), RoundedCornerShape(12.dp))
+    .border(1.dp, accent ?: Theme.hairline, RoundedCornerShape(12.dp))
 
 /** Общая «шапка» плитки — подпись мелко сверху, значение снизу. */
 @Composable
@@ -216,21 +272,6 @@ fun StatTile(label: String, value: String, modifier: Modifier = Modifier, symbol
     Box(modifier.tileBackground()) { TileBody(label, value, symbol, tint) }
 }
 
-/** Плитка-кнопка: тап запускает действие (например, перепроверить пинг). */
-@Composable
-fun ActionTile(
-    label: String, value: String, modifier: Modifier = Modifier,
-    tint: Color = Theme.fg, icon: ImageVector, busy: Boolean = false, action: () -> Unit,
-) {
-    val ctx = LocalContext.current
-    Box(modifier.tileBackground().pressable { Haptics.tap(ctx); action() }) {
-        TileBody(label, if (busy) "проверяю…" else value, valueColor = if (busy) Theme.dim else tint) {
-            if (busy) CircularProgressIndicator(Modifier.size(12.dp), color = Theme.accent, strokeWidth = 1.5.dp)
-            else Icon(icon, null, Modifier.size(13.dp), tint = Theme.accent)
-        }
-    }
-}
-
 /** Плитка со значением, которое копируется тапом (код, IP). */
 @Composable
 fun CopyTile(label: String, value: String, modifier: Modifier = Modifier) {
@@ -238,8 +279,8 @@ fun CopyTile(label: String, value: String, modifier: Modifier = Modifier) {
     val ctx = LocalContext.current
     var copied by remember { mutableStateOf(false) }
     val empty = value.isEmpty() || value == "—"
-    LaunchedEffect(copied) { if (copied) { delay(1300); copied = false } }
-    Box(modifier.tileBackground(if (copied) Theme.accent.copy(alpha = 0.5f) else null).tappable {
+    LaunchedEffect(copied) { if (copied) { delay(Theme.COPIED_MS); copied = false } }
+    Box(modifier.tileBackground(if (copied) Theme.edgeDone() else null).tappable {
         if (!empty) { clipboard.setText(AnnotatedString(value)); Haptics.tap(ctx); copied = true }
     }) {
         TileBody(
@@ -256,37 +297,6 @@ fun CopyTile(label: String, value: String, modifier: Modifier = Modifier) {
 
 // ── Кнопки ───────────────────────────────────────────────────────────────────
 
-/**
- * Кнопка в карточке: значок + подпись, приподнятая поверхность, отклик на палец.
- * Если задан copy, кладёт его в буфер и на 1.3с превращается в «Скопировано ✓».
- */
-@Composable
-fun CardButton(icon: ImageVector, title: String, modifier: Modifier = Modifier, copy: String? = null, action: (() -> Unit)? = null) {
-    val clipboard = LocalClipboardManager.current
-    val ctx = LocalContext.current
-    var copied by remember { mutableStateOf(false) }
-    LaunchedEffect(copied) { if (copied) { delay(1300); copied = false } }
-    Row(
-        modifier
-            .background(Theme.tile, RoundedCornerShape(12.dp))
-            .border(1.dp, if (copied) Theme.accent.copy(alpha = 0.5f) else Color.White.copy(alpha = 0.08f), RoundedCornerShape(12.dp))
-            .pressable {
-                if (copy != null) {
-                    if (copy.isNotEmpty()) { clipboard.setText(AnnotatedString(copy)); Haptics.success(ctx); copied = true }
-                } else { Haptics.tap(ctx); action?.invoke() }
-            }
-            .padding(vertical = 12.dp),
-        horizontalArrangement = Arrangement.spacedBy(7.dp, Alignment.CenterHorizontally),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Icon(if (copied) Icons.Filled.Check else icon, null, Modifier.size(15.dp), tint = Theme.accent)
-        Text(
-            if (copied) "Скопировано" else title, color = if (copied) Theme.accent else Theme.fg,
-            fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis,
-        )
-    }
-}
-
 /** Крупная кнопка «скопировать» под QR-кодом. Спокойная, как и все остальные:
  *  подкраска + рамка + цветной текст. Сплошной градиент был единственным ярким
  *  пятном на почти пустом экране и перетягивал взгляд с самого кода. */
@@ -295,12 +305,12 @@ fun BigCopyButton(value: String, modifier: Modifier = Modifier) {
     val clipboard = LocalClipboardManager.current
     val ctx = LocalContext.current
     var copied by remember { mutableStateOf(false) }
-    LaunchedEffect(copied) { if (copied) { delay(1400); copied = false } }
+    LaunchedEffect(copied) { if (copied) { delay(Theme.COPIED_MS); copied = false } }
     val hue = Theme.accent
     Row(
         modifier
             .background(Theme.picked(hue), RoundedCornerShape(14.dp))
-            .border(1.dp, hue.copy(alpha = if (copied) 0.7f else 0.4f), RoundedCornerShape(14.dp))
+            .border(1.dp, Theme.edge(hue, bright = copied), RoundedCornerShape(14.dp))
             .pressable {
                 if (value.isNotEmpty()) { clipboard.setText(AnnotatedString(value)); Haptics.success(ctx); copied = true }
             }.padding(vertical = 15.dp),
@@ -332,7 +342,7 @@ fun CalmButton(title: String, modifier: Modifier = Modifier, enabled: Boolean = 
             // фоном — выходила ТЕМНЕЕ соседнего поля ввода (13.6 против 15.5 по
             // L*) и читалась вдавленной.
             .background(Theme.picked(), RoundedCornerShape(14.dp))
-            .border(1.dp, Theme.accent.copy(alpha = 0.4f), RoundedCornerShape(14.dp))
+            .border(1.dp, Theme.edge(), RoundedCornerShape(14.dp))
             .pressable(enabled = enabled, onTap = onTap)
             .padding(vertical = 15.dp),
         contentAlignment = Alignment.Center,
@@ -344,27 +354,11 @@ fun CalmButton(title: String, modifier: Modifier = Modifier, enabled: Boolean = 
 // ── Карточка и подписи ───────────────────────────────────────────────────────
 
 @Composable
-fun Card(modifier: Modifier = Modifier, content: @Composable () -> Unit) {
-    Column(
-        modifier.fillMaxWidth().background(Theme.card, RoundedCornerShape(16.dp)).padding(16.dp).animateContentSize(),
-        verticalArrangement = Arrangement.spacedBy(10.dp),
-    ) { content() }
-}
-
-@Composable
 fun SectionLabel(t: String) {
     Text(
         t, color = Theme.dim, fontSize = 13.sp, fontWeight = FontWeight.Bold,
         modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
     )
-}
-
-@Composable
-fun TabHeader(icon: ImageVector, title: String) {
-    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-        Icon(icon, null, Modifier.size(26.dp), tint = Theme.accent)
-        Text(title, color = Theme.fg, fontSize = 26.sp, fontWeight = FontWeight.ExtraBold)
-    }
 }
 
 // ── Поле ввода в стиле iOS (без Material-декора) ─────────────────────────────
@@ -618,8 +612,9 @@ fun PinnedPanel(tint: Color, content: @Composable ColumnScope.() -> Unit) {
 /**
  * Строка состояния для РАБОТАЮЩЕГО режима: значок кружком, название, часы.
  *
- * Значок никуда не девается и в работе — он опознаёт экран с одного взгляда. Но
- * держать 84dp картинки там, где нужны код и цифры, расточительно: панель прижата
+ * Диск здесь вчетверо меньше геройского — тот же `StateDisc`, только с другим `d`.
+ * Значок никуда не девается и в работе: он опознаёт экран с одного взгляда. Но
+ * держать 72dp картинки там, где нужны код и цифры, расточительно: панель прижата
  * к верху и висит на экране постоянно.
  */
 @Composable
@@ -629,13 +624,7 @@ fun StatusLine(icon: ImageVector, title: String, tint: Color, clock: String? = n
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        Box(
-            Modifier
-                .size(38.dp)
-                .background(tint.copy(alpha = 0.13f), CircleShape)
-                .border(1.dp, tint.copy(alpha = 0.3f), CircleShape),
-            contentAlignment = Alignment.Center,
-        ) { Icon(icon, null, Modifier.size(19.dp), tint = tint) }
+        StateDisc(tint) { Icon(icon, null, Modifier.size(19.dp), tint = tint) }
         Text(
             title, color = Theme.fg, fontSize = 17.sp, fontWeight = FontWeight.Black,
             maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f),
@@ -657,7 +646,7 @@ fun ShareButtons(code: String, showQr: (String) -> Unit) {
     val clipboard = LocalClipboardManager.current
     val ctx = LocalContext.current
     var copied by remember { mutableStateOf(false) }
-    LaunchedEffect(copied) { if (copied) { delay(1300); copied = false } }
+    LaunchedEffect(copied) { if (copied) { delay(Theme.COPIED_MS); copied = false } }
     Row(Modifier.fillMaxWidth().padding(top = 2.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         ShareButton(
             if (copied) Icons.Filled.Check else Icons.Filled.ContentCopy,
@@ -678,7 +667,7 @@ private fun ShareButton(icon: ImageVector, title: String, done: Boolean, modifie
             // парящей панели, а панель светлее карточек списка (см. ShareButton
             // в components.slint).
             .background(Theme.tile, RoundedCornerShape(15.dp))
-            .border(1.dp, hue.copy(alpha = if (done) 0.5f else 0.24f), RoundedCornerShape(15.dp))
+            .border(1.dp, if (done) Theme.edgeDone(hue) else hue.copy(alpha = 0.24f), RoundedCornerShape(15.dp))
             .pressable(onTap = tap),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
@@ -692,13 +681,13 @@ private fun ShareButton(icon: ImageVector, title: String, done: Boolean, modifie
 @Composable
 fun QuietButton(icon: ImageVector, title: String, tap: () -> Unit) {
     var did by remember { mutableStateOf(false) }
-    LaunchedEffect(did) { if (did) { delay(1300); did = false } }
+    LaunchedEffect(did) { if (did) { delay(Theme.COPIED_MS); did = false } }
     val hue = if (did) Theme.accent else Theme.dim
     Row(
         Modifier
             .fillMaxWidth()
             .height(34.dp)
-            .border(1.dp, if (did) Theme.accent.copy(alpha = 0.5f) else Color.White.copy(alpha = 0.08f), RoundedCornerShape(10.dp))
+            .border(1.dp, if (did) Theme.edgeDone() else Theme.hairline, RoundedCornerShape(10.dp))
             .pressable(onTap = { tap(); did = true }),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally),

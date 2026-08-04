@@ -61,7 +61,7 @@ component NavCell inherits Rectangle {
                   : root.current ? Theme.picked(Theme.accent)
                   : transparent;
         border-width: (root.acting || root.current) ? 1px : 0px;
-        border-color: (root.acting ? root.hue : Theme.accent).with-alpha(0.4);
+        border-color: Theme.edge(root.acting ? root.hue : Theme.accent, false);
         animate background, border-color { duration: 160ms; easing: ease-in-out; }
     }
     VerticalLayout {

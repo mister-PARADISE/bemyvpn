@@ -1,5 +1,12 @@
-// Дизайн-токены — ЕДИНСТВЕННОЕ место цветов и метрик. Палитра — байт-в-байт
-// iOS Theme.swift (эталон вида). Меняешь тему — меняешь здесь.
+// Дизайн-токены окна.
+//
+// ЦВЕТА И ДОЛИ СЮДА НЕ ПИШУТ РУКАМИ. Они живут в `design/palette.toml` и
+// раскладываются отсюда и по трём другим темам скриптом `design/sync-palette.py`
+// — см. размеченный участок ниже. Правка мимо источника продержится до первого
+// прогона сторожа (`apps/bmv-gui/tests/palette_is_one_source.rs`).
+//
+// Всё, что ВНЕ участка, написано руками: пояснения, отступы страницы, геометрия
+// ореола. Их скрипт не трогает.
 export global Theme {
     // ── ЛЕСТНИЦА ПОВЕРХНОСТЕЙ: ПЯТЬ СТУПЕНЕЙ, ФОН НЕЙТРАЛЬНЫЙ ──
     //
@@ -19,13 +26,7 @@ export global Theme {
     // 4.5 тремя подписями разом (dim 5.34, акцент 4.58, красный 4.56). Уголь
     // темнее, и на самой светлой ступени (s3) худшая подпись теперь 5.27
     // (красный), dim 5.76, янтарь 7.21, акцент 7.89, fg 11.85.
-    out property <color> bg: #08090B;         // s0 — страница        L*  2.45
-    out property <color> card: #15181D;       // s1 — карточка списка, поле, кнопка «поделиться»  L*  8.14
-    out property <color> card-hi: #1D2128;    // s2 — раскрытая карточка, чип                     L* 12.62
-    out property <color> tile: #2A2F39;       // s3 — плитка внутри панели/карточки               L* 19.31
-    /// Парящее (панель состояния и нав-бар) — между s2 и s3.
-    out property <color> float-bg: #232830;   // L* 15.94
-
+    //
     // ── ЗЕЛЁНОГО КАК ОТДЕЛЬНОГО ЦВЕТА БОЛЬШЕ НЕТ ─────────────────────────────
     //
     // Акцент — мята. Прежний зелёный «работает» (#34E29E) от неё не отличим
@@ -36,12 +37,19 @@ export global Theme {
     //   • «работает»   = залитая площадь (точка связи, значок в панели).
     // Оттого же «выключено» больше не красится акцентом: у неё свой цвет — dim.
     // Иначе кольцо панели горело бы мятой и при «выключен», и при «подключено».
-    out property <color> accent: #2FE0A8;
-    out property <color> fg: #EDF1F8;
-    out property <color> dim: #A5AAB5;
-    out property <color> red: #FF7974;
-    out property <color> amber: #F5B14C;
-
+    //
+    // ── КРОМКИ: ИХ РОВНО ПЯТЬ, И БОЛЬШЕ НЕ БЫВАЕТ ────────────────────────────
+    //
+    // Это не запрет, а ИСЧЕРПЫВАЮЩИЙ СПИСОК: любая рамка в приложении — одна из
+    // пяти (`hairline`, `hairline-float`, `edge`, `edge-soft`, `edge-done`), и
+    // выбирать между «0.05», «0.07» и «0.08» больше не приходится. Раньше
+    // приходилось: кромка невыбранного была написана в двадцати девяти местах
+    // пятью разными числами, и три оболочки уже разошлись — здесь стояло
+    // `#FFFFFF14` (0.0784) там, где на телефонах 0.08.
+    //
+    // Числа записаны ДОЛЯМИ, а не шестнадцатеричной альфой: `#FFFFFF14`
+    // невозможно сверить глазом с `0.08` в Swift, а `with-alpha(0.08)` — можно.
+    //
     // ── ВЫБРАННОЕ: ОДНО ПРАВИЛО НА ВСЁ ПРИЛОЖЕНИЕ ────────────────────────────
     //
     // ВЫБРАННОЕ = СВОЯ СТУПЕНЬ ПЛЮС ПОДКРАСКА, А НЕ ПОДКРАСКА ПОВЕРХ ФОНА
@@ -65,12 +73,31 @@ export global Theme {
     // ЦВЕТ — НЕ ЕДИНСТВЕННЫЙ ПРИЗНАК. Выбранное везде несёт ещё и рамку в
     // оттенке, и подпись со значком в нём же: человеку с нарушением
     // цветовосприятия остаётся рамка, которой у невыбранного нет вовсе.
-    //
-    // `mix(a, f)` в Slint отдаёт f своего цвета и (1−f) чужого, отсюда 0.86/0.94.
+    // ── НАЧАЛО: значения из design/palette.toml (правит design/sync-palette.py) ──
+    out property <color> bg:       #08090B;       // s0 — страница
+    out property <color> card:     #15181D;       // s1 — карточка списка, поле ввода, кнопка «поделиться»
+    out property <color> card-hi:  #1D2128;       // s2 — раскрытая карточка, чип
+    out property <color> tile:     #2A2F39;       // s3 — плитка внутри панели или карточки
+    out property <color> float-bg: #232830;       // парящее: панель состояния и нав-бар
+    out property <color> accent:   #2FE0A8;       // мята: и «это можно нажать», и «это работает»
+    out property <color> fg:       #EDF1F8;       // основной текст
+    out property <color> dim:      #A5AAB5;       // второстепенный текст и «выключено»
+    out property <color> red:      #FF7974;       // беда, которая сама не пройдёт
+    out property <color> amber:    #F5B14C;       // беда, которая пройдёт сама
+
+    out property <color> hairline: #FFFFFF.with-alpha(0.08);
+    out property <color> hairline-float: #FFFFFF.with-alpha(0.05);
+    public pure function edge(tint: color, hover: bool) -> color { return tint.with-alpha(hover ? 0.7 : 0.4); }
+    public pure function edge-soft(tint: color) -> color { return tint.with-alpha(0.28); }
+    public pure function edge-done(tint: color) -> color { return tint.with-alpha(0.5); }
+    public pure function disc-fill(tint: color) -> color { return tint.with-alpha(0.13); }
+    public pure function disc-ring(tint: color) -> color { return tint.with-alpha(0.3); }
+
     public pure function picked(tint: color) -> color { return root.card.mix(tint, 0.86); }
     public pure function touched(tint: color) -> color { return root.card.mix(tint, 0.94); }
-    /// Рамка выбранного. Под курсором ярче — заливке подниматься уже некуда.
-    public pure function edge(tint: color, hover: bool) -> color { return tint.with-alpha(hover ? 0.7 : 0.4); }
+
+    out property <duration> copied-ms: 1300ms;
+    // ── КОНЕЦ: значения из design/palette.toml ──
 
     out property <length> pad: 20px;     // отступ страницы (iOS .padding(20))
     out property <length> gap: 14px;     // зазор секций (iOS spacing: 14)

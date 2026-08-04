@@ -1,5 +1,5 @@
-// Переиспользуемые блоки — построчный перенос iOS ContentView.swift:
-// плитки (Stat/Copy/Action), кнопки, карточка, герой-круг с пульсом, поле ввода.
+// Переиспользуемые блоки — построчный перенос iOS ContentView.swift: диск
+// состояния, плитки, кнопки, парящий блок с ореолом, поле ввода, чипы.
 import { Theme } from "theme.slint";
 import { IconCopy, IconCheck, IconRefresh, IconAntennaOff } from "icons.slint";
 
@@ -31,64 +31,57 @@ export struct HostRow {
     ping-ms: int,
 }
 
-// ── Точка статуса (с пульсом) ────────────────────────────────────────────────
-export component Dot inherits Rectangle {
-    in property <color> fill: Theme.accent;
-    in property <bool> pulse: false;
-    property <float> t: Math.mod(animation-tick() / 1ms, 2000) / 2000;
-    width: 11px;
-    height: 11px;
-    border-radius: 5.5px;
-    background: root.fill;
-    opacity: pulse ? (t < 0.5 ? 1 - 1.3 * t : 0.35 + 1.3 * (t - 0.5)) : 1.0;
-}
-
-// ── Герой-круг: заливка/кольцо в цвет статуса + расходящаяся волна ───────────
-export component HeroCircle inherits Rectangle {
+/// ДИСК СОСТОЯНИЯ — ОДНА ДЕТАЛЬ НА ВСЕ РАЗМЕРЫ.
+///
+/// Заливка `tint·disc-fill` плюс кольцо `tint·disc-ring` были написаны девятью
+/// копиями с диаметрами 38/72/74/84/88 — по одной на каждое место, где диск
+/// понадобился. Копии разошлись мгновенно: 84 в мёртвом компоненте против 72 на
+/// живых страницах, из-за чего компонент и лежал мёртвым — страницам он не
+/// подходил размером, а размер был вписан числом.
+///
+/// Размер здесь ЕДИНСТВЕННЫЙ параметр — `d`. Ни своей заливки, ни толщины
+/// кольца, ни тени: как только у диска появится второй способ выглядеть,
+/// начнётся вторая копия. Значок кладёт вызывающий (`@children`).
+export component StateDisc inherits Rectangle {
     in property <color> tint: Theme.accent;
+    in property <length> d: 38px;
+    /// Расходящаяся волна — «идёт процесс». Всегда 1200мс и ×1.28.
     in property <bool> pulsing: false;
-    in property <bool> glow: false;
-    property <float> t: Math.mod(animation-tick() / 1ms, 1200) / 1200;
-    height: 88px;
-    // Волна расходится, пока идёт процесс (проверка/пробитие).
-    if pulsing: Rectangle {
-        property <length> d: 84px * (1 + 0.28 * root.t);
-        x: (parent.width - self.d) / 2;
-        y: (88px - self.d) / 2;
-        width: self.d;
-        height: self.d;
-        border-radius: self.d / 2;
+    width: root.d;
+    height: root.d;
+    // Часы тикают только пока волна нужна: элемент существует под `if`, и
+    // вместе с ним исчезает и перерисовка каждого кадра.
+    if root.pulsing: Rectangle {
+        property <float> t: Math.mod(animation-tick() / 1ms, 1200) / 1200;
+        property <length> ring: root.d * (1 + 0.28 * self.t);
+        x: (root.d - self.ring) / 2;
+        y: (root.d - self.ring) / 2;
+        width: self.ring;
+        height: self.ring;
+        border-radius: self.ring / 2;
         border-width: 2px;
-        border-color: root.tint.with-alpha(0.5 * (1 - root.t));
-    }
-    // Свечение (тень iOS) — мягкий ореол позади круга.
-    if glow: Rectangle {
-        x: (parent.width - 108px) / 2;
-        y: -10px;
-        width: 108px;
-        height: 108px;
-        border-radius: 54px;
-        background: @radial-gradient(circle, root.tint.with-alpha(0.22) 0%, transparent 70%);
+        border-color: root.tint.with-alpha(0.5 * (1 - self.t));
     }
     Rectangle {
-        x: (parent.width - 84px) / 2;
-        y: 2px;
-        width: 84px;
-        height: 84px;
-        border-radius: 42px;
-        background: root.tint.with-alpha(0.13);
+        width: 100%;
+        height: 100%;
+        border-radius: root.d / 2;
+        background: Theme.disc-fill(root.tint);
         border-width: 1px;
-        border-color: root.tint.with-alpha(0.3);
+        border-color: Theme.disc-ring(root.tint);
     }
-    // Значок кладёт страница (@children поверх круга).
-    @children
+    // Значок кладёт вызывающий.
+    HorizontalLayout {
+        alignment: center;
+        VerticalLayout { alignment: center; @children }
+    }
 }
 
 // ── Плитки ───────────────────────────────────────────────────────────────────
 
 // Каркас плитки: подпись мелко сверху, значение снизу (TileBody на iOS).
 component TileFrame inherits Rectangle {
-    in property <color> stroke: #FFFFFF12;
+    in property <color> stroke: Theme.hairline;
     // Равные колонки: и min-, и preferred-width = 0 → ширину задаёт ТОЛЬКО stretch
     // (иначе Slint сперва даёт каждой плитке preferred по её содержимому, и длинный
     // код перетягивает место у IP). clip — чтобы длинное значение не вылезало.
@@ -104,7 +97,7 @@ component TileFrame inherits Rectangle {
 }
 
 /// Подпись плитки — мелкая, ЗАГЛАВНЫМИ. Один компонент на все три плитки:
-/// раньше эти три строки были скопированы в StatTile, CopyTile и ActionTile, и
+/// раньше эти три строки были скопированы в каждую плитку по отдельности, и
 /// починка надстрочных знаков (ниже) в одной из копий тихо разошлась бы с
 /// остальными.
 ///
@@ -220,9 +213,9 @@ export component CopyTile inherits TileFrame {
     in property <string> value;
     callback copy(string);
     property <bool> copied: false;
-    stroke: copied ? Theme.accent.with-alpha(0.5) : #FFFFFF12;
+    stroke: copied ? Theme.edge-done(Theme.accent) : Theme.hairline;
     reset := Timer {
-        interval: 1.3s;
+        interval: Theme.copied-ms;
         running: root.copied;
         triggered() => { root.copied = false; }
     }
@@ -254,34 +247,6 @@ export component CopyTile inherits TileFrame {
             }
         }
     }
-}
-
-// Плитка-кнопка (перепроверить пинг).
-export component ActionTile inherits TileFrame {
-    in property <string> label;
-    in property <string> value;
-    in property <color> tint: Theme.fg;
-    in property <bool> busy: false;
-    callback action;
-    VerticalLayout {
-        padding-left: 11px; padding-right: 11px; padding-top: 9px; padding-bottom: 9px;
-        spacing: 4px;
-        TileLabel { text: root.label; }
-        HorizontalLayout {
-            spacing: 5px;
-            Text {
-                text: root.busy ? "проверяю…" : root.value;
-                color: root.busy ? Theme.dim : root.tint;
-                font-size: 13.5px; font-weight: 600;
-                overflow: elide; horizontal-stretch: 1; vertical-alignment: center;
-            }
-            VerticalLayout {
-                alignment: center;
-                IconRefresh { width: 13px; height: 13px; tint: Theme.accent; opacity: root.busy ? 0.5 : 1.0; }
-            }
-        }
-    }
-    TouchArea { clicked => { root.action(); } }
 }
 
 /// ПАРЯЩИЙ БЛОК — панель состояния и нав-бар. Одна отделка на оба: два слоя над
@@ -318,7 +283,7 @@ export component ActionTile inherits TileFrame {
 export component FloatCard inherits Rectangle {
     in property <length> radius: 22px;
     /// Рамка по бокам и снизу. У панели её место занимает кольцо состояния.
-    in property <color> stroke: #FFFFFF0D;
+    in property <color> stroke: Theme.hairline-float;
     /// Блок прижат снизу (нав-бар) — тень уходит ВВЕРХ, к содержимому.
     in property <bool> lift-up: false;
     border-radius: root.radius;
@@ -367,37 +332,6 @@ export component FloatHalo inherits Rectangle {
 
 // ── Кнопки ───────────────────────────────────────────────────────────────────
 
-// Кнопка в карточке: значок + подпись на приподнятой плитке (CardButton iOS).
-export component CardButton inherits Rectangle {
-    in property <string> title;
-    in property <bool> copied: false;    // внешнее «Скопировано ✓» (управляет страница)
-    in property <bool> feedback: false;  // сам показать «Скопировано» после клика (копи-кнопки)
-    property <bool> did: false;
-    property <bool> show: root.copied || root.did;
-    callback clicked;
-    height: 44px;
-    min-width: 0px;         // в ряду «Код | QR» кнопки строго 50/50 —
-    preferred-width: 0px;   // ширину задаёт stretch, а не длина «Скопировано»
-    clip: true;
-    border-radius: 12px;
-    background: ta.has-hover ? Theme.tile.brighter(0.12) : Theme.tile;
-    border-width: 1px;
-    border-color: root.show ? Theme.accent.with-alpha(0.5) : #FFFFFF14;
-    animate border-color { duration: 180ms; easing: ease-out; }
-    reset := Timer { interval: 1.3s; running: root.did; triggered() => { root.did = false; } }
-    HorizontalLayout {
-        alignment: center;
-        spacing: 7px;
-        VerticalLayout { alignment: center; @children }
-        Text {
-            text: root.show ? "Скопировано" : root.title;
-            color: root.show ? Theme.accent : Theme.fg;
-            font-size: 14px; font-weight: 700; overflow: elide; min-width: 0px; vertical-alignment: center;
-        }
-    }
-    ta := TouchArea { clicked => { if (root.feedback) { root.did = true; } root.clicked(); } }
-}
-
 /// Главная кнопка страницы. СПОКОЙНАЯ: подкраска ~15% + рамка ~40% + цветной
 /// текст — тот же приём, что у ShareButton, у действующей ячейки нав-бара и у
 /// «Подключить» в карточке хоста.
@@ -432,16 +366,6 @@ export component CalmButton inherits Rectangle {
 }
 
 // ── Карточка и подписи ───────────────────────────────────────────────────────
-
-export component Card inherits Rectangle {
-    border-radius: 16px;
-    background: Theme.card;
-    VerticalLayout {
-        padding: 16px;
-        spacing: 10px;
-        @children
-    }
-}
 
 export component SectionLabel inherits Text {
     color: Theme.dim;
@@ -497,7 +421,7 @@ export component BigChip inherits Rectangle {
         : ta.has-hover ? Theme.touched(Theme.accent)
         : Theme.card;
     border-width: 1px;
-    border-color: root.on ? Theme.edge(Theme.accent, ta.has-hover) : #FFFFFF12;
+    border-color: root.on ? Theme.edge(Theme.accent, ta.has-hover) : Theme.hairline;
     animate background, border-color { duration: 160ms; easing: ease-out; }
     VerticalLayout {
         alignment: center;
@@ -516,31 +440,18 @@ export component BigChip inherits Rectangle {
 
 // ── Рабочее состояние: значок компактный, место отдано пользе ────────────────
 
-/// Кружок со значком — тот же опознавательный знак, что и в герой-круге, но
-/// вчетверо меньше. Убирать значок в работе нельзя: он опознаёт экран с одного
-/// взгляда; а держать 74px картинки там, где нужны код и цифры, — расточительство,
-/// потому что панель висит на экране постоянно.
-export component Badge inherits Rectangle {
-    in property <color> tint: Theme.accent;
-    width: 38px;
-    height: 38px;
-    border-radius: 19px;
-    background: root.tint.with-alpha(0.13);
-    border-width: 1px;
-    border-color: root.tint.with-alpha(0.3);
-    HorizontalLayout {
-        alignment: center;
-        VerticalLayout { alignment: center; @children }
-    }
-}
-
 /// Строка состояния для работающего режима: значок, название, часы справа.
+///
+/// Диск здесь вчетверо меньше геройского — тот же `StateDisc`, только с другим
+/// `d`. Убирать значок в работе нельзя: он опознаёт экран с одного взгляда; а
+/// держать 72px картинки там, где нужны код и цифры, — расточительство, потому
+/// что панель висит на экране постоянно.
 export component StatusLine inherits HorizontalLayout {
     in property <string> name;
     in property <string> clock;
     in property <color> tint: Theme.accent;
     spacing: 10px;
-    Badge { tint: root.tint; @children }
+    StateDisc { d: 38px; tint: root.tint; @children }
     VerticalLayout {
         alignment: center;
         horizontal-stretch: 1;
@@ -579,9 +490,9 @@ export component QuietButton inherits Rectangle {
     border-radius: 10px;
     background: ta.has-hover ? #FFFFFF0A : transparent;
     border-width: 1px;
-    border-color: root.did ? Theme.accent.with-alpha(0.5) : #FFFFFF14;
+    border-color: root.did ? Theme.edge-done(Theme.accent) : Theme.hairline;
     animate border-color { duration: 180ms; easing: ease-out; }
-    reset := Timer { interval: 1.3s; running: root.did; triggered() => { root.did = false; } }
+    reset := Timer { interval: Theme.copied-ms; running: root.did; triggered() => { root.did = false; } }
     HorizontalLayout {
         alignment: center;
         spacing: 6px;
@@ -616,12 +527,12 @@ export component ShareButton inherits Rectangle {
     // значило бы посадить её НИЖЕ собственной подложки — в одной панели плитки
     // были бы над фоном, а кнопки под ним. Правило приложения одно: кнопка на
     // поверхности — на ступень выше этой поверхности (так же покрашены
-    // CardButton и «Сканировать QR» на карточке).
+    // «Сканировать QR» на карточке).
     background: ta.has-hover ? Theme.tile.brighter(0.12) : Theme.tile;
     border-width: 1px;
-    border-color: Theme.accent.with-alpha(root.did ? 0.5 : 0.24);
+    border-color: root.did ? Theme.edge-done(Theme.accent) : Theme.accent.with-alpha(0.24);
     animate border-color, background { duration: 160ms; easing: ease-out; }
-    reset := Timer { interval: 1.3s; running: root.did; triggered() => { root.did = false; } }
+    reset := Timer { interval: Theme.copied-ms; running: root.did; triggered() => { root.did = false; } }
     HorizontalLayout {
         alignment: center;
         spacing: 8px;

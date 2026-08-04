@@ -11,8 +11,8 @@
 // Код сети НЕ показывается, пока раздача выключена: давать его некому.
 // Копирование и QR живут на нижней полке (app.slint) — под большим пальцем.
 import { Theme } from "theme.slint";
-import { Card, StatTile, CopyTile, CardButton, SectionLabel, Field, BigChip,
-         Badge, StatusLine, BigCode, QuietButton, ShareButton, FloatCard, FloatHalo } from "components.slint";
+import { StatTile, CopyTile, SectionLabel, Field, BigChip, StateDisc,
+         StatusLine, BigCode, QuietButton, ShareButton, FloatCard, FloatHalo } from "components.slint";
 import { IconRouter, IconRenew, IconCopy, IconQr, IconGlobe, IconEyeOff, IconPeople, IconWarning,
          IconShieldLock, IconMask, IconShieldSlash } from "icons.slint";
 import { ScrollView, Slider } from "std-widgets.slint";
@@ -296,31 +296,13 @@ export component HostPage inherits Rectangle {
                     if root.host-state != 2: Rectangle {
                         height: 74px;
                         // Волна расходится, пока идёт запуск.
-                        if root.host-state == 1: Rectangle {
-                            property <float> t: Math.mod(animation-tick() / 1ms, 1200) / 1200;
-                            property <length> d: 72px * (1 + 0.28 * self.t);
-                            x: (parent.width - self.d) / 2;
-                            y: (74px - self.d) / 2;
-                            width: self.d; height: self.d;
-                            border-radius: self.d / 2;
-                            border-width: 2px;
-                            border-color: root.tint.with-alpha(0.5 * (1 - self.t));
-                        }
-                        Rectangle {
-                            x: (parent.width - 72px) / 2;
+                        StateDisc {
+                            x: (parent.width - self.width) / 2;
                             y: 1px;
-                            width: 72px; height: 72px;
-                            border-radius: 36px;
-                            background: root.tint.with-alpha(0.13);
-                            border-width: 1px;
-                            border-color: root.tint.with-alpha(0.3);
-                            HorizontalLayout {
-                                alignment: center;
-                                VerticalLayout {
-                                    alignment: center;
-                                    IconRouter { width: 32px; height: 32px; tint: root.tint; }
-                                }
-                            }
+                            d: 72px;
+                            tint: root.tint;
+                            pulsing: root.host-state == 1;
+                            IconRouter { width: 32px; height: 32px; tint: root.tint; }
                         }
                     }
                     if root.host-state != 2: Text {

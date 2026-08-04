@@ -2,7 +2,6 @@ package org.bemyvpn.ui
 
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.material.icons.filled.Autorenew
-import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.SignalWifiOff
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.animateContentSize
@@ -31,7 +30,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -39,15 +37,12 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
-import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material.icons.filled.People
-import androidx.compose.material.icons.filled.QrCode2
 import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material.icons.filled.RemoveModerator
 import androidx.compose.material.icons.filled.Shield
@@ -64,14 +59,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.rotate
-import androidx.compose.ui.draw.shadow
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.style.TextAlign
@@ -119,7 +111,7 @@ fun VpnTab(app: AppState, bottomPad: Dp, openScanner: () -> Unit) {
             Modifier
                 .fillMaxWidth()
                 .background(Theme.tile, RoundedCornerShape(12.dp))
-                .border(1.dp, Color.White.copy(alpha = 0.08f), RoundedCornerShape(12.dp))
+                .border(1.dp, Theme.hairline, RoundedCornerShape(12.dp))
                 .pressable(onTap = openScanner)
                 .padding(vertical = 13.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
@@ -203,7 +195,7 @@ private fun CodeField(app: AppState, code: String, onCode: (String) -> Unit) {
         Box(
             Modifier.size(width = 44.dp, height = 44.dp)
                 .background(Theme.cardHi, RoundedCornerShape(10.dp))
-                .border(1.dp, Color.White.copy(alpha = 0.08f), RoundedCornerShape(10.dp))
+                .border(1.dp, Theme.hairline, RoundedCornerShape(10.dp))
                 .pressable { clipboard.getText()?.text?.let(onCode) },
             contentAlignment = Alignment.Center,
         ) {
@@ -214,7 +206,7 @@ private fun CodeField(app: AppState, code: String, onCode: (String) -> Unit) {
             // экрана. Стрелка крупнее соседней — здесь она главная.
             Modifier.size(width = 52.dp, height = 44.dp)
                 .background(Theme.picked(), RoundedCornerShape(10.dp))
-                .border(1.dp, Theme.accent.copy(alpha = 0.4f), RoundedCornerShape(10.dp))
+                .border(1.dp, Theme.edge(), RoundedCornerShape(10.dp))
                 .pressable { val c = code; onCode(""); app.connectByCode(c) },
             contentAlignment = Alignment.Center,
         ) {
@@ -234,7 +226,7 @@ private fun RecentChip(app: AppState, id: String, highlighted: Boolean) {
     Row(
         Modifier
             .background(if (highlighted) Theme.picked() else Theme.card, RoundedCornerShape(16.dp))
-            .border(1.dp, if (highlighted) Theme.accent.copy(alpha = 0.4f) else Color.Transparent, RoundedCornerShape(16.dp))
+            .border(1.dp, if (highlighted) Theme.edge() else Color.Transparent, RoundedCornerShape(16.dp))
             .tappable { if (app.vpnState == 0) app.connectByCode(id) }
             .padding(horizontal = 13.dp, vertical = 9.dp),
         horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -297,7 +289,7 @@ private fun VpnHero(app: AppState, showInvite: (String) -> Unit) {
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                HeroCircle(tint = tint, icon = icon, pulsing = app.vpnState == 1, glow = false)
+                HeroCircle(tint = tint, icon = icon, pulsing = app.vpnState == 1)
                 Text(
                     title, color = Theme.fg, fontSize = 21.sp, fontWeight = FontWeight.ExtraBold,
                     maxLines = 1, overflow = TextOverflow.Ellipsis,
@@ -349,23 +341,6 @@ private fun ConnectedExtras(app: AppState, showInvite: (String) -> Unit) {
     }
 }
 
-@Composable
-private fun InviteButton(icon: ImageVector, title: String, done: Boolean, modifier: Modifier, tap: () -> Unit) {
-    val tint = Theme.accent
-    Row(
-        modifier
-            .background(Theme.tile, RoundedCornerShape(12.dp))
-            .border(1.dp, if (done) Theme.accent.copy(alpha = 0.5f) else Color.White.copy(alpha = 0.08f), RoundedCornerShape(12.dp))
-            .pressable(onTap = tap)
-            .padding(vertical = 11.dp),
-        horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Icon(icon, null, Modifier.size(15.dp), tint = tint)
-        Text(title, color = tint, fontSize = 13.sp, fontWeight = FontWeight.Bold)
-    }
-}
-
 // ── Карточка хоста ───────────────────────────────────────────────────────────
 
 @Composable
@@ -379,7 +354,7 @@ fun HostCard(app: AppState, host: Host) {
     // свёрнутых соседей (15.5), а плитки по-прежнему выше её на 4.9.
     val bg by animateColorAsState(if (expanded) Theme.touched() else Theme.card, tween(200), label = "cardBg")
     val stroke by animateColorAsState(
-        if (expanded) Theme.accent.copy(alpha = 0.28f) else Color.White.copy(alpha = 0.05f),
+        if (expanded) Theme.edgeSoft() else Theme.hairline,
         tween(200), label = "cardStroke",
     )
 
@@ -414,7 +389,7 @@ fun HostCard(app: AppState, host: Host) {
             Box(
                 Modifier.size(56.dp)
                     .background(if (expanded) Theme.tile else Theme.cardHi, RoundedCornerShape(14.dp))
-                    .border(1.dp, Color.White.copy(alpha = 0.08f), RoundedCornerShape(14.dp)),
+                    .border(1.dp, Theme.hairline, RoundedCornerShape(14.dp)),
                 contentAlignment = Alignment.Center,
             ) { Text(hostFlag(host), fontSize = 29.sp, modifier = Modifier.alpha(0.85f)) }
 
@@ -544,7 +519,7 @@ private fun UpdateBanner(app: AppState) {
             // страницы давали L* 9.6 — ТЕМНЕЕ обычной карточки списка, и сообщение
             // о новой версии выглядело провалом в фоне.
             .background(Theme.touched(tint))
-            .border(1.dp, tint.copy(alpha = 0.28f), RoundedCornerShape(14.dp))
+            .border(1.dp, Theme.edgeSoft(tint), RoundedCornerShape(14.dp))
             .heightIn(min = 62.dp)
             .padding(horizontal = 14.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -570,7 +545,7 @@ private fun UpdateBanner(app: AppState) {
                     .height(38.dp)
                     .clip(RoundedCornerShape(11.dp))
                     .background(Theme.picked(btn))
-                    .border(1.dp, btn.copy(alpha = 0.4f), RoundedCornerShape(11.dp))
+                    .border(1.dp, Theme.edge(btn), RoundedCornerShape(11.dp))
                     .clickable { app.doUpdate() }
                     .padding(horizontal = 18.dp),
                 contentAlignment = Alignment.Center,

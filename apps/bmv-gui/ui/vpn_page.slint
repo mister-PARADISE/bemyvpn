@@ -5,8 +5,8 @@
 // цифрам (адрес хоста, гости, часы). Копирование кода сети и QR живут на нижней
 // полке (app.slint), под большим пальцем.
 import { Theme } from "theme.slint";
-import { HostRow, Card, StatTile, PingTile, CopyTile, SectionLabel, Field,
-         Badge, StatusLine, StateChip, ShareButton, CalmButton, FloatCard, FloatHalo } from "components.slint";
+import { HostRow, StatTile, PingTile, CopyTile, SectionLabel, Field, StateDisc,
+         StatusLine, StateChip, ShareButton, CalmButton, FloatCard, FloatHalo } from "components.slint";
 import { IconShield, IconShieldCheck, IconShieldSlash, IconShieldLock, IconMask, IconLock, IconLockOpen,
          IconPeople, IconCopy, IconCheck, IconClose, IconQr, IconScan, IconPaste, IconArrowRight, IconChevronRight, IconChevronUp } from "icons.slint";
 import { ScrollView } from "std-widgets.slint";
@@ -48,7 +48,7 @@ component HostCard inherits Rectangle {
     // выше свёрнутых соседей (8.1), а плитки по-прежнему выше её на 6.2.
     background: root.expanded ? Theme.touched(Theme.accent) : Theme.card;
     border-width: 1px;
-    border-color: root.expanded ? Theme.accent.with-alpha(0.28) : #FFFFFF0D;
+    border-color: root.expanded ? Theme.edge-soft(Theme.accent) : Theme.hairline;
     animate background, border-color { duration: 200ms; easing: ease-in-out; }
 
     VerticalLayout {
@@ -75,7 +75,7 @@ component HostCard inherits Rectangle {
                     border-radius: 14px;
                     background: root.expanded ? Theme.tile : Theme.card-hi;
                     border-width: 1px;
-                    border-color: #FFFFFF14;
+                    border-color: Theme.hairline;
                     if h.has-flag: Image { source: h.flag-img; width: 34px; height: 24px; opacity: 0.85; }
                     if !h.has-flag: Text { text: "🌍"; font-size: 26px; opacity: 0.85; }
                 }
@@ -259,7 +259,7 @@ export component VpnPage inherits Rectangle {
                 // провалом в фоне.
                 background: Theme.touched(root.update-state == 3 ? Theme.red : Theme.accent);
                 border-width: 1px;
-                border-color: root.update-state == 3 ? Theme.red.with-alpha(0.3) : Theme.accent.with-alpha(0.28);
+                border-color: Theme.edge-soft(root.update-state == 3 ? Theme.red : Theme.accent);
                 height: 62px;
                 HorizontalLayout {
                     padding: 12px;
@@ -336,7 +336,7 @@ export component VpnPage inherits Rectangle {
                         border-radius: 10px;
                         background: paste-ta.has-hover ? Theme.card-hi.brighter(0.12) : Theme.card-hi;
                         border-width: 1px;
-                        border-color: #FFFFFF14;
+                        border-color: Theme.hairline;
                         VerticalLayout { alignment: center; HorizontalLayout { alignment: center; IconPaste { width: 18px; height: 18px; tint: Theme.dim; } } }
                         paste-ta := TouchArea { clicked => { root.paste(); } }
                     }
@@ -517,33 +517,15 @@ export component VpnPage inherits Rectangle {
                     if root.vpn-state != 2: Rectangle {
                         height: 74px;
                         // Волна расходится, пока идёт пробитие.
-                        if root.vpn-state == 1: Rectangle {
-                            property <float> t: Math.mod(animation-tick() / 1ms, 1200) / 1200;
-                            property <length> d: 72px * (1 + 0.28 * self.t);
-                            x: (parent.width - self.d) / 2;
-                            y: (74px - self.d) / 2;
-                            width: self.d; height: self.d;
-                            border-radius: self.d / 2;
-                            border-width: 2px;
-                            border-color: root.tint.with-alpha(0.5 * (1 - self.t));
-                        }
-                        Rectangle {
-                            x: (parent.width - 72px) / 2;
+                        StateDisc {
+                            x: (parent.width - self.width) / 2;
                             y: 1px;
-                            width: 72px; height: 72px;
-                            border-radius: 36px;
-                            background: root.tint.with-alpha(0.13);
-                            border-width: 1px;
-                            border-color: root.tint.with-alpha(0.3);
-                            HorizontalLayout {
-                                alignment: center;
-                                VerticalLayout {
-                                    alignment: center;
-                                    if root.vpn-state == 0: IconShieldSlash { width: 32px; height: 32px; tint: root.tint; hole: Theme.bg; }
-                                    if root.vpn-state == 1: IconShield { width: 32px; height: 32px; tint: root.tint; }
-                                    if root.vpn-state == 3: IconShieldSlash { width: 32px; height: 32px; tint: Theme.red; hole: Theme.bg; }
-                                }
-                            }
+                            d: 72px;
+                            tint: root.tint;
+                            pulsing: root.vpn-state == 1;
+                            if root.vpn-state == 0: IconShieldSlash { width: 32px; height: 32px; tint: root.tint; hole: Theme.bg; }
+                            if root.vpn-state == 1: IconShield { width: 32px; height: 32px; tint: root.tint; }
+                            if root.vpn-state == 3: IconShieldSlash { width: 32px; height: 32px; tint: Theme.red; hole: Theme.bg; }
                         }
                     }
                     if root.vpn-state != 2: Text {

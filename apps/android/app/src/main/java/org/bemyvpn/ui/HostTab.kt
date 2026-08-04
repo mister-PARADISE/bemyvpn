@@ -111,7 +111,7 @@ fun HostTab(app: AppState, bottomPad: Dp) {
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                HeroCircle(tint = tint, icon = Icons.Filled.Router, pulsing = app.starting, glow = false)
+                HeroCircle(tint = tint, icon = Icons.Filled.Router, pulsing = app.starting)
                 Text(
                     when {
                         app.starting -> "Запускаюсь…"
@@ -207,7 +207,7 @@ fun HostTab(app: AppState, bottomPad: Dp) {
                 Box(
                     Modifier.weight(1f)
                         .background(if (on) Theme.picked() else Theme.card, RoundedCornerShape(10.dp))
-                        .border(1.dp, if (on) Theme.accent.copy(alpha = 0.4f) else Color.Transparent, RoundedCornerShape(10.dp))
+                        .border(1.dp, if (on) Theme.edge() else Color.Transparent, RoundedCornerShape(10.dp))
                         .tappable { app.hostMax = v; app.applyHostNow() }
                         .padding(vertical = 8.dp),
                     contentAlignment = Alignment.Center,
@@ -230,8 +230,6 @@ fun HostTab(app: AppState, bottomPad: Dp) {
         }
         Hint(protoDesc(app.hostProtocol), warn = app.hostProtocol == "plain")
 
-        // Главная кнопка: стать хостом / остановить.
-        val active = app.hosting || app.starting
         // Кнопки «Стать хостом» тут больше нет: она переехала в нав-бар, по
         // общему правилу «ячейка ведёт на вкладку, а на своей вкладке становится
         // включателем». Раньше главное действие лежало под всеми настройками —
@@ -259,11 +257,7 @@ private fun BigChip(icon: ImageVector, name: String, on: Boolean, modifier: Modi
     Column(
         modifier
             .background(if (on) Theme.picked() else Theme.card, RoundedCornerShape(14.dp))
-            .border(
-                1.dp,
-                if (on) Theme.accent.copy(alpha = 0.4f) else Color.White.copy(alpha = 0.07f),
-                RoundedCornerShape(14.dp),
-            )
+            .border(1.dp, if (on) Theme.edge() else Theme.hairline, RoundedCornerShape(14.dp))
             .tappable { Haptics.tap(ctx); tap() }
             .padding(vertical = 14.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
