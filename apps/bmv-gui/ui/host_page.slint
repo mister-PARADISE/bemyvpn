@@ -23,9 +23,13 @@ component ProtoChipIcon inherits Rectangle {
     // Выбранный — акцентом, а не белым по градиенту: чипы стали спокойными
     // (подкраска + рамка), и белый значок на светлой подкраске пропадал бы.
     property <color> tint: on ? Theme.accent : Theme.dim;
-    if id == "noise": IconShieldLock { width: 100%; height: 100%; tint: root.tint; hole: Theme.card; }
+    /// Прорезь в щите — В ЦВЕТ ТОГО, НА ЧЁМ ЗНАЧОК ЛЕЖИТ. У выбранного чипа это
+    /// уже не s1, а подкрашенная ступень, и прежний жёстко вписанный Theme.card
+    /// рисовал бы поперёк щита тёмную щель.
+    in property <color> hole: on ? Theme.picked(Theme.accent) : Theme.card;
+    if id == "noise": IconShieldLock { width: 100%; height: 100%; tint: root.tint; hole: root.hole; }
     if id == "noise-obfs": IconMask { width: 100%; height: 100%; tint: root.tint; }
-    if id == "plain": IconShieldSlash { width: 100%; height: 100%; tint: root.tint; hole: Theme.card; }
+    if id == "plain": IconShieldSlash { width: 100%; height: 100%; tint: root.tint; hole: root.hole; }
 }
 
 export component HostPage inherits Rectangle {
@@ -125,19 +129,23 @@ export component HostPage inherits Rectangle {
             }
             HorizontalLayout {
                 spacing: 6px;
-                // Тот же спокойный приём, что и у кнопок с чипами: выбранное
-                // значение — подкраска + рамка + цветная цифра. Сплошная
-                // синяя плашка на шести кнопках подряд кричала громче, чем
-                // стоит выбор числа.
+                // То же правило, что у чипов: выбранное — своя ступень плюс
+                // подкраска, плюс рамка и цветная цифра. Невыбранная кнопка
+                // теперь на s1, как и чипы двумя блоками выше: раньше эти две
+                // соседние группы «невыбранного» сидели на разных ступенях
+                // (s2 и s1) — на одном экране, в сорока строках друг от друга.
                 for v in [4, 8, 16, 32, 64, 128]: Rectangle {
+                    property <bool> on: root.host-max == v;
                     height: 34px;
                     horizontal-stretch: 1;
                     border-radius: 10px;
-                    background: root.host-max == v ? Theme.accent.with-alpha(0.15) : Theme.card-hi;
+                    background: self.on ? Theme.picked(Theme.accent)
+                        : max-ta.has-hover ? Theme.touched(Theme.accent)
+                        : Theme.card;
                     border-width: 1px;
-                    border-color: root.host-max == v ? Theme.accent.with-alpha(0.4) : transparent;
-                    Text { text: v; color: root.host-max == v ? Theme.accent : Theme.dim; font-size: 13px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; }
-                    TouchArea { clicked => { root.host-max = v; root.apply-host(); } }
+                    border-color: self.on ? Theme.edge(Theme.accent, max-ta.has-hover) : transparent;
+                    Text { text: v; color: parent.on ? Theme.accent : Theme.dim; font-size: 13px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; }
+                    max-ta := TouchArea { clicked => { root.host-max = v; root.apply-host(); } }
                 }
             }
 
@@ -207,10 +215,9 @@ export component HostPage inherits Rectangle {
             padding-bottom: 12px;
             // Общий парящий блок: фон и тень — те же, что у нав-бара.
             FloatCard {
-                // Кольцо состояния — ТИШЕ СОДЕРЖИМОГО и уведено под кромку
-                // света: на 0.45 обводка была ярче самой панели, и вся «высота»
-                // держалась на ней. Покажут состояние иначе — панель не станет
-                // от этого плоской.
+                // Кольцо состояния — ТИШЕ СОДЕРЖИМОГО: на 0.45 обводка была
+                // ярче самой панели, и вся «высота» держалась на ней. Покажут
+                // состояние иначе — панель не станет от этого плоской.
                 stroke: root.tint.with-alpha(0.30);
                 // Глушит клики по пустым местам карточки: без неё тап
                 // проваливался бы на карточку хоста, лежащую ПОД панелью.
@@ -257,7 +264,8 @@ export component HostPage inherits Rectangle {
                         spacing: 8px;
                         StatTile {
                             label: "ПРОТОКОЛ"; value: root.proto-name; horizontal-stretch: 1;
-                            ProtoChipIcon { id: root.host-protocol; width: 12px; height: 12px; }
+                            // Значок лежит на плитке, значит и прорезь щита — в цвет плитки.
+                            ProtoChipIcon { id: root.host-protocol; hole: Theme.tile; width: 12px; height: 12px; }
                         }
                         CopyTile {
                             label: "ВАШ IP"; value: root.host-ip == "" ? "—" : root.host-ip;

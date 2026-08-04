@@ -15,14 +15,19 @@ import { ScrollView } from "std-widgets.slint";
 component ProtoIcon inherits Rectangle {
     in property <string> id;
     in property <color> tint: Theme.dim;
-    if id == "" || id == "noise" || id == "noise-aes": IconShieldLock { width: 100%; height: 100%; tint: root.tint; hole: Theme.card-hi; }
+    /// Прорезь в щите — В ЦВЕТ ТОГО, НА ЧЁМ ЗНАЧОК ЛЕЖИТ. Значок стоит и в
+    /// строке имени (там подложка — сама карточка, а она меняется при
+    /// раскрытии), и в плитке «ПРОТОКОЛ» (там s3). Один вписанный цвет на оба
+    /// случая рисовал бы поперёк щита щель чужого оттенка.
+    in property <color> hole: Theme.card;
+    if id == "" || id == "noise" || id == "noise-aes": IconShieldLock { width: 100%; height: 100%; tint: root.tint; hole: root.hole; }
     if id == "noise-obfs": IconMask { width: 100%; height: 100%; tint: root.tint; }
     // ПУСТОЙ протокол — это «Обычный» (щит с замком), а не «без шифра»: хост
     // просто не объявил имя, канал всё равно шифрованный. Раньше он попадал в
     // последнюю ветку и рисовался перечёркнутым щитом — самый опасный из
     // возможных обманов. Последняя ветка ловит всё остальное незнакомое: пустое
     // место читалось бы как «тут ничего нет», а не как «мы это не опознали».
-    if id != "" && id != "noise" && id != "noise-aes" && id != "noise-obfs": IconShieldSlash { width: 100%; height: 100%; tint: root.tint; hole: Theme.card-hi; }
+    if id != "" && id != "noise" && id != "noise-aes" && id != "noise-obfs": IconShieldSlash { width: 100%; height: 100%; tint: root.tint; hole: root.hole; }
 }
 
 // Карточка хоста: свёрнутый вид + раскрытие (детали + Подключить).
@@ -36,7 +41,12 @@ component HostCard inherits Rectangle {
     callback connect(string);
     callback copy-text(string);
     border-radius: 16px;
-    background: root.expanded ? Theme.card-hi : Theme.card;
+    // РАСКРЫТАЯ КАРТОЧКА — ТА ЖЕ ПОДКРАСКА, ЧТО У ВЫБРАННОГО, НО СЛАБАЯ.
+    // Полную сюда класть нельзя: карточка не пустая — внутри неё лежат плитки
+    // s3 (L* 23.8), и подкраска в полную силу подняла бы саму карточку до 23.9,
+    // то есть утопила бы собственное содержимое. Слабая даёт 18.9 — карточка
+    // выше свёрнутых соседей (15.5), а плитки по-прежнему выше её на 4.9.
+    background: root.expanded ? Theme.touched(Theme.accent) : Theme.card;
     border-width: 1px;
     border-color: root.expanded ? Theme.accent.with-alpha(0.28) : #FFFFFF0D;
     animate background, border-color { duration: 200ms; easing: ease-in-out; }
@@ -56,10 +66,14 @@ component HostCard inherits Rectangle {
                 // Флаг — единственное полностью насыщенное пятно на экране, и
                 // сидел он на самой светлой подложке темы: в списке глаз ловил
                 // его раньше имени хоста, ради которого на строку и смотрят.
+                // ПЛАШКА — ВСЕГДА НА СТУПЕНЬ ВЫШЕ СВОЕЙ КАРТОЧКИ. Жёстко
+                // вписанный s2 совпадал с фоном РАСКРЫТОЙ карточки (обе были
+                // #1E2E4E) — плашка пропадала целиком, от неё оставалась одна
+                // рамка. Теперь она идёт следом за карточкой.
                 Rectangle {
                     width: 56px; height: 56px;
                     border-radius: 14px;
-                    background: Theme.card-hi;
+                    background: root.expanded ? Theme.tile : Theme.card-hi;
                     border-width: 1px;
                     border-color: #FFFFFF14;
                     if h.has-flag: Image { source: h.flag-img; width: 34px; height: 24px; opacity: 0.85; }
@@ -90,7 +104,10 @@ component HostCard inherits Rectangle {
                         spacing: 5px;
                         VerticalLayout {
                             alignment: center;   // иначе значок липнет к верху строки
-                            ProtoIcon { id: h.proto-id; width: 14px; height: 14px; }
+                            ProtoIcon {
+                                id: h.proto-id; width: 14px; height: 14px;
+                                hole: root.expanded ? Theme.touched(Theme.accent) : Theme.card;
+                            }
                         }
                         Text {
                             text: h.name; color: Theme.fg; font-size: 16px; font-weight: 600;
@@ -153,7 +170,7 @@ component HostCard inherits Rectangle {
                     }
                     StatTile {
                         label: "ПРОТОКОЛ"; value: h.proto; horizontal-stretch: 1;
-                        ProtoIcon { id: h.proto-id; width: 12px; height: 12px; tint: Theme.fg; }
+                        ProtoIcon { id: h.proto-id; width: 12px; height: 12px; tint: Theme.fg; hole: Theme.tile; }
                     }
                 }
                 if h.locked: Field { placeholder: "Пароль"; secure: true; text <=> root.guest-password; }
@@ -231,7 +248,12 @@ export component VpnPage inherits Rectangle {
             // версию, и спрятав его, человек больше о ней не узнает.
             if root.update-version != "": Rectangle {
                 border-radius: 14px;
-                background: root.update-state == 3 ? Theme.red.with-alpha(0.09) : Theme.accent.with-alpha(0.09);
+                // Слабая подкраска, как у раскрытой карточки: плашка большая, и
+                // полная сила на такой площади кричала бы. Прежние 0.09
+                // прозрачным поверх страницы давали L* 9.6 — ТЕМНЕЕ обычной
+                // карточки списка, и сообщение о новой версии выглядело
+                // провалом в фоне.
+                background: Theme.touched(root.update-state == 3 ? Theme.red : Theme.accent);
                 border-width: 1px;
                 border-color: root.update-state == 3 ? Theme.red.with-alpha(0.3) : Theme.accent.with-alpha(0.28);
                 height: 62px;
@@ -262,9 +284,9 @@ export component VpnPage inherits Rectangle {
                             property <color> hue: root.update-state == 3 ? Theme.red : Theme.green;
                             width: 116px; height: 38px;
                             border-radius: 11px;
-                            background: upd-ta.has-hover ? self.hue.with-alpha(0.23) : self.hue.with-alpha(0.14);
+                            background: Theme.picked(self.hue);
                             border-width: 1px;
-                            border-color: self.hue.with-alpha(0.4);
+                            border-color: Theme.edge(self.hue, upd-ta.has-hover);
                             Text {
                                 text: root.update-state == 3 ? "Ещё раз" : "Обновить";
                                 color: parent.hue; font-size: 13px; font-weight: 700;
@@ -320,9 +342,9 @@ export component VpnPage inherits Rectangle {
                     Rectangle {
                         width: 52px; height: 44px;
                         border-radius: 10px;
-                        background: go-ta.has-hover ? Theme.accent.with-alpha(0.28) : Theme.accent.with-alpha(0.16);
+                        background: Theme.picked(Theme.accent);
                         border-width: 1px;
-                        border-color: Theme.accent.with-alpha(0.4);
+                        border-color: Theme.edge(Theme.accent, go-ta.has-hover);
                         VerticalLayout { alignment: center; HorizontalLayout { alignment: center; IconArrowRight { width: 22px; height: 22px; tint: Theme.accent; } } }
                         go-ta := TouchArea { clicked => { root.connect-code(); } }
                     }
@@ -333,18 +355,23 @@ export component VpnPage inherits Rectangle {
             if root.recent-ids.length > 0: SectionLabel { text: "Недавние"; }
             if root.recent-ids.length > 0: HorizontalLayout {
                 spacing: 8px;
+                // Тот же чип, что и везде: невыбранный на s1, выбранный — s1 плюс
+                // подкраска. Раньше у него была своя пара чисел (0.16 и рамка
+                // 0.5) и своя ступень (s2) — третий рецепт одного и того же.
                 for name[i] in root.recent-names: Rectangle {
                     property <bool> hot: root.recent-ids[i] == root.vpn-host-id;
                     height: 38px;
                     border-radius: 16px;
-                    background: hot ? Theme.accent.with-alpha(0.16) : Theme.card-hi;
+                    background: hot ? Theme.picked(Theme.accent)
+                        : rec-ta.has-hover ? Theme.touched(Theme.accent)
+                        : Theme.card;
                     border-width: 1px;
-                    border-color: hot ? Theme.accent.with-alpha(0.5) : transparent;
+                    border-color: hot ? Theme.edge(Theme.accent, rec-ta.has-hover) : transparent;
                     HorizontalLayout {
                         padding-left: 13px; padding-right: 13px;
                         Text { text: name; color: hot ? Theme.accent : Theme.fg; font-size: 13px; font-weight: 700; vertical-alignment: center; }
                     }
-                    TouchArea { clicked => { if (root.vpn-state == 0) { root.code = root.recent-ids[i]; root.connect-code(); } } }
+                    rec-ta := TouchArea { clicked => { if (root.vpn-state == 0) { root.code = root.recent-ids[i]; root.connect-code(); } } }
                 }
                 Rectangle { horizontal-stretch: 1; }
             }
@@ -428,10 +455,9 @@ export component VpnPage inherits Rectangle {
             padding-bottom: 12px;
             // Общий парящий блок: фон и тень — те же, что у нав-бара.
             FloatCard {
-                // Кольцо состояния — ТИШЕ СОДЕРЖИМОГО и уведено под кромку
-                // света: на 0.45 обводка была ярче самой панели, и вся «высота»
-                // держалась на ней. Покажут состояние иначе — панель не станет
-                // от этого плоской.
+                // Кольцо состояния — ТИШЕ СОДЕРЖИМОГО: на 0.45 обводка была
+                // ярче самой панели, и вся «высота» держалась на ней. Покажут
+                // состояние иначе — панель не станет от этого плоской.
                 stroke: root.tint.with-alpha(0.30);
                 // Глушит клики по пустым местам карточки: без неё тап
                 // проваливался бы на карточку хоста, лежащую ПОД панелью.

@@ -91,9 +91,21 @@ private fun Cell(
     live: Color? = null,
 ) {
     val active = app.tab == t
+    // ТО ЖЕ «ВЫБРАННОЕ», ЧТО И ВЕЗДЕ (Theme.picked), И ТЕПЕРЬ С РАМКОЙ.
+    //
+    // Ячейка сидит на парящей панели, но красится ступенью s1 с подкраской, как
+    // чипы на странице: подкраска в полную силу поверх самой панели уронила бы
+    // акцентную подпись до 3.88 при пороге 4.5. Общий цвет выбранного даёт 4.57,
+    // а над панелью ячейка поднята на 2.4 по L* — видно, что она приподнята, и
+    // она не спорит яркостью с панелью состояния наверху экрана. Рамка появилась
+    // затем, чтобы «я на этой вкладке» отличалось не одним лишь цветом.
     val pill by animateColorAsState(
-        if (active) Theme.accent.copy(alpha = 0.16f) else Color.Transparent,
+        if (active) Theme.picked() else Color.Transparent,
         tween(180), label = "pill",
+    )
+    val edge by animateColorAsState(
+        if (active) Theme.accent.copy(alpha = 0.4f) else Color.Transparent,
+        tween(180), label = "pillEdge",
     )
     val tint = if (active) Theme.accent else Theme.dim
     androidx.compose.foundation.layout.Box(modifier) {
@@ -101,6 +113,7 @@ private fun Cell(
             Modifier
                 .fillMaxWidth()
                 .background(pill, RoundedCornerShape(innerR))
+                .border(1.dp, edge, RoundedCornerShape(innerR))
                 .tappable { app.tab = t }
                 .padding(vertical = 8.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
@@ -175,8 +188,8 @@ private fun HostCell(app: AppState, modifier: Modifier) {
 private fun Action(modifier: Modifier, icon: ImageVector, label: String, hue: Color, tap: () -> Unit) {
     Column(
         modifier
-            .background(hue.copy(alpha = 0.14f), RoundedCornerShape(innerR))
-            .border(1.dp, hue.copy(alpha = 0.37f), RoundedCornerShape(innerR))
+            .background(Theme.picked(hue), RoundedCornerShape(innerR))
+            .border(1.dp, hue.copy(alpha = 0.4f), RoundedCornerShape(innerR))
             .tappable(tap)
             .padding(vertical = 8.dp),
         horizontalAlignment = Alignment.CenterHorizontally,

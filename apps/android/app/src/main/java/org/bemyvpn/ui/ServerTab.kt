@@ -103,7 +103,8 @@ fun ServerTab(app: AppState, bottomPad: androidx.compose.ui.unit.Dp) {
                         url.removePrefix("https://").removePrefix("http://"),
                         color = Theme.fg, fontSize = 13.sp, fontWeight = FontWeight.Bold,
                         modifier = Modifier
-                            .background(Theme.cardHi, RoundedCornerShape(16.dp))
+                            // Тот же чип, что и «Недавние» на вкладке VPN: на s1.
+                            .background(Theme.card, RoundedCornerShape(16.dp))
                             .tappable { coordField = url; app.saveCoordinator(url) }
                             .padding(horizontal = 14.dp, vertical = 9.dp),
                     )

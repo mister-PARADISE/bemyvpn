@@ -287,13 +287,18 @@ export component ActionTile inherits TileFrame {
 /// ПАРЯЩИЙ БЛОК — панель состояния и нав-бар. Одна отделка на оба: два слоя над
 /// страницей читаются как один язык, а не как две разные плашки.
 ///
-/// ВЫСОТУ ДЕРЖАТ ТРИ НОСИТЕЛЯ, А НЕ ОДНА ТЕНЬ.
+/// ВЫСОТУ ДЕРЖИТ ПЕРЕПАД К ФОНУ, А НЕ ПОДПОРКИ ПО КРАЮ.
 ///
-///  1. ЗАЛИВКА НЕПРОЗРАЧНАЯ. Прежние 0.97 не покупали ничего: размытия под
-///     блоком нет ни на одной оболочке, зато сквозь панель на снимке читался
-///     текст списка под ней.
-///  2. КРОМКА СВЕТА 1px ТОЛЬКО СВЕРХУ. Это и есть физический верхний край
-///     блока; по бокам и снизу остаётся тихая рамка (`stroke`).
+///  1. ЗАЛИВКА НЕПРОЗРАЧНАЯ И СВЕТЛЕЕ ФОНА НА 17.5 по L*. Прежние 0.97 не
+///     покупали ничего: размытия под блоком нет ни на одной оболочке, зато
+///     сквозь панель на снимке читался текст списка под ней.
+///  2. КРОМКИ СВЕТА СВЕРХУ БОЛЬШЕ НЕТ. Она была подпоркой под тёмную палитру и
+///     компенсировала слабый перепад: на прежних поверхностях блок отличался от
+///     фона всего на 6.4 по L*, и край приходилось обводить руками. Замер
+///     показал, что и тень тут ни при чём — до чёрного фону 11 единиц из 255,
+///     тень углубляет его на 1–3 в ЛЮБОЙ палитре. Теперь перепад 17.5, край
+///     виден сам, а «полоска в 1 пиксель» сверху — просто мусор на виду.
+///     По бокам и снизу остаётся тихая рамка (`stroke`).
 ///  3. ТЕНЬ КОРОТКАЯ. Дальняя 30-пиксельная убрана: на почти-чёрном фоне
 ///     (#0B0E14) она размывалась в грязь и не сообщала ничего. Сторона подъезда
 ///     — параметр: у панели (прижата сверху) тень ВНИЗ, у нав-бара (прижат
@@ -315,15 +320,6 @@ export component FloatCard inherits Rectangle {
     drop-shadow-blur: 9px;
     drop-shadow-color: #000000E6;
     drop-shadow-offset-y: root.lift-up ? -5px : 5px;
-    // Кромка света. Поджата на радиус с боков — иначе полоса торчала бы из
-    // скруглённых углов.
-    Rectangle {
-        x: root.radius;
-        y: 0px;
-        width: root.width - 2 * root.radius;
-        height: 1px;
-        background: #FFFFFF24;
-    }
     @children
 }
 
@@ -411,11 +407,14 @@ export component CalmButton inherits Rectangle {
     callback clicked;
     height: 50px;
     border-radius: root.corner;
-    background: ta.has-hover ? root.hue.with-alpha(0.22) : root.hue.with-alpha(0.15);
+    // Та же подкраска, что у выбранного чипа: кнопка тоже лежит на странице, и
+    // прозрачным акцентом она смешивалась с почти чёрным фоном — выходила
+    // ТЕМНЕЕ соседнего поля ввода (13.6 против 15.5 по L*) и читалась вдавленной.
+    background: Theme.picked(root.hue);
     border-width: 1px;
-    border-color: root.hue.with-alpha(0.4);
+    border-color: Theme.edge(root.hue, ta.has-hover);
     opacity: root.enabled ? 1.0 : 0.5;
-    animate background { duration: 160ms; easing: ease-out; }
+    animate border-color { duration: 160ms; easing: ease-out; }
     Text {
         text: root.title; color: root.hue; font-size: 16px; font-weight: 700;
         horizontal-alignment: center; vertical-alignment: center;
@@ -482,15 +481,15 @@ export component BigChip inherits Rectangle {
     callback clicked;
     height: 64px;
     border-radius: 14px;
-    // Выбранный чип — тот же спокойный приём, что и у кнопок: подкраска +
-    // рамка + цветной текст. Сплошной градиент во всю плитку кричал сильнее
-    // самого выбора: на вкладке «Хост» таких чипов подряд шесть, и экран из
-    // них выходил в синих плашках.
-    background: root.on
-        ? (ta.has-hover ? Theme.accent.with-alpha(0.22) : Theme.accent.with-alpha(0.15))
-        : (ta.has-hover ? Theme.card.brighter(0.15) : Theme.card);
+    // Выбранный чип — общее правило приложения: своя ступень плюс подкраска
+    // (Theme.picked). Сплошной градиент во всю плитку кричал сильнее самого
+    // выбора: на вкладке «Хост» таких чипов подряд шесть, и экран из них
+    // выходил в синих плашках.
+    background: root.on ? Theme.picked(Theme.accent)
+        : ta.has-hover ? Theme.touched(Theme.accent)
+        : Theme.card;
     border-width: 1px;
-    border-color: root.on ? Theme.accent.with-alpha(0.4) : #FFFFFF12;
+    border-color: root.on ? Theme.edge(Theme.accent, ta.has-hover) : #FFFFFF12;
     animate background, border-color { duration: 160ms; easing: ease-out; }
     VerticalLayout {
         alignment: center;

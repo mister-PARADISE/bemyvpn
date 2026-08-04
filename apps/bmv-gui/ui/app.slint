@@ -41,16 +41,29 @@ component NavCell inherits Rectangle {
     callback clicked;
     min-width: 0px;
     preferred-width: 0px;
+    // ДЕЙСТВУЮЩАЯ ЯЧЕЙКА — ТО ЖЕ «ВЫБРАННОЕ», ЧТО И ВЕЗДЕ (Theme.picked).
+    //
+    // Ячейка сидит на парящей панели, но красится ступенью s1 с подкраской, как
+    // чипы на странице, а не подкраской поверх самой панели. Причина в потолке
+    // контраста: подкраска в полную силу поверх парящего (L* 21.5) даёт 28.6, и
+    // акцентная подпись на ней падает до 3.88 — за порог 4.5. Общий цвет
+    // выбранного даёт 23.9: подпись держит 4.57, а над панелью ячейка поднята на
+    // 2.4 по L* — видно, что она приподнята, и при этом она не спорит яркостью с
+    // панелью состояния наверху экрана.
+    //
+    // РАМКА ТЕПЕРЬ У ОБОИХ СОСТОЯНИЙ. Раньше её имела только ячейка-включатель, а
+    // ячейка «я на этой вкладке» отличалась одним цветом — то есть для человека с
+    // нарушением цветовосприятия не отличалась ничем.
     Rectangle {
         x: 2px; y: 3px;
         width: parent.width - 4px; height: parent.height - 6px;
         border-radius: 22px;
-        background: root.acting ? root.hue.with-alpha(0.14)
-                  : root.current ? Theme.accent.with-alpha(0.16)
+        background: root.acting ? Theme.picked(root.hue)
+                  : root.current ? Theme.picked(Theme.accent)
                   : transparent;
-        border-width: root.acting ? 1px : 0px;
-        border-color: root.hue.with-alpha(0.37);
-        animate background { duration: 160ms; easing: ease-in-out; }
+        border-width: (root.acting || root.current) ? 1px : 0px;
+        border-color: (root.acting ? root.hue : Theme.accent).with-alpha(0.4);
+        animate background, border-color { duration: 160ms; easing: ease-in-out; }
     }
     VerticalLayout {
         alignment: center;

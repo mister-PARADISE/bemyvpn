@@ -213,7 +213,7 @@ private fun CodeField(app: AppState, code: String, onCode: (String) -> Unit) {
             // Подкраска вместо сплошного синего: он спорил с акцентом всего
             // экрана. Стрелка крупнее соседней — здесь она главная.
             Modifier.size(width = 52.dp, height = 44.dp)
-                .background(Theme.accent.copy(alpha = 0.16f), RoundedCornerShape(10.dp))
+                .background(Theme.picked(), RoundedCornerShape(10.dp))
                 .border(1.dp, Theme.accent.copy(alpha = 0.4f), RoundedCornerShape(10.dp))
                 .pressable { val c = code; onCode(""); app.connectByCode(c) },
             contentAlignment = Alignment.Center,
@@ -223,14 +223,18 @@ private fun CodeField(app: AppState, code: String, onCode: (String) -> Unit) {
     }
 }
 
-/** Чип недавнего хоста: маленький флаг слева, затем имя. Подсвечен ВЫБРАННЫЙ. */
+/** Чип недавнего хоста: маленький флаг слева, затем имя. Подсвечен ВЫБРАННЫЙ.
+ *
+ *  Тот же чип, что и везде: невыбранный на s1, выбранный — s1 плюс подкраска.
+ *  Раньше у него была своя пара чисел (0.16 и рамка 0.5) и своя ступень (s2) —
+ *  третий рецепт одного и того же. */
 @Composable
 private fun RecentChip(app: AppState, id: String, highlighted: Boolean) {
     val host = app.hostById(id)
     Row(
         Modifier
-            .background(if (highlighted) Theme.accent.copy(alpha = 0.16f) else Theme.cardHi, RoundedCornerShape(16.dp))
-            .border(1.dp, if (highlighted) Theme.accent.copy(alpha = 0.5f) else Color.Transparent, RoundedCornerShape(16.dp))
+            .background(if (highlighted) Theme.picked() else Theme.card, RoundedCornerShape(16.dp))
+            .border(1.dp, if (highlighted) Theme.accent.copy(alpha = 0.4f) else Color.Transparent, RoundedCornerShape(16.dp))
             .tappable { if (app.vpnState == 0) app.connectByCode(id) }
             .padding(horizontal = 13.dp, vertical = 9.dp),
         horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -364,7 +368,12 @@ private fun InviteButton(icon: ImageVector, title: String, green: Boolean, modif
 fun HostCard(app: AppState, host: Host) {
     var password by remember(host.id) { mutableStateOf("") }
     val expanded = app.expandedId == host.id
-    val bg by animateColorAsState(if (expanded) Theme.cardHi else Theme.card, tween(200), label = "cardBg")
+    // РАСКРЫТАЯ КАРТОЧКА — ТА ЖЕ ПОДКРАСКА, ЧТО У ВЫБРАННОГО, НО СЛАБАЯ.
+    // Полную сюда класть нельзя: карточка не пустая — внутри неё лежат плитки s3
+    // (L* 23.8), и подкраска в полную силу подняла бы саму карточку до 23.9, то
+    // есть утопила бы собственное содержимое. Слабая даёт 18.9: карточка выше
+    // свёрнутых соседей (15.5), а плитки по-прежнему выше её на 4.9.
+    val bg by animateColorAsState(if (expanded) Theme.touched() else Theme.card, tween(200), label = "cardBg")
     val stroke by animateColorAsState(
         if (expanded) Theme.accent.copy(alpha = 0.28f) else Color.White.copy(alpha = 0.05f),
         tween(200), label = "cardStroke",
@@ -394,9 +403,13 @@ fun HostCard(app: AppState, host: Host) {
             // Флаг — единственное полностью насыщенное пятно на экране, и сидел
             // он на самой светлой подложке темы: в списке глаз ловил его раньше
             // имени хоста, ради которого на строку и смотрят.
+            //
+            // СТУПЕНЬ СЧИТАЕТСЯ ОТ СВОЕЙ КАРТОЧКИ, А НЕ ВПИСАНА ЧИСЛОМ. Жёсткий
+            // s2 совпадал с фоном РАСКРЫТОЙ карточки (обе были #1E2E4E) — плашка
+            // пропадала целиком, от неё оставалась одна рамка.
             Box(
                 Modifier.size(56.dp)
-                    .background(Theme.cardHi, RoundedCornerShape(14.dp))
+                    .background(if (expanded) Theme.tile else Theme.cardHi, RoundedCornerShape(14.dp))
                     .border(1.dp, Color.White.copy(alpha = 0.08f), RoundedCornerShape(14.dp)),
                 contentAlignment = Alignment.Center,
             ) { Text(hostFlag(host), fontSize = 29.sp, modifier = Modifier.alpha(0.85f)) }
@@ -523,7 +536,11 @@ private fun UpdateBanner(app: AppState) {
         Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(14.dp))
-            .background(tint.copy(alpha = 0.09f))
+            // Слабая подкраска, как у раскрытой карточки: плашка большая, и полная
+            // сила на такой площади кричала бы. Прежние 0.09 прозрачным поверх
+            // страницы давали L* 9.6 — ТЕМНЕЕ обычной карточки списка, и сообщение
+            // о новой версии выглядело провалом в фоне.
+            .background(Theme.touched(tint))
             .border(1.dp, tint.copy(alpha = 0.28f), RoundedCornerShape(14.dp))
             .heightIn(min = 62.dp)
             .padding(horizontal = 14.dp, vertical = 12.dp),
@@ -549,7 +566,7 @@ private fun UpdateBanner(app: AppState) {
                     .padding(start = 14.dp)
                     .height(38.dp)
                     .clip(RoundedCornerShape(11.dp))
-                    .background(btn.copy(alpha = 0.14f))
+                    .background(Theme.picked(btn))
                     .border(1.dp, btn.copy(alpha = 0.4f), RoundedCornerShape(11.dp))
                     .clickable { app.doUpdate() }
                     .padding(horizontal = 18.dp),

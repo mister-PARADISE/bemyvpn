@@ -893,7 +893,6 @@ dependencies = [
  "bmv-core",
  "bmv-desktop",
  "bmv-signal",
- "bmv-tunnel",
  "clap",
  "crossterm",
  "futures",
@@ -1072,6 +1071,7 @@ name = "bmv-tunnel"
 version = "1.0.0"
 dependencies = [
  "bmv-common",
+ "etherparse",
  "ipstack",
  "tokio",
  "tokio-util",

@@ -70,7 +70,6 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.ui.draw.drawBehind
-import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.drawscope.DrawScope
@@ -300,7 +299,7 @@ fun BigCopyButton(value: String, modifier: Modifier = Modifier) {
     val hue = if (copied) Theme.green else Theme.accent
     Row(
         modifier
-            .background(hue.copy(alpha = 0.15f), RoundedCornerShape(14.dp))
+            .background(Theme.picked(hue), RoundedCornerShape(14.dp))
             .border(1.dp, hue.copy(alpha = 0.4f), RoundedCornerShape(14.dp))
             .pressable {
                 if (value.isNotEmpty()) { clipboard.setText(AnnotatedString(value)); Haptics.success(ctx); copied = true }
@@ -328,7 +327,11 @@ fun CalmButton(title: String, modifier: Modifier = Modifier, enabled: Boolean = 
         modifier
             .fillMaxWidth()
             .alpha(if (enabled) 1f else 0.5f)
-            .background(Theme.accent.copy(alpha = 0.15f), RoundedCornerShape(14.dp))
+            // Та же подкраска, что у выбранного чипа: кнопка тоже лежит на
+            // странице, и прозрачным акцентом она смешивалась с почти чёрным
+            // фоном — выходила ТЕМНЕЕ соседнего поля ввода (13.6 против 15.5 по
+            // L*) и читалась вдавленной.
+            .background(Theme.picked(), RoundedCornerShape(14.dp))
             .border(1.dp, Theme.accent.copy(alpha = 0.4f), RoundedCornerShape(14.dp))
             .pressable(enabled = enabled, onTap = onTap)
             .padding(vertical = 15.dp),
@@ -421,7 +424,7 @@ fun BmvTextField(
  * Оттенок НАМЕРЕННО между s2 и s3: парящий блок выше карточек списка, но ниже
  * плиток, которые лежат внутри него самого.
  */
-val floatFill = Color(0xFF1B2740)   // L* 15.8 — та же лестница, что в Theme.kt
+val floatFill = Color(0xFF233354)   // L* 21.5 — та же лестница, что в Theme.kt
 
 /**
  * Вылет гашения от контура парящего блока наружу. Отступы прокрутки считаются ОТ
@@ -527,33 +530,24 @@ private fun DrawScope.panelHalo(r: Float, v: Float, s: Float, back: Float) {
 }
 
 /**
- * Отделка парящего слоя: заливка + тихая рамка + кромка света сверху. Одна на
- * панель и нав-бар.
+ * Отделка парящего слоя: заливка + тихая рамка. Одна на панель и нав-бар.
  *
  * ТЕНИ ЗДЕСЬ НЕТ, И ЭТО ЗАМЕР, А НЕ ЛЕНЬ. `Modifier.shadow(22.dp)` на почти
  * чёрном фоне (#0B0E14) темнил подложку под панелью на ОДНУ единицу из 255 —
  * чёрной тени на почти чёрном фоне физически быть не может. Штатный механизм
  * Android вдобавок не умеет направить тень вверх (нав-бар прижат снизу, и тень
- * уезжала под него, в полосу, на которую никто не смотрит). Высоту держат
- * непрозрачная заливка светлее того, что под ней, и кромка света по верху.
+ * уезжала под него, в полосу, на которую никто не смотрит).
+ *
+ * КРОМКИ СВЕТА 1px СВЕРХУ БОЛЬШЕ НЕТ. Она была подпоркой под тёмную палитру: на
+ * прежних поверхностях блок отличался от фона на 6.4 по L*, край приходилось
+ * обводить руками, и полоска бросалась в глаза. Теперь высоту держит ОДИН
+ * носитель — непрозрачная заливка светлее страницы на 17.5 по L*.
  */
 fun Modifier.floatSurface(radius: Dp, stroke: Color): Modifier {
     val shape = RoundedCornerShape(radius)
     return this
         .background(floatFill, shape)
         .border(1.dp, stroke, shape)
-        .drawWithContent {
-            drawContent()
-            // Кромка света — 1px по верхнему краю: это и есть физический край
-            // блока. Поджата на радиус с боков, иначе полоса торчала бы из
-            // скруглённых углов.
-            val r = radius.toPx()
-            val w = 1.dp.toPx()
-            drawLine(
-                Color.White.copy(alpha = 0.14f),
-                Offset(r, w / 2), Offset(size.width - r, w / 2), strokeWidth = w,
-            )
-        }
 }
 
 /**

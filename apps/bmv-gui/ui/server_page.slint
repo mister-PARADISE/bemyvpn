@@ -82,15 +82,18 @@ export component ServerPage inherits Rectangle {
             if root.history.length > 0: SectionLabel { text: "Недавние серверы"; }
             if root.history.length > 0: HorizontalLayout {
                 spacing: 8px;
+                // Тот же чип, что и «Недавние» на вкладке VPN: невыбранный на s1.
+                // Выбранного состояния здесь нет вовсе — текущий сервер из списка
+                // отфильтрован, подсвечивать нечего.
                 for url in root.history: Rectangle {
                     height: 36px;
                     border-radius: 16px;
-                    background: Theme.card-hi;
+                    background: hist-ta.has-hover ? Theme.touched(Theme.accent) : Theme.card;
                     HorizontalLayout {
                         padding-left: 14px; padding-right: 14px;
                         Text { text: url; color: Theme.fg; font-size: 13px; font-weight: 700; vertical-alignment: center; }
                     }
-                    TouchArea { clicked => { root.coord-field = url; root.set-coord(url); } }
+                    hist-ta := TouchArea { clicked => { root.coord-field = url; root.set-coord(url); } }
                 }
                 Rectangle { horizontal-stretch: 1; }
             }
@@ -134,10 +137,9 @@ export component ServerPage inherits Rectangle {
             padding-bottom: 12px;
             // Общий парящий блок: фон и тень — те же, что у нав-бара.
             FloatCard {
-                // Кольцо состояния — ТИШЕ СОДЕРЖИМОГО и уведено под кромку
-                // света: на 0.45 обводка была ярче самой панели, и вся «высота»
-                // держалась на ней. Покажут состояние иначе — панель не станет
-                // от этого плоской.
+                // Кольцо состояния — ТИШЕ СОДЕРЖИМОГО: на 0.45 обводка была
+                // ярче самой панели, и вся «высота» держалась на ней. Покажут
+                // состояние иначе — панель не станет от этого плоской.
                 stroke: root.tint.with-alpha(0.30);
                 // Глушит клики по пустым местам карточки: без неё тап
                 // проваливался бы на карточку хоста, лежащую ПОД панелью.

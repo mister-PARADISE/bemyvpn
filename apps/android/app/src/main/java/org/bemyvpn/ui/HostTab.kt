@@ -193,15 +193,17 @@ fun HostTab(app: AppState, bottomPad: Dp) {
                 inactiveTrackColor = Color.White.copy(alpha = 0.12f),
             ),
         )
-        // Выбранное значение — той же спокойной подкраской с рамкой, что и
-        // остальные кнопки: сплошная синяя плашка на шести кнопках подряд
-        // кричала громче, чем стоит выбор числа.
+        // То же правило, что у чипов: выбранное — своя ступень плюс подкраска,
+        // плюс рамка и цветная цифра. Невыбранная кнопка теперь на s1, как и
+        // чипы видимости выше: раньше эти две соседние группы «невыбранного»
+        // сидели на разных ступенях (s2 и s1) — на одном экране, в сорока
+        // строках друг от друга.
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             listOf(4, 8, 16, 32, 64, 128).forEach { v ->
                 val on = app.hostMax == v
                 Box(
                     Modifier.weight(1f)
-                        .background(if (on) Theme.accent.copy(alpha = 0.15f) else Theme.cardHi, RoundedCornerShape(10.dp))
+                        .background(if (on) Theme.picked() else Theme.card, RoundedCornerShape(10.dp))
                         .border(1.dp, if (on) Theme.accent.copy(alpha = 0.4f) else Color.Transparent, RoundedCornerShape(10.dp))
                         .tappable { app.hostMax = v; app.applyHostNow() }
                         .padding(vertical = 8.dp),
@@ -243,17 +245,17 @@ fun HostTab(app: AppState, bottomPad: Dp) {
 
 /** Толстый чип: значок сверху, название снизу — палец попадает не глядя.
  *
- *  Выбранный — тем же спокойным приёмом, что и кнопки: подкраска + рамка +
- *  цветной текст. Сплошной градиент со свечением кричал сильнее самого выбора:
- *  таких чипов на вкладке подряд шесть, и экран из них выходил в синих
- *  плашках. */
+ *  Выбранный — общее правило приложения: своя ступень плюс подкраска
+ *  (Theme.picked) плюс рамка и цветной текст. Сплошной градиент со свечением
+ *  кричал сильнее самого выбора: таких чипов на вкладке подряд шесть, и экран
+ *  из них выходил в синих плашках. */
 @Composable
 private fun BigChip(icon: ImageVector, name: String, on: Boolean, modifier: Modifier, tap: () -> Unit) {
     val ctx = LocalContext.current
     val tint = if (on) Theme.accent else Theme.dim
     Column(
         modifier
-            .background(if (on) Theme.accent.copy(alpha = 0.15f) else Theme.card, RoundedCornerShape(14.dp))
+            .background(if (on) Theme.picked() else Theme.card, RoundedCornerShape(14.dp))
             .border(
                 1.dp,
                 if (on) Theme.accent.copy(alpha = 0.4f) else Color.White.copy(alpha = 0.07f),

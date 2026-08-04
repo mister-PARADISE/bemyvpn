@@ -182,7 +182,16 @@ struct NavBar: View {
                 .lineLimit(1).minimumScaleFactor(0.8)
         }
         .frame(maxWidth: .infinity).padding(.vertical, 8)
-        .background(active ? RoundedRectangle(cornerRadius: innerR, style: .continuous).fill(Theme.accent.opacity(0.16)) : nil)
+        // ТО ЖЕ «ВЫБРАННОЕ», ЧТО И ВЕЗДЕ (Theme.picked), И ТЕПЕРЬ С РАМКОЙ.
+        // Ячейка сидит на парящей панели, но красится ступенью s1 с подкраской,
+        // как чипы на странице: подкраска в полную силу поверх самой панели
+        // уронила бы акцентную подпись до 3.88 при пороге 4.5. Общий цвет даёт
+        // 4.57, а над панелью ячейка поднята на 2.4 по L* — видно, что она
+        // приподнята, и она не спорит яркостью с панелью состояния наверху.
+        // Рамка появилась затем, чтобы «я на этой вкладке» отличалось не одним
+        // лишь цветом: раньше у ячейки-перехода её не было вовсе.
+        .background(active ? RoundedRectangle(cornerRadius: innerR, style: .continuous).fill(Theme.picked())
+            .overlay(RoundedRectangle(cornerRadius: innerR, style: .continuous).stroke(Theme.accent.opacity(0.4), lineWidth: 1)) : nil)
         .overlay(alignment: .top) {
             if let live {
                 Circle().fill(live).frame(width: 7, height: 7)
@@ -206,8 +215,8 @@ struct NavBar: View {
         }
         .frame(maxWidth: .infinity).padding(.vertical, 8)
         .background(
-            RoundedRectangle(cornerRadius: innerR, style: .continuous).fill(hue.opacity(0.14))
-                .overlay(RoundedRectangle(cornerRadius: innerR, style: .continuous).stroke(hue.opacity(0.37), lineWidth: 1))
+            RoundedRectangle(cornerRadius: innerR, style: .continuous).fill(Theme.picked(hue))
+                .overlay(RoundedRectangle(cornerRadius: innerR, style: .continuous).stroke(hue.opacity(0.4), lineWidth: 1))
         )
         .contentShape(Rectangle())
         .onTapGesture(perform: tap)
@@ -445,10 +454,9 @@ struct PinnedPanel<Content: View>: View {
             // должны читаться одним языком. Тень навешена ВНУТРИ `.background`,
             // на саму фигуру: снаружи она легла бы и на текст панели.
             //
-            // КОЛЬЦО СОСТОЯНИЯ ТИШЕ СОДЕРЖИМОГО (0.30, было 0.45) и уведено под
-            // кромку света: на 0.45 обводка была ярче самой панели, и вся
-            // «высота» держалась на ней. Покажут состояние иначе — панель не
-            // станет от этого плоской.
+            // КОЛЬЦО СОСТОЯНИЯ ТИШЕ СОДЕРЖИМОГО (0.30, было 0.45): на 0.45
+            // обводка была ярче самой панели, и вся «высота» держалась на ней.
+            // Покажут состояние иначе — панель не станет от этого плоской.
             .background(floatSurface(radius: 22, stroke: tint.opacity(0.30)))
             // СНИЗУ РОВНО ВЫЛЕТ ОРЕОЛА, и это не про воздух. `safeAreaInset`
             // обрезает всё, что вылезает за его границу, а граница — это отступ
@@ -584,7 +592,7 @@ struct BigCopyButton: View {
             .frame(maxWidth: .infinity).padding(.vertical, 15)
             .background(
                 RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .fill((copied ? Theme.green : Theme.accent).opacity(0.15))
+                    .fill(Theme.picked(copied ? Theme.green : Theme.accent))
                     .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous)
                         .stroke((copied ? Theme.green : Theme.accent).opacity(0.4), lineWidth: 1))
             )
@@ -732,7 +740,7 @@ func tabHeader(_ icon: String, _ title: String) -> some View {
 ///
 /// Оттенок НАМЕРЕННО между s2 и s3: парящий блок выше карточек списка, но ниже
 /// плиток, которые лежат внутри него самого.
-let floatFill = Color(hex: 0x1B2740)   // L* 15.8 — та же лестница, что в Theme.swift
+let floatFill = Color(hex: 0x233354)   // L* 21.5 — та же лестница, что в Theme.swift
 
 /// Вылет гашения от контура парящего блока наружу. Отступы прокрутки считаются
 /// ОТ НЕГО — покоящееся содержимое не должно попадать в зону гашения, иначе оно
@@ -757,13 +765,18 @@ let haloSolid: CGFloat = 12
 /// кромка поперёк экрана.
 let haloBack: CGFloat = 200
 
-/// ОТДЕЛКА ПАРЯЩЕГО БЛОКА: заливка, тихая рамка, кромка света сверху, короткая
-/// тень в сторону подъезда.
+/// ОТДЕЛКА ПАРЯЩЕГО БЛОКА: заливка, тихая рамка, короткая тень в сторону
+/// подъезда.
 ///
-/// Высоту держат ТРИ носителя, а не одна тень. Прежняя дальняя тень (radius 22,
-/// y 12) на почти-чёрном фоне (#0B0E14) размывалась в грязь и не сообщала
-/// ничего; «кромка света» из ореола сверху заменена честной линией по верхнему
-/// краю — это и есть физический край блока.
+/// Высоту держит ПЕРЕПАД К ФОНУ: заливка светлее страницы на 17.5 по L*.
+/// Прежняя дальняя тень (radius 22, y 12) на почти-чёрном фоне (#0B0E14)
+/// размывалась в грязь и не сообщала ничего.
+///
+/// КРОМКИ СВЕТА 1pt СВЕРХУ БОЛЬШЕ НЕТ. Она была подпоркой под тёмную палитру:
+/// на прежних поверхностях блок отличался от фона на 6.4 по L*, и край
+/// приходилось обводить руками. Тень тут ни при чём — до чёрного фону 11 единиц
+/// из 255, тень углубляет его на 1–3 в ЛЮБОЙ палитре. Перепад теперь 17.5, край
+/// виден сам, а полоска сверху просто бросалась в глаза.
 ///
 /// `up` — блок прижат снизу (нав-бар), тень уходит ВВЕРХ, к содержимому. Вниз
 /// она уезжала под сам бар, в полосу, на которую никто не смотрит.
@@ -774,12 +787,6 @@ func floatSurface(radius: CGFloat, stroke: Color, up: Bool = false) -> some View
             RoundedRectangle(cornerRadius: radius, style: .continuous)
                 .stroke(stroke, lineWidth: 1)
         )
-        // Кромка света. Поджата на радиус с боков — иначе полоса торчала бы из
-        // скруглённых углов.
-        .overlay(alignment: .top) {
-            Rectangle().fill(Color.white.opacity(0.14))
-                .frame(height: 1).padding(.horizontal, radius)
-        }
         .shadow(color: .black.opacity(0.9), radius: 5, x: 0, y: up ? -5 : 5)
         // ОРЕОЛ — ПОД всем блоком, включая его чёрную тень: та должна ложиться
         // на уже погашенный фон, ровно как она лежит на пустой странице при
@@ -879,7 +886,11 @@ func calmButton(_ title: String) -> some View {
     Text(title).fontWeight(.bold).foregroundColor(Theme.accent)
         .frame(maxWidth: .infinity).padding(.vertical, 15)
         .background(
-            RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Theme.accent.opacity(0.15))
+            // Та же подкраска, что у выбранного чипа: кнопка тоже лежит на
+            // странице, и прозрачным акцентом она смешивалась с почти чёрным
+            // фоном — выходила ТЕМНЕЕ соседнего поля ввода (13.6 против 15.5 по
+            // L*) и читалась вдавленной.
+            RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Theme.picked())
                 .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous)
                     .stroke(Theme.accent.opacity(0.4), lineWidth: 1))
         )
@@ -980,7 +991,8 @@ struct ServerTab: View {
                             ForEach(hist, id: \.self) { url in
                                 Text(url.replacingOccurrences(of: "https://", with: "").replacingOccurrences(of: "http://", with: ""))
                                     .font(.system(size: 13, weight: .bold)).foregroundColor(Theme.fg)
-                                    .padding(.horizontal, 14).padding(.vertical, 9).background(Theme.cardHi).cornerRadius(16)
+                                    // Тот же чип, что и «Недавние» на вкладке VPN: на s1.
+                                    .padding(.horizontal, 14).padding(.vertical, 9).background(Theme.card).cornerRadius(16)
                                     .onTapGesture { coordField = url; app.saveCoordinator(url) }
                             }
                         }.padding(.horizontal, 1)
@@ -1058,11 +1070,14 @@ struct VPNTab: View {
                 .foregroundColor(highlighted ? Theme.accent : Theme.fg).lineLimit(1)
         }
         .padding(.horizontal, 13).padding(.vertical, 9)
+        // Тот же чип, что и везде: невыбранный на s1, выбранный — s1 плюс
+        // подкраска. Раньше у него была своя пара чисел (0.16 и рамка 0.5) и
+        // своя ступень (s2) — третий рецепт одного и того же.
         .background(
             RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(highlighted ? Theme.accent.opacity(0.16) : Theme.cardHi)
+                .fill(highlighted ? Theme.picked() : Theme.card)
                 .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .stroke(highlighted ? Theme.accent.opacity(0.5) : Color.clear, lineWidth: 1))
+                    .stroke(highlighted ? Theme.accent.opacity(0.4) : Color.clear, lineWidth: 1))
         )
         .contentShape(Rectangle())
         .onTapGesture { if app.vpnState == 0 { app.connectByCode(id) } }
@@ -1097,7 +1112,7 @@ struct VPNTab: View {
                     Button { let c = code; code = ""; app.connectByCode(c) } label: {
                         Image(systemName: "arrow.right").font(.system(size: 21, weight: .bold))
                             .foregroundColor(Theme.accent).frame(width: 52, height: 44)
-                            .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Theme.accent.opacity(0.16))
+                            .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Theme.picked())
                                 .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(Theme.accent.opacity(0.4), lineWidth: 1)))
                     }
                 }
@@ -1350,9 +1365,14 @@ struct HostCard: View {
             }
         }
         .padding(14)
+        // РАСКРЫТАЯ КАРТОЧКА — ТА ЖЕ ПОДКРАСКА, ЧТО У ВЫБРАННОГО, НО СЛАБАЯ.
+        // Полную сюда класть нельзя: карточка не пустая — внутри неё лежат
+        // плитки s3 (L* 23.8), и подкраска в полную силу подняла бы саму
+        // карточку до 23.9, то есть утопила бы собственное содержимое. Слабая
+        // даёт 18.9: карточка выше свёрнутых соседей (15.5), плитки выше её на 4.9.
         .background(
             RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(expanded ? Theme.cardHi : Theme.card)
+                .fill(expanded ? Theme.touched() : Theme.card)
                 .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous)
                     .stroke(expanded ? Theme.accent.opacity(0.28) : Color.white.opacity(0.05), lineWidth: 1))
         )
@@ -1371,9 +1391,13 @@ struct HostCard: View {
     /// единственное полностью насыщенное пятно на экране, и сидел он на самой
     /// светлой подложке темы: в списке глаз ловил его раньше имени хоста, ради
     /// которого на строку и смотрят.
+    ///
+    /// СТУПЕНЬ СЧИТАЕТСЯ ОТ СВОЕЙ КАРТОЧКИ, А НЕ ВПИСАНА ЧИСЛОМ. Жёсткий s2
+    /// совпадал с фоном РАСКРЫТОЙ карточки (обе были #1E2E4E) — плашка пропадала
+    /// целиком, от неё оставалась одна рамка.
     private var flagAvatar: some View {
         ZStack {
-            RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Theme.cardHi)
+            RoundedRectangle(cornerRadius: 14, style: .continuous).fill(expanded ? Theme.tile : Theme.cardHi)
             RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(Color.white.opacity(0.08), lineWidth: 1)
             Text(hostFlag(host)).font(.system(size: 29)).opacity(0.85)
         }
@@ -1544,15 +1568,17 @@ struct HostTab: View {
                 Slider(value: Binding(get: { Double(app.hostMax) }, set: { app.hostMax = Int($0) }), in: 1...256, step: 1,
                        onEditingChanged: { editing in if !editing { app.applyHostNow() } })
                     .tint(Theme.accent)
-                // Выбранное значение — той же спокойной подкраской с рамкой, что
-                // и остальные кнопки: сплошная синяя плашка на шести кнопках
-                // подряд кричала громче, чем стоит выбор числа.
+                // То же правило, что у чипов: выбранное — своя ступень плюс
+                // подкраска, плюс рамка и цветная цифра. Невыбранная кнопка
+                // теперь на s1, как и чипы видимости выше: раньше эти две
+                // соседние группы «невыбранного» сидели на разных ступенях
+                // (s2 и s1) — на одном экране, в сорока строках друг от друга.
                 HStack(spacing: 6) {
                     ForEach([4, 8, 16, 32, 64, 128], id: \.self) { v in
                         Button { app.hostMax = v; app.applyHostNow() } label: {
                             Text("\(v)").font(.system(size: 13, weight: .bold)).foregroundColor(app.hostMax == v ? Theme.accent : Theme.dim)
                                 .frame(maxWidth: .infinity).padding(.vertical, 8)
-                                .background(app.hostMax == v ? AnyShapeStyle(Theme.accent.opacity(0.15)) : AnyShapeStyle(Theme.cardHi))
+                                .background(app.hostMax == v ? Theme.picked() : Theme.card)
                                 .cornerRadius(10)
                                 .overlay(RoundedRectangle(cornerRadius: 10)
                                     .stroke(app.hostMax == v ? Theme.accent.opacity(0.4) : Color.clear, lineWidth: 1))
@@ -1590,10 +1616,10 @@ struct HostTab: View {
 
     /// Толстый чип: значок сверху, название снизу — палец попадает не глядя.
     ///
-    /// Выбранный — тем же спокойным приёмом, что и кнопки: подкраска + рамка +
-    /// цветной текст. Сплошной градиент со свечением кричал сильнее самого
-    /// выбора: таких чипов на вкладке подряд шесть, и экран из них выходил в
-    /// синих плашках.
+    /// Выбранный — общее правило приложения: своя ступень плюс подкраска
+    /// (Theme.picked) плюс рамка и цветной текст. Сплошной градиент со свечением
+    /// кричал сильнее самого выбора: таких чипов на вкладке подряд шесть, и
+    /// экран из них выходил в синих плашках.
     private func bigChip(_ icon: String, _ name: String, on: Bool, _ tap: @escaping () -> Void) -> some View {
         VStack(spacing: 5) {
             Image(systemName: icon).font(.system(size: 18, weight: .semibold)).foregroundColor(on ? Theme.accent : Theme.dim)
@@ -1601,7 +1627,7 @@ struct HostTab: View {
                 .lineLimit(1).minimumScaleFactor(0.8)
         }
         .frame(maxWidth: .infinity).padding(.vertical, 14)
-        .background(on ? AnyShapeStyle(Theme.accent.opacity(0.15)) : AnyShapeStyle(Theme.card))
+        .background(on ? Theme.picked() : Theme.card)
         .cornerRadius(14)
         .overlay(RoundedRectangle(cornerRadius: 14)
             .stroke(on ? Theme.accent.opacity(0.4) : Color.white.opacity(0.07), lineWidth: 1))
