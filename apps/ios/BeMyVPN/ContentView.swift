@@ -355,10 +355,10 @@ private struct TileBody<Trailing: View>: View {
 
 /// Фон плитки: единый для всех — разница только в содержимом, не в оформлении.
 ///
-/// `fill` по умолчанию нейтральная s3; в РАСКРЫТОЙ карточке хоста сюда приходит
-/// s3 с подкраской. Подкраска лежит на плитках, а не на самой карточке: карточка
-/// — это ступень (место в стопке), плитки — содержимое, ради которого её
-/// раскрывают, и цвет должен быть на содержимом.
+/// `fill` — нейтральная ступень s3, ОДНА И ТА ЖЕ у плиток панели состояния и у
+/// плиток внутри раскрытой карточки хоста. Ручка оставлена затем, что раскрытая
+/// карточка задаёт заливку одним местом на всю сетку (см. `tileFill` в
+/// `HostCard`), а не семью вызовами по отдельности.
 private func tileBackground(_ accent: Color?, fill: Color = Theme.tile) -> some View {
     RoundedRectangle(cornerRadius: 12, style: .continuous)
         .fill(fill)
@@ -581,7 +581,7 @@ struct BigCopyButton: View {
 
 struct PingTile: View {
     let value: String
-    /// См. `tileBackground`: s3, а в раскрытой карточке хоста — s3 с подкраской.
+    /// См. `tileBackground`: нейтральная s3 — и в панели, и в раскрытой карточке.
     var fill: Color = Theme.tile
     private var waiting: Bool { value == "…" }
     private var noAnswer: Bool { value == "—" }
@@ -636,7 +636,7 @@ struct StatTile: View {
     let label: String; let value: String
     var symbol: String? = nil
     var tint: Color = Theme.fg
-    /// См. `tileBackground`: s3, а в раскрытой карточке хоста — s3 с подкраской.
+    /// См. `tileBackground`: нейтральная s3 — и в панели, и в раскрытой карточке.
     var fill: Color = Theme.tile
     var body: some View {
         TileBody(label: label, value: value, symbol: symbol, valueColor: tint) { EmptyView() }
@@ -649,7 +649,7 @@ struct StatTile: View {
 /// иначе плитки в одном блоке выглядят разнородными.
 struct CopyTile: View {
     let label: String; let value: String
-    /// См. `tileBackground`: s3, а в раскрытой карточке хоста — s3 с подкраской.
+    /// См. `tileBackground`: нейтральная s3 — и в панели, и в раскрытой карточке.
     var fill: Color = Theme.tile
     @State private var copied = false
     private var empty: Bool { value.isEmpty || value == "—" }
@@ -1053,13 +1053,17 @@ struct VPNTab: View {
                             .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Theme.cardHi)
                                 .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(Theme.hairline, lineWidth: 1)))
                     }
-                    // Подкраска вместо сплошного синего: он спорил с акцентом
-                    // всего экрана. Стрелка крупнее соседней — здесь она главная.
+                    // Перейти — НА СТУПЕНЬ ВЫШЕ СОСЕДКИ. Мята отсюда снята: она
+                    // обещает «работает/включено», а это просто переход. Но
+                    // отделать главное действие строки ровно как вспомогательное
+                    // «вставить» нельзя — в спешке промахнёшься. Поэтому здесь s3
+                    // (перепад к полю L* 11.2 против 3.5 у «вставить»), а отделка
+                    // та же тихая: ступень плюс кромка hairline.
                     Button { let c = code; code = ""; app.connectByCode(c) } label: {
                         Image(systemName: "arrow.right").font(.system(size: 21, weight: .bold))
-                            .foregroundColor(Theme.accent).frame(width: 52, height: 44)
-                            .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Theme.picked())
-                                .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(Theme.edge(), lineWidth: 1)))
+                            .foregroundColor(Theme.fg).frame(width: 52, height: 44)
+                            .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Theme.tile)
+                                .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(Theme.hairline, lineWidth: 1)))
                     }
                 }
                 .padding(5).background(Theme.card).cornerRadius(14)
@@ -1227,12 +1231,14 @@ struct HostCard: View {
     let host: Host
     @State private var password = ""
     private var expanded: Bool { app.expandedId == host.id }
-    /// Заливка плиток внутри раскрытой карточки: s3 ПЛЮС ПОДКРАСКА — то самое
-    /// общее правило приложения (`picked`), взятое готовым, а не вписанное сюда
-    /// вторым числом. Совпадение не случайное: 0.14 мяты подобрана так, чтобы
-    /// подкрашенное вставало ровно вровень с s3 (L* 19.54 против 19.31), поэтому
-    /// плитка меняет ЦВЕТ, не меняя своей ступени.
-    private var tileFill: Color { Theme.picked() }
+    /// Заливка плиток внутри раскрытой карточки: ЧИСТАЯ СТУПЕНЬ s3, БЕЗ ПОДКРАСКИ.
+    ///
+    /// Мята с плиток снята: в раскрытой карточке их семь, и семь подкрашенных
+    /// ячеек читались как «всё это включено», хотя это просто цифры о хосте.
+    /// Ступень s3 для того и заведена — она отличима от своей подложки (L* 7.71
+    /// над s2 раскрытой карточки), но остаётся нейтральной. Та же ступень лежит
+    /// под плитками панели состояния, так что по оттенку они одно и то же.
+    private var tileFill: Color { Theme.tile }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -1320,14 +1326,13 @@ struct HostCard: View {
             }
         }
         .padding(14)
-        // ПОДКРАСКА ЛЕЖИТ НА ПЛИТКАХ, А САМА КАРТОЧКА — ЧИСТАЯ СТУПЕНЬ.
+        // ВНУТРИ КАРТОЧКИ МЯТЫ НЕТ — ОДНИ СТУПЕНИ.
         //
-        // Было наоборот: мятой красили карточку целиком, а плитки внутри
-        // оставались серыми. Цвет тогда доставался ОБОЛОЧКЕ, а не содержимому —
-        // раскрытая карточка выглядела «подсвеченной сеткой», в которой лежат
-        // чужие серые ячейки. Теперь карточка встаёт на s2 (L* 11.6 против 8.1 у
-        // свёрнутых соседей), а мята уходит внутрь, на плитки: они и есть то,
-        // ради чего карточку раскрывают.
+        // Пробовали и так, и эдак: сперва мятой красили карточку целиком (цвет
+        // доставался оболочке, а не содержимому), потом — плитки внутри (семь
+        // подкрашенных ячеек читались как «всё это включено»). Осталась чистая
+        // лестница: свёрнутая карточка s1 (L* 8.1), раскрытая s2 (11.6), плитки
+        // внутри неё s3 (19.31). Все три различимы, и ни одна ничего не обещает.
         //
         // «РАСКРЫТА» ЧИТАЕТСЯ БЕЗ ПОДКРАСКИ — ступенью и рамкой; рамка осталась
         // мятной (edgeSoft), так что признак не один.

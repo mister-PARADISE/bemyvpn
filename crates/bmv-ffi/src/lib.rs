@@ -1360,7 +1360,7 @@ mod tests {
         assert!(stale_code_signature(&sig), "403 не опознан: самолечение протухшей подписи снова мертво");
         assert_eq!(host_start_sentinel(&sig), "!SIG");
 
-        let nat = refused(422, "Ваша сеть не пропускает гостей внутрь.");
+        let nat = refused(422, "Не удалось определить ваш адрес в интернете.");
         assert!(!nat.to_string().contains("422"), "текст отказа с цифрами — тест перестал ловить старый приём");
         assert!(!stale_code_signature(&nat), "422 — это не протухшая подпись, свежий код тут не поможет");
         assert_eq!(host_start_sentinel(&nat), "!NAT");

@@ -202,15 +202,19 @@ private fun CodeField(app: AppState, code: String, onCode: (String) -> Unit) {
             Icon(Icons.Filled.ContentPaste, null, Modifier.size(18.dp), tint = Theme.dim)
         }
         Box(
-            // Подкраска вместо сплошного синего: он спорил с акцентом всего
-            // экрана. Стрелка крупнее соседней — здесь она главная.
+            // Перейти — НА СТУПЕНЬ ВЫШЕ СОСЕДКИ. Мята отсюда снята: она обещает
+            // «работает/включено», а это просто переход. Но отделать главное
+            // действие строки ровно как вспомогательное «вставить» нельзя — в
+            // спешке промахнёшься. Поэтому здесь s3 (перепад к полю L* 11.2
+            // против 3.5 у «вставить»), а отделка та же тихая: ступень плюс
+            // кромка hairline.
             Modifier.size(width = 52.dp, height = 44.dp)
-                .background(Theme.picked(), RoundedCornerShape(10.dp))
-                .border(1.dp, Theme.edge(), RoundedCornerShape(10.dp))
+                .background(Theme.tile, RoundedCornerShape(10.dp))
+                .border(1.dp, Theme.hairline, RoundedCornerShape(10.dp))
                 .pressable { val c = code; onCode(""); app.connectByCode(c) },
             contentAlignment = Alignment.Center,
         ) {
-            Icon(Icons.AutoMirrored.Filled.ArrowForward, null, Modifier.size(22.dp), tint = Theme.accent)
+            Icon(Icons.AutoMirrored.Filled.ArrowForward, null, Modifier.size(22.dp), tint = Theme.fg)
         }
     }
 }
@@ -347,22 +351,23 @@ private fun ConnectedExtras(app: AppState, showInvite: (String) -> Unit) {
 fun HostCard(app: AppState, host: Host) {
     var password by remember(host.id) { mutableStateOf("") }
     val expanded = app.expandedId == host.id
-    // ПОДКРАСКА ЛЕЖИТ НА ПЛИТКАХ, А САМА КАРТОЧКА — ЧИСТАЯ СТУПЕНЬ.
+    // ВНУТРИ КАРТОЧКИ МЯТЫ НЕТ — ОДНИ СТУПЕНИ.
     //
-    // Было наоборот: мятой красили карточку целиком, а плитки внутри оставались
-    // серыми. Цвет тогда доставался ОБОЛОЧКЕ, а не содержимому — раскрытая
-    // карточка выглядела «подсвеченной сеткой», в которой лежат чужие серые
-    // ячейки. Теперь карточка встаёт на s2 (L* 11.6 против 8.1 у свёрнутых
-    // соседей), а мята уходит внутрь, на плитки: они и есть то, ради чего
-    // карточку раскрывают. «Раскрыта» читается ступенью и мятной рамкой
-    // (edgeSoft), так что признак не один.
+    // Пробовали и так, и эдак: сперва мятой красили карточку целиком (цвет
+    // доставался оболочке, а не содержимому), потом — плитки внутри (семь
+    // подкрашенных ячеек читались как «всё это включено»). Осталась чистая
+    // лестница: свёрнутая карточка s1 (L* 8.1), раскрытая s2 (11.6), плитки
+    // внутри неё s3 (19.31). Все три различимы, и ни одна ничего не обещает.
+    // «Раскрыта» читается ступенью и мятной рамкой (edgeSoft), признак не один.
     val bg by animateColorAsState(if (expanded) Theme.cardHi else Theme.card, tween(200), label = "cardBg")
-    // Заливка плиток внутри: s3 ПЛЮС ПОДКРАСКА — то самое общее правило
-    // приложения (`picked`), взятое готовым, а не вписанное сюда вторым числом.
-    // Совпадение не случайное: 0.14 мяты подобрана так, чтобы подкрашенное
-    // вставало ровно вровень с s3 (L* 19.54 против 19.31), поэтому плитка меняет
-    // ЦВЕТ, не меняя своей ступени.
-    val tileFill = Theme.picked()
+    // Заливка плиток внутри: ЧИСТАЯ СТУПЕНЬ s3, БЕЗ ПОДКРАСКИ.
+    //
+    // Мята с плиток снята: в раскрытой карточке их семь, и семь подкрашенных
+    // ячеек читались как «всё это включено», хотя это просто цифры о хосте.
+    // Ступень s3 для того и заведена — она отличима от своей подложки (L* 7.71
+    // над s2 раскрытой карточки), но остаётся нейтральной. Та же ступень лежит
+    // под плитками панели состояния, так что по оттенку они одно и то же.
+    val tileFill = Theme.tile
     val stroke by animateColorAsState(
         if (expanded) Theme.edgeSoft() else Theme.hairline,
         tween(200), label = "cardStroke",

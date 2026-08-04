@@ -606,7 +606,7 @@ final class AppState: ObservableObject {
                                                      proto: proto, isPublic: pub) }
                 withAnimation { self.starting = false }
                 switch res {
-                case "!NAT": self.hostError = "Ваша сеть не пропускает гостей внутрь — раздавать отсюда не выйдет. Попробуйте другую сеть."
+                case "!NAT": self.hostError = "Не удалось определить ваш адрес в интернете — без него гости не найдут дорогу. Попробуйте ещё раз, а если не проходит — из другой сети."
                 // Свежий код ядро берёт САМО; сюда доходит, только если и это не
                 // удалось (нет связи с сервером).
                 case "!SIG": self.setHostCode("", ""); self.hostError = "Сервер не подтвердил код сети. Проверьте связь и попробуйте ещё раз."
