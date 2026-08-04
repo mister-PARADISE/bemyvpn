@@ -21,6 +21,24 @@ use tokio::time::timeout;
 
 use crate::Protocol;
 
+/// Единственный узор Noise, который мы говорим по проводу.
+///
+/// НЕ РУЧКА. Раньше он лежал полем структуры и передавался в `handshake`
+/// параметром — будто узоров бывает несколько. Значение было ровно одно, зато
+/// вид у кода был «подставь любой»: маскировка затирает ПЕРВЫЕ 32 БАЙТА
+/// сообщения, считая их эфемерным ключом, а это верно только для узоров,
+/// начинающихся с `-> e`. Подставленный NN/IK молча портил бы сообщение.
+const PATTERN: &str = "Noise_XX_25519_ChaChaPoly_BLAKE2s";
+
+/// ВСЁ, ЧТО ЧЕЛОВЕК МОЖЕТ УВИДЕТЬ ОТ ШИФРОСЛОЯ, — эти четыре фразы, и каждая
+/// лежит в одном экземпляре. Раньше три из них были рассыпаны по файлу копиями
+/// (по две-три штуки), а копии расходятся молча — ровно та беда, из-за которой
+/// в проекте завели справочник показа.
+const ERR_SILENT: &str = "Хост не отвечает. Попробуйте ещё раз или выберите другой.";
+const ERR_CLOSED: &str = "Хост оборвал подключение. Попробуйте ещё раз или выберите другой.";
+const ERR_GARBLED: &str = "Хост ответил непонятно — возможно, у него другая версия приложения.";
+const ERR_NO_DEAL: &str = "Не удалось договориться о шифровании с хостом. Выберите другой.";
+
 const HS_TIMEOUT: Duration = Duration::from_secs(6);
 /// Сколько ждать ответа, прежде чем ПОСЛАТЬ СВОЁ СООБЩЕНИЕ ЗАНОВО.
 ///
@@ -39,27 +57,39 @@ const HS_TRIES: usize = 4;
 ///   • `noise`      — прямой Noise (быстр везде, дефолт).
 ///   • `noise-obfs` — «Маскировка»: то же шифрование ПЛЮС три слоя против DPI:
 ///       (1) размеры пакетов рукопожатия рандомизированы (случайный груз);
-///       (2) каждый пакет данных добивается паддингом (пол 80 Б + джиттер) —
-///           нет «отпечатка» размеров;
+///       (2) каждый пакет данных добивается паддингом (свой «пол» у каждой
+///           сессии, см. `PAD_FLOOR_MIN`, плюс джиттер) — нет «отпечатка»
+///           размеров. В доке годами стоял «пол 80 Б», хотя фиксированные 80 как
+///           раз и убрали — именно потому, что общий пол сам был отпечатком;
 ///       (3) плейнтекст-шапка (8-байтный счётчик nonce) МАСКИРУЕТСЯ по образцу
 ///           шифротекста (как QUIC header protection) — в проводе нет монотонного
 ///           счётчика, кадр целиком неотличим от случайных байт.
 ///     Обёртка над проверенным Noise + sha2 — своей крипты не пишем.
 pub struct Noise {
     name: &'static str,
-    pattern: &'static str,
     pad: bool,
 }
 
 impl Noise {
     /// Noise с ChaCha20-Poly1305 (имя `noise`).
     pub fn chacha() -> Self {
-        Noise { name: "noise", pattern: "Noise_XX_25519_ChaChaPoly_BLAKE2s", pad: false }
+        Noise { name: "noise", pad: false }
     }
     /// «Маскировка» (имя `noise-obfs`): ChaCha20 + паддинг + маскировка nonce.
     pub fn obfs() -> Self {
-        Noise { name: "noise-obfs", pattern: "Noise_XX_25519_ChaChaPoly_BLAKE2s", pad: true }
+        Noise { name: "noise-obfs", pad: true }
     }
+}
+
+/// Кто мы в рукопожатии. Раньше это был `initiator: bool`, и соответствие
+/// «гость = инициатор» приходилось держать в доке — а вызовы читались как
+/// `handshake(link, p, false, true)`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Side {
+    /// Ходит первым (msg1, msg3).
+    Guest,
+    /// Отвечает (msg2).
+    Host,
 }
 
 #[async_trait]
@@ -73,11 +103,11 @@ impl Protocol for Noise {
     }
 
     async fn connect_host(&self, link: Box<dyn Link>) -> Result<Box<dyn Link>> {
-        Ok(Box::new(handshake(link, self.pattern, false, self.pad).await?))
+        Ok(Box::new(handshake(link, Side::Host, self.pad).await?))
     }
 
     async fn connect_guest(&self, link: Box<dyn Link>) -> Result<Box<dyn Link>> {
-        Ok(Box::new(handshake(link, self.pattern, true, self.pad).await?))
+        Ok(Box::new(handshake(link, Side::Guest, self.pad).await?))
     }
 }
 
@@ -122,24 +152,22 @@ fn uncloak_ephemeral(msg: &mut [u8], pad: bool) -> Result<()> {
         return Ok(());
     }
     if msg.len() < 32 {
-        return Err(Error::Protocol("Хост ответил непонятно — возможно, у него другая версия приложения.".into()));
+        return Err(Error::Protocol(ERR_GARBLED.into()));
     }
     let mut r = [0u8; 32];
     r.copy_from_slice(&msg[..32]);
-    let raw = decode_representative(&r)
-        .ok_or_else(|| Error::Protocol("Хост ответил непонятно — возможно, у него другая версия приложения.".into()))?;
+    let raw = decode_representative(&r).ok_or_else(|| Error::Protocol(ERR_GARBLED.into()))?;
     msg[..32].copy_from_slice(&raw);
     Ok(())
 }
 
 /// Провести рукопожатие Noise XX поверх канала и вернуть шифрующий Link.
-/// initiator=true — гость (ходит первым), false — хост (отвечает).
 ///
 /// Возвращает КОНКРЕТНЫЙ тип (а не `Box<dyn Link>`): тестам нужен доступ к
 /// транспортному состоянию, чтобы собрать враждебный кадр РАБОЧИМИ ключами
 /// сессии — иначе «злой пир» ничем не отличить от мусора, который и так дропается.
-async fn handshake(inner: Box<dyn Link>, pattern: &str, initiator: bool, pad: bool) -> Result<NoiseLink> {
-    let params = pattern.parse().map_err(noe)?;
+async fn handshake(inner: Box<dyn Link>, side: Side, pad: bool) -> Result<NoiseLink> {
+    let params = PATTERN.parse().map_err(noe)?;
     let builder = snow::Builder::new(params);
     let keypair = builder.generate_keypair().map_err(noe)?;
     let mut builder = builder.local_private_key(&keypair.private);
@@ -161,10 +189,9 @@ async fn handshake(inner: Box<dyn Link>, pattern: &str, initiator: bool, pad: bo
         None
     };
 
-    let mut hs = if initiator {
-        builder.build_initiator().map_err(noe)?
-    } else {
-        builder.build_responder().map_err(noe)?
+    let mut hs = match side {
+        Side::Guest => builder.build_initiator().map_err(noe)?,
+        Side::Host => builder.build_responder().map_err(noe)?,
     };
 
     let mut out = vec![0u8; 4096];
@@ -174,7 +201,7 @@ async fn handshake(inner: Box<dyn Link>, pattern: &str, initiator: bool, pad: bo
     // Груз каждого сообщения рандомизирован (см. hs_payload) — размеры трёх пакетов
     // перестают быть фиксированным отпечатком Noise-XX. Эфемерный ключ несут msg1
     // (гость) и msg2 (хост) — их маскируем Elligator2; msg3 эфемерного не несёт.
-    if initiator {
+    if side == Side::Guest {
         let n = hs.write_message(&hs_payload(pad), &mut out).map_err(noe)?;
         cloak_ephemeral(&mut out[..n], &my_repr);
         // Шлём msg1 и ждём msg2, повторяя msg1 при тишине (потерю не отличить от
@@ -209,9 +236,7 @@ async fn handshake(inner: Box<dyn Link>, pattern: &str, initiator: bool, pad: bo
         let mut done = false;
         for _ in 0..HS_TRIES {
             match timeout(HS_RETRY, inner.recv()).await {
-                Ok(Ok(m)) if m.is_empty() => {
-                    return Err(Error::Protocol("Хост оборвал подключение. Попробуйте ещё раз или выберите другой.".into()))
-                }
+                Ok(Ok(m)) if m.is_empty() => return Err(Error::Protocol(ERR_CLOSED.into())),
                 Ok(Ok(m)) if m == msg1_raw => {
                     inner.send(&msg2).await?; // гость не получил msg2 — повторяем
                 }
@@ -225,26 +250,25 @@ async fn handshake(inner: Box<dyn Link>, pattern: &str, initiator: bool, pad: bo
             }
         }
         if !done {
-            return Err(Error::Protocol("Хост не отвечает. Попробуйте ещё раз или выберите другой.".into()));
+            return Err(Error::Protocol(ERR_SILENT.into()));
         }
     }
 
-    // Ключ маскировки nonce = хэш рукопожатия (одинаков у обеих сторон, снаружи
-    // неизвестен). Берём ДО перехода в транспортный режим (он поглощает hs).
-    let obfs_key = if pad { Some(charge_mask_key(hs.get_handshake_hash())) } else { None };
+    // Маскировка собирается ЦЕЛИКОМ здесь и только здесь:
+    //   • ключ — хэш рукопожатия (одинаков у обеих сторон, снаружи неизвестен);
+    //     взять его надо ДО перехода в транспортный режим, тот поглощает `hs`;
+    //   • пол — свой у каждой сессии: фиксированный 80 давал ВСЕМ одинаковую
+    //     полосу мелких пакетов [80,112], узнаваемый горб в гистограмме длин.
+    let mask = pad.then(|| Masking {
+        key: charge_mask_key(hs.get_handshake_hash()),
+        floor: PAD_FLOOR_MIN + rand::random::<u8>() as usize % (PAD_FLOOR_MAX - PAD_FLOOR_MIN + 1),
+    });
     let transport = hs.into_stateless_transport_mode().map_err(noe)?;
-    // Пер-сессийный «пол» паддинга: фиксированный 80 давал ВСЕМ сессиям одинаковую
-    // полосу мелких пакетов [80,112] — узнаваемый горб в гистограмме длин. Свой
-    // случайный пол на сессию убирает эту общую сигнатуру. floor+jitter<256 (одна
-    // байтовая длина): 120+32=152 < 255.
-    let pad_floor = if pad { 64 + (rand::random::<u8>() as usize % 57) } else { 0 }; // 64..=120
     Ok(NoiseLink {
         inner,
         transport,
         send_ctr: std::sync::atomic::AtomicU64::new(0),
-        pad,
-        pad_floor,
-        obfs_key,
+        mask,
         send_frame: std::sync::Mutex::new(Vec::new()),
         send_plain: std::sync::Mutex::new(Vec::new()),
         recv_scratch: std::sync::Mutex::new(Vec::new()),
@@ -277,26 +301,33 @@ fn nonce_mask(charged: &sha2::Sha256, ciphertext: &[u8]) -> u64 {
 
 /// Случайная добавка сверх пола/размера (0..=OBFS_JITTER).
 const OBFS_JITTER: usize = 32;
+/// Отрезок, из которого сессия берёт себе «пол» паддинга.
+const PAD_FLOOR_MIN: usize = 64;
+const PAD_FLOOR_MAX: usize = 120;
+/// ИНВАРИАНТ, КОТОРЫЙ РАНЬШЕ ДЕРЖАЛСЯ КОММЕНТАРИЕМ («120+32=152 < 255»): длина
+/// паддинга уходит в кадр ОДНИМ байтом, значит пол с джиттером обязаны в него
+/// влезать. Теперь это считает компилятор, а не читатель: подними пол выше 223 —
+/// и крейт не соберётся.
+const _: () = assert!(PAD_FLOOR_MAX + OBFS_JITTER <= u8::MAX as usize);
 
 /// Сколько байт паддинга добавить пакету длины `len` в режиме маскировки.
 /// `floor` — пер-сессийный «пол» (мелкие пакеты добиваются до него, чтобы не
-/// выделяться крошечным размером). Гарантированно ≤255 (длина — один байт):
-/// floor ≤120 + джиттер 32 < 255.
+/// выделяться крошечным размером).
 fn obfs_pad_len(len: usize, floor: usize) -> usize {
     let jitter = rand::random::<u8>() as usize % (OBFS_JITTER + 1); // 0..=32
     let target = len.max(floor) + jitter;
     (target - len).min(u8::MAX as usize)
 }
 
-/// Случайный «груз» рукопожатия для маскировки (0..48 случайных байт). В обычном
-/// режиме — пусто (груз не нужен). Noise штатно шифрует груз со 2-го сообщения;
-/// в 1-м он идёт в открытую, но это просто случайные байты без маркеров.
+/// Случайный «груз» рукопожатия для маскировки — 0..=255 байт (в шапке годами
+/// стояло «0..48», хотя ровно этот узкий диапазон и убрали: он оставлял три
+/// сообщения Noise-XX в распознаваемых полосах размера). В обычном режиме —
+/// пусто, груз не нужен. Noise штатно шифрует груз со 2-го сообщения; в 1-м он
+/// идёт в открытую, но это просто случайные байты без маркеров.
 fn hs_payload(pad: bool) -> Vec<u8> {
     if !pad {
         return Vec::new();
     }
-    // 0..=255 (было 0..=48): узкий диапазон оставлял 3 сообщения Noise-XX в
-    // распознаваемых узких полосах размера. Широкий разброс их размывает.
     let n = rand::random::<u8>() as usize;
     let mut v = vec![0u8; n];
     rand::Rng::fill(&mut rand::thread_rng(), &mut v[..]);
@@ -315,21 +346,21 @@ async fn send_and_await(link: &dyn Link, msg: &[u8]) -> Result<Vec<u8>> {
         let wait = HS_RETRY.min(deadline.saturating_duration_since(tokio::time::Instant::now()));
         match timeout(wait, link.recv()).await {
             Ok(Ok(m)) if !m.is_empty() => return Ok(m),
-            Ok(Ok(_)) => return Err(Error::Protocol("Хост оборвал подключение. Попробуйте ещё раз или выберите другой.".into())),
+            Ok(Ok(_)) => return Err(Error::Protocol(ERR_CLOSED.into())),
             Ok(Err(e)) => return Err(e),
             Err(_) if tokio::time::Instant::now() < deadline => continue, // тишина — шлём заново
             Err(_) => break,
         }
     }
-    Err(Error::Protocol("Хост не отвечает. Попробуйте ещё раз или выберите другой.".into()))
+    Err(Error::Protocol(ERR_SILENT.into()))
 }
 
 async fn recv_hs(link: &dyn Link) -> Result<Vec<u8>> {
     match timeout(HS_TIMEOUT, link.recv()).await {
         Ok(Ok(m)) if !m.is_empty() => Ok(m),
-        Ok(Ok(_)) => Err(Error::Protocol("Хост оборвал подключение. Попробуйте ещё раз или выберите другой.".into())),
+        Ok(Ok(_)) => Err(Error::Protocol(ERR_CLOSED.into())),
         Ok(Err(e)) => Err(e),
-        Err(_) => Err(Error::Protocol("Хост не отвечает. Попробуйте ещё раз или выберите другой.".into())),
+        Err(_) => Err(Error::Protocol(ERR_SILENT.into())),
     }
 }
 
@@ -340,7 +371,7 @@ async fn recv_hs(link: &dyn Link) -> Result<Vec<u8>> {
 /// по-прежнему есть по чему.
 fn noe(e: snow::Error) -> Error {
     log::debug!("шифрослой: {e}");
-    Error::Protocol("Не удалось договориться о шифровании с хостом. Выберите другой.".into())
+    Error::Protocol(ERR_NO_DEAL.into())
 }
 
 /// Канал, шифрующий каждый пакет. Формат кадра: nonce(8, LE) + ciphertext+tag.
@@ -350,13 +381,8 @@ struct NoiseLink {
     inner: Box<dyn Link>,
     transport: snow::StatelessTransportState,
     send_ctr: std::sync::atomic::AtomicU64,
-    /// Режим маскировки: добавлять случайный паддинг к каждому пакету.
-    pad: bool,
-    /// Пер-сессийный «пол» размера plaintext (маскировка). 0 в обычном режиме.
-    pad_floor: usize,
-    /// Some(hash) в режиме маскировки — ЗАРЯЖЕННЫЙ ключом хэш для маски шапки-nonce
-    /// (см. `charge_mask_key`). None иначе.
-    obfs_key: Option<sha2::Sha256>,
+    /// `Some` — включена «Маскировка», `None` — прямой Noise. См. `Masking`.
+    mask: Option<Masking>,
     /// Переиспользуемые буферы горячего пути — чтобы НЕ аллоцировать Vec на каждый
     /// пакет (тяжело для CPU/батареи телефона при высоком pps). Берём из Mutex
     /// до `.await`, кладём обратно после — лок через await не держим.
@@ -365,6 +391,20 @@ struct NoiseLink {
     recv_scratch: std::sync::Mutex<Vec<u8>>,
     /// Анти-повтор: (наибольший принятый nonce, маска 64 предыдущих). См. `replay_ok`.
     replay: std::sync::Mutex<(u64, u64)>,
+}
+
+/// Всё, чем «Маскировка» отличается от прямого Noise ПОСЛЕ рукопожатия — одним
+/// куском. Раньше это были три поля рядом (`pad: bool`, `pad_floor`, `obfs_key:
+/// Option<_>`), а связь между ними держалась комментарием: пол осмыслен только
+/// при `pad`, ключ обязан быть `Some` ровно тогда же, а иначе кадры уезжали бы
+/// с одной половиной маскировки. Здесь их не развести: либо маскировки нет,
+/// либо она есть — вместе с ключом и полом.
+struct Masking {
+    /// ЗАРЯЖЕННЫЙ ключом хэш для маски шапки-nonce (см. `charge_mask_key`).
+    key: sha2::Sha256,
+    /// Пер-сессийный «пол» размера plaintext: мелкие пакеты добиваются до него,
+    /// чтобы не выделяться крошечным размером.
+    floor: usize,
 }
 
 /// Ширина окна анти-повтора (как в IPsec) — сколько перестановок в сети терпим.
@@ -412,8 +452,8 @@ impl Link for NoiseLink {
         let mut plain = std::mem::take(&mut *self.send_plain.lock().unwrap());
         plain.clear();
         plain.extend_from_slice(packet);
-        if self.pad {
-            let pad_len = obfs_pad_len(packet.len(), self.pad_floor);
+        if let Some(m) = &self.mask {
+            let pad_len = obfs_pad_len(packet.len(), m.floor);
             // ПАДДИНГ — НУЛИ, И ЭТО НЕ ЭКОНОМИЯ НА СТОЙКОСТИ. Он лежит ВНУТРИ
             // AEAD: снаружи видно только шифротекст, а ChaCha20 превращает любой
             // вход в неотличимую от шума строку — прячется здесь ДЛИНА, а не
@@ -441,8 +481,8 @@ impl Link for NoiseLink {
             Ok(n) => {
                 // Маскировка шапки: nonce ^ маска(шифротекст). Счётчик остаётся
                 // уникальным (без nonce-reuse), но в проводе монотонности не видно.
-                let wire_nonce = match &self.obfs_key {
-                    Some(k) => nonce ^ nonce_mask(k, &frame[8..8 + n]),
+                let wire_nonce = match &self.mask {
+                    Some(m) => nonce ^ nonce_mask(&m.key, &frame[8..8 + n]),
                     None => nonce,
                 };
                 frame[..8].copy_from_slice(&wire_nonce.to_le_bytes());
@@ -468,8 +508,8 @@ impl Link for NoiseLink {
                     }
                     let wire_nonce = u64::from_le_bytes(frame[..8].try_into().unwrap());
                     // Снимаем маску шапки той же маской (образец шифротекста тот же).
-                    let nonce = match &self.obfs_key {
-                        Some(k) => wire_nonce ^ nonce_mask(k, &frame[8..]),
+                    let nonce = match &self.mask {
+                        Some(m) => wire_nonce ^ nonce_mask(&m.key, &frame[8..]),
                         None => wire_nonce,
                     };
                     // Расшифровываем ПРЯМО в буфер вызывающего (переиспользуется).
@@ -489,7 +529,7 @@ impl Link for NoiseLink {
                                 continue; // повтор — молча дропаем
                             }
                             out.truncate(n);
-                            if self.pad {
+                            if self.mask.is_some() {
                                 // Последний байт — длина паддинга; отрезаем паддинг+байт.
                                 // Не сходится (байт больше самого plaintext или
                                 // plaintext пуст) — кадр ДРОПАЕМ. Раньше паддинг в
@@ -568,6 +608,10 @@ mod tests {
     use crate::Protocol;
     use std::sync::atomic::Ordering;
     use std::sync::Arc;
+
+    /// Весь словарь шифрослоя, обращённый к человеку. Ошибка, которой тут нет, —
+    /// это либо латиница из `snow`, либо фраза, написанная мимо этого списка.
+    const HUMAN_LINES: [&str; 4] = [ERR_SILENT, ERR_CLOSED, ERR_GARBLED, ERR_NO_DEAL];
 
     /// Перехваченный пакет не должен приниматься повторно: иначе повтор `BYE`
     /// рвёт чужую сессию, а повтор данных дублирует TCP-сегменты у гостя.
@@ -727,6 +771,11 @@ mod tests {
     /// Мусор ВМЕСТО рукопожатия. Хост обязан вернуть ошибку и отпустить слот, а
     /// не упасть и не зависнуть: иначе сканер портов кладёт хосту одну сессию
     /// за другой.
+    ///
+    /// И ЧЕЛОВЕК ОБЯЗАН УВИДЕТЬ НАШУ ФРАЗУ, а не английский текст `snow`
+    /// («decrypt error»): ради этого написан `noe`, и до сих пор это ничем не
+    /// проверялось — вернись сюда `format!("noise: {e}")`, все тесты остались бы
+    /// зелёными, а в строку состояния поехала бы латиница.
     #[tokio::test]
     async fn garbage_instead_of_handshake_fails_cleanly() {
         for junk in [vec![0u8; 1], vec![0xFF; 31], vec![0x41; 200], vec![0u8; 1500]] {
@@ -735,13 +784,20 @@ mod tests {
             b.send(&junk).await.unwrap();
             let r = tokio::time::timeout(Duration::from_secs(9), host).await;
             let r = r.expect("рукопожатие зависло на мусоре").expect("задача упала (паника)");
-            assert!(r.is_err(), "мусор длиной {} принят за рукопожатие", junk.len());
+            let e = r.expect_err(&format!("мусор длиной {} принят за рукопожатие", junk.len()));
+            // Фраза зависит от длины мусора, и обе честные: короткий обрывок
+            // snow отвергает сразу (ERR_NO_DEAL), а мусор от 32 байт он ПРИМЕТ
+            // за msg1 — любые 32 байта годятся как точка X25519, остальное сойдёт
+            // за груз. Тогда хост честно отвечает msg2 и ждёт msg3, которого не
+            // будет: для него это молчаливый пир (ERR_SILENT). Проверяем то, что
+            // проверять и надо: наружу ушла ОДНА ИЗ НАШИХ фраз.
+            assert!(HUMAN_LINES.contains(&e.to_string().as_str()), "человеку показали чужой текст: {e}");
         }
     }
 
     /// В режиме маскировки первые 32 байта — Elligator2-representative. Слишком
-    /// короткое сообщение и невалидная точка обязаны давать ОШИБКУ, а не панику
-    /// на срезе `msg[..32]`.
+    /// короткое сообщение и невалидная точка обязаны давать ОШИБКУ (нашей
+    /// фразой, а не латиницей), а не панику на срезе `msg[..32]`.
     #[tokio::test]
     async fn obfs_rejects_short_and_invalid_representative() {
         for junk in [vec![0u8; 4], vec![0xAB; 31]] {
@@ -749,7 +805,8 @@ mod tests {
             let host = tokio::spawn(async move { Noise::obfs().connect_host(a).await.map(|_| ()) });
             b.send(&junk).await.unwrap();
             let r = tokio::time::timeout(Duration::from_secs(9), host).await;
-            assert!(r.expect("зависло").expect("паника").is_err(), "короткий эфемерный принят");
+            let e = r.expect("зависло").expect("паника").expect_err("короткий эфемерный принят");
+            assert_eq!(e.to_string(), ERR_GARBLED, "человеку показали не нашу фразу");
         }
     }
 
@@ -886,25 +943,71 @@ mod tests {
         assert!(high_bit_seen > 0, "representative не рандомизирует старший бит — палевно для DPI");
     }
 
-    /// Маскировка шапки: в проводе первые 8 байт двух подряд кадров НЕ идут
-    /// монотонным счётчиком (0,1,2…), т.е. счётчик замаскирован. И при этом
-    /// расшифровка проходит (проверяется в roundtrip).
+    /// Канал-«отвод»: складывает копию КАЖДОГО отправленного кадра, чтобы тест
+    /// мог посмотреть на провод глазами наблюдателя (ТСПУ), а не через свои же
+    /// функции.
+    struct Tap {
+        inner: Box<dyn Link>,
+        sent: Arc<std::sync::Mutex<Vec<Vec<u8>>>>,
+    }
+    #[async_trait]
+    impl Link for Tap {
+        async fn send(&self, p: &[u8]) -> Result<()> {
+            self.sent.lock().unwrap().push(p.to_vec());
+            self.inner.send(p).await
+        }
+        async fn recv_into(&self, b: &mut Vec<u8>) -> Result<bool> {
+            self.inner.recv_into(b).await
+        }
+    }
+
+    /// ШАПКА-NONCE ГЛАЗАМИ НАБЛЮДАТЕЛЯ — оба режима сразу.
+    ///
+    /// Прошлая версия этого теста обещала заголовком проверку провода, а сверяла
+    /// `nonce_mask` сам с собой: убери маскировку из `send` — и он оставался
+    /// зелёным. Смотрим на байты, которые ушли в канал:
+    ///   • `noise` — шапка обязана быть ровно счётчиком 0,1,2… Это ПРОВОД, по
+    ///     нему нас читают старые сборки; заодно видно, что маскировка не
+    ///     протекла в обычный режим.
+    ///   • `noise-obfs` — шапка не должна совпадать со счётчиком ни на одном
+    ///     кадре, иначе монотонный счётчик виден снаружи и палит нас.
     #[tokio::test]
-    async fn noise_obfs_masks_nonce_header() {
-        let (a, b) = bmv_common::wire::memory_pair(64);
-        let (ph, pg) = (Noise::obfs(), Noise::obfs());
-        let (host, guest) = tokio::join!(ph.connect_host(a), pg.connect_guest(b));
-        let (host, _guest) = (host.unwrap(), guest.unwrap());
-        // Отправим два одинаковых пакета и убедимся, что «шапки» не 0 и не 1.
-        // (Проверяем на приёмной стороне через сам факт корректной расшифровки —
-        // если бы маска ломала nonce, recv вернул бы ошибку/пусто.)
-        host.send(b"aaaa").await.unwrap();
-        host.send(b"aaaa").await.unwrap();
-        // Косвенно: nonce_mask даёт разные маски для разных шифротекстов, а два
-        // шифрования одного текста разными nonce дают разные шифротексты.
-        let k = charge_mask_key(&[7u8; 32]);
-        assert_ne!(nonce_mask(&k, &[1, 2, 3, 4, 5, 6, 7, 8, 9]), 0, "маска не должна быть нулевой");
-        assert_ne!(nonce_mask(&k, b"AAAAAAAAAAAAAAAA"), nonce_mask(&k, b"BBBBBBBBBBBBBBBB"), "маска зависит от шифротекста");
+    async fn nonce_header_is_a_counter_in_plain_mode_and_masked_in_obfs() {
+        for (proto, masked) in [(Noise::chacha(), false), (Noise::obfs(), true)] {
+            let (a, b) = bmv_common::wire::memory_pair(64);
+            let sent: Arc<std::sync::Mutex<Vec<Vec<u8>>>> = Default::default();
+            let tapped = Box::new(Tap { inner: b, sent: sent.clone() });
+            let (host, guest) = tokio::join!(proto.connect_host(a), proto.connect_guest(tapped));
+            let (host, guest) = (host.unwrap(), guest.unwrap());
+            sent.lock().unwrap().clear(); // рукопожатие отсмотрели, дальше — данные
+
+            for i in 0..4u64 {
+                guest.send(format!("пакет {i}").as_bytes()).await.unwrap();
+                // С таймаутом, а не голым `recv()`: разойдись маскировка отправки
+                // с маскировкой приёма — кадр не расшифруется, приёмник его молча
+                // дропнет и тест ЗАВИС БЫ вместо того, чтобы покраснеть.
+                let got = tokio::time::timeout(Duration::from_secs(2), host.recv())
+                    .await
+                    .unwrap_or_else(|_| panic!("{}: кадр {i} не дошёл — отправка и приём разошлись в шапке", proto.name()))
+                    .unwrap();
+                assert_eq!(got, format!("пакет {i}").as_bytes());
+            }
+
+            let heads: Vec<u64> = sent
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|f| u64::from_le_bytes(f[..8].try_into().unwrap()))
+                .collect();
+            assert_eq!(heads.len(), 4, "{}: в провод ушло не 4 кадра", proto.name());
+            if masked {
+                for (i, h) in heads.iter().enumerate() {
+                    assert_ne!(*h, i as u64, "маскировка: в проводе голый счётчик {i} — шапка не замаскирована");
+                }
+            } else {
+                assert_eq!(heads, [0, 1, 2, 3], "обычный режим: шапка обязана оставаться счётчиком — по ней нас читают старые сборки");
+            }
+        }
     }
 
     /// Паддинг маскировки: всегда влезает в 1 байт (≤255), мелкие пакеты добиты до
@@ -934,8 +1037,8 @@ mod tests {
         let mut frame = vec![0u8; plain.len() + 16 + 8];
         let n = from.transport.write_message(nonce, plain, &mut frame[8..]).unwrap();
         frame.truncate(8 + n);
-        let wire = match &from.obfs_key {
-            Some(k) => nonce ^ nonce_mask(k, &frame[8..]),
+        let wire = match &from.mask {
+            Some(m) => nonce ^ nonce_mask(&m.key, &frame[8..]),
             None => nonce,
         };
         frame[..8].copy_from_slice(&wire.to_le_bytes());
@@ -949,8 +1052,8 @@ mod tests {
     #[tokio::test]
     async fn padding_longer_than_plaintext_drops_the_frame() {
         let (a, b) = bmv_common::wire::memory_pair(16);
-        let p = "Noise_XX_25519_ChaChaPoly_BLAKE2s";
-        let (host, guest) = tokio::join!(handshake(a, p, false, true), handshake(b, p, true, true));
+        let (host, guest) =
+            tokio::join!(handshake(a, Side::Host, true), handshake(b, Side::Guest, true));
         let (host, guest) = (host.unwrap(), guest.unwrap());
 
         // Заявлено 200 байт паддинга при 3 байтах plaintext.

@@ -6,6 +6,9 @@ license.workspace = true
 
 [dependencies]
 bmv-common.workspace = true
+# Таблица адресных диапазонов (`bmv_net::reach`): по ней хост решает, куда ему
+# открывать сокет наружу. Своей копии здесь нет — она уже расходилась с чужой.
+bmv-net.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 tracing.workspace = true

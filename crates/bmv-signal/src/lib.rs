@@ -223,7 +223,7 @@ struct Shared {
     pending: Mutex<HashMap<u64, oneshot::Sender<Value>>>,
     /// Ответ на announce (hostok/error без id).
     host_ack: Mutex<Option<oneshot::Sender<Result<()>>>>,
-    /// Очередь пришедших гостей (кандидаты) — для pending().
+    /// Очередь пришедших гостей (кандидаты) — для `next_guest`.
     guest_tx: mpsc::UnboundedSender<Vec<String>>,
     guest_rx: tokio::sync::Mutex<mpsc::UnboundedReceiver<Vec<String>>>,
     /// Каталог + сигнал изменения (для directory_watch).
@@ -410,7 +410,6 @@ impl Coordinator {
         }
     }
 
-    /// Быстрая проверка живости: подключились ли за короткий срок.
     /// Круг до координатора в мс. `None` — ещё не мерили или связь оборвана.
     pub fn rtt_ms(&self) -> Option<u32> {
         match self.shared.rtt_ms.load(Ordering::Relaxed) {
@@ -419,26 +418,17 @@ impl Coordinator {
         }
     }
 
+    /// Быстрая проверка живости: поднялся ли сокет за короткий срок.
     pub async fn health(&self) -> Result<()> {
         self.ensure_started();
-        if *self.shared.connected.subscribe().borrow() {
-            return Ok(());
-        }
+        // `wait_for` смотрит ТЕКУЩЕЕ значение и только потом ждёт — живой сокет
+        // отвечает мгновенно, и отдельная ветка «уже подключены» не нужна.
+        // Err — все отправители уронены (клиент закрыт), для нас это «связи нет».
         let mut c = self.shared.connected.subscribe();
-        match tokio::time::timeout(HEALTH_TIMEOUT, async {
-            loop {
-                if *c.borrow() {
-                    return;
-                }
-                if c.changed().await.is_err() {
-                    return;
-                }
-            }
-        })
-        .await
-        {
-            Ok(()) if *self.shared.connected.subscribe().borrow() => Ok(()),
-            _ => Err(Error::Signal("Нет связи с сервером. Проверьте интернет или адрес во вкладке «Сервер».".into())),
+        let woke = tokio::time::timeout(HEALTH_TIMEOUT, c.wait_for(|live| *live)).await;
+        match woke {
+            Ok(Ok(_)) => Ok(()),
+            _ => Err(no_link()),
         }
     }
 
@@ -452,9 +442,8 @@ impl Coordinator {
         *self.shared.last_announce.lock() = Some(ann.clone());
         let (tx, rx) = oneshot::channel();
         *self.shared.host_ack.lock() = Some(tx);
-        let mut v = serde_json::to_value(ann)
-            .map_err(|_| Error::Signal("Не удалось отправить заявку о раздаче. Попробуйте ещё раз.".into()))?;
-        v["t"] = json!("host");
+        let v = host_frame(ann)
+            .ok_or_else(|| Error::Signal("Не удалось отправить заявку о раздаче. Попробуйте ещё раз.".into()))?;
         self.send_if_live(v.to_string());
         match tokio::time::timeout(RPC_TIMEOUT, rx).await {
             Ok(Ok(Ok(()))) => Ok(()),
@@ -565,8 +554,8 @@ impl Coordinator {
         // СНАЧАЛА дождаться первого снапшота: свежий клиент иначе отдавал version=0,
         // и UI решал «нет связи», хотя мы просто ещё подключались.
         let _ = tokio::time::timeout(CONNECT_TIMEOUT, self.wait_first_snapshot()).await;
-        if self.shared.dir_ver.subscribe().borrow().eq(&0) {
-            return Err(Error::Signal("Нет связи с сервером. Проверьте интернет или адрес во вкладке «Сервер».".into())); // честно: не подключились
+        if *self.shared.dir_ver.borrow() == 0 {
+            return Err(no_link()); // честно: не подключились
         }
         let mut c = self.shared.dir_ver.subscribe();
         if *c.borrow() == since {
@@ -575,8 +564,8 @@ impl Coordinator {
         }
         // Сокет сейчас лежит (обрыв/переподключение)? Не выдаём устаревший каталог
         // за правду — честная ошибка, UI покажет «нет связи» без миганий.
-        if !*self.shared.connected.subscribe().borrow() {
-            return Err(Error::Signal("Нет связи с сервером. Проверьте интернет или адрес во вкладке «Сервер».".into()));
+        if !*self.shared.connected.borrow() {
+            return Err(no_link());
         }
         let d = self.shared.dir.lock();
         Ok(DirectoryUpdate { version: d.version, hosts: d.hosts.clone() })
@@ -607,12 +596,18 @@ impl Coordinator {
 
     async fn wait_first_snapshot(&self) {
         let mut c = self.shared.dir_ver.subscribe();
-        while *c.borrow() == 0 {
-            if c.changed().await.is_err() {
-                return;
-            }
-        }
+        let _ = c.wait_for(|v| *v != 0).await;
     }
+}
+
+/// «Связи нет» — ОДИН текст на все места, где мы это сообщаем.
+///
+/// Он лежал тремя дословными копиями (проверка живости и два выхода из
+/// наблюдения за каталогом). Одинаковость тут не украшение: человек видит эту
+/// строку на трёх разных путях и должен понять, что дело одно и то же, — а
+/// разъезжаются копии молча, при первой же правке формулировки.
+fn no_link() -> Error {
+    Error::Signal("Нет связи с сервером. Проверьте интернет или адрес во вкладке «Сервер».".into())
 }
 
 /// Кадр подписки на каталог.
@@ -624,9 +619,41 @@ fn watch_frame(filter: &Filter) -> Value {
     v
 }
 
-/// Супервизор: держит сокет, читает/пишет, ПЕРЕПОДКЛЮЧАЕТСЯ и восстанавливает
-/// состояние (повторный анонс + подписка). Один на Coordinator; ВЫХОДИТ (и
-/// закрывает сокет), когда уронен последний клон Coordinator (сигнал `closed`).
+/// Кадр анонса хоста. `None` — анонс не сериализуется (недостижимо: одни строки,
+/// числа и флаги), вызывающий переводит это в человеческую ошибку.
+///
+/// ОДНО МЕСТО НА ДВА ОТПРАВИТЕЛЯ: этот кадр шлёт и [`Coordinator::announce`], и
+/// супервизор при восстановлении после обрыва. Собирался он раньше дважды, двумя
+/// одинаковыми парами строк, — а расхождение между ними означало бы ровно то,
+/// что после реконнекта координатор видит хост ИНАЧЕ, чем при первом анонсе:
+/// другое имя, другие адреса, другой потолок гостей. Тихо и без единой ошибки.
+fn host_frame(ann: &HostAnnounce) -> Option<Value> {
+    let mut v = serde_json::to_value(ann).ok()?;
+    v["t"] = json!("host");
+    Some(v)
+}
+
+/// Кадры, которыми (пере)подключившийся сокет заново рассказывает координатору
+/// всё, что тот о нас знал: анонс хоста и подписка на каталог — С ЕЁ ФИЛЬТРОМ.
+///
+/// Это СПИСОК ТОГО, ЧТО ПЕРЕЖИВАЕТ ОБРЫВ, в одном месте. Раньше он существовал
+/// только как две подряд идущие вставки в теле супервизора, и добавить туда
+/// третий вид состояния (или забыть его добавить) было одинаково незаметно:
+/// пропажа видна не в тестах, а у человека — через раз, после случайного обрыва.
+///
+/// Возвращаем готовые строки, а не держим локи: их нельзя проносить через
+/// `await` отправки (иначе future перестаёт быть Send).
+fn session_frames(sh: &Shared) -> Vec<String> {
+    let mut out = Vec::new();
+    if let Some(v) = sh.last_announce.lock().as_ref().and_then(host_frame) {
+        out.push(v.to_string());
+    }
+    if let Some(f) = sh.watching.lock().as_ref() {
+        out.push(watch_frame(f).to_string());
+    }
+    out
+}
+
 /// Связь пропала: погасить флаг И РАЗБУДИТЬ ЖДУЩИХ ОТВЕТА RPC.
 ///
 /// Без этого каждый RPC, отправленный до обрыва, честно висел все свои десять
@@ -646,6 +673,9 @@ fn go_offline(sh: &Shared) {
     sh.pending.lock().clear();
 }
 
+/// Супервизор: держит сокет, читает/пишет, ПЕРЕПОДКЛЮЧАЕТСЯ и восстанавливает
+/// состояние (`session_frames`). Один на Coordinator; ВЫХОДИТ (и закрывает
+/// сокет), когда уронен последний клон Coordinator (сигнал `closed`).
 async fn supervisor(sh: Arc<Shared>, mut out_rx: mpsc::UnboundedReceiver<String>) {
     let mut closed = sh.closed.clone();
     // Бэкофф с джиттером: при рестарте координатора тысячи клиентов иначе ломятся
@@ -674,19 +704,10 @@ async fn supervisor(sh: Arc<Shared>, mut out_rx: mpsc::UnboundedReceiver<String>
         let _ = sh.connected.send_replace(true);
         let (mut sink, mut read) = stream.split();
 
-        // Восстановление состояния на (пере)подключении. Локи снимаем ДО await
-        // (иначе MutexGuard живёт через await → future не Send).
-        let restore_ann = sh.last_announce.lock().clone();
-        if let Some(ann) = restore_ann {
-            if let Ok(mut v) = serde_json::to_value(&ann) {
-                v["t"] = json!("host");
-                let _ = sink.send(Message::Text(v.to_string())).await;
-            }
-        }
-        // Подписку восстанавливаем С ТЕМ ЖЕ ФИЛЬТРОМ, с каким подписывались.
-        let restore_watch = sh.watching.lock().clone();
-        if let Some(filter) = restore_watch {
-            let _ = sink.send(Message::Text(watch_frame(&filter).to_string())).await;
+        // Восстановление состояния на (пере)подключении — весь список в
+        // `session_frames` (анонс хоста + подписка с её фильтром).
+        for frame in session_frames(&sh) {
+            let _ = sink.send(Message::Text(frame)).await;
         }
 
         // Часы живости: любой входящий кадр (в т.ч. Ping/Pong) — признак жизни.
@@ -801,29 +822,34 @@ fn with_jitter(base: Duration) -> Duration {
 /// Разобрать одно серверное сообщение и разложить по адресатам.
 fn handle_incoming(sh: &Arc<Shared>, txt: &str) {
     let Ok(v) = serde_json::from_str::<Value>(txt) else { return };
-    let t = v.get("t").and_then(|t| t.as_str()).unwrap_or("");
-    match t {
-        // Ответы RPC по id.
-        "code" | "ip" | "resolved" | "connected" => {
-            if let Some(id) = v.get("id").and_then(|x| x.as_u64()) {
-                let waiter = sh.pending.lock().remove(&id);
-                if let Some(tx) = waiter {
-                    let _ = tx.send(v);
-                }
-            }
+
+    // ОТВЕТ УЗНАЁТСЯ ПО МЕТКЕ, А НЕ ПО ИМЕНИ. `id` ставит [`Coordinator::rpc`],
+    // сервер возвращает его эхом — значит кадр с меткой адресован ровно тому
+    // ожиданию и никому больше (ждущего может уже не быть: истёк таймаут, был
+    // обрыв — тогда кадр просто некому отдать).
+    //
+    // Раньше здесь стоял список имён ответов — `"code" | "ip" | "resolved" |
+    // "connected"`, — то есть КОПИЯ знания о наборе запросов, живущая отдельно от
+    // самих запросов. Новый запрос требовал двух правок в разных концах файла, а
+    // забытая вторая давала худший вид отказа: всё компилируется, кадр приходит,
+    // ответ молча выбрасывается, и человек десять секунд смотрит на «задумалось»
+    // и читает «Сервер не ответил». Метку же не забыть — без неё нет и запроса.
+    let id = v.get("id").and_then(|x| x.as_u64()).unwrap_or(0);
+    if id != 0 {
+        let waiter = sh.pending.lock().remove(&id);
+        if let Some(tx) = waiter {
+            let _ = tx.send(v);
         }
+        return;
+    }
+
+    // Дальше — кадры, которые сервер ТОЛКАЕТ сам, без запроса.
+    match v.get("t").and_then(|t| t.as_str()).unwrap_or("") {
+        // Отказ без метки — это отказ по анонсу хоста (у `host` метки нет).
         "error" => {
-            let id = v.get("id").and_then(|x| x.as_u64()).unwrap_or(0);
-            if id != 0 {
-                let waiter = sh.pending.lock().remove(&id);
-                if let Some(tx) = waiter {
-                    let _ = tx.send(v);
-                }
-            } else {
-                let ack = sh.host_ack.lock().take();
-                if let Some(tx) = ack {
-                    let _ = tx.send(Err(refusal(&v)));
-                }
+            let ack = sh.host_ack.lock().take();
+            if let Some(tx) = ack {
+                let _ = tx.send(Err(refusal(&v)));
             }
         }
         "hostok" => {
@@ -845,30 +871,39 @@ fn handle_incoming(sh: &Arc<Shared>, txt: &str) {
         }
         "dirfull" => {
             if let Some(hosts) = v.get("hosts").and_then(|h| serde_json::from_value::<Vec<HostInfo>>(h.clone()).ok()) {
-                let mut d = sh.dir.lock();
-                d.replace_all(hosts);
-                d.version += 1;
-                let _ = sh.dir_ver.send_replace(d.version);
+                dir_changed(sh, |d| d.replace_all(hosts));
             }
         }
         "diradd" | "dirupdate" => {
             if let Some(host) = v.get("host").and_then(|h| serde_json::from_value::<HostInfo>(h.clone()).ok()) {
-                let mut d = sh.dir.lock();
-                d.upsert(host);
-                d.version += 1;
-                let _ = sh.dir_ver.send_replace(d.version);
+                dir_changed(sh, |d| d.upsert(host));
             }
         }
         "dirremove" => {
             if let Some(id) = v.get("id").and_then(|x| x.as_str()) {
-                let mut d = sh.dir.lock();
-                d.remove(id);
-                d.version += 1;
-                let _ = sh.dir_ver.send_replace(d.version);
+                dir_changed(sh, |d| d.remove(id));
             }
         }
         _ => {}
     }
+}
+
+/// Изменить каталог: правка, новая версия, сигнал ждущим — ВСЕГДА вместе.
+///
+/// Эти три шага стояли копиями в каждой ветке дельты, и связаны они не случайно:
+/// версия — единственное, по чему `directory_watch` понимает, что список стал
+/// другим. Забыть её в одной ветке (или в новой, четвёртой) значит заморозить
+/// каталог у человека: карточки в памяти уже поменялись, а экран об этом не
+/// узнает и будет ждать до таймаута — молча, без единой ошибки.
+///
+/// Версию поднимаем БЕЗУСЛОВНО, даже если правка ничего не изменила (удаление
+/// незнакомого id): лишнее пробуждение стоит одного лишнего снимка, пропущенное
+/// — застывшего списка.
+fn dir_changed(sh: &Shared, change: impl FnOnce(&mut DirState)) {
+    let mut d = sh.dir.lock();
+    change(&mut d);
+    d.version += 1;
+    let _ = sh.dir_ver.send_replace(d.version);
 }
 
 #[cfg(test)]
@@ -881,7 +916,8 @@ mod tests {
         Coordinator::new("http://127.0.0.1:1").unwrap()
     }
 
-    fn host_frame(t: &str, id: &str, name: &str) -> String {
+    /// Кадр дельты каталога (`diradd`/`dirupdate`).
+    fn dir_frame(t: &str, id: &str, name: &str) -> String {
         json!({ "t": t, "host": { "id": id, "name": name } }).to_string()
     }
 
@@ -937,8 +973,8 @@ mod tests {
             { "id": "b", "name": "второй" },
             { "id": "c", "name": "третий" },
         ] }).to_string());
-        handle_incoming(sh, &host_frame("dirupdate", "a", "первый-обновлён"));
-        handle_incoming(sh, &host_frame("diradd", "d", "четвёртый"));
+        handle_incoming(sh, &dir_frame("dirupdate", "a", "первый-обновлён"));
+        handle_incoming(sh, &dir_frame("diradd", "d", "четвёртый"));
         handle_incoming(sh, &json!({ "t": "dirremove", "id": "b" }).to_string());
 
         let d = sh.dir.lock();
@@ -960,11 +996,11 @@ mod tests {
         let c = offline_client();
         let sh = &c.shared;
         for i in 0..(MAX_HOSTS + 50) {
-            handle_incoming(sh, &host_frame("diradd", &format!("h{i}"), "x"));
+            handle_incoming(sh, &dir_frame("diradd", &format!("h{i}"), "x"));
         }
         assert_eq!(sh.dir.lock().hosts.len(), MAX_HOSTS, "потолок каталога не держится");
         // Уже известный хост поверх потолка обязан обновляться (это не рост).
-        handle_incoming(sh, &host_frame("dirupdate", "h0", "обновлён"));
+        handle_incoming(sh, &dir_frame("dirupdate", "h0", "обновлён"));
         assert_eq!(sh.dir.lock().hosts[0].name, "обновлён");
     }
 
@@ -985,6 +1021,141 @@ mod tests {
         assert_eq!(v.get("addr").unwrap(), "1.2.3.4");
         assert!(arx.await.unwrap().is_ok(), "hostok обязан подтвердить анонс");
         assert!(sh.pending.lock().is_empty(), "ожидающий не убран из карты");
+    }
+
+    /// ОТВЕТ НАХОДИТ СВОЙ ЗАПРОС ПО МЕТКЕ, А НЕ ПО ИМЕНИ КАДРА.
+    ///
+    /// Здесь стоял список имён (`"code" | "ip" | "resolved" | "connected"`) —
+    /// копия знания о наборе запросов, живущая в другом конце файла. Новый запрос
+    /// требовал двух правок, и забытая вторая давала худший вид поломки: всё
+    /// компилируется, ответ приходит и молча выбрасывается, человек десять секунд
+    /// смотрит на «задумалось» и читает «Сервер не ответил».
+    ///
+    /// Последнее имя в списке — заведомо незнакомое: оно проверяет ровно то, что
+    /// маршрут больше не зависит от списка имён. Остальные пять — сегодняшние
+    /// кадры координатора (`WsServerMsg`), они обязаны ходить как ходили.
+    #[tokio::test]
+    async fn an_answer_reaches_its_waiter_by_mark_not_by_name() {
+        let c = offline_client();
+        let sh = &c.shared;
+        for (n, t) in ["code", "ip", "resolved", "connected", "error", "будущий-ответ"].iter().enumerate() {
+            let id = n as u64 + 1;
+            let (tx, rx) = oneshot::channel();
+            sh.pending.lock().insert(id, tx);
+            handle_incoming(sh, &json!({ "t": t, "id": id }).to_string());
+            // Со СРОКОМ: потерянный ответ не роняет ожидание, а просто не
+            // приходит — без этого тест не падал бы, а висел.
+            let v = tokio::time::timeout(Duration::from_secs(5), rx)
+                .await
+                .unwrap_or_else(|_| panic!("ответ «{t}» не дошёл до своего запроса"))
+                .unwrap_or_else(|_| panic!("ожидание ответа «{t}» уронено"));
+            assert_eq!(v["t"], *t);
+        }
+        assert!(sh.pending.lock().is_empty(), "ожидающие не убраны из карты");
+    }
+
+    /// ЧУЖОЙ ОТКАЗ НЕ СНИМАЕТ ЗАЯВКУ О РАЗДАЧЕ. Отказ С МЕТКОЙ адресован
+    /// запросу; если тот уже ушёл по таймауту, кадр отдать некому — и он обязан
+    /// пропасть, а не свалиться на ожидание анонса. Иначе неудачный `resolve`
+    /// гостя гасил бы раздачу, идущую в том же приложении, — а лечится это только
+    /// перезапуском.
+    #[tokio::test]
+    async fn a_marked_refusal_never_touches_the_announce() {
+        let c = offline_client();
+        let (atx, mut arx) = oneshot::channel::<Result<()>>();
+        *c.shared.host_ack.lock() = Some(atx);
+
+        handle_incoming(&c.shared, &json!({ "t": "error", "id": 9, "code": 404, "reason": "код не найден" }).to_string());
+        assert!(arx.try_recv().is_err(), "отказ по чужому запросу снял заявку о раздаче");
+
+        // А отказ БЕЗ метки — как раз по заявке (у `host` метки нет).
+        handle_incoming(&c.shared, &json!({ "t": "error", "code": 403, "reason": "код не наш" }).to_string());
+        assert_eq!(arx.await.unwrap().unwrap_err().refusal_code(), Some(403), "отказ по заявке не дошёл");
+    }
+
+    /// ЛЮБОЕ ИЗМЕНЕНИЕ КАТАЛОГА ПОДНИМАЕТ ВЕРСИЮ И БУДИТ ЖДУЩИХ.
+    ///
+    /// Версия — единственное, по чему `directory_watch` понимает, что список стал
+    /// другим. Раньше её подъём стоял копией в каждой ветке дельты; пропусти его
+    /// одна ветка (или новая, четвёртая) — карточки в памяти уже поменялись, а
+    /// экран об этом не узнает и досидит до таймаута. Ни ошибки, ни лога: просто
+    /// у человека застыл список хостов.
+    #[tokio::test]
+    async fn every_directory_frame_bumps_the_version() {
+        let c = offline_client();
+        let sh = &c.shared;
+        let mut ver = sh.dir_ver.subscribe();
+        let frames = [
+            json!({ "t": "dirfull", "hosts": [{ "id": "a" }] }).to_string(),
+            dir_frame("diradd", "b", "новый"),
+            dir_frame("dirupdate", "b", "переименован"),
+            json!({ "t": "dirremove", "id": "b" }).to_string(),
+        ];
+        for (n, frame) in frames.iter().enumerate() {
+            let want = n as u64 + 1;
+            handle_incoming(sh, frame);
+            assert_eq!(sh.dir.lock().version, want, "кадр не поднял версию каталога: {frame}");
+            assert!(ver.has_changed().unwrap(), "ждущие каталога не разбужены кадром: {frame}");
+            assert_eq!(*ver.borrow_and_update(), want, "сигнал версии разошёлся с каталогом: {frame}");
+        }
+    }
+
+    /// ПОСЛЕ ОБРЫВА КООРДИНАТОР ВИДИТ ТОТ ЖЕ САМЫЙ ХОСТ.
+    ///
+    /// Анонс уходит двумя путями — первым `announce` и восстановлением на
+    /// реконнекте, — и раньше собирался ДВАЖДЫ, двумя одинаковыми парами строк.
+    /// Разъедься копии, и после случайного дрожания связи раздача молча меняла бы
+    /// имя, адреса или потолок гостей: ошибок нет, тесты зелёные, а хост в
+    /// каталоге не тот. Здесь оба пути сверяются побайтово.
+    ///
+    /// Что супервизор берёт кадры именно отсюда, проверяет соседний тест
+    /// `reconnect_restores_watch_with_filter` — он ловит подписку из того же
+    /// `session_frames` на живом сокете, дважды.
+    #[tokio::test]
+    async fn a_reconnect_re_announces_the_very_same_host() {
+        let c = offline_client();
+        let mut out = c.shared.out_rx.lock().take().expect("очередь исходящих");
+        let _ = c.shared.connected.send_replace(true); // сокет «жив» — кадр уйдёт в очередь
+        *c.shared.watching.lock() = Some(Filter { country: Some("NL".into()) });
+
+        let ann = HostAnnounce {
+            id: "ABCDEF123456".into(),
+            name: "дом".into(),
+            endpoints: vec!["203.0.113.7:41000".into()],
+            max_guests: 3,
+            protocol: "masque".into(),
+            ..Default::default()
+        };
+        // Ждать подтверждения незачем — кадр уходит до ожидания; забираем и бросаем.
+        let _ = tokio::time::timeout(Duration::from_millis(100), c.announce(&ann)).await;
+        let first = out.try_recv().expect("анонс не ушёл на провод");
+
+        let restore = session_frames(&c.shared);
+        assert_eq!(restore.first().map(String::as_str), Some(first.as_str()), "восстановительный анонс разошёлся с первым");
+        assert_eq!(
+            restore.get(1).map(String::as_str),
+            Some(watch_frame(&Filter { country: Some("NL".into()) }).to_string().as_str()),
+            "подписка на каталог выпала из восстановления — после обрыва человек остался бы без списка хостов"
+        );
+    }
+
+    /// ЖИВОЙ СОКЕТ ПРИЗНАЁТСЯ ЖИВЫМ СРАЗУ. Отдельной ветки «мы уже подключены»
+    /// больше нет — её роль взял `wait_for`, который сначала смотрит ТЕКУЩЕЕ
+    /// значение и только потом ждёт. Ошибись он, и каждый запрос начинался бы с
+    /// ожидания ИЗМЕНЕНИЯ флага: четыре секунды паузы на ровном месте перед
+    /// любым `rpc`, при полностью исправной связи.
+    #[tokio::test]
+    async fn health_on_a_live_socket_returns_at_once() {
+        let c = offline_client();
+        // Супервизор не нужен и вреден: он бы полез на несуществующий порт и
+        // погасил флаг прямо посреди проверки.
+        c.shared.started.store(true, Ordering::SeqCst);
+        let _ = c.shared.connected.send_replace(true);
+
+        tokio::time::timeout(Duration::from_millis(200), c.health())
+            .await
+            .expect("проверка живости не вернулась сразу при живом сокете")
+            .expect("живой сокет признан мёртвым");
     }
 
     /// Ошибка БЕЗ id — это отказ по анонсу, а не потерянный ответ RPC.

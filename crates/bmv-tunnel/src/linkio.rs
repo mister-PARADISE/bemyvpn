@@ -41,8 +41,52 @@ const SEND_QUEUE: usize = 4096;
 /// Глубина приёмной очереди (readahead: UDP-приём не ждёт, пока ipstack
 /// переварит предыдущий пакет).
 const RECV_QUEUE: usize = 512;
-/// Потолок пула переиспользуемых приёмных буферов (возвращаются из poll_read).
+/// Потолок пула переиспользуемых буферов пакета.
 const POOL_CAP: usize = RECV_QUEUE + 8;
+
+/// Пул буферов под один пакет. ОБА направления берут отсюда и возвращают сюда,
+/// поэтому в устоявшемся режиме перекачка не аллоцирует вовсе.
+///
+/// Раньше пул был только на приёме, а `poll_write` делал `buf.to_vec()` — то
+/// есть КАЖДЫЙ пакет, уходящий гостю (а это направление скачивания, самое
+/// нагруженное), стоил одной аллокации и одного освобождения. Объяснить эту
+/// разницу между направлениями было нечем: буфер там и там один и тот же, MTU.
+#[derive(Default)]
+struct BufPool(std::sync::Mutex<Vec<Vec<u8>>>);
+
+impl BufPool {
+    /// Буфер под `recv_into`: из пула, а если пул пуст (или отравлен паникой) —
+    /// свежий. ДЛИНУ НЕ СБРАСЫВАЕМ.
+    ///
+    /// `clear()` тут выглядел безобидно, но стоил полного MTU обнуления на
+    /// КАЖДЫЙ принятый пакет: `NoiseLink::recv_into` растёт по потребности
+    /// (`if out.len() < frame.len() { out.resize(frame.len(), 0) }`, см.
+    /// noise.rs), и с прежней длиной он зануляет только дельту — 24 байта
+    /// (nonce+tag), а с нулевой — все 1424. Содержимое наружу не течёт: по
+    /// контракту `Link::recv_into` (bmv-common/src/wire.rs) реализация
+    /// ПЕРЕЗАПИСЫВАЕТ буфер и сама выставляет длину.
+    fn empty(&self) -> Vec<u8> {
+        self.0.lock().ok().and_then(|mut p| p.pop()).unwrap_or_default()
+    }
+
+    /// Буфер с копией `data`. Вот ЗДЕСЬ сброс обязателен — дописываем к хвосту.
+    fn filled(&self, data: &[u8]) -> Vec<u8> {
+        let mut b = self.empty();
+        b.clear();
+        b.extend_from_slice(data);
+        b
+    }
+
+    /// Вернуть отработавший буфер. Сверх потолка отдаём аллокатору — пул не
+    /// должен расти на всплеске и держать память до конца сессии.
+    fn give(&self, b: Vec<u8>) {
+        if let Ok(mut p) = self.0.lock() {
+            if p.len() < POOL_CAP {
+                p.push(b);
+            }
+        }
+    }
+}
 
 /// Целевой темп отправки из env `BMV_TX_PPS` (пакетов/с). 0/пусто → пейсинг ВЫКЛ.
 fn tx_pps() -> f64 {
@@ -71,10 +115,8 @@ pub struct LinkIo {
     /// (ipstack сам EOF устройства не обрабатывает, поэтому сносим его снаружи.)
     dead: Option<tokio::sync::oneshot::Sender<()>>,
     eof: bool,
-    /// Пул переиспользуемых приёмных буферов. Фоновая задача берёт буфер отсюда,
-    /// `recv_into` заполняет его, `poll_read` после копирования в ipstack ВОЗВРАЩАЕТ
-    /// буфер сюда → в устоявшемся режиме приём вообще не аллоцирует.
-    pool: Arc<std::sync::Mutex<Vec<Vec<u8>>>>,
+    /// Буферы пакетов обоих направлений (см. `BufPool`).
+    pool: Arc<BufPool>,
     /// Гард отмены фоновых задач (см. `AbortBoth`).
     _abort: AbortBoth,
 }
@@ -97,13 +139,17 @@ impl Drop for AbortBoth {
 
 impl LinkIo {
     pub fn new(link: Arc<dyn Link>, dead: tokio::sync::oneshot::Sender<()>) -> Self {
+        let pool: Arc<BufPool> = Arc::new(BufPool::default());
         let (send_tx, mut send_rx) = mpsc::channel::<Vec<u8>>(SEND_QUEUE);
         // Единственный, кто реально зовёт link.send. Пейсинг — на входе в очередь
         // (в poll_write), поэтому здесь просто проталкиваем в сеть по мере сил.
         let sender = link.clone();
+        let spool = pool.clone();
         let send_task = tokio::spawn(async move {
             while let Some(pkt) = send_rx.recv().await {
-                if sender.send(&pkt).await.is_err() {
+                let ok = sender.send(&pkt).await.is_ok();
+                spool.give(pkt); // буфер ушёл в сеть — назад в пул
+                if !ok {
                     break; // канал мёртв; смерть заметит и recv-путь (keepalive)
                 }
             }
@@ -112,13 +158,12 @@ impl LinkIo {
         // (EOF/ошибка/keepalive-смерть) → задача выходит, tx дропается, канал
         // закрывается → poll_read увидит None и объявит сессию мёртвой.
         let (recv_tx, recv_rx) = mpsc::channel::<Vec<u8>>(RECV_QUEUE);
-        let pool: Arc<std::sync::Mutex<Vec<Vec<u8>>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
         let receiver = link;
         let rpool = pool.clone();
         let recv_task = tokio::spawn(async move {
             loop {
-                // Буфер из пула (или свежий, если пусто/гонка) — заполняем recv_into.
-                let mut buf = rpool.lock().unwrap().pop().unwrap_or_default();
+                // Буфер из пула (или свежий, если пусто) — заполняем recv_into.
+                let mut buf = rpool.empty();
                 match receiver.recv_into(&mut buf).await {
                     Ok(true) => {
                         if recv_tx.send(buf).await.is_err() {
@@ -172,12 +217,7 @@ impl AsyncRead for LinkIo {
                     return Poll::Pending;
                 }
                 buf.put_slice(&pkt);
-                // Возвращаем буфер в пул (с ограничением, чтобы не рос бесконечно).
-                if let Ok(mut p) = self.pool.lock() {
-                    if p.len() < POOL_CAP {
-                        p.push(pkt);
-                    }
-                }
+                self.pool.give(pkt); // буфер отработал — назад в пул
                 Poll::Ready(Ok(()))
             }
             Poll::Ready(None) => {
@@ -231,7 +271,10 @@ impl AsyncWrite for LinkIo {
             }
             Poll::Pending => return Poll::Pending,
         }
-        match self.send_tx.send_item(buf.to_vec()) {
+        // Буфер из общего пула, а не свежий `Vec` на каждый пакет: слот в очереди
+        // уже зарезервирован, значит буфер точно уедет и вернётся (см. `BufPool`).
+        let pkt = self.pool.filled(buf);
+        match self.send_tx.send_item(pkt) {
             Ok(()) => Poll::Ready(Ok(buf.len())),
             Err(_) => Poll::Ready(Err(io::Error::new(io::ErrorKind::BrokenPipe, "Связь с хостом оборвалась."))),
         }
@@ -243,5 +286,86 @@ impl AsyncWrite for LinkIo {
 
     fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         Poll::Ready(Ok(()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::AsyncWriteExt;
+
+    /// ОТПРАВКА ГОСТЮ НЕ АЛЛОЦИРУЕТ НА КАЖДЫЙ ПАКЕТ.
+    ///
+    /// Это направление скачивания — самое нагруженное в туннеле: при 100 Мбит/с
+    /// через хост проходит порядка десяти тысяч пакетов в секунду, и `to_vec()`
+    /// на каждом означал столько же пар «выделил-освободил» на ровном месте, при
+    /// том что на приёме буферы переиспользовались уже давно.
+    ///
+    /// Проверяем по КРУГОВОРОТУ: один и тот же буфер обязан уходить в сеть,
+    /// возвращаться в пул и уходить снова. Считать аллокации напрямую нечем, зато
+    /// это видно по пулу: при переиспользовании там всё время лежит ОДИН и тот же
+    /// буфер (его забрали и вернули), а стоит отправке начать делать свой `Vec` на
+    /// каждый пакет — пул начнёт РАСТИ чужими буферами, и счёт разойдётся сразу.
+    #[tokio::test]
+    async fn the_send_path_reuses_buffers_instead_of_allocating() {
+        let (mine, _peer) = bmv_common::wire::memory_pair(256);
+        let (dead_tx, _dead_rx) = tokio::sync::oneshot::channel();
+        let mut io = LinkIo::new(Arc::from(mine), dead_tx);
+        let pkt = vec![7u8; 1400]; // пакет в целый MTU, как в жизни
+
+        // Разгон: первый буфер забирает себе приёмник — он держит один наготове,
+        // пока ждёт пакет от пира (это его работа, а не утечка). Со второго круга
+        // в пуле остаётся ровно тот буфер, что вернула отправка.
+        for _ in 0..2 {
+            io.write_all(&pkt).await.unwrap();
+            tokio::time::sleep(Duration::from_millis(20)).await; // сток разбирает очередь
+        }
+        let first = {
+            let free = io.pool.0.lock().unwrap();
+            assert_eq!(free.len(), 1, "буфер не вернулся в пул после отправки");
+            assert!(free[0].capacity() >= pkt.len(), "в пул вернулся не тот буфер, что уходил в сеть");
+            free[0].as_ptr()
+        };
+
+        for n in 3..=8 {
+            io.write_all(&pkt).await.unwrap();
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            let free = io.pool.0.lock().unwrap();
+            assert_eq!(
+                free.len(), 1,
+                "после {n}-й отправки в пуле {} буферов — отправка не берёт буфер оттуда, \
+                 а выделяет новый на КАЖДЫЙ пакет (это направление скачивания, ~10 000 пакетов/с)",
+                free.len()
+            );
+            assert_eq!(free[0].as_ptr(), first, "в сеть ушёл не тот буфер, что лежал в пуле");
+        }
+    }
+
+    /// ПРИЁМ НЕ ОБНУЛЯЕТ БУФЕР ЗАНОВО НА КАЖДЫЙ ПАКЕТ.
+    ///
+    /// `recv_into` у `NoiseLink` растёт по потребности — `if out.len() <
+    /// frame.len() { out.resize(frame.len(), 0) }`. Кадр длиннее plaintext ровно
+    /// на 8 байт nonce и 16 байт tag, поэтому с буфером ПРЕЖНЕЙ длины обнуляются
+    /// 24 байта, а с обнулённым — все 1424. Разница в 59 раз на пакет, и на
+    /// десяти тысячах пакетов в секунду это уже мегабайты memset на ровном месте.
+    ///
+    /// Ловим за длину: `empty()` обязан отдавать буфер как есть, `filled()` —
+    /// сбрасывать (он дописывает к хвосту, и без сброса склеил бы два пакета).
+    #[test]
+    fn the_recv_path_does_not_re_zero_the_whole_mtu() {
+        let pool = BufPool::default();
+        pool.give(vec![9u8; 1400]); // «отработавший» буфер прошлого пакета
+
+        let b = pool.empty();
+        assert_eq!(
+            b.len(), 1400,
+            "буфер приёма пришёл с длиной {} вместо 1400: значит его сбросили, и шифрослой \
+             занулит целый MTU на КАЖДЫЙ пакет вместо 24 байт (см. resize в noise.rs)",
+            b.len()
+        );
+
+        // А отправка обязана получить ровно свои данные, без хвоста прошлого пакета.
+        pool.give(b);
+        assert_eq!(pool.filled(&[1, 2, 3]), [1, 2, 3], "к отправке приклеился хвост прошлого пакета");
     }
 }

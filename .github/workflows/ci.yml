@@ -81,8 +81,17 @@ jobs:
       # отрабатывала верно, а задача падала на сообщении о её успехе.
       # Системных зависимостей, в отличие от Linux, тут не нужно: GUI под
       # Windows собирается голым тулчейном (см. job gui-windows в release.yml).
-      - name: Check GUI (Windows)
-        run: cargo check -p bmv-gui
+      # --all-targets и -D warnings ОБЯЗАТЕЛЬНЫ, а не украшение. Голый
+      # `cargo check -p bmv-gui` не разбирал тестовый код под Windows и не считал
+      # предупреждения ошибками — и уже спрятал настоящую поломку: после правки
+      # маршрутов одна константа стала мёртвой в windows-ветке, проект перестал
+      # проходить собственную проверку, а эта задача осталась зелёной. Нашли
+      # вручную, эмулируя цель через rustc. Второй раз так не проедет.
+      #
+      # Клиппи вместо check: он включает всё, что делает check, плюс сами
+      # замечания, ради которых тут и стоит -D warnings.
+      - name: Clippy GUI (Windows)
+        run: cargo clippy -p bmv-gui --all-targets -- -D warnings
 
       # Fork of wintun (vendor/wintun) is excluded from the workspace as well and
       # is Windows-only: on Linux it does not even compile (std::os::windows), so

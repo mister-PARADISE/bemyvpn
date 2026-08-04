@@ -2,10 +2,12 @@
 //! а на Drop — откатить. Один код для CLI, GUI и привилегированного хелпера GUI.
 //! Android/iOS сюда не ходят — там свой fd из платформенного шелла.
 //!
-//! Настоящий VPN, а не прокси: split-default (`0.0.0.0/1` + `128.0.0.0/1`)
-//! перекрывает дефолтный маршрут НЕ удаляя его; сам хост пинуется через реальный
-//! шлюз (иначе шифрованные пакеты зациклятся). `RouteGuard::drop` всё откатывает.
-//! Реализовано для Linux и macOS (обе требуют root); Windows — задел.
+//! Настоящий VPN, а не прокси: split-default (см. `IPV4_HALVES`) перекрывает
+//! дефолтный маршрут НЕ удаляя его; сам хост пинуется через реальный шлюз
+//! (иначе шифрованные пакеты зациклятся). `RouteGuard::drop` всё откатывает.
+//! Три ветки, и все три боевые: Linux и macOS (обе требуют root) и Windows
+//! (админ-права, wintun). Здесь стояло «Windows — задел» — неправда с тех пор,
+//! как появились `windows_net_info`, `ensure_wintun` и `ensure_firewall_allow`.
 //!
 //! ТОЧНО ТАК ЖЕ ПЕРЕКРЫВАЕТСЯ IPv6 — `::/1` + `8000::/1` (см. `IPV6_HALVES`).
 //! Без этого туннель на IPv4 «подключён», а весь v6-трафик уходит мимо него
@@ -348,6 +350,32 @@ fn write_dns_crumb(data: &str) {
     }
 }
 
+/// ДВЕ ПОЛОВИНЫ IPv4 — приём тот же, что у `IPV6_HALVES` ниже (там он и
+/// расписан подробно), просто эти строки появились раньше.
+///
+/// Раньше они были ДВЕНАДЦАТЬЮ отдельными литералами: по паре на установку и на
+/// откат в каждой из трёх платформенных веток. Опечатка в откате не мешает
+/// подключиться и никак не видна — она оставляет человека с половиной
+/// завёрнутого трафика ПОСЛЕ того, как он выключил VPN.
+// Под Windows префиксную запись не читает никто (там своя, `IPV4_HALVES_WIN`),
+// но константа нужна тесту `both_spellings_of_the_ipv4_halves_agree` — он
+// сверяет обе записи на ЛЮБОЙ платформе. Без этой строки `-D warnings` роняет
+// сборку под Windows на `dead_code`. Зеркало соседки ниже.
+#[cfg_attr(target_os = "windows", allow(dead_code))]
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+const IPV4_HALVES: [&str; 2] = ["0.0.0.0/1", "128.0.0.0/1"];
+
+/// ТЕ ЖЕ ДВЕ ПОЛОВИНЫ в записи `route.exe`: (сеть, маска). Отдельная константа
+/// потому, что Windows не понимает префиксной записи, — а НЕ потому, что правило
+/// там другое. Что обе записи описывают один и тот же кусок адресного
+/// пространства, проверяет `both_spellings_of_the_ipv4_halves_agree`: сверить их
+/// глазами нельзя, ветку Windows на этой машине никто не собирает.
+// Тест читает константу на ЛЮБОЙ платформе — иначе правку половин на маке
+// проверял бы только мак, а ломалась бы она у человека под Windows.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+const IPV4_HALVES_WIN: [(&str, &str); 2] = [("0.0.0.0", "128.0.0.0"), ("128.0.0.0", "128.0.0.0")];
+
 /// ДВЕ ПОЛОВИНЫ IPv6 вместо `::/0` — тот же приём, что `0.0.0.0/1` +
 /// `128.0.0.0/1` у IPv4: маршрут длиной /1 бьёт провайдерский /0 по длине
 /// префикса, поэтому перекрывает его НЕ удаляя (и откат не зависит от того,
@@ -399,7 +427,9 @@ fn has_ipv6() -> bool {
 /// нет): вызывающий заводит guard ДО этого вызова, и его `Drop` стирает обе.
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 fn apply_ipv6_policy(mode: Ipv6Mode, tun: &str) -> Result<(), String> {
-    if mode == Ipv6Mode::Allow {
+    // Вопрос «требует ли режим блокировки» задаём ТОЙ ЖЕ функции, что и `Drop`
+    // при уборке, — иначе поставить и снять начинают решать разные правила.
+    if !mode.needs_block() {
         tracing::warn!("IPv6 НЕ блокируется (guest.ipv6 = \"allow\"): v6-трафик пойдёт МИМО туннеля");
         return Ok(());
     }
@@ -426,54 +456,65 @@ fn apply_ipv6_policy(mode: Ipv6Mode, tun: &str) -> Result<(), String> {
     }
 }
 
+/// Что читает человек, когда шлюза по умолчанию не видно. ОДНА фраза на три
+/// ветки: править её приходится в одном месте, а проверить правку можно только
+/// на своей ОС — три копии значили, что две останутся непроверенными.
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+const NO_GATEWAY: &str = "Не видно выхода в интернет — проверьте подключение к сети.";
+
 /// Разворачивает маршруты так, что ВЕСЬ трафик идёт в туннель, а на Drop —
 /// откатывает (в т.ч. если задачу прервут или туннель оборвётся).
 pub struct RouteGuard {
-    #[cfg(target_os = "linux")]
+    /// Адрес хоста, приколотый к реальному шлюзу (анти-петля). Нужен ВСЕМ трём
+    /// платформам одинаково — поэтому объявлен один раз, а не тремя отдельными
+    /// строками под тремя разными `cfg`, из-за которых общее поле читалось как
+    /// три платформенных.
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
     host_ip: String,
+    // Дальше — то, что и правда своё у каждой платформы.
     #[cfg(target_os = "linux")]
     resolv: Option<Vec<u8>>,
-    #[cfg(target_os = "macos")]
-    host_ip: String,
     #[cfg(target_os = "macos")]
     dns_service: Option<String>,
     #[cfg(target_os = "macos")]
     dns_old: Vec<String>,
     #[cfg(target_os = "windows")]
-    host_ip: String,
-    #[cfg(target_os = "windows")]
     tun_name: String,
     #[cfg(target_os = "windows")]
     tun_idx: String,
-    /// Ставили ли блокировку IPv6 — значит, её надо снять в `Drop`. Лишнее
-    /// удаление безобидно (маршрута нет → ошибка, которую мы игнорируем), а вот
-    /// стереть чужой `::/1` у человека, выбравшего `ipv6 = "allow"`, — нет.
+    /// С КАКОЙ ПОЛИТИКОЙ IPv6 поставлен этот guard — по ней `Drop` и решает,
+    /// убирать ли за собой. Лишнее удаление безобидно (маршрута нет → ошибка,
+    /// которую мы игнорируем), а вот стереть чужой `::/1` у человека,
+    /// выбравшего `ipv6 = "allow"`, — нет.
+    ///
+    /// Здесь лежит РЕЖИМ, а не пережёванный `bool`: сам вопрос «требует ли этот
+    /// режим блокировки» — это правило, и живёт оно ОДНИМ `match` в
+    /// `Ipv6Mode::needs_block` (крейт настроек). Сюда его не переписывать: и
+    /// установка, и уборка обязаны спрашивать одну функцию, иначе полярности
+    /// разъезжаются. Сторож — `each_rule_is_written_in_exactly_one_place`.
     #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-    ipv6_blocked: bool,
+    ipv6: Ipv6Mode,
 }
 
+// ВТОРОГО ВХОДА СЮДА НЕТ. Была ещё `install(host_ip, tun)` — «как `install_with`,
+// но с блокировкой IPv6», с пояснением «нужна оболочкам, у которых под рукой нет
+// конфига (терминал поднимает туннель напрямую)». Пояснение устарело: терминал
+// давно ходит общим путём `tunnel::run_candidates`, и звал ту функцию НИКТО.
+// Умолчание «Block» она при этом дублировала — а живёт оно в
+// `bmv_config::Ipv6Mode::parse`, где на него есть тесты.
 impl RouteGuard {
-    /// Как `install_with`, но с блокировкой IPv6 — это безопасное умолчание.
-    ///
-    /// Отдельный вход нужен оболочкам, у которых под рукой нет конфига (терминал
-    /// поднимает туннель напрямую). Умолчание тут не «как получится», а самая
-    /// защищённая ветка: забыть про IPv6 — значит молча утечь.
-    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-    pub fn install(host_ip: IpAddr, tun: &str) -> Result<Self, String> {
-        Self::install_with(host_ip, tun, Ipv6Mode::Block)
-    }
-
     // ── Linux ──
     #[cfg(target_os = "linux")]
     pub fn install_with(host_ip: IpAddr, tun: &str, ipv6: Ipv6Mode) -> Result<Self, String> {
         // ПЕРВЫМ делом — доесть крошку прошлого запуска, иначе снимком «текущего»
         // DNS окажется наш же 8.8.8.8, и настоящий резолвер потеряется навсегда.
         recover_after_crash();
-        let (gw, dev) = default_route_linux().ok_or("Не видно выхода в интернет — проверьте подключение к сети.")?;
+        let (gw, dev) = default_route_linux().ok_or(NO_GATEWAY)?;
         let hip = host_ip.to_string();
         let _ = ip(&["route", "add", &format!("{hip}/32"), "via", &gw, "dev", &dev]);
-        ip(&["route", "add", "0.0.0.0/1", "dev", tun])?;
-        ip(&["route", "add", "128.0.0.0/1", "dev", tun])?;
+        for half in IPV4_HALVES {
+            ip(&["route", "add", half, "dev", tun])?;
+        }
         let resolv = std::fs::read("/etc/resolv.conf").ok();
         // Крошку пишем ВСЕГДА, даже если resolv.conf не прочитался: по ней же
         // чинятся v6-маршруты после смерти процесса, а они переживают её и
@@ -482,7 +523,7 @@ impl RouteGuard {
         let _ = std::fs::write("/etc/resolv.conf", "nameserver 8.8.8.8\n");
         // Guard заводим ДО блокировки IPv6: если она сорвётся на полпути,
         // возврат ошибки дропнет его и откатит уже поставленное.
-        let guard = Self { host_ip: hip, resolv, ipv6_blocked: ipv6 == Ipv6Mode::Block };
+        let guard = Self { host_ip: hip, resolv, ipv6 };
         apply_ipv6_policy(ipv6, tun)?;
         Ok(guard)
     }
@@ -496,13 +537,14 @@ impl RouteGuard {
         // Первым делом — доесть крошку прошлого запуска (см. DNS_CRUMB): иначе
         // «прежними» серверами запомнится наш же 8.8.8.8.
         recover_after_crash();
-        let (gw, dev) = default_route_macos().ok_or("Не видно выхода в интернет — проверьте подключение к сети.")?;
+        let (gw, dev) = default_route_macos().ok_or(NO_GATEWAY)?;
         let hip = host_ip.to_string();
         // Хост-пин через реальный шлюз, чтобы шифрованные UDP не зациклились в туннель.
         let _ = route(&["-n", "add", "-host", &hip, &gw]);
         // Split-default в utun (перекрывает дефолт, не удаляя его).
-        route(&["-n", "add", "-net", "0.0.0.0/1", "-interface", tun])?;
-        route(&["-n", "add", "-net", "128.0.0.0/1", "-interface", tun])?;
+        for half in IPV4_HALVES {
+            route(&["-n", "add", "-net", half, "-interface", tun])?;
+        }
         // DNS → 8.8.8.8 (через туннель). Запоминаем сервис и старые серверы.
         // networksetup меняет СПИСОК сервиса целиком, то есть заодно убирает и
         // v6-резолверы — отдельной возни с ними не нужно.
@@ -521,7 +563,7 @@ impl RouteGuard {
             }
         };
         // Guard заводим ДО блокировки IPv6 — см. пояснение в linux-ветке.
-        let guard = Self { host_ip: hip, dns_service, dns_old, ipv6_blocked: ipv6 == Ipv6Mode::Block };
+        let guard = Self { host_ip: hip, dns_service, dns_old, ipv6 };
         apply_ipv6_policy(ipv6, tun)?;
         Ok(guard)
     }
@@ -535,7 +577,7 @@ impl RouteGuard {
     pub fn install_with(host_ip: IpAddr, tun: &str, ipv6: Ipv6Mode) -> Result<Self, String> {
         // Сетевые параметры (шлюз, индекс и IP tun-адаптера) — нативными route/netsh,
         // без PowerShell (он грузится ~15с на холодную → ощущается как зависание).
-        let (gw, tun_idx, tun_ip) = windows_net_info(tun).ok_or("Не видно выхода в интернет — проверьте подключение к сети.")?;
+        let (gw, tun_idx, tun_ip) = windows_net_info(tun).ok_or(NO_GATEWAY)?;
         let hip = host_ip.to_string();
         // 1) Пин хоста через реальный шлюз, чтобы шифрованный UDP не зациклился в туннель.
         let _ = route(&["add", &hip, "mask", "255.255.255.255", &gw, "metric", "1"]);
@@ -544,17 +586,13 @@ impl RouteGuard {
         // интернета»). metric=1 = высший приоритет.
         let _ = netsh(&["interface", "ipv4", "set", "interface", &tun_idx, "metric=1"]);
         // 3) Split-default через tun (перекрывает дефолт, не удаляя его).
-        route(&["add", "0.0.0.0", "mask", "128.0.0.0", &tun_ip, "metric", "1", "if", &tun_idx])?;
-        route(&["add", "128.0.0.0", "mask", "128.0.0.0", &tun_ip, "metric", "1", "if", &tun_idx])?;
+        for (net, mask) in IPV4_HALVES_WIN {
+            route(&["add", net, "mask", mask, &tun_ip, "metric", "1", "if", &tun_idx])?;
+        }
         // 4) DNS → 8.8.8.8 на tun-адаптере.
         let _ = netsh(&["interface", "ipv4", "set", "dnsservers", &format!("name={tun}"), "static", "8.8.8.8", "primary"]);
         // Guard заводим ДО блокировки IPv6 — см. пояснение в linux-ветке.
-        let guard = Self {
-            host_ip: hip,
-            tun_name: tun.to_string(),
-            tun_idx: tun_idx.clone(),
-            ipv6_blocked: ipv6 == Ipv6Mode::Block,
-        };
+        let guard = Self { host_ip: hip, tun_name: tun.to_string(), tun_idx: tun_idx.clone(), ipv6 };
         apply_ipv6_policy(ipv6, &tun_idx)?;
         Ok(guard)
     }
@@ -562,18 +600,22 @@ impl RouteGuard {
 
 impl Drop for RouteGuard {
     fn drop(&mut self) {
-        #[cfg(any(target_os = "linux", target_os = "macos"))]
-        if self.ipv6_blocked {
+        // Тот же вопрос и та же функция, что при установке (`apply_ipv6_policy`).
+        // Ручное сравнение с вариантом здесь запрещено сторожем ниже: полярности
+        // «ставить?» и «снимать?» обязаны быть ОДНИМ правилом, иначе новый режим
+        // получит блокировку и не получит снятия.
+        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+        if self.ipv6.needs_block() {
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
             ipv6_unblock();
-        }
-        #[cfg(target_os = "windows")]
-        if self.ipv6_blocked {
+            #[cfg(target_os = "windows")]
             ipv6_unblock(&self.tun_idx);
         }
         #[cfg(target_os = "linux")]
         {
-            let _ = ip(&["route", "del", "0.0.0.0/1"]);
-            let _ = ip(&["route", "del", "128.0.0.0/1"]);
+            for half in IPV4_HALVES {
+                let _ = ip(&["route", "del", half]);
+            }
             let _ = ip(&["route", "del", &format!("{}/32", self.host_ip)]);
             if let Some(r) = &self.resolv {
                 let _ = std::fs::write("/etc/resolv.conf", r);
@@ -582,8 +624,9 @@ impl Drop for RouteGuard {
         }
         #[cfg(target_os = "macos")]
         {
-            let _ = route(&["-n", "delete", "-net", "0.0.0.0/1"]);
-            let _ = route(&["-n", "delete", "-net", "128.0.0.0/1"]);
+            for half in IPV4_HALVES {
+                let _ = route(&["-n", "delete", "-net", half]);
+            }
             let _ = route(&["-n", "delete", "-host", &self.host_ip]);
             if let Some(svc) = &self.dns_service {
                 if self.dns_old.is_empty() {
@@ -598,8 +641,9 @@ impl Drop for RouteGuard {
         }
         #[cfg(target_os = "windows")]
         {
-            let _ = route(&["delete", "0.0.0.0", "mask", "128.0.0.0"]);
-            let _ = route(&["delete", "128.0.0.0", "mask", "128.0.0.0"]);
+            for (net, mask) in IPV4_HALVES_WIN {
+                let _ = route(&["delete", net, "mask", mask]);
+            }
             let _ = route(&["delete", &self.host_ip]);
             // DNS у tun-адаптера обратно на авто (адаптер всё равно исчезнет вместе с TUN).
             let _ = netsh(&["interface", "ipv4", "set", "dnsservers", &format!("name={}", self.tun_name), "dhcp"]);
@@ -728,13 +772,19 @@ fn netsh(args: &[&str]) -> Result<(), String> {
 
 /// Сетевые параметры для маршрутизации: шлюз по умолчанию, ifIndex tun-адаптера,
 /// его IPv4. БЕЗ PowerShell — он грузится ~15с на холодную (модули Get-Net*), что
-/// ощущается как зависание. `route.exe`/`netsh.exe` нативные (~50мс). tun-IP у
-/// гостя фиксирован (10.7.0.2). Возвращает (шлюз, tun_idx, tun_ip).
+/// ощущается как зависание. `route.exe`/`netsh.exe` нативные (~50мс).
+/// Возвращает (шлюз, tun_idx, tun_ip).
+///
+/// tun-IP БЕРЁТСЯ У `TunParams::guest()`, а не вписан числом: это тот самый
+/// адрес, который `make_tun` только что назначил интерфейсу, и Windows требует
+/// его как next hop. Вписанная копия разошлась бы с оригиналом молча — ветку
+/// Windows на маке и линуксе никто не собирает, а у человека маршруты просто не
+/// встали бы («подключено, но нет интернета»).
 #[cfg(target_os = "windows")]
 fn windows_net_info(tun: &str) -> Option<(String, String, String)> {
     let gw = default_gateway_windows()?;
     let idx = adapter_index_windows(tun)?;
-    Some((gw, idx, "10.7.0.2".to_string()))
+    Some((gw, idx, bmv_tunnel::TunParams::guest().address.to_string()))
 }
 
 /// Захват stdout нативной команды (без окна консоли — см. `bmv_common::command`).
@@ -798,17 +848,55 @@ fn run(cmd: &str, args: &[&str]) -> Result<(), String> {
 }
 
 #[cfg(all(test, any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-mod ipv6_tests {
-    use super::{has_ipv6, IPV6_HALVES};
-    use std::net::Ipv6Addr;
+mod route_tests {
+    use super::{has_ipv6, IPV4_HALVES, IPV4_HALVES_WIN, IPV6_HALVES};
+    use std::net::{Ipv4Addr, Ipv6Addr};
 
-    /// «::/1» → (адрес сети, длина префикса).
-    fn parse(p: &str) -> (Ipv6Addr, u32) {
+    /// Префикс → отрезок адресов [первый, последний] числом.
+    ///
+    /// `bits` — размер адресного пространства (32 для IPv4, 128 для IPv6): всё
+    /// считается в u128, потому что правило у обеих версий ОДНО и проверять его
+    /// двумя разными арифметиками значило бы завести вторую копию проверки.
+    fn span(p: &str, first: u128, len: u32, bits: u32) -> (u128, u128) {
+        // /0 закрыл бы всё одной строкой, но проиграл бы маршруту провайдера:
+        // у того тоже /0, а побеждает САМЫЙ ДЛИННЫЙ.
+        assert!(
+            (1..=bits).contains(&len),
+            "{p}: длина префикса должна быть 1..={bits}, иначе дефолт провайдера победит",
+        );
+        let size = 1u128 << (bits - len);
+        assert_eq!(first % size, 0, "{p}: адрес не выровнен по своей же длине префикса");
+        (first, first + (size - 1))
+    }
+
+    /// Отрезки обязаны замостить [0, 2^bits) ЦЕЛИКОМ: первый начинается с нуля,
+    /// каждый следующий — сразу за предыдущим, последний кончается на максимуме.
+    /// Ни щели, ни нахлёста. Возвращает их же, отсортированными.
+    fn tiles_everything(mut spans: Vec<(u128, u128)>, bits: u32) -> Vec<(u128, u128)> {
+        spans.sort_unstable();
+        assert_eq!(spans.first().expect("список половин пуст").0, 0, "начало пространства не закрыто");
+        for w in spans.windows(2) {
+            assert_eq!(w[1].0, w[0].1 + 1, "между {:?} и {:?} щель или нахлёст", w[0], w[1]);
+        }
+        let last = u128::MAX >> (128 - bits);
+        assert_eq!(spans.last().expect("список половин пуст").1, last, "конец пространства не закрыт");
+        spans
+    }
+
+    /// «::/1» → отрезок.
+    fn span_v6(p: &str) -> (u128, u128) {
         let (addr, len) = p.split_once('/').unwrap_or_else(|| panic!("префикс без длины: {p}"));
-        (
-            addr.parse().unwrap_or_else(|e| panic!("{p}: не IPv6-адрес ({e})")),
-            len.parse().unwrap_or_else(|e| panic!("{p}: не длина префикса ({e})")),
-        )
+        let net: Ipv6Addr = addr.parse().unwrap_or_else(|e| panic!("{p}: не IPv6-адрес ({e})"));
+        let len = len.parse().unwrap_or_else(|e| panic!("{p}: не длина префикса ({e})"));
+        span(p, u128::from(net), len, 128)
+    }
+
+    /// «0.0.0.0/1» → отрезок.
+    fn span_v4(p: &str) -> (u128, u128) {
+        let (addr, len) = p.split_once('/').unwrap_or_else(|| panic!("префикс без длины: {p}"));
+        let net: Ipv4Addr = addr.parse().unwrap_or_else(|e| panic!("{p}: не IPv4-адрес ({e})"));
+        let len = len.parse().unwrap_or_else(|e| panic!("{p}: не длина префикса ({e})"));
+        span(p, u128::from(u32::from(net)), len, 32)
     }
 
     /// БЛОКИРОВКА ОБЯЗАНА ЗАКРЫВАТЬ ВСЁ АДРЕСНОЕ ПРОСТРАНСТВО IPv6 ЦЕЛИКОМ.
@@ -816,31 +904,9 @@ mod ipv6_tests {
     /// Это ровно та проверка, которую человеку самому не сделать: дыра в
     /// покрытии выглядит как полностью рабочий VPN — просто часть сайтов
     /// (те, чьи адреса попали в незакрытую половину) видит настоящий адрес.
-    /// Поэтому проверяем не «похоже на правду», а замощение отрезка
-    /// [0, 2^128): первый префикс начинается с нуля, каждый следующий — сразу
-    /// за предыдущим, последний кончается на максимуме. Ни щели, ни нахлёста.
     #[test]
     fn the_two_halves_tile_the_entire_ipv6_space() {
-        let mut spans: Vec<(u128, u128)> = IPV6_HALVES
-            .iter()
-            .map(|p| {
-                let (net, len) = parse(p);
-                // /0 закрыл бы всё одной строкой, но проиграл бы маршруту
-                // провайдера: у того тоже /0, а побеждает САМЫЙ ДЛИННЫЙ.
-                assert!((1..=128).contains(&len), "{p}: длина префикса должна быть 1..=128, иначе дефолт провайдера победит");
-                let first = u128::from(net);
-                let size = 1u128 << (128 - len);
-                assert_eq!(first % size, 0, "{p}: адрес не выровнен по своей же длине префикса");
-                (first, first + (size - 1))
-            })
-            .collect();
-        spans.sort_unstable();
-
-        assert_eq!(spans.first().expect("список половин пуст").0, 0, "начало IPv6 не закрыто");
-        for w in spans.windows(2) {
-            assert_eq!(w[1].0, w[0].1 + 1, "между {:?} и {:?} щель или нахлёст", w[0], w[1]);
-        }
-        assert_eq!(spans.last().expect("список половин пуст").1, u128::MAX, "конец IPv6 не закрыт");
+        let spans = tiles_everything(IPV6_HALVES.iter().map(|p| span_v6(p)).collect(), 128);
 
         // Точечно — по одному живому адресу из каждой половины, чтобы поломка
         // читалась глазами, а не только через арифметику выше.
@@ -850,6 +916,99 @@ mod ipv6_tests {
         };
         for a in ["2001:4860:4860::8888", "2606:4700::1111", "::1", "fe80::1", "fc00::1", "ff02::1"] {
             assert_eq!(hit(a), 1, "{a} закрыт не ровно одной половиной");
+        }
+    }
+
+    /// ТО ЖЕ САМОЕ ДЛЯ IPv4 — и в ОБЕИХ записях сразу.
+    ///
+    /// Половины IPv4 записаны дважды: префиксами (linux/macos) и парой
+    /// «сеть+маска» (Windows, `route.exe` префиксов не понимает). Сверить их
+    /// глазами нельзя — на маке и линуксе ветка Windows даже не собирается,
+    /// поэтому расхождение доехало бы до человека под Windows целым: туннель
+    /// поднят, «Защищено» горит, а половина трафика идёт мимо него.
+    ///
+    /// Незакрытая половина IPv4 — это не «часть сайтов», это ПОЛОВИНА интернета
+    /// со настоящим адресом человека.
+    #[test]
+    fn both_spellings_of_the_ipv4_halves_agree() {
+        let prefixes = tiles_everything(IPV4_HALVES.iter().map(|p| span_v4(p)).collect(), 32);
+
+        let windows: Vec<(u128, u128)> = IPV4_HALVES_WIN
+            .iter()
+            .map(|(net, mask)| {
+                let m = u32::from(mask.parse::<Ipv4Addr>().unwrap_or_else(|e| panic!("{mask}: не IPv4-маска ({e})")));
+                // Маска обязана быть СПЛОШНОЙ (единицы слева) — иначе это не
+                // префикс, а решето, и «половина» перестаёт быть половиной.
+                assert_eq!(m.leading_ones() + m.trailing_zeros(), 32, "{mask}: маска не сплошная");
+                span_v4(&format!("{net}/{}", m.leading_ones()))
+            })
+            .collect();
+        let windows = tiles_everything(windows, 32);
+
+        assert_eq!(prefixes, windows, "две записи одних и тех же половин разошлись — под Windows завернётся не тот трафик");
+    }
+
+    /// ЧАСОВОЙ ПРОТИВ ВТОРОЙ КОПИИ. Приём одолжен у `bmv-common`
+    /// (`one_place_per_rule.rs`): дешевле поймать грепом, чем ловить руками.
+    ///
+    /// Здесь он нужен острее, чем где бы то ни было: из трёх платформенных
+    /// веток на машине разработчика СОБИРАЕТСЯ ОДНА. Копия, разошедшаяся в
+    /// ветке Windows, не краснеет ни в одном тесте и доезжает до человека
+    /// целой — а на его стороне выглядит как «подключено, но нет интернета»
+    /// или, хуже, как работающий VPN с утечкой.
+    #[test]
+    fn each_rule_is_written_in_exactly_one_place() {
+        const SRC: &str = include_str!("lib.rs");
+        // Считаем ТОЛЬКО боевой код: дальше идут тестовые модули, и признаки
+        // ниже встречаются в них самих.
+        let code = SRC.split("#[cfg(all(test").next().expect("split всегда даёт хотя бы кусок");
+        assert!(code.len() < SRC.len(), "тестовые модули не отрезались — счёт пойдёт по самим признакам");
+
+        // КОММЕНТАРИЙ — НЕ КОПИЯ ПРАВИЛА. Считали по сырому тексту, и потому
+        // назвать правило в пояснении рядом с ним было нельзя: часовой краснел
+        // от объяснения, которое сам же и требует. Выкидываем строки-комментарии
+        // целиком и хвостовые пояснения после « // ».
+        //
+        // Потолок: пробелы вокруг `//` обязательны, иначе под нож попали бы
+        // `http://` и прочие косые внутри строк. Это осознанно — правило
+        // «признак в кавычках» так не потерять.
+        let code: String = code
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .map(|l| l.split(" // ").next().unwrap_or(l))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let code = code.as_str();
+
+        // (правило, признак, сколько раз он ВПРАВЕ встретиться)
+        let rules: [(&str, String, usize); 6] = [
+            // Адрес гостевого TUN. Windows требует его как next hop в каждом
+            // маршруте, и он был вписан сюда числом второй раз.
+            ("адрес гостевого TUN живёт в bmv_tunnel::TunParams::guest()", bmv_tunnel::TunParams::guest().address.to_string(), 0),
+            // ПОЛЯРНОСТЬ IPv6. Правило «требует ли режим блокировки» живёт одним
+            // match в Ipv6Mode::needs_block. Сравнивать режим с вариантом РУКАМИ
+            // здесь нельзя ни разу: ровно так оно и разъехалось — установка
+            // спрашивала «не Allow ли?», уборка «Block ли?», и третий режим
+            // получил бы блокировку без снятия.
+            ("полярность IPv6 не пишется руками (Ipv6Mode::needs_block)", "Ipv6Mode::Block".to_string(), 0),
+            ("полярность IPv6 не пишется руками (Ipv6Mode::needs_block)", "Ipv6Mode::Allow".to_string(), 0),
+            // ...и спросить её обязаны ОБА: тот, кто ставит (apply_ipv6_policy),
+            // и тот, кто снимает (RouteGuard::drop). Станет один — блокировка
+            // либо не встанет, либо не снимется.
+            ("и установка, и уборка спрашивают одну функцию", "needs_block()".to_string(), 2),
+            // Фраза «нет выхода в интернет» — её читает человек, и она была
+            // скопирована в каждую из трёх веток.
+            ("текст «не видно выхода в интернет» (NO_GATEWAY)", "Не видно выхода в интернет".to_string(), 1),
+            // ГЛАВНОЕ ПРАВИЛО ЭТОГО ФАЙЛА, которого в таблице не было: половины
+            // IPv4/IPv6 — по одной константе на запись, а не литералами по
+            // веткам. Двенадцать копий тут уже жили, и опечатка в откате не
+            // видна никак: она оставляет человека с завёрнутым трафиком ПОСЛЕ
+            // выключения VPN.
+            ("половины маршрутов живут в константах, а не литералами", "\"0.0.0.0/1\"".to_string(), 1),
+        ];
+        for (rule, mark, allowed) in rules {
+            let n = code.matches(&mark).count();
+            assert_eq!(n, allowed, "{rule}: признак «{mark}» встречается {n} раз(а), а можно {allowed}");
         }
     }
 

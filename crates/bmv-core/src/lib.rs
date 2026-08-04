@@ -24,6 +24,18 @@ const AUTH_MARKER: u8 = 0xF0;
 #[derive(Clone)]
 pub struct BmvEngine {
     config: Config,
+    /// Список STUN-серверов, РАЗОБРАННЫЙ ОДИН РАЗ — при сборке движка.
+    ///
+    /// `StunConfig::resolve` читает файл с диска, а звали её из пяти мест, одно
+    /// из которых — тик хоста: то есть блокирующее чтение файла раз в десять
+    /// секунд из async-задачи, всё время раздачи. На телефонах файла нет вовсе
+    /// (конфига там нет как явления), и это был отказ open() каждые десять
+    /// секунд навсегда. Настройка обязана доезжать до места решения РАЗОБРАННОЙ,
+    /// а не выводиться заново из файловой системы на каждый пинг.
+    ///
+    /// Пустой список — законное значение: он означает «взять встроенный пул»
+    /// (см. `StunConfig::resolve` и `bmv_net`).
+    stun: Arc<[String]>,
     protocols: Arc<Registry>,
     /// ЕДИНСТВЕННЫЙ клиент координатора на движок (персистентный WebSocket:
     /// сокет = живость хоста, каталог пушем). Создаётся лениво при первом
@@ -138,6 +150,7 @@ impl BmvEngine {
             host_protocol: Arc::new(Mutex::new(default_proto)),
             host_active: Arc::new(AtomicBool::new(true)),
             host_code_sig: config.host.code_sig.clone(),
+            stun: config.stun.resolve().into(), // диск читаем ЗДЕСЬ, и только здесь
             config,
             protocols: Arc::new(Registry::with_builtins()),
             host_id,
@@ -158,14 +171,15 @@ impl BmvEngine {
         &self.host_id
     }
 
-    /// Автоопределение типа NAT этого узла: "cone" (мягкий — прямой прострел
-    /// возможен), "symmetric" (строгий — внешний порт зависит от адресата) или ""
-    /// (не удалось). Для UI/диагностики и раннего вывода «нужен релей». Занимает
-    /// пару секунд (STUN на два сервера) — звать из фонового потока, не на UI.
-    pub async fn classify_nat(&self) -> String {
-        let servers = self.config.stun.resolve();
-        bmv_net::classify_mapping(&servers, Duration::from_secs(4)).await
-    }
+    // Здесь был `classify_nat` — «определить тип NAT для UI и раннего вывода
+    // «нужен релей»». Ни одной оболочкой он не звался НИ РАЗУ: ни релея, ни
+    // экрана диагностики в продукте нет, а строки "cone"/"symmetric" некому было
+    // прочитать. Задел ценой в две секунды STUN на пустом месте.
+    //
+    // Понадобится показать тип NAT — это экран, а не метод: и тогда он придёт со
+    // своим набором ответов, который заранее всё равно не угадать. Единственный
+    // читатель `bmv_net::classify_mapping` был здесь — теперь та функция тоже без
+    // вызовов (её судьба за владельцем bmv-net).
 
     // ── знакомство через КООРДИНАТОР (главный путь) ──────────────────────────
 
@@ -278,8 +292,7 @@ impl BmvEngine {
         // пробьёт нам навстречу (без этого его не достать).
         let ep = UdpEndpoint::bind("0.0.0.0:0".parse().unwrap()).await?;
         let port = ep.local_addr()?.port();
-        let servers = self.config.stun.resolve();
-        let reflexive = ep.reflexive(&servers, Duration::from_secs(3)).await.ok();
+        let reflexive = ep.reflexive(&self.stun, Duration::from_secs(3)).await.ok();
         let candidates = my_endpoints(port, reflexive);
         log::info!("ГОСТЬ: мои кандидаты для хоста: {:?}", candidates);
 
@@ -301,7 +314,8 @@ impl BmvEngine {
         let tokens = bmv_net::PunchTokens::for_host(host_id);
         let (peer, primed) = ep.hole_punch(&peers, Duration::from_secs(12), tokens).await?;
         // Протокол ДОЛЖЕН совпадать с хостом (гость берёт его из каталога).
-        let proto = self.protocol_by_name(self.guest_protocol_name(protocol));
+        // Пусто/незнакомо → дефолт проекта, и это решает `protocol_by_name`.
+        let proto = self.protocol_by_name(protocol.unwrap_or(""));
         let link = ep.connect_primed(peer, primed, tokens);
         let plink = proto.connect_guest(Box::new(link)).await?;
         let link: Box<dyn Link> = Box::new(bmv_common::KeepaliveLink::new(plink));
@@ -357,11 +371,10 @@ impl BmvEngine {
     ) -> Result<(std::sync::Arc<bmv_net::UdpHub>, String, Vec<String>)> {
         // STUN делаем ВНУТРИ bind (до старта демультиплексора) — иначе demux
         // съедает STUN-ответ и хост за NAT узнаёт только свой LAN-адрес.
-        let servers = self.config.stun.resolve();
         // Токены пробивания и пробы задержки — из СВОЕГО host_id (гость выведет те же).
         let tokens = bmv_net::PunchTokens::for_host(&self.host_id);
         let (hub, reflexive) = bmv_net::UdpHub::bind_reflexive(
-            "0.0.0.0:0".parse().unwrap(), &servers, Duration::from_secs(4), tokens,
+            "0.0.0.0:0".parse().unwrap(), &self.stun, Duration::from_secs(4), tokens,
         )
         .await?;
         let port = hub.local_addr()?.port();
@@ -411,22 +424,23 @@ impl BmvEngine {
         self.announce_state().await
     }
 
-    /// Каким протоколом гость идёт к хосту: что сказал каталог, иначе ЕДИНЫЙ
-    /// дефолт проекта. Раньше здесь стояло «noise», а у хоста дефолт был
-    /// «noise-obfs» — пустая строка из оболочки разводила стороны по разным
-    /// протоколам, и это выглядело как 12 секунд тишины вместо ошибки.
-    fn guest_protocol_name<'a>(&self, requested: Option<&'a str>) -> &'a str {
-        match requested {
-            Some(p) if !p.is_empty() => p,
-            _ => bmv_config::DEFAULT_PROTOCOL,
-        }
-    }
-
-    /// Выбрать протокол по имени. Неизвестное имя — это рассогласование версий
-    /// (хост объявил протокол, которого нет в этой сборке): берём дефолт проекта
-    /// — его же возьмёт и вторая сторона, поэтому шанс договориться остаётся, —
-    /// но ГРОМКО, а не молча: раньше подменялось «первым доступным» без следа в
-    /// журнале, и диагностировать это было нечем.
+    /// ЕДИНСТВЕННАЯ ДВЕРЬ ОТ ИМЕНИ ПРОТОКОЛА К САМОМУ ПРОТОКОЛУ.
+    ///
+    /// Пусто — имя не назвали (пустая настройка из оболочки, хост не объявил
+    /// протокол в каталоге): берём ЕДИНЫЙ дефолт проекта молча. Раньше пустая
+    /// строка у гостя означала «noise», а у хоста «noise-obfs» — стороны уходили
+    /// в разные протоколы, и человек видел 12 секунд тишины вместо ошибки.
+    ///
+    /// Незнакомое имя — рассогласование версий (хост объявил протокол, которого
+    /// нет в этой сборке): берём тот же дефолт — его возьмёт и вторая сторона,
+    /// поэтому шанс договориться остаётся, — но ГРОМКО, а не молча.
+    ///
+    /// Последний шаг — `expect`, а не «первый доступный из реестра»: реестр
+    /// собирается из встроенного списка (`Registry::with_builtins`), дефолт
+    /// проекта в нём есть всегда, и это проверяет тест
+    /// `default_protocol_is_one_for_everyone`. Прежний «фолбэк» изображал выбор
+    /// там, где выбора нет, и при этом молча подсовывал «первый доступный» —
+    /// ровно то, от чего эта функция и заводилась.
     fn protocol_by_name(&self, name: &str) -> Arc<dyn Protocol> {
         if let Some(p) = self.protocols.get(name) {
             return p;
@@ -439,8 +453,17 @@ impl BmvEngine {
         }
         self.protocols
             .get(bmv_config::DEFAULT_PROTOCOL)
-            .or_else(|| self.connect_order().into_iter().next())
-            .expect("хотя бы один протокол есть")
+            .expect("дефолт проекта обязан быть в реестре (Registry::with_builtins)")
+    }
+
+    /// Протокол ЭТОГО узла по настройке — уже разобранный, а не строка.
+    ///
+    /// Через него же идут `active_protocol` (что показать человеку) и
+    /// `demo_loopback` (чем проверять связь): раньше это были три разных ответа
+    /// на один вопрос. При пустой настройке экран говорил «noise», сессия шла
+    /// «noise-obfs», а демо — вообще «plain», то есть БЕЗ ШИФРА.
+    fn default_proto(&self) -> Arc<dyn Protocol> {
+        self.protocol_by_name(&self.config.default_protocol)
     }
 
     /// ХОСТ: сменить лимит гостей НА ЛЕТУ (сразу видно в каталоге).
@@ -472,12 +495,22 @@ impl BmvEngine {
         }
         let ann = self.build_announce();
         let coord = self.coordinator()?;
-        // ПОВТОРНАЯ проверка ПЕРЕД самой отправкой. Между первой проверкой и этим
+        // ПОВТОРНАЯ проверка ПЕРЕД самой отправкой: между первой проверкой и этим
         // местом мог пройти host_deannounce (он ставит host_active=false, ЗАТЕМ
-        // шлёт bye). Если мы всё ещё видим true — значит deannounce ещё не начался,
-        // и наш announce гарантированно уходит РАНЬШЕ bye (WS упорядочен) → хост
-        // не «воскресает» после снятия. Без этого утёкший/выходящий анонс возвращал
-        // снятый хост в каталог.
+        // шлёт bye), и тогда анонс уже незачем отправлять.
+        //
+        // ЧЕСТНО ПРО ПОТОЛОК: это СУЖЕНИЕ окна, а не запрет. Задачи идут на
+        // многопоточном рантайме, и нашу задачу может снять с ядра прямо здесь —
+        // между этой проверкой и первой строкой `announce`. Тогда порядок на
+        // проводе выйдет «bye, затем host», и хост вернётся в каталог призраком:
+        // клиент координатора ещё и запоминает последний анонс, чтобы повторить
+        // его на переподключении. Прежний комментарий обещал тут гарантию
+        // («announce уходит РАНЬШЕ bye»), которой нет ни у одной из двух
+        // проверок. Настоящая гарантия — в клиенте координатора: после `bye`
+        // сокет обязан отвергать анонсы этой записи насовсем; отсюда, снаружи,
+        // такое не выражается. Практическая цена окна мала: heartbeat остановлен
+        // раньше bye (это делают все оболочки), поэтому попасть в него может
+        // только анонс, начатый в ту же миллисекунду.
         if !self.host_active.load(Ordering::SeqCst) {
             return Ok(());
         }
@@ -487,17 +520,17 @@ impl BmvEngine {
         Ok(())
     }
 
-    /// Совместимость: ре-анонс с явными адресами (обновляет и сохранённый набор).
-    pub async fn host_reannounce(&self, endpoints: &[String]) -> Result<()> {
-        *self.host_endpoints.lock() = endpoints.to_vec();
-        self.announce_state().await
-    }
+    // Здесь был `host_reannounce(endpoints)` — «совместимость: ре-анонс с явными
+    // адресами». Совместимость с НИКЕМ: ни одна оболочка его не звала, а адреса
+    // хост запоминает сам в `host_bind_announce`. Ручка позволяла подменить набор
+    // анонсируемых адресов извне — то есть единственное, что она могла сделать,
+    // это разойтись с тем, на чём хост реально слушает.
 
     /// ХОСТ: периодический тик — держит NAT-дырку hub-сокета открытой (иначе
     /// хост за NAT становится недостижим для новых гостей) и обновляет запись в
     /// каталоге. Звать раз в `HOST_HEARTBEAT` из цикла приёма гостей.
     pub async fn host_heartbeat(&self, hub: &bmv_net::UdpHub) -> Result<()> {
-        hub.nat_keepalive(&self.config.stun.resolve()).await;
+        hub.nat_keepalive(&self.stun).await;
         self.announce_state().await
     }
 
@@ -647,25 +680,28 @@ impl BmvEngine {
             .collect()
     }
 
-    /// Порядок протоколов для попытки соединения: выбранный + внутренний фолбэк.
+    /// Список протоколов для ПОКАЗА: свой первым, остальные доступные следом.
+    ///
+    /// Это витрина, а не фолбэк: перебора протоколов при подключении нет и
+    /// никогда не было — обе стороны берут РОВНО ОДНО имя (см.
+    /// `protocol_by_name`), потому что договориться на лету по UDP не с кем.
+    /// Единственный, кто это зовёт, — терминальная команда `protocols`.
     pub fn connect_order(&self) -> Vec<Arc<dyn Protocol>> {
-        self.protocols
-            .fallback_order(&self.config.default_protocol)
+        self.protocols.display_order(self.active_protocol())
     }
 
-    /// Имя протокола, который реально будет использован (первый доступный из
-    /// порядка фолбэка) — для честного вывода в UI.
+    /// Имя протокола, которым этот узел РЕАЛЬНО работает, — для вывода человеку.
+    ///
+    /// Берётся из того же разбора, что и сама сессия. Раньше здесь стоял «первый
+    /// доступный из порядка фолбэка», и при пустой настройке экран честно писал
+    /// «noise», пока хост и гость поднимали «noise-obfs».
     pub fn active_protocol(&self) -> &'static str {
-        self.connect_order()
-            .first()
-            .map(|p| p.name())
-            .unwrap_or("—")
+        self.default_proto().name()
     }
 
     /// Узнать свой внешний адрес через STUN-пул (из файла/конфига или встроенный).
     pub async fn external_addr(&self) -> Result<SocketAddr> {
-        let servers = self.config.stun.resolve();
-        bmv_net::reflexive_addr(&servers, Duration::from_secs(5)).await
+        bmv_net::reflexive_addr(&self.stun, Duration::from_secs(5)).await
     }
 
     /// ДЕМО: прогнать пакет host↔guest через выбранный протокол по in-memory
@@ -673,11 +709,12 @@ impl BmvEngine {
     pub async fn demo_loopback(&self, payload: &[u8]) -> Result<Vec<u8>> {
         use bmv_common::wire::memory_pair;
 
-        let proto = self
-            .protocols
-            .get(&self.config.default_protocol)
-            .or_else(|| self.protocols.get("plain"))
-            .ok_or_else(|| bmv_common::Error::Protocol("Не с чем связаться с хостом — обновите приложение.".into()))?;
+        // ТОТ ЖЕ разбор имени, что и у боевой сессии. Здесь стоял свой:
+        // «протокол из настройки, иначе plain» — то есть на незнакомом или
+        // пустом имени проверка связи шла БЕЗ ШИФРА, а рядом печаталось имя
+        // из `active_protocol`. Проверка, которая проверяет не то, что работает,
+        // хуже отсутствующей.
+        let proto = self.default_proto();
 
         tracing::info!(protocol = proto.name(), "демо loopback");
 
@@ -1074,12 +1111,75 @@ mod announce_tests {
         let cfg = Config { default_protocol: String::new(), ..Default::default() };
         let eng = BmvEngine::from_config(cfg);
         assert_eq!(*eng.host_protocol.lock(), bmv_config::DEFAULT_PROTOCOL);
-        assert_eq!(eng.guest_protocol_name(None), bmv_config::DEFAULT_PROTOCOL,
+        assert_eq!(eng.protocol_by_name("").name(), bmv_config::DEFAULT_PROTOCOL,
             "гость без явного протокола обязан брать общий дефолт");
 
         // Неизвестное имя не подменяется молча «первым доступным».
         assert_eq!(eng.protocol_by_name("выдуманный").name(), bmv_config::DEFAULT_PROTOCOL);
         assert_eq!(eng.protocol_by_name("plain").name(), "plain", "известное имя обязано работать");
+    }
+
+    /// ЭКРАН ГОВОРИТ ТО, ЧЕМ ИДЁТ СЕССИЯ.
+    ///
+    /// На один вопрос «каким протоколом мы работаем» в этом файле было ТРИ
+    /// ответа: сессия разбирала имя через `protocol_by_name`, `active_protocol`
+    /// брала «первый доступный из реестра», а демо-проверка — «протокол из
+    /// настройки, иначе plain». При пустой настройке (её кладёт оболочка, у
+    /// которой поле протокола не заполнено) это давало: сессия — «noise-obfs»,
+    /// экран — «noise», проверка связи — вообще БЕЗ ШИФРА. Здесь проверяется,
+    /// что ответ ровно один, на всех четырёх видах настройки.
+    #[test]
+    fn the_screen_names_the_protocol_the_session_uses() {
+        for setting in ["", "выдуманный", "plain", bmv_config::DEFAULT_PROTOCOL] {
+            let eng = BmvEngine::from_config(Config {
+                default_protocol: setting.to_string(),
+                ..Default::default()
+            });
+            // Чем ПОЙДЁТ сессия: host_run_session разбирает ровно это имя.
+            let real = eng.protocol_by_name(&eng.host_protocol.lock().clone()).name();
+            assert_eq!(
+                eng.active_protocol(), real,
+                "настройка {setting:?}: человеку показываем «{}», а работаем «{real}»",
+                eng.active_protocol()
+            );
+            // Витрина протоколов начинается с того же самого.
+            assert_eq!(
+                eng.connect_order().first().map(|p| p.name()),
+                Some(real),
+                "настройка {setting:?}: список протоколов начинается не с рабочего"
+            );
+        }
+    }
+
+    /// НАСТРОЙКА STUN ДОЕЗЖАЕТ ДО МЕСТА РЕШЕНИЯ РАЗОБРАННОЙ, А НЕ ФАЙЛОМ.
+    ///
+    /// `StunConfig::resolve` читает файл с диска, и её звали из пяти мест — в том
+    /// числе из тика хоста, то есть блокирующее чтение файла раз в десять секунд
+    /// из async-задачи, всё время раздачи. На телефонах файла нет вовсе, там это
+    /// был отказ open() каждые десять секунд навсегда.
+    #[test]
+    fn stun_servers_are_parsed_once_when_the_engine_is_built() {
+        let dir = std::env::temp_dir().join(format!(
+            "bmv-stun-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("stun_servers.txt");
+        std::fs::write(&path, "первый.example:3478\n# коммент\nвторой.example:3478\n").unwrap();
+
+        let mut cfg = Config::default();
+        cfg.stun.file = path.display().to_string();
+        let eng = BmvEngine::from_config(cfg);
+
+        // Файл убрали — движок обязан помнить то, что прочитал при сборке.
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(
+            eng.stun.as_ref(),
+            ["первый.example:3478".to_string(), "второй.example:3478".to_string()].as_slice(),
+            "список STUN выводится из файловой системы на каждом обращении, а не из настройки"
+        );
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     /// Пароль ⇒ сеть скрытая, что бы ни стояло в настройке публичности.

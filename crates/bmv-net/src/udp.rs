@@ -343,12 +343,6 @@ pub struct UdpLink {
     tokens: PunchTokens,
 }
 
-impl UdpLink {
-    pub fn peer(&self) -> SocketAddr {
-        self.peer
-    }
-}
-
 #[async_trait]
 impl Link for UdpLink {
     async fn send(&self, packet: &[u8]) -> Result<()> {
@@ -585,14 +579,6 @@ impl UdpHub {
         for a in addrs {
             let _ = self.sock.send_to(&self.tokens.punch, a).await;
         }
-    }
-
-    /// Отправить произвольную датаграмму с ЭТОГО же hub-сокета (тот же
-    /// внешний адрес). Нужно для UDP-keepalive координатору: он видит источником
-    /// именно рефлексивный адрес хоста и держит его как авторитетный. Ответ
-    /// координатора (если будет) съест демультиплексор и молча отбросит — ок.
-    pub async fn send_raw(&self, data: &[u8], dst: SocketAddr) {
-        let _ = self.sock.send_to(data, dst).await;
     }
 
     /// Дождаться следующего нового гостя. `None` — хаб закрыт.

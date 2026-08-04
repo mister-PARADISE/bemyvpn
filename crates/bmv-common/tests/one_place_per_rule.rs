@@ -102,23 +102,76 @@ const MIGRATING: &[(&str, &str)] = &[
     ("apps/bmv-gui/src/main.rs", "vpn выключен"),
     ("apps/bmv-gui/src/main.rs", "подключаюсь"),
     ("apps/bmv-gui/src/main.rs", "завершил раздачу"),
+    // ── НЕ-RUST ОБОЛОЧКИ ──────────────────────────────────────────────────
+    // Телефоны и разметка окна живут на СОБСТВЕННЫХ копиях всего справочника:
+    // позвать `view.rs` оттуда сегодня нечем, дверь открывает мост `bmv-ffi`
+    // (`bmv_proto_name`, `bmv_ping_text`, `bmv_session_clock`, …). Пока копия
+    // жива — она названа здесь поимённо; переедет — строка обязана уйти, иначе
+    // часовой напомнит сам. Пополнять этот кусок новыми строками НЕЛЬЗЯ: новая
+    // копия и есть то расхождение, ради поимки которого всё это стоит.
+    ("apps/android/app/src/main/java/org/bemyvpn/AppState.kt", "восстанавлива"),
+    ("apps/android/app/src/main/java/org/bemyvpn/AppState.kt", "завершил раздачу"),
+    ("apps/android/app/src/main/java/org/bemyvpn/AppState.kt", "мс\""),
+    ("apps/android/app/src/main/java/org/bemyvpn/AppState.kt", "подключаюсь"),
+    ("apps/android/app/src/main/java/org/bemyvpn/AppState.kt", "связь с хостом пропала"),
+    ("apps/android/app/src/main/java/org/bemyvpn/BmvVpnService.kt", "подключаюсь"),
+    ("apps/android/app/src/main/java/org/bemyvpn/HostService.kt", "восстанавлива"),
+    ("apps/android/app/src/main/java/org/bemyvpn/Model.kt", "% 3600"),
+    ("apps/android/app/src/main/java/org/bemyvpn/Model.kt", "маскировка"),
+    ("apps/android/app/src/main/java/org/bemyvpn/Native.kt", "завершил раздачу"),
+    ("apps/android/app/src/main/java/org/bemyvpn/Native.kt", "маскировка"),
+    ("apps/android/app/src/main/java/org/bemyvpn/Native.kt", "переподключение"),
+    ("apps/android/app/src/main/java/org/bemyvpn/Native.kt", "подключаюсь"),
+    ("apps/android/app/src/main/java/org/bemyvpn/ui/Common.kt", "маскировка"),
+    ("apps/android/app/src/main/java/org/bemyvpn/ui/ServerTab.kt", "\"http://\""),
+    ("apps/android/app/src/main/java/org/bemyvpn/ui/ServerTab.kt", "восстанавлива"),
+    ("apps/android/app/src/main/java/org/bemyvpn/ui/ServerTab.kt", "мс\""),
+    ("apps/android/app/src/main/java/org/bemyvpn/ui/ServerTab.kt", "на связи"),
+    ("apps/android/app/src/main/java/org/bemyvpn/ui/ServerTab.kt", "проверяю связ"),
+    ("apps/android/app/src/main/java/org/bemyvpn/ui/VpnTab.kt", "vpn выключен"),
+    ("apps/android/app/src/main/java/org/bemyvpn/ui/VpnTab.kt", "восстанавлива"),
+    ("apps/android/app/src/main/java/org/bemyvpn/ui/VpnTab.kt", "переподключение"),
+    ("apps/android/app/src/main/java/org/bemyvpn/ui/VpnTab.kt", "подключаюсь"),
+    ("apps/android/app/src/main/java/org/bemyvpn/ui/VpnTab.kt", "хостов пока нет"),
+    ("apps/bmv-gui/ui/app.slint", "vpn выключен"),
+    ("apps/bmv-gui/ui/host_page.slint", "маскировка"),
+    ("apps/bmv-gui/ui/server_page.slint", "восстанавлива"),
+    ("apps/bmv-gui/ui/server_page.slint", "мс\""),
+    ("apps/bmv-gui/ui/server_page.slint", "на связи"),
+    ("apps/bmv-gui/ui/server_page.slint", "проверяю связ"),
+    ("apps/bmv-gui/ui/vpn_page.slint", "восстанавлива"),
+    ("apps/bmv-gui/ui/vpn_page.slint", "хостов пока нет"),
+    ("apps/ios/BeMyVPN/BeMyVPNApp.swift", "% 3600"),
+    ("apps/ios/BeMyVPN/BeMyVPNApp.swift", "завершил раздачу"),
+    ("apps/ios/BeMyVPN/BeMyVPNApp.swift", "мс\""),
+    ("apps/ios/BeMyVPN/BeMyVPNApp.swift", "подключаюсь"),
+    ("apps/ios/BeMyVPN/ContentView.swift", "\"http://\""),
+    ("apps/ios/BeMyVPN/ContentView.swift", "vpn выключен"),
+    ("apps/ios/BeMyVPN/ContentView.swift", "восстанавлива"),
+    ("apps/ios/BeMyVPN/ContentView.swift", "маскировка"),
+    ("apps/ios/BeMyVPN/ContentView.swift", "мс\""),
+    ("apps/ios/BeMyVPN/ContentView.swift", "на связи"),
+    ("apps/ios/BeMyVPN/ContentView.swift", "переподключение"),
+    ("apps/ios/BeMyVPN/ContentView.swift", "подключаюсь"),
+    ("apps/ios/BeMyVPN/ContentView.swift", "проверяю связ"),
+    ("apps/ios/BeMyVPN/ContentView.swift", "хостов пока нет"),
+    ("apps/ios/BeMyVPNTunnel/PacketTunnelProvider.swift", "завершил раздачу"),
+    ("apps/ios/BeMyVPNTunnel/PacketTunnelProvider.swift", "связь с хостом пропала"),
 ];
 
-/// ГРЕПАЛКА ВИДИТ ТОЛЬКО RUST — И ЭТО ЕЁ ИЗВЕСТНЫЙ ПОТОЛОК.
+/// ГРЕПАЛКА ВИДИТ ВСЕ ЧЕТЫРЕ ОБОЛОЧКИ.
 ///
-/// Правила показа рисуют четыре оболочки, но три из них написаны не на Rust
-/// (Kotlin, Swift, разметка окна), и позвать `view.rs` оттуда сегодня НЕЧЕМ:
-/// моста для этих правил нет. Разовый прогон по `kt/swift/slint` показал 24
-/// копии уже переехавших правил (подпись протокола, пинг, часы сеанса, адрес
-/// координатора) — то есть телефоны и окно живут на собственных копиях всего
-/// справочника, а не только тех строк, что здесь перечислены.
+/// Здесь стояло только `rs` с доводом: «включать расширения бессмысленно, пока
+/// копию нечем заменить — тест стал бы вечно красным списком того, что
+/// запрещено чинить». Довод верный, а вывод из него — нет: ровно для этого и
+/// заведён `MIGRATING`. Со списком известных копий часовой РАБОТАЕТ уже
+/// сегодня — он пропускает поимённо перечисленный долг и ловит НОВУЮ копию, —
+/// а долг сам себя вычёркивает: убрал копию, не убрал строку → тест напомнит.
 ///
-/// Включать эти расширения ЗДЕСЬ бессмысленно, пока копию нечем заменить: тест
-/// стал бы вечно красным списком того, что запрещено чинить. Дверь открывает
-/// мост `bmv-ffi` (`bmv_proto_name`, `bmv_ping_text`, `bmv_session_clock`,
-/// `bmv_coordinator_url`, …); когда оболочка на него перейдёт, добавь сюда её
-/// расширение — и копия больше не заведётся.
-const EXTS: [&str; 1] = ["rs"];
+/// Пока расширений не было, три оболочки из четырёх были для часового
+/// невидимы: любую новую копию правила в Kotlin, Swift или разметке окна можно
+/// было завести молча — то есть именно там, где правила уже расходились.
+const EXTS: [&str; 4] = ["rs", "kt", "swift", "slint"];
 
 fn source_files(dir: &Path, out: &mut Vec<PathBuf>) {
     let Ok(entries) = std::fs::read_dir(dir) else { return };

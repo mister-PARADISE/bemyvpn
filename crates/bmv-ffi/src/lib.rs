@@ -16,6 +16,10 @@
 // вне workspace) зовёт их как обычные Rust-функции — сборка APK молча
 // сломалась бы, а CI этого не увидел бы. Контракт вместо пометки описан в
 // `cstr`: указатель либо null, либо валидная нуль-терминированная строка.
+//
+// Оба обещания моста — «не помечена unsafe» и «тело завёрнуто в `ffi!`» —
+// теперь ПРОВЕРЯЮТСЯ, а не обещаются здесь на словах: сторож
+// `every_bridge_entry_keeps_the_shape_of_all_the_others` внизу файла.
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 
 use std::ffi::{CStr, CString};
@@ -202,9 +206,11 @@ fn to_c(s: String) -> *mut c_char {
 /// один раз. ABI не меняется — для Swift/Kotlin функция выглядит как раньше.
 #[no_mangle]
 pub unsafe extern "C" fn bmv_free_string(p: *mut c_char) {
-    if !p.is_null() {
-        unsafe { drop(CString::from_raw(p)) };
-    }
+    ffi!((), {
+        if !p.is_null() {
+            unsafe { drop(CString::from_raw(p)) };
+        }
+    })
 }
 
 // ── ПРАВИЛА ПОКАЗА: мост к справочнику `bmv_common::view` ─────────────────────
@@ -610,7 +616,7 @@ pub extern "C" fn bmv_start_tunnel(fd: i32, utun: bool) -> bool {
 /// (например, из-за неверного пароля).
 #[no_mangle]
 pub extern "C" fn bmv_vpn_status() -> i32 {
-    VPN_STATUS.load(Ordering::SeqCst)
+    ffi!(0, { VPN_STATUS.load(Ordering::SeqCst) })
 }
 
 /// Почему сеанс кончился САМ: 0 — не кончался (идёт или выключили сами),
@@ -621,7 +627,7 @@ pub extern "C" fn bmv_vpn_status() -> i32 {
 /// человеку надо предложить другой хост, а не показывать отказ.
 #[no_mangle]
 pub extern "C" fn bmv_stop_reason() -> i32 {
-    STOP_REASON.load(Ordering::SeqCst)
+    ffi!(0, { STOP_REASON.load(Ordering::SeqCst) })
 }
 
 /// Остановить VPN (отменяет и идущее подключение). Маршрут спадает у вызывающего
@@ -698,7 +704,7 @@ pub extern "C" fn bmv_send_bye() {
 /// вне активной сессии (просто no-op, если качать нечего).
 #[no_mangle]
 pub extern "C" fn bmv_nudge_reconnect() {
-    NUDGE.notify_waiters();
+    ffi!((), { NUDGE.notify_waiters() })
 }
 
 // ── хост-режим ───────────────────────────────────────────────────────────────
@@ -1285,6 +1291,57 @@ mod tests {
     use std::sync::atomic::AtomicBool;
     use std::sync::Arc;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    /// СТОРОЖ ФОРМЫ МОСТА: у тридцати точек входа она обязана быть ОДНА.
+    ///
+    /// Оба обещания ломаются МОЛЧА — ни компилятор, ни CI не краснеют:
+    ///
+    /// 1. ПОМЕТКА `unsafe`. Android-мост (apps/android/rust) лежит ВНЕ рабочего
+    ///    пространства и зовёт эти функции как обычные Rust-функции. Пометь одну
+    ///    из них — и перестанет собираться APK, а здесь всё зелено. Исключение
+    ///    ровно одно: `bmv_free_string` помечена с самого начала, и мост уже
+    ///    зовёт её из `unsafe`-блока.
+    /// 2. ОБЁРТКА `ffi!`. Паника через `extern "C"` — это abort всего приложения
+    ///    (на iOS ещё и «краш» в глазах системы). Шапка макроса обещает, что
+    ///    обёртка одинакова во всех точках входа, «иначе новую функцию забудут
+    ///    прикрыть», — и её действительно забыли в четырёх: `bmv_free_string`,
+    ///    `bmv_vpn_status`, `bmv_stop_reason`, `bmv_nudge_reconnect`.
+    ///
+    /// Читаем СВОЙ ЖЕ исходник: путь от рабочего каталога не зависит.
+    #[test]
+    fn every_bridge_entry_keeps_the_shape_of_all_the_others() {
+        const SRC: &str = include_str!("lib.rs");
+        // Единственная точка входа, которой пометка разрешена (см. пункт 1).
+        const UNSAFE_BY_DESIGN: [&str; 1] = ["bmv_free_string"];
+        // Кавычки экранированы, поэтому эта строка НЕ находит саму себя.
+        let marker = "extern \"C\" fn bmv_";
+
+        let lines: Vec<&str> = SRC.lines().collect();
+        let mut seen = 0;
+        for (i, line) in lines.iter().enumerate() {
+            let Some((head, tail)) = line.split_once(marker) else { continue };
+            let name = format!(
+                "bmv_{}",
+                tail.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_')).next().unwrap_or_default()
+            );
+            // Тело — до первой строки, закрывающей функцию на нулевом отступе.
+            let end = lines[i..].iter().position(|l| l.trim_end() == "}").map_or(lines.len() - 1, |k| i + k);
+            let body = lines[i..=end].join("\n");
+            seen += 1;
+
+            assert_eq!(
+                head.contains("unsafe"),
+                UNSAFE_BY_DESIGN.contains(&name.as_str()),
+                "{name}: пометка unsafe разрешена ТОЛЬКО у {UNSAFE_BY_DESIGN:?}. Андроидный мост вне рабочего \
+                 пространства зовёт остальные как обычные Rust-функции — пометка молча ломает сборку APK",
+            );
+            assert!(
+                body.contains("ffi!("),
+                "{name}: тело не завёрнуто в ffi! — паника внутри станет abort'ом всего приложения",
+            );
+        }
+        assert!(seen >= 20, "разбор точек входа сломался: найдено {seen}, а их три десятка");
+    }
 
     /// САМОЛЕЧЕНИЕ ПРОТУХШЕЙ ПОДПИСИ ОБЯЗАНО ВКЛЮЧАТЬСЯ. Смотрим со стороны
     /// ПОТРЕБИТЕЛЯ: даём ровно тот отказ, что приезжает с координатора, и

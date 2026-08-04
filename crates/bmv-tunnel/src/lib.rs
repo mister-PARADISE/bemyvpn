@@ -26,7 +26,13 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 mod host;
 mod linkio;
 
-pub use host::{punch_target_allowed, run_host};
+pub use host::run_host;
+
+/// Куда можно слать встречный PUNCH — правило живёт в `bmv_net::reach` вместе с
+/// SSRF-фильтром хоста и проверкой ответа STUN (одна таблица диапазонов на всех).
+/// Здесь имя оставлено ради `bmv-core`, который зовёт его отсюда исторически;
+/// когда он перейдёт на `bmv_net::punch_target_allowed`, эту строку убрать.
+pub use bmv_net::punch_target_allowed;
 
 /// MTU оверлея. 1400: оверхед инкапсуляции (Noise ~24 + UDP 8 + IP 20 ≈ 52)
 /// укладывает внешний пакет в 1500 без фрагментации, но даёт на ~9% больше

@@ -16,6 +16,13 @@ use rand::RngCore;
 use tokio::net::{lookup_host, UdpSocket};
 use tokio::time::timeout;
 
+// Адрес из ответа STUN уезжает в каталог, и все гости пойдут пробивать NAT
+// именно туда, — а сам ответ приходит по UDP от ЧУЖОЙ машины, то есть
+// подделывается кем угодно, кто угадал наш порт. Полностью проверить «наш ли это
+// адрес» нельзя (в том и смысл STUN — мы его сами не знаем), но заведомо
+// невозможные варианты режет общая таблица диапазонов (`crate::reach`).
+use crate::reach::plausible_external;
+
 /// Встроенный пул STUN-серверов (пусто в конфиге → берём это).
 pub const DEFAULT_STUN: &[&str] = &[
     "stun.l.google.com:19302",
@@ -217,46 +224,6 @@ fn parse_response(buf: &[u8], txid: &[u8; 12]) -> Option<SocketAddr> {
     fallback
 }
 
-/// Может ли это вообще быть НАШИМ ВНЕШНИМ адресом.
-///
-/// Ответ STUN приходит по UDP от чужой машины, то есть подделывается кем угодно,
-/// кто угадал наш порт, — а названный адрес мы анонсируем в каталог, и все гости
-/// пойдут пробивать NAT именно туда. Враждебный (или просто сломанный) сервер мог
-/// назвать петлю, LAN-адрес или чужой публичный, и хост честно раздал бы это как
-/// свою точку входа. Полностью проверить «наш ли это адрес» нельзя (в том и смысл
-/// STUN — мы его сами не знаем), но заведомо невозможные варианты режем здесь.
-///
-/// Приватка отвергается без потерь: если внешний адрес совпал с локальным, он и
-/// так уже анонсирован кандидатом `local_ip()`.
-fn plausible_external(addr: &SocketAddr) -> bool {
-    if addr.port() == 0 {
-        return false;
-    }
-    match addr.ip() {
-        std::net::IpAddr::V4(a) => {
-            !(a.is_loopback()
-                || a.is_private()
-                || a.is_link_local() // 169.254/16, в т.ч. метаданные облака
-                || a.is_unspecified()
-                || a.is_broadcast()
-                || a.is_multicast()
-                || a.is_documentation()
-                || a.octets()[0] == 0
-                || a.octets()[0] >= 240) // 240/4 зарезервировано
-        }
-        // Данные ходят по IPv4 (сокеты биндятся в 0.0.0.0), но правило пусть
-        // будет полным — иначе при переходе на IPv6 дыра откроется молча.
-        std::net::IpAddr::V6(a) => {
-            let s0 = a.segments()[0];
-            !(a.is_loopback()
-                || a.is_unspecified()
-                || a.is_multicast()
-                || (s0 & 0xffc0) == 0xfe80
-                || (s0 & 0xfe00) == 0xfc00)
-        }
-    }
-}
-
 fn parse_xor_mapped(val: &[u8]) -> Option<SocketAddr> {
     if val.len() < 8 || val[1] != 0x01 {
         return None;
@@ -414,6 +381,34 @@ mod tests {
         assert_eq!(parse_response(&resp(&txid, &xor_body([8, 8, 8, 8], 0)), &txid), None);
         // А нормальный публичный адрес обязан проходить.
         assert!(parse_response(&resp(&txid, &xor_body([45, 11, 22, 33], 40000)), &txid).is_some());
+    }
+
+    /// ИЗ РАЗБОРА STUN НИКОГДА НЕ ВЫХОДИТ АДРЕС IPv6.
+    ///
+    /// Это не мелочь, а причина, по которой у проверки адреса нет отдельной ветки
+    /// про IPv6: семейство `0x02` (IPv6) отбрасывается ЗДЕСЬ, в разборе, — и
+    /// раньше на этом месте лежала вторая таблица диапазонов «на случай IPv6»,
+    /// которая ничего не решала, но успела разойтись с первой. Если однажды сюда
+    /// добавят разбор IPv6, этот тест покраснеет и напомнит проверить политику.
+    #[test]
+    fn an_ipv6_stun_answer_is_never_parsed() {
+        let txid = [8u8; 12];
+        for attr in [ATTR_XOR_MAPPED_ADDRESS, ATTR_MAPPED_ADDRESS] {
+            let mut body = Vec::new();
+            body.extend_from_slice(&attr.to_be_bytes());
+            body.extend_from_slice(&20u16.to_be_bytes());
+            body.push(0);
+            body.push(0x02); // семейство IPv6
+            body.extend_from_slice(&[0x9c, 0x40]); // порт
+            body.extend_from_slice(&[0x20, 0x01, 0x0d, 0xb8]); // 2001:db8::1 — публичный
+            body.extend_from_slice(&[0u8; 11]);
+            body.push(1);
+            assert_eq!(
+                parse_response(&resp(&txid, &body), &txid),
+                None,
+                "разбор STUN выдал адрес IPv6 — политика адресов его не рассматривает"
+            );
+        }
     }
 
     /// Атрибут вылезает ЗА объявленную длину тела. Граница проверялась по размеру
