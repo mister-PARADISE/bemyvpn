@@ -119,7 +119,7 @@ class AppState private constructor(val ctx: Context) {
                     updateState = 3
                     // Самая частая причина у наших пользователей — блокировка
                     // GitHub, и её же решает само приложение.
-                    updateError = "Не удалось скачать — подключитесь к VPN и повторите"
+                    updateError = "Не удалось скачать обновление — подключитесь к VPN и повторите"
                 }
             }
         }
@@ -206,7 +206,7 @@ class AppState private constructor(val ctx: Context) {
     // а на других платформах сюда попадало имя машины вида «MacBook Air — Armen»,
     // то есть настоящее имя. Единое правило: страна по своему IP (офлайн, из
     // встроенной базы), до её появления — нейтральное имя.
-    var hostName by mutableStateOf(prefs.getString("host_name", null) ?: "Хост")
+    var hostName by mutableStateOf(prefs.getString("host_name", null) ?: HostService.DEFAULT_NAME)
     var hostMax by mutableStateOf(prefs.getInt("host_max", 8))
     var hostPassword by mutableStateOf(prefs.getString("host_pw", null) ?: "")
     // «noise-obfs» (Маскировка) — как на iOS и в ядре. Android оставался на голом
@@ -370,6 +370,10 @@ class AppState private constructor(val ctx: Context) {
                     // попытки подключения.
                     val why = try { Native.nativeStopReason() } catch (_: Throwable) { 0 }
                     if (why == 1) showVpnError("Хост завершил раздачу — выберите другой", calm = true)
+                    // Потеря связи (2) на Android МОЛЧАЛА: карточка гасла без
+                    // единого слова, и человек не знал, оборвалось у него или он
+                    // сам что-то нажал. На iOS про это говорят — теперь одинаково.
+                    else if (why == 2) showVpnError("Связь с хостом пропала — подключитесь заново", calm = true)
                     vpnState = 0; connectedTo = null; connectedSince = null
                 }
             }
@@ -523,7 +527,7 @@ class AppState private constructor(val ctx: Context) {
         // и человек смотрел бы на «подключаюсь» до таймаута, не понимая почему.
         // На десктопе это подписано давно — здесь молчало.
         if (hosting && host.id == hostCode) {
-            showVpnError("Это ваш собственный хост")
+            showVpnError("Это ваш собственный хост — выберите другой")
             return
         }
         vpnError = null
@@ -544,7 +548,7 @@ class AppState private constructor(val ctx: Context) {
         val code = raw.uppercase().trim()
         if (code.isEmpty()) return
         if (hosting && code == hostCode) {
-            showVpnError("Это код вашего же хоста")
+            showVpnError("Это код вашего же хоста — введите чужой")
             return
         }
         hostById(code)?.let { h ->
@@ -620,11 +624,11 @@ class AppState private constructor(val ctx: Context) {
                 val res = HostState.result ?: ""
                 starting = false
                 when {
-                    res == "!NAT" -> hostError = "Нет публичного адреса (вы за NAT) — раздача отсюда невозможна"
+                    res == "!NAT" -> hostError = "Ваша сеть не пропускает гостей внутрь — раздавать отсюда не выйдет. Попробуйте другую сеть."
                     // Свежий код ядро берёт САМО; сюда доходит, только если и это
                     // не удалось (нет связи с сервером).
-                    res == "!SIG" -> { setHostCode("", ""); hostError = "Сервер не подтвердил код — проверьте связь и повторите" }
-                    res.isEmpty() || res.startsWith("!") -> hostError = "Не удалось включить раздачу"
+                    res == "!SIG" -> { setHostCode("", ""); hostError = "Сервер не подтвердил код сети. Проверьте связь и попробуйте ещё раз." }
+                    res.isEmpty() || res.startsWith("!") -> hostError = "Раздача не включилась — попробуйте ещё раз."
                     else -> {
                         // Ответ — пара «код|подпись». Ядро могло вылечить протухшую
                         // подпись, взяв у сервера свежий код: сохраняем ОБЕ части,

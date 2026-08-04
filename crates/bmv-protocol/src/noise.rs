@@ -122,12 +122,12 @@ fn uncloak_ephemeral(msg: &mut [u8], pad: bool) -> Result<()> {
         return Ok(());
     }
     if msg.len() < 32 {
-        return Err(Error::Protocol("рукопожатие: слишком короткий эфемерный".into()));
+        return Err(Error::Protocol("Хост ответил непонятно — возможно, у него другая версия приложения.".into()));
     }
     let mut r = [0u8; 32];
     r.copy_from_slice(&msg[..32]);
     let raw = decode_representative(&r)
-        .ok_or_else(|| Error::Protocol("рукопожатие: невалидный Elligator2-representative".into()))?;
+        .ok_or_else(|| Error::Protocol("Хост ответил непонятно — возможно, у него другая версия приложения.".into()))?;
     msg[..32].copy_from_slice(&raw);
     Ok(())
 }
@@ -210,7 +210,7 @@ async fn handshake(inner: Box<dyn Link>, pattern: &str, initiator: bool, pad: bo
         for _ in 0..HS_TRIES {
             match timeout(HS_RETRY, inner.recv()).await {
                 Ok(Ok(m)) if m.is_empty() => {
-                    return Err(Error::Protocol("канал закрыт во время рукопожатия".into()))
+                    return Err(Error::Protocol("Хост оборвал подключение. Попробуйте ещё раз или выберите другой.".into()))
                 }
                 Ok(Ok(m)) if m == msg1_raw => {
                     inner.send(&msg2).await?; // гость не получил msg2 — повторяем
@@ -225,7 +225,7 @@ async fn handshake(inner: Box<dyn Link>, pattern: &str, initiator: bool, pad: bo
             }
         }
         if !done {
-            return Err(Error::Protocol("таймаут рукопожатия Noise".into()));
+            return Err(Error::Protocol("Хост не отвечает. Попробуйте ещё раз или выберите другой.".into()));
         }
     }
 
@@ -315,26 +315,32 @@ async fn send_and_await(link: &dyn Link, msg: &[u8]) -> Result<Vec<u8>> {
         let wait = HS_RETRY.min(deadline.saturating_duration_since(tokio::time::Instant::now()));
         match timeout(wait, link.recv()).await {
             Ok(Ok(m)) if !m.is_empty() => return Ok(m),
-            Ok(Ok(_)) => return Err(Error::Protocol("канал закрыт во время рукопожатия".into())),
+            Ok(Ok(_)) => return Err(Error::Protocol("Хост оборвал подключение. Попробуйте ещё раз или выберите другой.".into())),
             Ok(Err(e)) => return Err(e),
             Err(_) if tokio::time::Instant::now() < deadline => continue, // тишина — шлём заново
             Err(_) => break,
         }
     }
-    Err(Error::Protocol("таймаут рукопожатия Noise".into()))
+    Err(Error::Protocol("Хост не отвечает. Попробуйте ещё раз или выберите другой.".into()))
 }
 
 async fn recv_hs(link: &dyn Link) -> Result<Vec<u8>> {
     match timeout(HS_TIMEOUT, link.recv()).await {
         Ok(Ok(m)) if !m.is_empty() => Ok(m),
-        Ok(Ok(_)) => Err(Error::Protocol("канал закрыт во время рукопожатия".into())),
+        Ok(Ok(_)) => Err(Error::Protocol("Хост оборвал подключение. Попробуйте ещё раз или выберите другой.".into())),
         Ok(Err(e)) => Err(e),
-        Err(_) => Err(Error::Protocol("таймаут рукопожатия Noise".into())),
+        Err(_) => Err(Error::Protocol("Хост не отвечает. Попробуйте ещё раз или выберите другой.".into())),
     }
 }
 
+/// Ошибка шифрослоя → текст для человека.
+///
+/// Английский текст `snow` в окно НЕ идёт: человеку он не объясняет ничего, а
+/// занимает собой всю строку состояния. В журнал — идёт, разбирать поломку
+/// по-прежнему есть по чему.
 fn noe(e: snow::Error) -> Error {
-    Error::Protocol(format!("noise: {e}"))
+    log::debug!("шифрослой: {e}");
+    Error::Protocol("Не удалось договориться о шифровании с хостом. Выберите другой.".into())
 }
 
 /// Канал, шифрующий каждый пакет. Формат кадра: nonce(8, LE) + ciphertext+tag.

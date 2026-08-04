@@ -151,12 +151,12 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
                 guard bmv_vpn_status() == 3 else { continue }
                 // 1 — хост завершил раздачу (ошибки НЕТ), иначе связь потеряна.
                 let hostLeft = bmv_stop_reason() == 1
-                let text = hostLeft ? "Хост завершил раздачу" : "Связь с хостом потеряна"
+                let text = hostLeft ? "Хост завершил раздачу" : "Связь с хостом пропала"
                 tlog.notice("ядро завершило сеанс (\(text, privacy: .public)) — гашу туннель")
                 self.cancelTunnelWithError(NSError(
                     domain: Self.stopDomain,
                     code: hostLeft ? 1 : 2,
-                    userInfo: [NSLocalizedDescriptionKey: hostLeft ? "Хост завершил раздачу — выберите другой" : text]
+                    userInfo: [NSLocalizedDescriptionKey: hostLeft ? "Хост завершил раздачу — выберите другой" : "Связь с хостом пропала — подключитесь заново"]
                 ))
                 return
             }

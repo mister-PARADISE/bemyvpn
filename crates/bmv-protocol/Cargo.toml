@@ -7,6 +7,9 @@ license.workspace = true
 [dependencies]
 bmv-common.workspace = true
 async-trait.workspace = true
+# Английский текст ошибки шифрослоя уходит СЮДА, а не в окно: человеку он не
+# говорит ничего, а разбирать поломку по нему всё равно надо.
+log.workspace = true
 tokio.workspace = true
 snow.workspace = true
 rand.workspace = true

@@ -132,7 +132,7 @@ class ScanActivity : Activity() {
             hasCam = true
             barcodeView.resume(); barcodeView.decodeSingle(callback)
         } else {
-            Toast.makeText(this, "Нет доступа к камере", Toast.LENGTH_SHORT).show(); finish()
+            Toast.makeText(this, "Разрешите камеру — или введите код сети вручную", Toast.LENGTH_SHORT).show(); finish()
         }
     }
 

@@ -148,7 +148,7 @@ pub async fn run_candidates<F>(
             return;
         }
     }
-    on_state(State::Failed("не удалось подключиться".into()));
+    on_state(State::Failed("Не удалось подключиться к хосту. Попробуйте ещё раз или выберите другой.".into()));
 }
 
 async fn run_tunnel<F>(
@@ -165,11 +165,21 @@ async fn run_tunnel<F>(
     let params = bmv_tunnel::TunParams::guest();
     let (device, ifname) = match crate::make_tun(&params) {
         Ok(d) => d,
-        Err(e) => return on_state(State::Failed(format!("TUN: {e}"))),
+        // «TUN: » и «маршрут: » были первым словом, которое человек читал в
+        // строке состояния, и не значили для него ничего. Подробность системы —
+        // в журнал, в окно — что случилось и что делать.
+        Err(e) => {
+            tracing::error!("сетевой интерфейс не создался: {e}");
+            return on_state(State::Failed(
+                "Не удалось включить VPN — нужны права администратора. Запустите приложение ещё раз и введите пароль.".into(),
+            ));
+        }
     };
     let _guard = match crate::RouteGuard::install_with(peer.ip(), &ifname, ipv6) {
         Ok(g) => g,
-        Err(e) => return on_state(State::Failed(format!("маршрут: {e}"))),
+        // Отказ из-за IPv6 приходит СЮДА уже готовым текстом для человека
+        // (см. `apply_ipv6_policy`) — его и показываем, не оборачивая.
+        Err(e) => return on_state(State::Failed(e)),
     };
     on_state(State::Up(host.to_string()));
     let link_arc: Arc<dyn bmv_common::Link> = Arc::from(link);

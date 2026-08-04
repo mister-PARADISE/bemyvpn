@@ -86,14 +86,14 @@ fn host_cc(h: &HostInfo) -> Option<String> {
 /// завершиться, иначе подмена не пройдёт: пока процесс жив, файлы держатся.
 async fn fetch_update(tag: &str) -> Result<(), String> {
     let asset = bmv_common::update::current_asset_name(true)
-        .ok_or("для этой платформы релизы не выпускаются")?;
+        .ok_or("Для вашей системы обновления не выпускаются.")?;
     let repo = std::env::var("BMV_REPO").unwrap_or_else(|_| "mister-PARADISE/bemyvpn".into());
     let url = bmv_common::update::asset_url(&repo, tag, asset);
 
     let bytes = bmv_common::update::download(&url, bmv_common::update::MAX_ASSET_BYTES)
         .await
         // Частый случай: GitHub заблокирован. Наш же продукт это и решает.
-        .map_err(|e| format!("{e} — попробуйте подключиться к VPN"))?;
+        .map_err(|_| "Не удалось скачать обновление — подключитесь к VPN и повторите.".to_string())?;
 
     #[cfg(target_os = "macos")]
     bmv_common::update::spawn_bundle_updater(&bytes).map_err(|e| e.to_string())?;
@@ -232,7 +232,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // стороны это выглядит как «сохранённый сервер сам сбросился».
     let (config, config_error) = match Config::load(None) {
         Ok(c) => (c, String::new()),
-        Err(e) => (Config::default(), format!("Настройки не прочитались ({e}) — взяты стандартные")),
+        Err(e) => (Config::default(), format!("Настройки не прочитались, взяты стандартные: {e}")),
     };
     let coord = config.coordinators.first().cloned().unwrap_or_else(|| DEFAULT_COORD.into());
     // Настройки хоста показываем ровно те, что сохранены (иначе имя, лимит,
@@ -432,7 +432,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         { let mut r = recent.lock().unwrap(); r.retain(|x| x != &id); r.insert(0, id.clone()); r.truncate(6); }
                         let _ = store::add_recent(&coord_full.lock().unwrap(), &id);
                     }
-                    3 => { ui.set_vpn_state(3); ui.set_vpn_status(if err.is_empty() { "не удалось подключиться".into() } else { err.clone().into() }); ui.set_vpn_sub(err.into()); }
+                    // ЗАГОЛОВОК КОРОТКИЙ И ПОСТОЯННЫЙ, объяснение — строкой ниже.
+                    // Раньше текст ошибки уходил И в заголовок, И в подпись: одно и
+                    // то же читалось дважды, а длинное сообщение (например, отказ
+                    // из-за IPv6) разворачивалось на семь строк жирным 21px. На
+                    // телефонах так уже сделано — теперь одинаково везде.
+                    3 => {
+                        ui.set_vpn_state(3);
+                        ui.set_vpn_status("Не удалось подключиться".into());
+                        ui.set_vpn_sub(if err.is_empty() { "Попробуйте ещё раз или выберите другой хост.".into() } else { err.into() });
+                    }
                     // ХОСТ ЗАВЕРШИЛ РАЗДАЧУ. Состояние — обычное «выключено» (0), то
                     // есть спокойный синий круг, а не красная карточка отказа:
                     // ошибки здесь нет, всё сработало правильно. Меняются только
@@ -983,7 +992,8 @@ fn wire_vpn(
             let Some(host) = hosts.lock().unwrap().iter().find(|h| h.id == id.as_str()).cloned() else { return };
             if u.get_host_state() == 2 && u.get_host_code() == host.id.as_str() {
                 u.set_vpn_state(3);
-                u.set_vpn_status("Это ваш собственный хост".into());
+                u.set_vpn_status("Не удалось подключиться".into());
+                u.set_vpn_sub("Это ваш собственный хост — выберите другой.".into());
                 return;
             }
             let pw = if host.has_password { u.get_guest_password().to_string() } else { String::new() };
@@ -1006,7 +1016,8 @@ fn wire_vpn(
             if code.is_empty() { return; }
             if u.get_host_state() == 2 && u.get_host_code() == code.as_str() {
                 u.set_vpn_state(3);
-                u.set_vpn_status("Это код вашего же хоста".into());
+                u.set_vpn_status("Не удалось подключиться".into());
+                u.set_vpn_sub("Это код вашего же хоста — введите чужой.".into());
                 u.set_code("".into());
                 return;
             }
@@ -1053,7 +1064,8 @@ fn wire_vpn(
             };
             let Some(first) = cands.first() else {
                 u.set_vpn_state(3);
-                u.set_vpn_status("Нет открытого свободного хоста".into());
+                u.set_vpn_status("Не удалось подключиться".into());
+                u.set_vpn_sub("Сейчас нет свободного хоста без пароля. Выберите хост в списке ниже.".into());
                 return;
             };
             begin(&u, &first.id, &display_name(first));
@@ -1159,12 +1171,12 @@ fn wire_host(
             if id.is_empty() || sig.is_empty() {
                 match BmvEngine::from_config(base.clone()).host_new_code().await {
                     Ok((c, s)) if !c.is_empty() && !s.is_empty() => { id = c; sig = s; store::save_host_creds(&id, &sig); }
-                    _ => return set_host_err(&weak, "Сервер не выдал код".into()),
+                    _ => return set_host_err(&weak, "Сервер не выдал код сети. Проверьте связь и попробуйте ещё раз.".into()),
                 }
             }
             let mut eng = Arc::new(BmvEngine::from_config(build(&id, &sig)));
             let mut announce = eng.host_bind_announce().await;
-            if announce.as_ref().err().map(|e| e.to_string().contains("403")).unwrap_or(false) {
+            if announce.as_ref().err().and_then(|e| e.refusal_code()) == Some(403) {
                 store::clear_host_creds();
                 if let Ok((c, s)) = BmvEngine::from_config(base.clone()).host_new_code().await {
                     if !c.is_empty() && !s.is_empty() {
@@ -1177,8 +1189,14 @@ fn wire_host(
             let hub = match announce {
                 Ok((hub, _id, _eps)) => hub,
                 Err(e) => {
-                    let s = e.to_string();
-                    let msg = if s.contains("422") { "Нет публичного адреса (вы за NAT) — раздача отсюда невозможна".to_string() } else { s };
+                    // Причину смотрим ПО КОДУ, а не по буквам в тексте: код
+                    // приезжает отдельным полем (см. `Error::Refused`). Раньше
+                    // здесь стоял `s.contains("422")` — и не срабатывал никогда.
+                    let msg = if e.refusal_code() == Some(422) {
+                        "Ваша сеть не пропускает гостей внутрь — раздавать отсюда не выйдет. Попробуйте другую сеть.".to_string()
+                    } else {
+                        e.to_string()
+                    };
                     return set_host_err(&weak, msg);
                 }
             };

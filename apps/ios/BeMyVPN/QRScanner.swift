@@ -42,7 +42,7 @@ struct ScannerSheet: View {
         VStack(spacing: 14) {
             Image(systemName: "camera.fill").font(.system(size: 44)).foregroundColor(.white.opacity(0.5))
             Text("Нет доступа к камере").foregroundColor(.white).font(.system(size: 18, weight: .bold))
-            Text("Сканировать QR без камеры нельзя. Разрешение можно включить в настройках — или ввести код сети вручную.")
+            Text("Разрешите камеру в настройках — или введите код сети вручную.")
                 .foregroundColor(.white.opacity(0.7)).font(.system(size: 14))
                 .multilineTextAlignment(.center).padding(.horizontal, 32)
             if let url = URL(string: UIApplication.openSettingsURLString) {

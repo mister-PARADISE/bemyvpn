@@ -316,7 +316,7 @@ impl Link for MemLink {
         self.tx
             .send(packet.to_vec())
             .await
-            .map_err(|_| crate::Error::other("memory link: другой конец закрыт"))
+            .map_err(|_| crate::Error::other("Связь оборвалась."))
     }
 
     async fn recv_into(&self, buf: &mut Vec<u8>) -> Result<bool> {

@@ -409,12 +409,16 @@ fn apply_ipv6_policy(mode: Ipv6Mode, tun: &str) -> Result<(), String> {
             tracing::info!("IPv6 заглушён на время сеанса ({})", IPV6_HALVES.join(" + "));
             Ok(())
         }
-        Err(e) if live => Err(format!(
-            "IPv6 работает, но заглушить его не удалось ({e}). Подключение отменено: \
-             иначе часть трафика ушла бы мимо туннеля вместе с настоящим адресом. \
-             Если IPv6 у вас единственный способ выйти в сеть — поставьте в bemyvpn.toml \
-             [guest] ipv6 = \"allow\" и знайте, что защиты по IPv6 не будет"
-        )),
+        // ТЕКСТ ЧИТАЕТ ЧЕЛОВЕК, и читает его в строке состояния. Причина отказа
+        // тут одна и объяснить её надо в одну фразу; вывод системной команды
+        // (`{e}`) человеку не говорит ничего и уезжает в журнал.
+        Err(e) if live => {
+            tracing::warn!("IPv6 не заглушён и он живой — отказ подключаться: {e}");
+            Err("Не удалось закрыть IPv6 — через него ваш настоящий адрес утёк бы мимо туннеля. Попробуйте \
+                 ещё раз; если IPv6 у вас единственный выход в сеть, разрешите его в bemyvpn.toml: \
+                 [guest] ipv6 = \"allow\"."
+                .to_string())
+        }
         Err(e) => {
             tracing::debug!("IPv6 не заглушён ({e}), но и выхода по IPv6 на машине нет — утекать нечему");
             Ok(())
@@ -465,7 +469,7 @@ impl RouteGuard {
         // ПЕРВЫМ делом — доесть крошку прошлого запуска, иначе снимком «текущего»
         // DNS окажется наш же 8.8.8.8, и настоящий резолвер потеряется навсегда.
         recover_after_crash();
-        let (gw, dev) = default_route_linux().ok_or("не найден шлюз по умолчанию")?;
+        let (gw, dev) = default_route_linux().ok_or("Не видно выхода в интернет — проверьте подключение к сети.")?;
         let hip = host_ip.to_string();
         let _ = ip(&["route", "add", &format!("{hip}/32"), "via", &gw, "dev", &dev]);
         ip(&["route", "add", "0.0.0.0/1", "dev", tun])?;
@@ -492,7 +496,7 @@ impl RouteGuard {
         // Первым делом — доесть крошку прошлого запуска (см. DNS_CRUMB): иначе
         // «прежними» серверами запомнится наш же 8.8.8.8.
         recover_after_crash();
-        let (gw, dev) = default_route_macos().ok_or("не найден шлюз по умолчанию")?;
+        let (gw, dev) = default_route_macos().ok_or("Не видно выхода в интернет — проверьте подключение к сети.")?;
         let hip = host_ip.to_string();
         // Хост-пин через реальный шлюз, чтобы шифрованные UDP не зациклились в туннель.
         let _ = route(&["-n", "add", "-host", &hip, &gw]);
@@ -531,7 +535,7 @@ impl RouteGuard {
     pub fn install_with(host_ip: IpAddr, tun: &str, ipv6: Ipv6Mode) -> Result<Self, String> {
         // Сетевые параметры (шлюз, индекс и IP tun-адаптера) — нативными route/netsh,
         // без PowerShell (он грузится ~15с на холодную → ощущается как зависание).
-        let (gw, tun_idx, tun_ip) = windows_net_info(tun).ok_or("не удалось получить сетевые параметры")?;
+        let (gw, tun_idx, tun_ip) = windows_net_info(tun).ok_or("Не видно выхода в интернет — проверьте подключение к сети.")?;
         let hip = host_ip.to_string();
         // 1) Пин хоста через реальный шлюз, чтобы шифрованный UDP не зациклился в туннель.
         let _ = route(&["add", &hip, "mask", "255.255.255.255", &gw, "metric", "1"]);
@@ -773,13 +777,23 @@ fn adapter_index_windows(name: &str) -> Option<String> {
 //
 // Через `bmv_common::command`, а не `Command::new`: на Windows он ставит
 // CREATE_NO_WINDOW, без которого каждый route/netsh мигает окном консоли.
+//
+// Текст ошибки отсюда доезжает ДО ЧЕЛОВЕКА, в строку состояния. Ругань `route`/
+// `netsh`/`ip` («writing to routing socket: not permitted») ему не говорит
+// ничего, а причина у неё почти всегда одна — не хватило прав. Её и называем, а
+// саму ругань кладём в журнал: разбирать поломку по-прежнему есть по чему.
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 fn run(cmd: &str, args: &[&str]) -> Result<(), String> {
-    let out = bmv_common::command(cmd).args(args).output().map_err(|e| e.to_string())?;
+    const HUMAN: &str = "Не удалось настроить сеть — нужны права администратора. Запустите приложение ещё раз и введите пароль.";
+    let out = bmv_common::command(cmd).args(args).output().map_err(|e| {
+        tracing::error!("{cmd} не запустился: {e}");
+        HUMAN.to_string()
+    })?;
     if out.status.success() {
         Ok(())
     } else {
-        Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
+        tracing::error!("{cmd} {args:?}: {}", String::from_utf8_lossy(&out.stderr).trim());
+        Err(HUMAN.to_string())
     }
 }
 

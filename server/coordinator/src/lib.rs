@@ -573,7 +573,7 @@ async fn register_host(
     conn: u64,
 ) -> (StatusCode, &'static str) {
     if ann.id.is_empty() || ann.id.len() > MAX_ID || ann.token.len() > MAX_TOKEN {
-        return (StatusCode::BAD_REQUEST, "пустой или слишком длинный код/токен");
+        return (StatusCode::BAD_REQUEST, "Сервер не принял код сети. Возьмите новый код и попробуйте ещё раз.");
     }
     // Санитизация полей: режем размеры и адреса — защита от мусора/амплификации.
     ann.name = clamp(&ann.name, MAX_NAME);
@@ -593,7 +593,7 @@ async fn register_host(
         state.rej_nat.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         return (
             StatusCode::UNPROCESSABLE_ENTITY,
-            "координатор видит вас только по IPv6, а данные у нас ходят по IPv4 — включите IPv4",
+            "Ваш интернет работает только по IPv6, а раздача пока требует IPv4. Включите IPv4 в настройках сети или роутера.",
         );
     }
     ann.endpoints = match obs {
@@ -605,12 +605,12 @@ async fn register_host(
         state.rej_nat.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         return (
             StatusCode::UNPROCESSABLE_ENTITY,
-            "нет публичного адреса: вы за NAT или STUN не нашёл внешний порт",
+            "Ваша сеть не пропускает гостей внутрь — раздавать отсюда не выйдет. Попробуйте другую сеть.",
         );
     }
     // Хост, не принимающий гостей (лимит 0) — «пустышка», а не рабочая сеть.
     if ann.max_guests == 0 {
-        return (StatusCode::UNPROCESSABLE_ENTITY, "лимит гостей 0 — раздавать нечего");
+        return (StatusCode::UNPROCESSABLE_ENTITY, "Лимит гостей — ноль: подключиться никто не сможет. Поставьте хотя бы одного.");
     }
     // Вместимость — со слов хоста, и раньше её никто не проверял. Объявив
     // max_guests = 4 000 000 000 при нуле гостей, хост оказывался САМЫМ СВОБОДНЫМ
@@ -639,7 +639,7 @@ async fn register_host(
                 if !e.owner.is_empty() && e.owner != ann.token {
                     state.rej_hijack.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     tracing::warn!(code = %code_hint(&state.code_secret, &ann.id), "отклонён: неверный owner-токен (угон)");
-                    return (StatusCode::FORBIDDEN, "код занят другим владельцем");
+                    return (StatusCode::FORBIDDEN, "Этот код сети занят другим устройством. Возьмите новый код.");
                 }
                 // Видимое поле изменилось (гость зашёл/вышел, смена имени/лимита…)?
                 announce_visible_fp(&e.ann) != new_fp
@@ -649,12 +649,12 @@ async fn register_host(
                 if !verify_code(&state.code_secret, &ann.id, &ann.code_sig) {
                     state.rej_sig.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     tracing::warn!(code = %code_hint(&state.code_secret, &ann.id), "отклонён: код без валидной подписи сервера");
-                    return (StatusCode::FORBIDDEN, "код без подписи этого сервера — запросите новый код");
+                    return (StatusCode::FORBIDDEN, "Этот сервер не выдавал такой код сети. Возьмите новый код.");
                 }
                 if db.len() >= MAX_HOSTS {
                     state.rej_full.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     tracing::warn!("каталог полон ({MAX_HOSTS}), новый хост отклонён");
-                    return (StatusCode::SERVICE_UNAVAILABLE, "каталог координатора переполнен");
+                    return (StatusCode::SERVICE_UNAVAILABLE, "Сервер сейчас перегружен. Попробуйте через пару минут.");
                 }
                 true // новый хост — показать сразу
             }
@@ -1238,7 +1238,7 @@ async fn ws_conn(socket: WebSocket, state: Db, ip: IpAddr, _guard: WsConnGuard) 
             continue;
         }
         let Ok(m) = serde_json::from_str::<WsClientMsg>(&text) else {
-            let _ = out_tx.send(WsServerMsg::Error { id: 0, code: 400, reason: "плохой JSON".into() }).await;
+            let _ = out_tx.send(WsServerMsg::Error { id: 0, code: 400, reason: "Сервер не понял запрос. Обновите приложение.".into() }).await;
             continue;
         };
         match m {
@@ -1336,7 +1336,7 @@ async fn ws_conn(socket: WebSocket, state: Db, ip: IpAddr, _guard: WsConnGuard) 
             }
             WsClientMsg::Connect { id, host_id: hid, candidates } => {
                 if hid.is_empty() || hid.len() > MAX_ID {
-                    let _ = out_tx.send(WsServerMsg::Error { id, code: 400, reason: "плохой host_id".into() }).await;
+                    let _ = out_tx.send(WsServerMsg::Error { id, code: 400, reason: "Код сети написан неверно. Проверьте и введите ещё раз.".into() }).await;
                     continue;
                 }
                 // Достаём адреса хоста (гость к ним пробивает) и проверяем живость.
@@ -1348,7 +1348,7 @@ async fn ws_conn(socket: WebSocket, state: Db, ip: IpAddr, _guard: WsConnGuard) 
                     }
                 };
                 let Some(endpoints) = endpoints else {
-                    let _ = out_tx.send(WsServerMsg::Error { id, code: 404, reason: "хост не найден".into() }).await;
+                    let _ = out_tx.send(WsServerMsg::Error { id, code: 404, reason: "Такой сети нет. Проверьте код — возможно, хост уже выключил раздачу.".into() }).await;
                     continue;
                 };
                 // Адреса ГОСТЯ проходят ровно тот же конвейер, что адреса хоста:
@@ -2434,7 +2434,9 @@ mod tests {
         nat.endpoints = vec!["192.168.0.5:40000".into()];
         let (code, why) = register_host(&st, nat, test_peer().ip().to_string(), 1).await;
         assert_eq!(code, StatusCode::UNPROCESSABLE_ENTITY);
-        assert!(why.contains("NAT"), "причина отказа за NAT не названа: {why:?}");
+        // Текст читает ЧЕЛОВЕК, поэтому слова «NAT» в нём больше нет — но сама
+        // причина названа и отличается от IPv6-случая.
+        assert!(why.contains("не пропускает"), "причина отказа «снаружи не достучаться» не названа: {why:?}");
         assert_eq!(seen(&st.rej_nat), 2, "отказы «недостижим» не считаются");
 
         // Код без подписи — единственный случай, когда надо просить НОВЫЙ код.

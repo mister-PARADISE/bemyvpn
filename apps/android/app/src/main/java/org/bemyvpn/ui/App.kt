@@ -25,7 +25,11 @@ fun App(app: AppState, openScanner: () -> Unit) {
     val navInset = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
     // Контент не должен прятаться под плавающим баром (navPadding на iOS = 104pt).
     // Бар приподняли на 8dp — отступ подрос на ту же величину.
-    val bottomPad = navInset + 104.dp
+    //
+    // +8 сверх этого — под завесу над баром (24dp): по замеру снимка покоящееся
+    // содержимое кончалось в (navInset + 0.8)dp над кромкой бара, и без прибавки
+    // последняя карточка гасла бы, стоя на месте.
+    val bottomPad = navInset + 112.dp
     Box(Modifier.fillMaxSize().background(Theme.bg)) {
         Box(Modifier.fillMaxSize().statusBarsPadding()) {
             when (app.tab) {

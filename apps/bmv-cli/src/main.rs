@@ -210,7 +210,7 @@ async fn main() {
                 config.host.id = code;
                 config.host.code_sig = sig;
             }
-            _ => fail("сервер не выдал код — хостинг невозможен (сервер — единственный источник кодов)".into()),
+            _ => fail("сервер не выдал код сети — без него раздавать нельзя. Проверьте связь и повторите".into()),
         }
     }
 
@@ -275,7 +275,7 @@ async fn main() {
 
         Cmd::Stun => match engine.external_addr().await {
             Ok(addr) => println!("Внешний адрес (server-reflexive): {addr}"),
-            Err(e) => fail(format!("STUN не удался: {e}")),
+            Err(e) => fail(format!("свой внешний адрес узнать не вышло. {e}")),
         },
 
         Cmd::Ping => {
@@ -283,7 +283,7 @@ async fn main() {
             print!("Координатор {base} … ");
             match engine.coordinator_health().await {
                 Ok(()) => println!("жив ✅"),
-                Err(e) => fail(format!("недоступен: {e}")),
+                Err(e) => fail(format!("недоступен. {e}")),
             }
         }
 
@@ -319,7 +319,7 @@ async fn run_host(engine: std::sync::Arc<BmvEngine>, tunnel: bool) {
             println!("готово ✅");
             v
         }
-        Err(e) => fail(format!("не удалось: {e}")),
+        Err(e) => fail(format!("не вышло. {e}")),
     };
     println!(
         "Хост #{id} в каталоге ({}){}.",
@@ -426,13 +426,13 @@ async fn run_guest(
                     }
                     println!("\nПодключиться: bemyvpn guest --connect <id>");
                 }
-                Err(e) => fail(format!("каталог недоступен: {e}")),
+                Err(e) => fail(format!("каталог недоступен. {e}")),
             }
         }
         Some(host_id) => {
             if tunnel {
                 println!(
-                    "Поднимаю ТУННЕЛЬ к {host_id} (знакомство → пробитие NAT → {})…",
+                    "Поднимаю ТУННЕЛЬ к {host_id} (знакомимся через сервер → пробиваем прямой канал → {})…",
                     engine.active_protocol()
                 );
                 // Узнаём протокол хоста из каталога — гость обязан ему следовать.
@@ -448,12 +448,12 @@ async fn run_guest(
                     .await
                 {
                     Ok(v) => v,
-                    Err(e) => fail(format!("не соединился: {e}")),
+                    Err(e) => fail(format!("не соединился. {e}")),
                 };
                 let params = bmv_tunnel::TunParams::guest();
                 let (device, ifname) = match bmv_desktop::make_tun(&params) {
                     Ok(d) => d,
-                    Err(e) => fail(format!("не создать TUN (нужен root/sudo): {e}")),
+                    Err(e) => fail(format!("не создать сетевой интерфейс — нужен sudo. {e}")),
                 };
                 // Полный туннель: split-default заворачивает ВЕСЬ трафик через хост,
                 // хост пинуется через реальный шлюз (анти-петля), DNS → 8.8.8.8.
@@ -469,7 +469,7 @@ async fn run_guest(
                     engine.config().guest.ipv6_mode(),
                 ) {
                     Ok(g) => g,
-                    Err(e) => fail(format!("не настроить маршруты (нужен root/sudo): {e}")),
+                    Err(e) => fail(format!("не настроить маршруты — нужен sudo. {e}")),
                 };
                 println!("  соединён с {peer}. Весь трафик идёт через хост (интерфейс {ifname}).");
                 let link: std::sync::Arc<dyn bmv_common::Link> = std::sync::Arc::from(link);
@@ -482,14 +482,14 @@ async fn run_guest(
                     _ = BmvEngine::relay_peer_checks(&*link, engine.peer_check()) => unreachable!(),
                 };
                 if let Err(e) = res {
-                    fail(format!("туннель оборвался: {e}"));
+                    fail(format!("туннель оборвался. {e}"));
                 }
                 println!("  туннель завершён.");
                 return;
             }
             let msg = "привет от гостя BeMyVPN";
             print!(
-                "Соединяюсь с хостом {host_id} (знакомство → пробитие NAT → {})… ",
+                "Соединяюсь с хостом {host_id} (знакомимся через сервер → пробиваем прямой канал → {})… ",
                 engine.active_protocol()
             );
             match engine.guest_connect_run(&host_id, msg.as_bytes()).await {
@@ -501,7 +501,7 @@ async fn run_guest(
                     "соединено с {peer}, но эхо иное: {:?}",
                     String::from_utf8_lossy(&echo)
                 ),
-                Err(e) => fail(format!("не соединился: {e}")),
+                Err(e) => fail(format!("не соединился. {e}")),
             }
         }
     }

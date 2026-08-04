@@ -264,6 +264,25 @@ impl Clone for Coordinator {
     }
 }
 
+/// Разобрать кадр «error» координатора в ошибку.
+///
+/// КОД ОТКАЗА БЕРЁМ ТОЖЕ. Раньше здесь читали один `reason`, а число (422 «до
+/// вас не достучаться снаружи», 403 «код не наш») выбрасывали — при том, что
+/// координатор его исправно шлёт. Все четыре оболочки искали это число
+/// подстрокой в тексте ошибки и, разумеется, не находили: человек вместо
+/// объяснения читал сырую строку сервера, а протухшая подпись кода не лечилась
+/// сама, хотя код для самолечения написан в каждой оболочке.
+fn refusal(v: &Value) -> Error {
+    Error::Refused {
+        code: v.get("code").and_then(|c| c.as_u64()).unwrap_or(0) as u16,
+        reason: v
+            .get("reason")
+            .and_then(|r| r.as_str())
+            .unwrap_or("Сервер отклонил запрос. Попробуйте ещё раз.")
+            .to_string(),
+    }
+}
+
 impl Coordinator {
     pub fn new(base: impl Into<String>) -> Result<Self> {
         let base = base.into();
@@ -366,8 +385,7 @@ impl Coordinator {
         match tokio::time::timeout(RPC_TIMEOUT, rx).await {
             Ok(Ok(val)) => {
                 if val.get("t").and_then(|t| t.as_str()) == Some("error") {
-                    let reason = val.get("reason").and_then(|r| r.as_str()).unwrap_or("ошибка");
-                    return Err(Error::Signal(reason.to_string()));
+                    return Err(refusal(&val));
                 }
                 Ok(val)
             }
@@ -375,7 +393,7 @@ impl Coordinator {
             // ожидание кончается мгновенно, а не через десять секунд.
             _ => {
                 self.shared.pending.lock().remove(&id);
-                Err(Error::Signal("координатор не ответил".into()))
+                Err(Error::Signal("Сервер не ответил. Проверьте интернет и попробуйте ещё раз.".into()))
             }
         }
     }
@@ -408,7 +426,7 @@ impl Coordinator {
         .await
         {
             Ok(()) if *self.shared.connected.subscribe().borrow() => Ok(()),
-            _ => Err(Error::Signal("координатор недоступен".into())),
+            _ => Err(Error::Signal("Нет связи с сервером. Проверьте интернет или адрес во вкладке «Сервер».".into())),
         }
     }
 
@@ -422,13 +440,14 @@ impl Coordinator {
         *self.shared.last_announce.lock() = Some(ann.clone());
         let (tx, rx) = oneshot::channel();
         *self.shared.host_ack.lock() = Some(tx);
-        let mut v = serde_json::to_value(ann).map_err(|e| Error::Signal(e.to_string()))?;
+        let mut v = serde_json::to_value(ann)
+            .map_err(|_| Error::Signal("Не удалось отправить заявку о раздаче. Попробуйте ещё раз.".into()))?;
         v["t"] = json!("host");
         self.send_if_live(v.to_string());
         match tokio::time::timeout(RPC_TIMEOUT, rx).await {
             Ok(Ok(Ok(()))) => Ok(()),
             Ok(Ok(Err(e))) => Err(e),
-            _ => Err(Error::Signal("анонс: координатор не ответил".into())),
+            _ => Err(Error::Signal("Сервер не ответил на заявку о раздаче. Попробуйте ещё раз.".into())),
         }
     }
 
@@ -469,7 +488,7 @@ impl Coordinator {
         let mut rx = self.shared.guest_rx.lock().await;
         match tokio::time::timeout(PENDING_TIMEOUT, rx.recv()).await {
             Ok(Some(cands)) => Ok(PendingGuests { version: 0, guests: vec![cands] }),
-            Ok(None) => Err(Error::Signal("канал гостей закрыт".into())),
+            Ok(None) => Err(Error::Signal("Связь с сервером оборвалась — восстанавливаю.".into())),
             Err(_) => Ok(PendingGuests { version: 0, guests: vec![] }),
         }
     }
@@ -514,7 +533,7 @@ impl Coordinator {
         // и UI решал «нет связи», хотя мы просто ещё подключались.
         let _ = tokio::time::timeout(CONNECT_TIMEOUT, self.wait_first_snapshot()).await;
         if self.shared.dir_ver.subscribe().borrow().eq(&0) {
-            return Err(Error::Signal("координатор недоступен".into())); // честно: не подключились
+            return Err(Error::Signal("Нет связи с сервером. Проверьте интернет или адрес во вкладке «Сервер».".into())); // честно: не подключились
         }
         let mut c = self.shared.dir_ver.subscribe();
         if *c.borrow() == since {
@@ -524,7 +543,7 @@ impl Coordinator {
         // Сокет сейчас лежит (обрыв/переподключение)? Не выдаём устаревший каталог
         // за правду — честная ошибка, UI покажет «нет связи» без миганий.
         if !*self.shared.connected.subscribe().borrow() {
-            return Err(Error::Signal("координатор недоступен".into()));
+            return Err(Error::Signal("Нет связи с сервером. Проверьте интернет или адрес во вкладке «Сервер».".into()));
         }
         let d = self.shared.dir.lock();
         Ok(DirectoryUpdate { version: d.version, hosts: d.hosts.clone() })
@@ -770,8 +789,7 @@ fn handle_incoming(sh: &Arc<Shared>, txt: &str) {
             } else {
                 let ack = sh.host_ack.lock().take();
                 if let Some(tx) = ack {
-                    let reason = v.get("reason").and_then(|r| r.as_str()).unwrap_or("отклонено");
-                    let _ = tx.send(Err(Error::Signal(reason.to_string())));
+                    let _ = tx.send(Err(refusal(&v)));
                 }
             }
         }
@@ -832,6 +850,25 @@ mod tests {
 
     fn host_frame(t: &str, id: &str, name: &str) -> String {
         json!({ "t": t, "host": { "id": id, "name": name } }).to_string()
+    }
+
+    /// КОД ОТКАЗА ОБЯЗАН ДОЕХАТЬ ДО ОБОЛОЧКИ, а текст — остаться человеческим.
+    ///
+    /// Раньше здесь брали один `reason`, а число выбрасывали. Оболочки искали
+    /// его подстрокой в тексте (`contains("422")`) и не находили никогда: вместо
+    /// «ваша сеть не пропускает гостей внутрь» человек читал сырую строку
+    /// сервера, а протухшая подпись кода (403) не лечилась сама. Ловушка тихая —
+    /// всё компилируется и работает, просто ни одна ветка не срабатывает.
+    #[test]
+    fn refusal_carries_code_and_shows_only_human_text() {
+        let e = refusal(&json!({ "t": "error", "code": 422, "reason": "Ваша сеть не пропускает гостей внутрь." }));
+        assert_eq!(e.refusal_code(), Some(422), "код отказа потерян — ветки в оболочках снова мертвы");
+        assert_eq!(e.to_string(), "Ваша сеть не пропускает гостей внутрь.", "в текст для человека подмешалось лишнее");
+
+        // Кадр без кода — не отказ по коду, но текст всё равно есть.
+        let e = refusal(&json!({ "t": "error" }));
+        assert_eq!(e.refusal_code(), Some(0));
+        assert!(!e.to_string().is_empty(), "молчаливый отказ: человеку нечего прочитать");
     }
 
     /// ПОРЯДОК КАТАЛОГА ЗАДАЁТ СЕРВЕР. Дельты не должны его перетасовывать:

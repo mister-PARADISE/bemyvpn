@@ -137,7 +137,7 @@ fun HostTab(app: AppState, bottomPad: Dp) {
             .verticalScroll(rememberScrollState())
             .padding(horizontal = 20.dp)
             // Отступ РОВНО в высоту панели: содержимое начинается сразу под ней.
-            .padding(top = panelH + 2.dp, bottom = bottomPad),
+            .padding(top = panelH + 12.dp, bottom = bottomPad),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
         Text(
@@ -168,7 +168,7 @@ fun HostTab(app: AppState, bottomPad: Dp) {
         }
         Hint(
             when {
-                locked -> "С паролем сеть всегда скрыта: публичная карточка светит её существование, страну и адрес — как раз тем, от кого вы закрылись."
+                locked -> "С паролем сеть всегда скрыта: публичная карточка выдала бы её как раз тем, от кого вы закрылись. Подключение — по коду."
                 publicNow -> "Виден всем в списке хостов — подключиться сможет любой."
                 else -> "В списке не виден — подключиться можно только по коду выше."
             },

@@ -49,7 +49,11 @@ class HostService : Service() {
         val id0 = intent?.getStringExtra(EXTRA_ID) ?: prefs.getString("host_code", "") ?: ""
         val sig0 = intent?.getStringExtra(EXTRA_SIG) ?: prefs.getString("host_sig", "") ?: ""
         val token = intent?.getStringExtra(EXTRA_TOKEN) ?: prefs.getString("host_token", "") ?: ""
-        val name = intent?.getStringExtra(EXTRA_NAME) ?: prefs.getString("host_name", Build.MODEL) ?: Build.MODEL
+        // Имя уходит в ПУБЛИЧНЫЙ каталог. Раньше при перезапуске системой сюда
+        // подставлялась модель телефона — человек её не выбирал и не увидел бы,
+        // пока не открыл список. Источник один: те же prefs и то же умолчание,
+        // что у AppState.
+        val name = intent?.getStringExtra(EXTRA_NAME) ?: prefs.getString("host_name", null) ?: DEFAULT_NAME
         val max = intent?.getIntExtra(EXTRA_MAX, 8) ?: prefs.getInt("host_max", 8)
         val password = intent?.getStringExtra(EXTRA_PASSWORD) ?: prefs.getString("host_pw", "") ?: ""
         val protocol = intent?.getStringExtra(EXTRA_PROTOCOL) ?: prefs.getString("host_proto", "noise") ?: "noise"
@@ -170,5 +174,7 @@ class HostService : Service() {
         const val EXTRA_PROTOCOL = "protocol"
         const val EXTRA_PUBLIC = "public"
         const val ACTION_STOP = "org.bemyvpn.HOST_STOP"
+        /** Умолчание имени хоста — одно на приложение (см. AppState.hostName). */
+        const val DEFAULT_NAME = "Хост"
     }
 }

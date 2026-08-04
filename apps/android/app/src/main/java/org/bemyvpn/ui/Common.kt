@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -46,6 +47,7 @@ import androidx.compose.ui.composed
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -413,7 +415,34 @@ fun BmvTextField(
  * Оттенок НАМЕРЕННО между s2 и s3: парящий блок выше карточек списка, но ниже
  * плиток, которые лежат внутри него самого.
  */
-val floatFill = Color(0xFF1E2636)
+val floatFill = Color(0xFF1B2740)   // L* 15.8 — та же лестница, что в Theme.kt
+
+/**
+ * Ширина завесы под парящим блоком: содержимое, уходящее под него, ГАСНЕТ, а не
+ * срезается ножом. Отступы прокрутки считаются ОТ НЕЁ — покоящееся содержимое не
+ * должно попадать в полосу гашения, иначе завеса выглядит тенью на пустом месте.
+ */
+val veilWidth = 24.dp
+
+/**
+ * Полоса гашения у кромки парящего блока. `toBar = true` — блок снизу
+ * (нав-бар), гасим вверх→вниз; иначе блок сверху (панель), вниз→вверх.
+ *
+ * Кликов не перехватывает: фон в Compose ловит жесты только через
+ * `pointerInput`/`clickable`.
+ *
+ * На коротком списке невидима: это фон страницы, растворяющийся в фоне
+ * страницы, — тенью посреди пустоты она стать не может по построению.
+ */
+@Composable
+fun Veil(modifier: Modifier = Modifier, toBar: Boolean = false) {
+    // Прозрачный конец — ФОН С НУЛЕВОЙ АЛЬФОЙ, а не Color.Transparent: тот
+    // прозрачно-ЧЁРНЫЙ, и на непремультиплицированной интерполяции середина
+    // градиента вышла бы темнее обоих концов — тёмной полосой поперёк экрана.
+    val clear = Theme.bg.copy(alpha = 0f)
+    val stops = if (toBar) listOf(clear, Theme.bg) else listOf(Theme.bg, clear)
+    Box(modifier.fillMaxWidth().height(veilWidth).background(Brush.verticalGradient(stops)))
+}
 
 /**
  * Отделка парящего слоя: заливка + тихая рамка + кромка света сверху. Одна на
@@ -467,6 +496,24 @@ fun FloatingPanelLayout(
     val density = LocalDensity.current
     Box(Modifier.fillMaxSize()) {
         content(panelH)
+        // ЗАВЕСА У КРОМКИ ПАНЕЛИ: содержимое, уходящее под неё, ГАСНЕТ, а не
+        // срезается ножом. Стоит МЕЖДУ прокруткой и панелью — порядок в Box и
+        // есть порядок отрисовки. Смещение −12dp: столько у обёртки панели
+        // нижнего отступа, то есть завеса начинается точно от края карточки, а
+        // не от края её невидимой обёртки.
+        Veil(Modifier.align(Alignment.TopStart).offset(y = panelH - 12.dp))
+        // ПОЛОСКА НАД ПАНЕЛЬЮ. Панель отстоит от верхнего края на 20dp, и в этот
+        // просвет пролезали обрывки содержимого — над карточкой читался
+        // заголовок «Подключиться по коду». Ничего полезного там нет: гасить
+        // нечего, просто фон, а сверху полосу обрезает край экрана.
+        Box(
+            Modifier
+                .align(Alignment.TopStart)
+                .offset(y = (-60).dp)
+                .fillMaxWidth()
+                .height(60.dp)
+                .background(Theme.bg),
+        )
         Box(Modifier.onSizeChanged { panelH = with(density) { it.height.toDp() } }) { panel() }
     }
 }

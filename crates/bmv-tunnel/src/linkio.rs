@@ -227,13 +227,13 @@ impl AsyncWrite for LinkIo {
         match self.send_tx.poll_reserve(cx) {
             Poll::Ready(Ok(())) => {}
             Poll::Ready(Err(_)) => {
-                return Poll::Ready(Err(io::Error::new(io::ErrorKind::BrokenPipe, "link закрыт")));
+                return Poll::Ready(Err(io::Error::new(io::ErrorKind::BrokenPipe, "Связь с хостом оборвалась.")));
             }
             Poll::Pending => return Poll::Pending,
         }
         match self.send_tx.send_item(buf.to_vec()) {
             Ok(()) => Poll::Ready(Ok(buf.len())),
-            Err(_) => Poll::Ready(Err(io::Error::new(io::ErrorKind::BrokenPipe, "link закрыт"))),
+            Err(_) => Poll::Ready(Err(io::Error::new(io::ErrorKind::BrokenPipe, "Связь с хостом оборвалась."))),
         }
     }
 

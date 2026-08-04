@@ -79,21 +79,18 @@ enum Haptics {
 }
 
 /// Слова под текущую платформу — один код iOS+macOS (Catalyst), но тексты,
-/// где важна платформа, подставляются свои. На iOS — «телефон/iPhone», на
-/// macOS-сборке (Catalyst) — «компьютер/этот Mac».
+/// где важна платформа, подставляются свои: на iOS «телефон», на macOS-сборке
+/// (Catalyst) — «компьютер».
+///
+/// `deviceName` («iPhone» / «этом Mac») отсюда убран вместе с фразой про фоновую
+/// раздачу: подстановка была в предложном падеже и годилась ровно в одном
+/// обороте, а сама фраза теперь не называет устройство.
 enum Platform {
     static var device: String {
         #if targetEnvironment(macCatalyst)
         return "компьютер"
         #else
         return "телефон"
-        #endif
-    }
-    static var deviceName: String {
-        #if targetEnvironment(macCatalyst)
-        return "этом Mac"
-        #else
-        return "iPhone"
         #endif
     }
 }
@@ -505,7 +502,7 @@ final class AppState: ObservableObject {
         // и человек смотрел бы на «подключаюсь» до таймаута, не понимая почему.
         // На десктопе это подписано давно — здесь молчало.
         if hosting && host.id == hostCode {
-            showVpnError("Это ваш собственный хост")
+            showVpnError("Это ваш собственный хост — выберите другой")
             return
         }
         vpnError = nil
@@ -547,7 +544,7 @@ final class AppState: ObservableObject {
         let code = raw.uppercased().trimmingCharacters(in: .whitespaces)
         guard !code.isEmpty else { return }
         if hosting && code == hostCode {
-            showVpnError("Это код вашего же хоста")
+            showVpnError("Это код вашего же хоста — введите чужой")
             return
         }
         if let h = hostById(code) { withAnimation { expandedId = code }; if !h.hasPassword && h.usable { connect(h) }; return }
@@ -609,11 +606,11 @@ final class AppState: ObservableObject {
                                                      proto: proto, isPublic: pub) }
                 withAnimation { self.starting = false }
                 switch res {
-                case "!NAT": self.hostError = "Нет публичного адреса (вы за NAT) — раздача отсюда невозможна"
+                case "!NAT": self.hostError = "Ваша сеть не пропускает гостей внутрь — раздавать отсюда не выйдет. Попробуйте другую сеть."
                 // Свежий код ядро берёт САМО; сюда доходит, только если и это не
                 // удалось (нет связи с сервером).
-                case "!SIG": self.setHostCode("", ""); self.hostError = "Сервер не подтвердил код — проверьте связь и повторите"
-                case "":     self.hostError = "Не удалось включить раздачу"
+                case "!SIG": self.setHostCode("", ""); self.hostError = "Сервер не подтвердил код сети. Проверьте связь и попробуйте ещё раз."
+                case "":     self.hostError = "Раздача не включилась — попробуйте ещё раз."
                 default:
                     // Ответ — пара «код|подпись». Ядро могло вылечить протухшую
                     // подпись, взяв у сервера свежий код: сохраняем ОБЕ части,

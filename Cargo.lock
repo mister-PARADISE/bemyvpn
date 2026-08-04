@@ -1046,6 +1046,7 @@ dependencies = [
  "async-trait",
  "bmv-common",
  "curve25519-elligator2",
+ "log",
  "rand 0.8.6",
  "sha2",
  "snow",

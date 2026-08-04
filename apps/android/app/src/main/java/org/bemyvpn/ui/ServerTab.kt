@@ -69,11 +69,11 @@ fun ServerTab(app: AppState, bottomPad: androidx.compose.ui.unit.Dp) {
             .verticalScroll(rememberScrollState())
             .padding(horizontal = 20.dp)
             // Отступ РОВНО в высоту панели: содержимое начинается сразу под ней.
-            .padding(top = panelH + 2.dp, bottom = bottomPad),
+            .padding(top = panelH + 12.dp, bottom = bottomPad),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
         Text(
-            "Сервер ведёт каталог хостов и сводит участников. Ваш трафик через него не проходит.",
+            "Сервер только помогает найти хостов и связаться с ними. Ваш трафик идёт напрямую к хосту, мимо сервера.",
             color = Theme.dim, fontSize = 12.sp, modifier = Modifier.fillMaxWidth(),
         )
 

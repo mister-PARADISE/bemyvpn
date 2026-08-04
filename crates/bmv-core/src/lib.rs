@@ -165,7 +165,7 @@ impl BmvEngine {
             .config
             .coordinators
             .first()
-            .ok_or_else(|| bmv_common::Error::Config("в конфиге не задан координатор".into()))?;
+            .ok_or_else(|| bmv_common::Error::Config("Не задан адрес сервера — укажите его во вкладке «Сервер».".into()))?;
         let fresh = bmv_signal::Coordinator::new(base)?;
         // Гонка двух первых вызовов безопасна: проигравший Coordinator дропается,
         // его супервизор ещё не стартовал (стартует лишь при первом использовании).
@@ -299,7 +299,7 @@ impl BmvEngine {
         let peers = parse_addrs(&resp.host_endpoints);
         log::info!("ГОСТЬ: адреса хоста от координатора: {:?}", resp.host_endpoints);
         if peers.is_empty() {
-            return Err(bmv_common::Error::Net("у хоста нет валидных адресов".into()));
+            return Err(bmv_common::Error::Net("У этого хоста нет рабочего адреса — выберите другой.".into()));
         }
 
         // Пробиваем NAT к хосту и поднимаем протокол (гость — инициатор).
@@ -578,7 +578,7 @@ impl BmvEngine {
         // рукопожатий и выжрать CPU. Пермит держим ТОЛЬКО на время рукопожатия
         // (миллисекунды), затем отпускаем — сессия дальше идёт без него.
         let plink = {
-            let _permit = self.handshake_gate.acquire().await.map_err(|_| bmv_common::Error::other("gate закрыт"))?;
+            let _permit = self.handshake_gate.acquire().await.map_err(|_| bmv_common::Error::other("Приложение закрывается — подключение отменено."))?;
             proto.connect_host(raw).await? // рукопожатие ДО учёта
         };
         let link: Arc<dyn Link> = Arc::new(bmv_common::KeepaliveLink::new(plink));
@@ -605,7 +605,7 @@ impl BmvEngine {
                 let _slow = self.penalty_gate.acquire().await;
                 tokio::time::sleep(WRONG_PASSWORD_DELAY).await;
                 let _ = link.close().await;
-                return Err(bmv_common::Error::Protocol("неверный пароль".into()));
+                return Err(bmv_common::Error::Protocol("Неверный пароль.".into()));
             }
         }
 
@@ -613,7 +613,7 @@ impl BmvEngine {
         // отмену задачи (а сессии гостей во всех оболочках живут в tokio::spawn).
         let Some(_slot) = GuestSlot::take(self, peer) else {
             let _ = link.close().await;
-            return Err(bmv_common::Error::Net("хост заполнен: лимит гостей".into()));
+            return Err(bmv_common::Error::Net("На этом хосте нет свободных мест — выберите другой.".into()));
         };
         let _ = self.announce_state().await; // каталог видит нового гостя сразу
 
@@ -681,7 +681,7 @@ impl BmvEngine {
             .protocols
             .get(&self.config.default_protocol)
             .or_else(|| self.protocols.get("plain"))
-            .ok_or_else(|| bmv_common::Error::Protocol("нет ни одного протокола".into()))?;
+            .ok_or_else(|| bmv_common::Error::Protocol("Не с чем связаться с хостом — обновите приложение.".into()))?;
 
         tracing::info!(protocol = proto.name(), "демо loopback");
 

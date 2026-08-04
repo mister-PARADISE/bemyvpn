@@ -106,7 +106,7 @@ fun VpnTab(app: AppState, bottomPad: Dp, openScanner: () -> Unit) {
             .verticalScroll(rememberScrollState())
             .padding(horizontal = 20.dp)
             // Отступ РОВНО в высоту панели: содержимое начинается сразу под ней.
-            .padding(top = panelH + 2.dp, bottom = bottomPad),
+            .padding(top = panelH + 12.dp, bottom = bottomPad),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
         UpdateBanner(app)
@@ -163,7 +163,7 @@ fun VpnTab(app: AppState, bottomPad: Dp, openScanner: () -> Unit) {
         }
         if (shown.isEmpty()) {
             Text(
-                if (app.serverOnline == false) "Нет связи с сервером.\nПроверьте адрес во вкладке «Сервер»."
+                if (app.serverOnline == false) "Нет связи с сервером — восстанавливаю.\nЕсли надолго, проверьте адрес во вкладке «Сервер»."
                 else "Хостов пока нет.\nВведите код сети или поднимите свой во вкладке «Хост».",
                 color = Theme.dim, fontSize = 14.sp, textAlign = TextAlign.Center,
                 modifier = Modifier.fillMaxWidth().padding(vertical = 40.dp),
@@ -532,7 +532,7 @@ private fun UpdateBanner(app: AppState) {
         Text(
             text = when (app.updateState) {
                 1 -> "Скачиваю $ver…"
-                2 -> "Открываю установщик…"
+                2 -> "Готово — открываю установщик"
                 3 -> app.updateError
                 else -> "Версия $ver доступна"
             },

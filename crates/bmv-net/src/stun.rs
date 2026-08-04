@@ -65,7 +65,7 @@ pub async fn reflexive_addr_on(
         }
     }
     if pending.is_empty() {
-        return Err(Error::Net("ни один STUN-сервер не резолвится".into()));
+        return Err(Error::Net("Не удаётся узнать свой адрес в интернете. Проверьте подключение.".into()));
     }
 
     // Ждём первый ПОДХОДЯЩИЙ ответ (совпал источник и txid) до общего дедлайна.
@@ -74,11 +74,11 @@ pub async fn reflexive_addr_on(
     loop {
         let left = deadline.saturating_duration_since(Instant::now());
         if left.is_zero() {
-            return Err(Error::Net("STUN: таймаут (никто не ответил)".into()));
+            return Err(Error::Net("Сеть не отвечает — не удаётся узнать свой адрес в интернете. Проверьте подключение.".into()));
         }
         let (n, from) = match timeout(left, sock.recv_from(&mut buf)).await {
             Ok(r) => r?,
-            Err(_) => return Err(Error::Net("STUN: таймаут (никто не ответил)".into())),
+            Err(_) => return Err(Error::Net("Сеть не отвечает — не удаётся узнать свой адрес в интернете. Проверьте подключение.".into())),
         };
         // Ищем отправителя среди опрошенных и проверяем его txid.
         if let Some((_, txid)) = pending.iter().find(|(dst, _)| *dst == from) {

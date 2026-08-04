@@ -651,15 +651,21 @@ fn spawn_and_connect(on_state: Arc<dyn Fn(i32, String, String) + Send + Sync>, u
     let _ = std::fs::remove_file(helper_log(&port_file));
     let _ = std::fs::remove_dir(&dir);
     if port == 0 {
+        // ЧЕЛОВЕКУ — ОДНА ФРАЗА, УЛИКИ — В ЖУРНАЛ. Раньше сюда склеивались
+        // «помощник не отдал порт», текст ошибки чтения файла и последние пять
+        // строк журнала через « | » — и всё это уезжало в ЗАГОЛОВОК состояния
+        // (21px, жирный). Читать это было невозможно, а сделать по нему всё
+        // равно нечего: случая ровно два — пароль не ввели, либо помощник не
+        // поднялся, и в обоих следующий шаг один и тот же.
         let tail: Vec<&str> = log.lines().rev().take(5).collect();
-        let mut msg = "помощник не отдал порт".to_string();
-        if !last_err.is_empty() { msg.push_str(&format!(" ({last_err})")); }
-        if tail.is_empty() {
-            msg.push_str(" — привилегии не получены (пароль отменён?)");
-        } else {
-            msg.push_str(&format!(" — {}", tail.into_iter().rev().collect::<Vec<_>>().join(" | ")));
+        if !last_err.is_empty() {
+            eprintln!("хелпер: {last_err}");
         }
-        return Err(msg);
+        if tail.is_empty() {
+            return Err("Нужен пароль администратора — без него VPN не включить.".into());
+        }
+        eprintln!("хелпер не поднялся: {}", tail.into_iter().rev().collect::<Vec<_>>().join(" | "));
+        return Err("Не удалось включить VPN. Попробуйте ещё раз.".into());
     }
 
     let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).map_err(|e| e.to_string())?;
@@ -738,9 +744,16 @@ fn elevate_launch(exe: &std::path::Path, port_file: &std::path::Path, token_file
         sh_quote(exe), sh_quote(port_file), sh_quote(token_file), sh_quote(up_file), sh_quote(cfg_file),
         sh_quote(&helper_log(port_file))
     );
-    let script = format!("do shell script \"{}\" with administrator privileges", sh.replace('\\', "\\\\").replace('"', "\\\""));
+    // `with prompt` — ЭТО И ЕСТЬ ТЕКСТ, КОТОРЫЙ ЧЕЛОВЕК ЧИТАЕТ В ОКНЕ ПАРОЛЯ.
+    // Без него macOS печатает в окне саму команду: шесть абсолютных путей,
+    // перенаправление и амперсанд — одной простынёй, вместо объяснения, зачем у
+    // человека просят пароль от компьютера. Одна фраза: зачем и на сколько.
+    let script = format!(
+        "do shell script \"{}\" with prompt \"BeMyVPN включает VPN. Пароль нужен один раз за сеанс — чтобы направить трафик через туннель.\" with administrator privileges",
+        sh.replace('\\', "\\\\").replace('"', "\\\"")
+    );
     let status = std::process::Command::new("osascript").arg("-e").arg(script).status().map_err(|e| e.to_string())?;
-    if status.success() { Ok(()) } else { Err("запрос прав отменён".into()) }
+    if status.success() { Ok(()) } else { Err("Нужен пароль администратора — без него VPN не включить.".into()) }
 }
 
 #[cfg(target_os = "linux")]
@@ -760,7 +773,10 @@ fn elevate_launch(exe: &std::path::Path, port_file: &std::path::Path, token_file
             cmd.stdout(std::process::Stdio::from(f)).stderr(std::process::Stdio::from(dup));
         }
     }
-    cmd.spawn().map(|_| ()).map_err(|e| format!("pkexec: {e}"))
+    cmd.spawn().map(|_| ()).map_err(|e| {
+        eprintln!("pkexec не запустился: {e}");
+        "Нужен пароль администратора — без него VPN не включить.".to_string()
+    })
 }
 
 // На Windows отдельного root-процесса нет: приложение уже под админом (манифест

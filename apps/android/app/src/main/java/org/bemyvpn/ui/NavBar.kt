@@ -23,6 +23,8 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.offset
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -46,8 +48,14 @@ import org.bemyvpn.Theme
  */
 @Composable
 fun NavBar(app: AppState, modifier: Modifier = Modifier) {
+  Box(modifier) {
+    // ЗАВЕСА НАД БАРОМ: содержимое, подъезжающее под него, ГАСНЕТ, а не
+    // срезается ножом. Лежит выше бара (offset вверх на свою ширину); Box в
+    // Compose детей не обрезает, а весь бар рисуется последним в корневом Box —
+    // значит завеса над прокруткой, но под самим баром.
+    Veil(Modifier.align(Alignment.TopCenter).offset(y = -veilWidth), toBar = true)
     Row(
-        modifier
+        Modifier
             .padding(horizontal = 18.dp)
             // ВТОРОЙ ПАРЯЩИЙ СЛОЙ: фон и тень — те же, что у панели состояния
             // (floatSurface). Свой цвет, подобранный на глаз, разошёлся бы с
@@ -68,6 +76,20 @@ fun NavBar(app: AppState, modifier: Modifier = Modifier) {
         VpnCell(app, Modifier.weight(1f))
         HostCell(app, Modifier.weight(1f))
     }
+    // ПОЛОСКА ПОД БАРОМ. Бар приподнят над нижним краем, и в этот просвет
+    // пролезали обрывки карточек — из-под бара торчала половина строки
+    // «US · гостей 0/64». Ничего полезного там нет и быть не может: полоса
+    // высотой в палец, прижатая к краю экрана. Гасить нечего — просто фон;
+    // снизу полосу обрезает сам край экрана.
+    Box(
+        Modifier
+            .align(Alignment.BottomCenter)
+            .offset(y = 60.dp)
+            .fillMaxWidth()
+            .height(60.dp)
+            .background(Theme.bg),
+    )
+  }
 }
 
 /** Радиус внутренней таблетки: концентричность — внешний R − отступ (28−6=22). */

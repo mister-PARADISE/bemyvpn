@@ -402,7 +402,7 @@ fn handle_input_key(
                         app.lock().unwrap().toast("Лимит обновлён");
                         persist(engine, app);
                     }
-                    Err(_) => app.lock().unwrap().toast("Нужно число"),
+                    Err(_) => app.lock().unwrap().toast("Нужно число, например 8"),
                 },
                 InputKind::HostPassword => {
                     app.lock().unwrap().hset.password = buf.clone();
@@ -417,7 +417,7 @@ fn handle_input_key(
                     }
                     // Раньше здесь требовалось набрать «https://» руками, и на
                     // «bemyvpn.net» человек получал отказ вместо адреса.
-                    None => app.lock().unwrap().toast("Пустой адрес"),
+                    None => app.lock().unwrap().toast("Адрес пустой — введите адрес сервера"),
                 },
                 InputKind::SrvDomain => {
                     let d = buf.trim().trim_end_matches('/').trim_start_matches("https://").trim_start_matches("http://").to_string();
@@ -438,7 +438,7 @@ fn handle_input_key(
                         app.lock().unwrap().toast("Адрес прослушивания сохранён");
                         persist(engine, app);
                     } else {
-                        app.lock().unwrap().toast("Нужен порт (443) или адрес (0.0.0.0:443)");
+                        app.lock().unwrap().toast("Нужен порт (443) или адрес с портом (0.0.0.0:443)");
                     }
                 }
             }
@@ -501,7 +501,7 @@ fn vpn_key(code: KeyCode, engine: &EngineSlot, app: &Shared, vpn_task: &mut VpnT
                 })
             };
             if cands.is_empty() {
-                app.lock().unwrap().toast("Нет открытого свободного хоста");
+                app.lock().unwrap().toast("Сейчас нет свободного хоста без пароля — выберите в списке");
             } else {
                 connect_queue(engine, app, vpn_task, cands, None);
             }
@@ -770,7 +770,7 @@ pub fn enable_service(host: bool) -> Result<(), String> {
         Config::user_path().display()
     );
     std::fs::write(format!("/etc/systemd/system/{unit}.service"), text)
-        .map_err(|_| "нужен root: запустите с sudo".to_string())?;
+        .map_err(|_| "Нужны права администратора — запустите с sudo.".to_string())?;
     run(&["daemon-reload"])?;
     // --now: поднять СРАЗУ фоновым демоном (не только при загрузке). Тогда после
     // выхода из меню (q/Ctrl+C) раздача/сервер ПРОДОЛЖАЮТ работать — это и есть
@@ -780,12 +780,12 @@ pub fn enable_service(host: bool) -> Result<(), String> {
 
 #[cfg(not(target_os = "linux"))]
 pub fn enable_service(_host: bool) -> Result<(), String> {
-    Err("автозапуск — только на Linux с systemd".into())
+    Err("Автозапуск бывает только на Linux с systemd.".into())
 }
 
 #[cfg(not(target_os = "linux"))]
 fn toggle_autostart(_host: bool) -> Result<bool, String> {
-    Err("Автозапуск — на Linux-сервере (systemd)".into())
+    Err("Автозапуск бывает только на Linux-сервере (systemd).".into())
 }
 
 /// Переключить автозапуск НЕ блокируя интерфейс: `systemctl` на слабом VPS отвечает
@@ -883,7 +883,7 @@ fn start_vpn(engine: &EngineSlot, app: &Shared, vpn_task: &mut VpnTask) {
         a.hosts.get(a.sel).cloned()
     };
     let Some(host) = host else {
-        app.lock().unwrap().toast("Нет выбранного хоста");
+        app.lock().unwrap().toast("Сначала выберите хост в списке");
         return;
     };
     if host.has_password {
@@ -901,7 +901,7 @@ fn start_vpn(engine: &EngineSlot, app: &Shared, vpn_task: &mut VpnTask) {
 /// хост держал ушедшего гостя лишние 8 секунд, до keepalive-таймаута.
 fn connect_queue(engine: &EngineSlot, app: &Shared, vpn_task: &mut VpnTask, cands: Vec<HostInfo>, password: Option<String>) {
     let Some(first) = cands.first() else {
-        app.lock().unwrap().toast("Нет подходящего хоста");
+        app.lock().unwrap().toast("Подходящего хоста нет — выберите в списке");
         return;
     };
     app.lock().unwrap().vpn = Vpn::Connecting(host_name(first));
@@ -942,12 +942,12 @@ fn connect_queue(engine: &EngineSlot, app: &Shared, vpn_task: &mut VpnTask, cand
                     // Хост выключил раздачу — говорим об этом словами и без
                     // красного: подключение сработало, просто хоста больше нет.
                     bmv_desktop::tunnel::State::HostLeft => {
-                        a.toast("Хост завершил раздачу");
+                        a.toast("Хост завершил раздачу — выберите другой");
                         a.vpn = Vpn::Ended;
                     }
                     bmv_desktop::tunnel::State::Failed(e) => {
                         a.vpn = Vpn::Failed(if had_password {
-                            format!("{e} (неверный пароль?)")
+                            format!("{e} Возможно, неверный пароль.")
                         } else {
                             e
                         })
@@ -1023,7 +1023,7 @@ fn start_host(engine: &EngineSlot, app: &Shared, host_engine: &HostEngine, host_
                     hcfg.host.code_sig = s;
                 }
                 _ => {
-                    app2.lock().unwrap().host = HostMode::Failed("сервер не выдал код".into());
+                    app2.lock().unwrap().host = HostMode::Failed("Сервер не выдал код сети. Проверьте связь и попробуйте ещё раз.".into());
                     return;
                 }
             }
@@ -1038,7 +1038,7 @@ fn start_host(engine: &EngineSlot, app: &Shared, host_engine: &HostEngine, host_
         // код отозвали, конфиг переехал). Раньше терминал на этом просто вставал
         // с непонятным «403», хотя лечится оно само: просим новый код и пробуем
         // ещё раз — ровно так делает окно.
-        if announce.as_ref().err().map(|e| e.to_string().contains("403")).unwrap_or(false) {
+        if announce.as_ref().err().and_then(|e| e.refusal_code()) == Some(403) {
             if let Ok((c, s)) = BmvEngine::from_config(base.clone()).host_new_code().await {
                 if !c.is_empty() && !s.is_empty() {
                     let mut fresh = hcfg.clone();
@@ -1053,11 +1053,12 @@ fn start_host(engine: &EngineSlot, app: &Shared, host_engine: &HostEngine, host_
         let hub = match announce {
             Ok((hub, _id, _eps)) => hub,
             Err(err) => {
-                let s = err.to_string();
-                let msg = if s.contains("422") {
-                    "Нет публичного адреса (за NAT/без белого IP) — раздавать отсюда нельзя".to_string()
+                // По КОДУ отказа, а не по буквам в тексте: раньше `contains("422")`
+                // не срабатывал никогда — число ехало отдельным полем и терялось.
+                let msg = if err.refusal_code() == Some(422) {
+                    "Ваша сеть не пропускает гостей внутрь — раздавать отсюда не выйдет. Попробуйте другую сеть.".to_string()
                 } else {
-                    s
+                    err.to_string()
                 };
                 app2.lock().unwrap().host = HostMode::Failed(msg);
                 return;
@@ -1391,7 +1392,7 @@ fn vpn_tab(f: &mut Frame, area: Rect, a: &App) {
 
     // Статус-карточка (при подключении — детали хоста из каталога).
     let status: Vec<Line> = match &a.vpn {
-        Vpn::Off => vec![Line::from(Span::styled(format!("{} Отключено", dot_off()), Style::default().fg(DIM)))],
+        Vpn::Off => vec![Line::from(Span::styled(format!("{} VPN выключен", dot_off()), Style::default().fg(DIM)))],
         Vpn::Connecting(h) => vec![Line::from(Span::styled(format!("{} Подключаюсь к {h}…", dot_wait()), Style::default().fg(Color::Yellow)))],
         Vpn::On { id, name, since } => {
             let h = a.hosts.iter().find(|h| &h.id == id);
@@ -1418,7 +1419,7 @@ fn vpn_tab(f: &mut Frame, area: Rect, a: &App) {
     f.render_widget(Paragraph::new(status).wrap(Wrap { trim: true }).block(card(" Статус ")), rows[0]);
 
     let items: Vec<ListItem> = if a.hosts.is_empty() {
-        vec![ListItem::new(Line::from(Span::styled("Пока нет живых хостов…", Style::default().fg(DIM))))]
+        vec![ListItem::new(Line::from(Span::styled("Живых хостов сейчас нет…", Style::default().fg(DIM))))]
     } else {
         a.hosts
             .iter()
@@ -1461,7 +1462,7 @@ fn vpn_tab(f: &mut Frame, area: Rect, a: &App) {
 fn ping_text(a: &App, id: &str) -> String {
     match &a.host_ping {
         Some((pid, Some(ms))) if pid == id => format!("   ⏱ {ms} мс"),
-        Some((pid, None)) if pid == id => "   ⏱ нет ответа".to_string(),
+        Some((pid, None)) if pid == id => "   ⏱ не отвечает".to_string(),
         _ => String::new(),
     }
 }
@@ -1493,12 +1494,12 @@ fn host_tab(f: &mut Frame, area: Rect, a: &App) {
     // ВКЛ = либо демон 24/7 (Linux-сервер), либо раздача в окне — одно понятие.
     let on247 = a.auto_host == Some(true);
     let status = if on247 {
-        Span::styled(format!("{} Раздаю интернет — 24/7 (живёт и после выхода)", dot_on()), Style::default().fg(GREEN).add_modifier(Modifier::BOLD))
+        Span::styled(format!("{} Раздаю — 24/7 (живёт и после выхода)", dot_on()), Style::default().fg(GREEN).add_modifier(Modifier::BOLD))
     } else {
         match &a.host {
-            HostMode::Off => Span::styled(format!("{} Хост выключен", dot_off()), Style::default().fg(DIM)),
+            HostMode::Off => Span::styled(format!("{} Раздача выключена", dot_off()), Style::default().fg(DIM)),
             HostMode::Starting => Span::styled(format!("{} Запускаюсь…", dot_wait()), Style::default().fg(Color::Yellow)),
-            HostMode::On { .. } => Span::styled(format!("{} Раздаю интернет", dot_on()), Style::default().fg(GREEN).add_modifier(Modifier::BOLD)),
+            HostMode::On { .. } => Span::styled(format!("{} Раздаю", dot_on()), Style::default().fg(GREEN).add_modifier(Modifier::BOLD)),
             HostMode::Failed(e) => Span::styled(format!("{} {e}", dot_err()), Style::default().fg(Color::Red)),
         }
     };
@@ -1564,7 +1565,7 @@ fn server_tab(f: &mut Frame, area: Rect, a: &App) {
     // ── Статус-карточка: связь с координатором + состояние своего сервера.
     let link = match a.coord_ok {
         Some(true) => Span::styled(format!("{} на связи · {} мс", dot_on(), a.coord_ping), Style::default().fg(GREEN)),
-        Some(false) => Span::styled(format!("{} нет связи", dot_err()), Style::default().fg(Color::Red)),
+        Some(false) => Span::styled(format!("{} нет связи — восстанавливаю", dot_err()), Style::default().fg(Color::Red)),
         None => Span::styled(format!("{} проверяю…", dot_wait()), Style::default().fg(DIM)),
     };
     let ip = if a.my_ip.is_empty() { "—".to_string() } else { a.my_ip.clone() };

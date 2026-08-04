@@ -221,9 +221,9 @@ export component VpnPage inherits Rectangle {
             // Отступ РОВНО в высоту панели: содержимое начинается сразу под
             // ней и уходит под неё при прокрутке. Число здесь было бы враньём —
             // высота панели меняется вместе с состоянием.
-            padding-top: panel.height + 2px;
+            padding-top: panel.height + 12px;   // 12 = 24 (завеса) − 12 (нижний отступ обёртки панели)
             // Ниже плавают нав-бар и (при подключении) полка действий.
-            padding-bottom: 116px;
+            padding-bottom: 120px;  // низ покоящегося содержимого = верх завесы нав-бара
             spacing: Theme.gap;
 
             // ── Свежий релиз ──
@@ -244,7 +244,7 @@ export component VpnPage inherits Rectangle {
                         horizontal-stretch: 1;
                         Text {
                             text: root.update-state == 1 ? "Скачиваю " + root.update-version + "…"
-                                : root.update-state == 2 ? "Готово — закрываю и обновляю"
+                                : root.update-state == 2 ? "Готово — закрываю и обновляюсь"
                                 : root.update-state == 3 ? root.update-error
                                 : "Версия " + root.update-version + " доступна";
                             color: root.update-state == 3 ? Theme.red : Theme.accent;
@@ -365,7 +365,7 @@ export component VpnPage inherits Rectangle {
             }
             if root.hosts.length == 0: Text {
                 text: root.coord-state == 2
-                    ? "Нет связи с сервером. Восстанавливаю…\nЕсли не проходит — проверьте адрес во вкладке «Сервер»."
+                    ? "Нет связи с сервером — восстанавливаю.\nЕсли надолго, проверьте адрес во вкладке «Сервер»."
                     : "Хостов пока нет.\nВведите код сети или поднимите свой во вкладке «Хост».";
                 color: Theme.dim; font-size: 14px;
                 horizontal-alignment: center; wrap: word-wrap;

@@ -72,9 +72,9 @@ export component HostPage inherits Rectangle {
             // Отступ РОВНО в высоту панели: содержимое начинается сразу под
             // ней и уходит под неё при прокрутке. Число здесь было бы враньём —
             // высота панели меняется вместе с состоянием.
-            padding-top: panel.height + 2px;
+            padding-top: panel.height + 12px;   // 12 = 24 (завеса) − 12 (нижний отступ обёртки панели)
             // Ниже плавают нав-бар и полка действий — оставляем им место.
-            padding-bottom: 116px;
+            padding-bottom: 120px;  // низ покоящегося содержимого = верх завесы нав-бара
             spacing: Theme.gap;
 
             if root.host-error != "" && root.host-state != 3: HorizontalLayout {
@@ -107,8 +107,8 @@ export component HostPage inherits Rectangle {
             }
             Text {
                 text: root.locked-hidden
-                    ? "С паролем сеть всегда скрытая: публичная карточка выдала бы её тем, от кого вы закрылись. Подключение — по коду."
-                    : root.host-public ? "Виден всем в списке хостов — подключиться сможет любой." : "В списке не виден — подключиться можно только по коду.";
+                    ? "С паролем сеть всегда скрыта: публичная карточка выдала бы её как раз тем, от кого вы закрылись. Подключение — по коду."
+                    : root.host-public ? "Виден всем в списке хостов — подключиться сможет любой." : "В списке не виден — подключиться можно только по коду выше.";
                 color: Theme.dim; font-size: 12px; wrap: word-wrap;
             }
 
@@ -164,7 +164,7 @@ export component HostPage inherits Rectangle {
             }
 
             Text {
-                text: "Раздача работает, пока открыто приложение или ваш ПК не уснул.";
+                text: "Раздача идёт, пока приложение открыто и компьютер не уснул.";
                 color: Theme.dim; font-size: 12px; wrap: word-wrap;
             }
         }
@@ -312,7 +312,7 @@ export component HostPage inherits Rectangle {
                     }
                     if root.host-state != 2: Text {
                         text: root.host-state == 1 ? "Пробиваю канал наружу…"
-                            : root.host-state == 3 ? (root.host-error != "" ? root.host-error : "Попробуйте ещё раз")
+                            : root.host-state == 3 ? (root.host-error != "" ? root.host-error : "Попробуйте ещё раз.")
                             : "Станьте выходной точкой для друзей";
                         color: Theme.dim; font-size: 13px;
                         horizontal-alignment: center; wrap: word-wrap;
