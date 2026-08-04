@@ -26,9 +26,15 @@ use serde_json::{json, Value};
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio_tungstenite::tungstenite::Message;
 
-pub type Params = std::collections::BTreeMap<String, String>;
-
 /// Анонс хоста координатору.
+///
+/// Здесь был `params: BTreeMap<String, String>` (плюс зеркальный `host_params` в
+/// [`ConnectResponse`] и общий алиас `Params`) — «параметры протокола на будущее».
+/// Карта всегда оставалась ПУСТОЙ: ни одна строчка проекта не клала в неё ключ.
+/// У координатора этого поля больше нет вовсе — он его удалил, оставив надгробие
+/// в коде: клиент слал, сервер хранил, а отдавал никому. При этом `params` не
+/// имел `skip_serializing_if`, то есть `"params":{}` уезжало в КАЖДОМ анонсе и в
+/// каждом восстановлении после реконнекта — чистый мусор на проводе.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct HostAnnounce {
     pub id: String,
@@ -36,8 +42,6 @@ pub struct HostAnnounce {
     pub token: String,
     #[serde(default)]
     pub name: String,
-    #[serde(default)]
-    pub params: Params,
     #[serde(default)]
     pub endpoints: Vec<String>,
     #[serde(default)]
@@ -65,21 +69,20 @@ pub struct GuestConnect {
     pub candidates: Vec<String>,
 }
 
-/// Ответ хосту: список ждущих гостей (каждый — набор своих адресов).
-#[derive(Clone, Debug, Default, Deserialize)]
-pub struct PendingGuests {
-    pub version: u64,
-    #[serde(default)]
-    pub guests: Vec<Vec<String>>,
-}
+// Здесь был `PendingGuests { version, guests }` — «ответ хосту со списком
+// ждущих гостей». Ни одного поля не пережило разбора: координатор не шлёт такой
+// структуры вовсе (его кадр — `{"t":"guest","candidates":[...]}`, ровно один
+// гость), `version` собиралась вручную из литерального нуля, а `guests` всегда
+// содержала либо один набор, либо ноль по таймауту. Теперь см. `next_guest`.
 
 /// Ответ координатора гостю: как достучаться до хоста.
 #[derive(Clone, Debug, Default, Deserialize)]
 pub struct ConnectResponse {
     #[serde(default)]
     pub host_endpoints: Vec<String>,
-    #[serde(default)]
-    pub host_params: Params,
+    // `host_params` убран вместе с `HostAnnounce::params` — см. там. Он
+    // конструировался всегда пустым и не читался НИ ОДНОЙ строчкой; координатор
+    // в ответе `Connected` шлёт только `{id, endpoints}`.
 }
 
 /// Карточка хоста в каталоге.
@@ -117,10 +120,18 @@ pub struct NewCode {
 }
 
 /// Фильтр каталога.
+///
+/// Здесь был `public_only: bool` — протянутый через публичный API ядра
+/// (`guest_list`/`guest_watch`), пять мест вызова и даже флаг `--public` в CLI.
+/// На провод он не попадал НИКОГДА: `Filter` не сериализуется вовсе, кадр
+/// подписки — `{"t":"watch"[,"country":"XX"]}`, и всё. И дело не в забытой
+/// строчке: каталог координатора и так отдаёт ТОЛЬКО публичные хосты
+/// (безусловный `filter(|e| e.ann.public)` на его стороне), поэтому фильтр
+/// нечего было бы фильтровать. `--public true` и `--public false` давали
+/// побайтово один и тот же список.
 #[derive(Clone, Debug, Default)]
 pub struct Filter {
     pub country: Option<String>,
-    pub public_only: bool,
 }
 
 /// Снимок каталога (версия + список) — тот же контракт, что был у long-poll.
@@ -135,8 +146,9 @@ pub struct DirectoryUpdate {
 const RPC_TIMEOUT: Duration = Duration::from_secs(10);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(6);
 const HEALTH_TIMEOUT: Duration = Duration::from_secs(4);
-/// Как долго ждём гостя в pending() прежде чем вернуть пусто (мимик long-poll).
-const PENDING_TIMEOUT: Duration = Duration::from_secs(20);
+// `PENDING_TIMEOUT` (20с) убран вместе с `pending()`: он изображал возврат
+// long-poll'а по сроку, а ждать гостя по расписанию незачем — тот приходит
+// пушем, и `next_guest` просто ждёт.
 
 /// Потолок каталога на клиенте.
 ///
@@ -475,21 +487,42 @@ impl Coordinator {
 
     /// ХОСТ: «я ухожу». Убираем восстановление (чтобы реконнект не воскресил) и
     /// шлём bye — координатор снимет запись мгновенно.
-    pub async fn bye(&self, _id: &str, _token: &str) -> Result<()> {
+    ///
+    /// Без аргументов: раньше принимал `id` и `token` и выбрасывал оба. Кто
+    /// уходит — координатор знает по САМОМУ СОКЕТУ, на проводе кадр выглядит как
+    /// `{"t":"bye"}` и никогда не нёс ни id, ни токена. Просить их у вызывающего
+    /// значило обещать, что запись снимут по предъявлению секрета, — а на деле
+    /// снимают по владению соединением.
+    pub async fn bye(&self) -> Result<()> {
         *self.shared.last_announce.lock() = None;
         self.send(json!({ "t": "bye" }));
         Ok(())
     }
 
-    /// ХОСТ: дождаться следующего ждущего гостя (или пусто по таймауту). Гости
-    /// приходят пушем `guest` в сокет — здесь просто снимаем из очереди.
-    pub async fn pending(&self, _id: &str, _since: u64) -> Result<PendingGuests> {
+    /// ХОСТ: дождаться СЛЕДУЮЩЕГО ждущего гостя — его кандидатов для встречного
+    /// пробития NAT. Ждёт сколько нужно; пустого ответа не бывает.
+    ///
+    /// Раньше это был `pending(id, since)`, возвращавший `PendingGuests` со
+    /// списком гостей и «версией» — форма времён HTTP-опроса. От опроса не
+    /// осталось ничего: координатор ТОЛКАЕТ гостя кадром `guest` в сокет, метод
+    /// не отправлял на провод ни байта, оба аргумента выбрасывал, «версия»
+    /// всегда была нулём (ядро исправно клало этот ноль обратно в `since`,
+    /// который тоже выбрасывался), а 20-секундный таймаут существовал только
+    /// затем, чтобы вызывающий крутил вокруг цикл. Теперь форма совпадает с
+    /// сутью: один гость, одно ожидание.
+    ///
+    /// ЖДЁМ ПОД ЗАМКОМ, А ПРИЁМНИК НАРУЖУ НЕ ОТДАЁМ. Соблазн вернуть сам
+    /// `Receiver` («пусть вызывающий крутит цикл сам») ломает вторую раздачу:
+    /// приёмник у канала ОДИН, а `host_serve_punch` запускается на КАЖДЫЙ старт
+    /// раздачи — второй раз забирать было бы уже нечего, и цикл молча замер бы
+    /// навсегда. Здесь же приёмник остаётся в `Shared`, и повторный старт просто
+    /// берёт замок заново (см. тест `a_second_hosting_start_still_gets_a_guest`).
+    pub async fn next_guest(&self) -> Result<Vec<String>> {
         self.ensure_started();
         let mut rx = self.shared.guest_rx.lock().await;
-        match tokio::time::timeout(PENDING_TIMEOUT, rx.recv()).await {
-            Ok(Some(cands)) => Ok(PendingGuests { version: 0, guests: vec![cands] }),
-            Ok(None) => Err(Error::Signal("Связь с сервером оборвалась — восстанавливаю.".into())),
-            Err(_) => Ok(PendingGuests { version: 0, guests: vec![] }),
+        match rx.recv().await {
+            Some(cands) => Ok(cands),
+            None => Err(Error::Signal("Связь с сервером оборвалась — восстанавливаю.".into())),
         }
     }
 
@@ -558,7 +591,7 @@ impl Coordinator {
             .get("endpoints")
             .and_then(|e| serde_json::from_value(e.clone()).ok())
             .unwrap_or_default();
-        Ok(ConnectResponse { host_endpoints: endpoints, host_params: Params::new() })
+        Ok(ConnectResponse { host_endpoints: endpoints })
     }
 
     // ── вспомогательное ──
@@ -871,6 +904,27 @@ mod tests {
         assert!(!e.to_string().is_empty(), "молчаливый отказ: человеку нечего прочитать");
     }
 
+    /// ЗВЕНО ВТОРОГО СЛОЯ ПРОЩАНИЯ. Координатор шлёт `{"t":"peercheck"}`, когда
+    /// сосед по паре отвалился ОТ НЕГО (см. серверный
+    /// `a_dying_host_makes_the_coordinator_hint_its_guest`). Здесь кадр обязан
+    /// превратиться в подсказку «опроси пира немедленно».
+    ///
+    /// Ветка не была покрыта ничем: её можно было удалить целиком — подсказка
+    /// не доходила бы никогда, слоёв обнаружения оставалось два вместо трёх, а
+    /// падало ноль тестов. Имя кадра здесь и на сервере — одна и та же строка,
+    /// так что переименование ломает ровно один из двух тестов.
+    #[tokio::test]
+    async fn a_peercheck_frame_becomes_a_liveness_probe() {
+        let c = offline_client();
+        let mut rx = c.peer_check();
+        assert!(!rx.has_changed().unwrap(), "подсказка появилась до кадра");
+
+        handle_incoming(&c.shared, &json!({ "t": "peercheck" }).to_string());
+
+        assert!(rx.has_changed().unwrap(), "кадр «peercheck» разобран молча — сессия узнает об уходе пира только по тишине");
+        assert_eq!(*rx.borrow_and_update(), 1);
+    }
+
     /// ПОРЯДОК КАТАЛОГА ЗАДАЁТ СЕРВЕР. Дельты не должны его перетасовывать:
     /// обновление правит карточку НА МЕСТЕ, новые уходят в конец, удаление не
     /// сдвигает остальных друг относительно друга.
@@ -970,17 +1024,70 @@ mod tests {
 
     /// В ОФФЛАЙНЕ НЕ БУФЕРИЗУЕМ. Иначе час без связи = сотни протухших кадров,
     /// которые улетят залпом при реконнекте (и `bye` доедет после нового старта).
-    #[test]
-    fn offline_frames_are_dropped_not_queued() {
+    ///
+    /// Здесь же закреплена ФОРМА `bye` на проводе. Зовём настоящий `c.bye()`, а
+    /// не пишем кадр руками: раньше тест собирал `{"t":"bye"}` сам и потому не
+    /// покрывал метод, у которого как раз и убрали два аргумента (`id`, `token`).
+    /// Кто уходит — координатор знает по сокету, и в кадре этого никогда не было.
+    #[tokio::test]
+    async fn offline_frames_are_dropped_not_queued() {
         let c = offline_client();
         let mut rx = c.shared.out_rx.lock().take().expect("очередь исходящих");
         c.send_if_live(json!({ "t": "watch" }).to_string());
-        c.send_if_live(json!({ "t": "bye" }).to_string());
+        c.bye().await.unwrap();
         assert!(rx.try_recv().is_err(), "в оффлайне очередь исходящих обязана остаться пустой");
         // А на живом сокете кадр обязан уходить (иначе «фикс» — просто заглушка).
         let _ = c.shared.connected.send_replace(true);
-        c.send_if_live(json!({ "t": "bye" }).to_string());
-        assert_eq!(rx.try_recv().unwrap(), json!({ "t": "bye" }).to_string());
+        c.bye().await.unwrap();
+        assert_eq!(
+            rx.try_recv().unwrap(),
+            json!({ "t": "bye" }).to_string(),
+            "кадр bye изменился: он не нёс ни id, ни токена"
+        );
+    }
+
+    /// ВТОРОЙ СТАРТ РАЗДАЧИ В ТОМ ЖЕ ПРОЦЕССЕ ВСЁ ЕЩЁ ПОЛУЧАЕТ ГОСТЯ.
+    ///
+    /// Ловит ровно одну опасность, и она не теоретическая. Соблазн при переходе
+    /// с опроса на пуш — отдать наружу сам `Receiver` («пусть цикл встречного
+    /// пробития крутит его сам, без замка»). Приёмник у mpsc ОДИН: первый же
+    /// `take()` опустошил бы `Shared`, и `host_serve_punch`, который запускается
+    /// НА КАЖДЫЙ старт раздачи, со второго раза не получил бы ничего. Отказ
+    /// тихий — ни ошибки, ни лога: раздача работает, гости за строгим NAT просто
+    /// перестают подключаться, потому что встречный PUNCH больше не уходит.
+    ///
+    /// Поэтому здесь проигрывается жизненный цикл целиком: первый старт встаёт в
+    /// ожидание, оболочка гасит его задачу (`h.abort()` — так делают и GUI, и
+    /// TUI, и FFI при остановке раздачи), затем стартует второй и обязан гостя
+    /// дождаться. Заодно проверяется, что снятая задача ОТПУСКАЕТ замок: ждём мы
+    /// теперь без таймаута, и залипший guard подвесил бы вторую раздачу навсегда.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_second_hosting_start_still_gets_a_guest() {
+        let c = offline_client();
+
+        // ПЕРВЫЙ старт раздачи: цикл встречного пробития ждёт гостя под замком.
+        let first = {
+            let c = c.clone();
+            tokio::spawn(async move { c.next_guest().await })
+        };
+        // Даём задаче дойти до ожидания (иначе снимем её раньше взятия замка).
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        // Человек остановил раздачу — оболочка снимает задачу.
+        first.abort();
+        let _ = first.await;
+
+        // ВТОРОЙ старт. Координатор толкает ждущего гостя в сокет.
+        handle_incoming(
+            &c.shared,
+            &json!({ "t": "guest", "candidates": ["203.0.113.9:41000"] }).to_string(),
+        );
+
+        let cands = tokio::time::timeout(Duration::from_secs(5), c.next_guest())
+            .await
+            .expect("вторая раздача не дождалась гостя: приёмник забрали или замок не отпущен")
+            .expect("канал гостей закрыт");
+        assert_eq!(cands, vec!["203.0.113.9:41000".to_string()]);
     }
 
     /// ПОСЛЕ РЕКОННЕКТА ФИЛЬТР НЕ ТЕРЯЕТСЯ. Восстановление слало голый `watch`,
@@ -1010,7 +1117,7 @@ mod tests {
         });
 
         let c = Coordinator::new(format!("http://127.0.0.1:{port}")).unwrap();
-        let filter = Filter { country: Some("NL".into()), public_only: true };
+        let filter = Filter { country: Some("NL".into()) };
         let bg = c.clone();
         tokio::spawn(async move {
             let _ = bg.directory(&filter).await;

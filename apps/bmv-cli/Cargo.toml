@@ -12,7 +12,8 @@ path = "src/main.rs"
 bmv-common.workspace = true
 bmv-config.workspace = true
 bmv-core.workspace = true
-bmv-tunnel.workspace = true
+# bmv-tunnel здесь больше не нужен: гостевой туннель поднимает bmv-desktop —
+# общий с окном код, а своей копии этого пути в терминале не осталось.
 bmv-signal.workspace = true
 # Десктопный роутinг гостя (TUN + завернуть трафик) — общий с bmv-gui.
 bmv-desktop = { path = "../../crates/bmv-desktop" }

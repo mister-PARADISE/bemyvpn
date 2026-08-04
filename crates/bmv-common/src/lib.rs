@@ -8,6 +8,8 @@ pub mod error;
 pub mod ids;
 pub mod update;
 pub mod version;
+/// Правила ПОКАЗА, общие для всех оболочек (без памяти, без сети, без таймеров).
+pub mod view;
 pub mod wire;
 
 pub use error::{Error, Result};

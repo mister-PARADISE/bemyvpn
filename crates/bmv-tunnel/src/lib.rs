@@ -292,6 +292,69 @@ mod tests {
         }
     }
 
+    // ── Фильтры ПРИМЕНЕНЫ, а не просто написаны ──────────────────────────────
+    //
+    // Всё, что выше, зовёт чистые функции. Ни один из этих тестов не заметит,
+    // если из `run_guest` убрать сам вызов: обе дыры (утечка IPv6 хосту и чужой
+    // пакет в стек гостя) откроются заново при зелёном прогоне. Ниже — настоящая
+    // качалка с настоящим каналом.
+
+    /// Пакет IPv4 к указанному адресату (20 байт — заголовок без данных).
+    fn v4_to(dst: [u8; 4]) -> Vec<u8> {
+        let mut p = vec![0u8; 20];
+        p[0] = 0x45;
+        p[16..20].copy_from_slice(&dst);
+        p
+    }
+
+    /// АПЛОАД: IPv6 из интерфейса гостя в канал НЕ УХОДИТ. Следом шлём законный
+    /// IPv4 — хост обязан получить первым именно его.
+    #[tokio::test]
+    async fn the_upload_path_really_calls_the_filter() {
+        use tokio::io::AsyncWriteExt;
+        let (mut device, guest_end) = tokio::io::duplex(4096);
+        let (guest_link, host_end) = bmv_common::wire::memory_pair(64);
+        let _session = tokio::spawn(run_guest(guest_end, Arc::from(guest_link)));
+
+        let mut v6 = vec![0u8; 40];
+        v6[0] = 0x60;
+        device.write_all(&v6).await.unwrap();
+        // Пауза обязательна: `duplex` — поток, две записи подряд слились бы в одно
+        // чтение, и тогда проверялась бы склейка, а не отдельный пакет.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        device.write_all(&v4_to([8, 8, 8, 8])).await.unwrap();
+
+        let mut buf = Vec::new();
+        let got = tokio::time::timeout(std::time::Duration::from_secs(2), host_end.recv_into(&mut buf))
+            .await
+            .expect("хост не получил вообще ничего — качалка встала")
+            .unwrap();
+        assert!(got, "канал закрылся вместо доставки пакета");
+        assert_eq!(buf[0] >> 4, 4, "хосту уехал IPv6-пакет — ровно тот трафик, который человек прятал");
+    }
+
+    /// ДАУНЛОАД: пакет не нашему адресу в стек гостя НЕ ПОПАДАЕТ. Следом —
+    /// законный ответ, он и обязан прийти первым.
+    #[tokio::test]
+    async fn the_download_path_really_calls_the_filter() {
+        use tokio::io::AsyncReadExt;
+        let (mut device, guest_end) = tokio::io::duplex(4096);
+        let (guest_link, host_end) = bmv_common::wire::memory_pair(64);
+        let _session = tokio::spawn(run_guest(guest_end, Arc::from(guest_link)));
+
+        host_end.send(&v4_to([192, 168, 1, 1])).await.unwrap(); // домашний адрес гостя
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        host_end.send(&v4_to([10, 7, 0, 2])).await.unwrap(); // наш адрес в туннеле
+
+        let mut buf = [0u8; 128];
+        let n = tokio::time::timeout(std::time::Duration::from_secs(2), device.read(&mut buf))
+            .await
+            .expect("в интерфейс гостя не пришло ничего — качалка встала")
+            .unwrap();
+        assert!(n >= 20, "огрызок вместо пакета ({n} Б)");
+        assert_eq!(&buf[16..20], &[10, 7, 0, 2], "в стек гостя попал пакет НЕ ЕГО адресу — хост шлёт мимо туннеля");
+    }
+
     /// Граница длины: 19 байт разбирать нечем, 20 — ровно заголовок без данных.
     /// Проверяем обе стороны, потому что ошибка на единицу здесь — это паника
     /// по срезу от пакета, присланного чужой машиной.

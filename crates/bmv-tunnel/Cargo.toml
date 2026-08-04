@@ -10,3 +10,9 @@ tokio.workspace = true
 tokio-util.workspace = true
 tracing.workspace = true
 ipstack.workspace = true
+
+[dev-dependencies]
+# Сборка настоящих IP-пакетов в тестах: фильтр адресата проверяется через
+# `run_host` с реальным пакетом гостя, а не вызовом чистой функции.
+# Версия та же, что у ipstack, — в дереве уже есть, лишнего не тянем.
+etherparse = { version = "0.19", default-features = false, features = ["std"] }

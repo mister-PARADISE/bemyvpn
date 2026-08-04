@@ -210,18 +210,13 @@ impl BmvEngine {
     }
 
     /// ГОСТЬ: получить список хостов из каталога.
-    pub async fn guest_list(
-        &self,
-        country: Option<String>,
-        public_only: bool,
-    ) -> Result<Vec<bmv_signal::HostInfo>> {
+    ///
+    /// Аргумента `public_only` больше нет: каталог координатора и так состоит
+    /// ТОЛЬКО из публичных хостов, а сам флаг никогда не доезжал до провода.
+    /// Скрытый хост ищется по коду — `guest_resolve`, а не фильтром.
+    pub async fn guest_list(&self, country: Option<String>) -> Result<Vec<bmv_signal::HostInfo>> {
         let coord = self.coordinator()?;
-        coord
-            .directory(&bmv_signal::Filter {
-                country,
-                public_only,
-            })
-            .await
+        coord.directory(&bmv_signal::Filter { country }).await
     }
 
     /// ГОСТЬ: найти хост по коду (id) — в т.ч. СКРЫТУЮ сеть (её нет в каталоге).
@@ -242,19 +237,10 @@ impl BmvEngine {
     pub async fn guest_watch(
         &self,
         country: Option<String>,
-        public_only: bool,
         since: u64,
     ) -> Result<bmv_signal::DirectoryUpdate> {
         let coord = self.coordinator()?;
-        coord
-            .directory_watch(
-                &bmv_signal::Filter {
-                    country,
-                    public_only,
-                },
-                since,
-            )
-            .await
+        coord.directory_watch(&bmv_signal::Filter { country }, since).await
     }
 
     /// ГОСТЬ: установить зашифрованный канал к хосту — на ОДНОМ сокете: собрать
@@ -342,8 +328,17 @@ impl BmvEngine {
     ///
     /// Проба не создаёт на хосте ни сессии, ни записи (см. `bmv_net::probe_rtt`),
     /// поэтому её можно звать для нескольких хостов подряд.
+    ///
+    /// Адреса — из карточки каталога, то есть ЧУЖИЕ СЛОВА, ровно как у пробития.
+    /// Поэтому и фильтр тот же (`parse_addrs`): это была единственная дверь, через
+    /// которую адрес от координатора уходил в сокет непроверенным, а зовут её все
+    /// четыре оболочки, причём в цикле раз в секунду, пока открыта карточка.
+    /// Против честного координатора ничего не менялось — но эшелон обороны стоит
+    /// одну строку, а без него подменённая карточка превращала каждое запущенное
+    /// приложение в сканер чужой локальной сети и облачных метаданных.
     pub async fn probe_host_rtt(&self, host_id: &str, endpoints: &[String]) -> Option<u32> {
-        bmv_net::probe_rtt(host_id, endpoints, PROBE_TIMEOUT)
+        let targets: Vec<String> = parse_addrs(endpoints).iter().map(|a| a.to_string()).collect();
+        bmv_net::probe_rtt(host_id, &targets, PROBE_TIMEOUT)
             .await
             .map(|d| d.as_millis().min(u32::MAX as u128) as u32)
     }
@@ -404,7 +399,6 @@ impl BmvEngine {
             has_password,
             protocol: self.host_protocol.lock().clone(),
             code_sig: self.host_code_sig.clone(),
-            params: bmv_signal::Params::new(),
         }
     }
 
@@ -510,39 +504,44 @@ impl BmvEngine {
         self.announce_state().await
     }
 
-    /// ХОСТ: цикл ВСТРЕЧНОГО ПРОБИТИЯ. Long-poll'ит у координатора ждущих гостей
-    /// и шлёт им PUNCH, открывая свой NAT навстречу (иначе хост за NAT недостижим).
+    /// ХОСТ: цикл ВСТРЕЧНОГО ПРОБИТИЯ. Ждёт от координатора ждущих гостей и шлёт
+    /// им PUNCH, открывая свой NAT навстречу (иначе хост за NAT недостижим).
     /// Крутить фоном рядом с циклом приёма гостей.
+    ///
+    /// Гость приходит ПУШЕМ — координатор сам толкает его кадром в сокет, — так
+    /// что здесь нет ни опроса, ни «версии», ни таймаута: `next_guest` ждёт
+    /// ровно до появления гостя. Раньше на этом месте стоял `pending(id, since)`,
+    /// возвращавший список и нулевую «версию», которую цикл прилежно клал обратно
+    /// в `since`, откуда её выбрасывали, — вся конструкция изображала HTTP-опрос,
+    /// которого нет уже давно.
     pub async fn host_serve_punch(&self, hub: std::sync::Arc<bmv_net::UdpHub>) -> Result<()> {
         let coord = self.coordinator()?;
-        let mut since = 0u64;
         loop {
-            let p = match coord.pending(&self.host_id, since).await {
-                Ok(p) => p,
+            let cands = match coord.next_guest().await {
+                Ok(c) => c,
+                // Связь оборвалась — супервизор клиента её восстановит, а мы
+                // подождём, чтобы не крутить пустой цикл на полной скорости.
                 Err(_) => {
                     tokio::time::sleep(Duration::from_secs(2)).await;
                     continue;
                 }
             };
-            since = p.version;
-            for cand_set in p.guests {
-                let addrs = parse_addrs(&cand_set);
-                if addrs.is_empty() {
-                    continue;
-                }
-                // Встречный PUNCH на ВСЁ окно пробития гостя (~12с). Раньше было
-                // ~3с и не перекрывало 12с-окно гостя — для обратного пробития
-                // (строгий хост × мягкий гость) это критично: гостю нужно успеть
-                // выучить реальный порт хоста из этих PUNCH и простучать назад,
-                // пока его окно открыто. Лишние PUNCH безвредны (держат NAT-дырку).
-                let hub2 = hub.clone();
-                tokio::spawn(async move {
-                    for _ in 0..48 {
-                        hub2.punch(&addrs).await;
-                        tokio::time::sleep(Duration::from_millis(250)).await;
-                    }
-                });
+            let addrs = parse_addrs(&cands);
+            if addrs.is_empty() {
+                continue;
             }
+            // Встречный PUNCH на ВСЁ окно пробития гостя (~12с). Раньше было
+            // ~3с и не перекрывало 12с-окно гостя — для обратного пробития
+            // (строгий хост × мягкий гость) это критично: гостю нужно успеть
+            // выучить реальный порт хоста из этих PUNCH и простучать назад,
+            // пока его окно открыто. Лишние PUNCH безвредны (держат NAT-дырку).
+            let hub2 = hub.clone();
+            tokio::spawn(async move {
+                for _ in 0..48 {
+                    hub2.punch(&addrs).await;
+                    tokio::time::sleep(Duration::from_millis(250)).await;
+                }
+            });
         }
     }
 
@@ -551,7 +550,7 @@ impl BmvEngine {
     /// воскресила. Zовём при остановке раздачи.
     pub async fn host_deannounce(&self) -> Result<()> {
         self.host_active.store(false, Ordering::SeqCst);
-        self.coordinator()?.bye(&self.host_id, &self.host_token).await
+        self.coordinator()?.bye().await
     }
 
     /// Узнать свой внешний IP через координатор (для UI, без сторонних сайтов).
@@ -833,6 +832,77 @@ mod announce_tests {
         let eng = BmvEngine::from_config(cfg);
         eng.host_active.store(false, Ordering::SeqCst);
         eng
+    }
+
+    /// ВТОРОЙ СЛОЙ ПРОЩАНИЯ, ПОСЛЕДНЕЕ ЗВЕНО. Координатор увидел, что сосед по
+    /// паре отвалился, и прислал `peercheck` (серверная половина —
+    /// `a_dying_host_makes_the_coordinator_hint_its_guest`, разбор кадра —
+    /// `a_peercheck_frame_becomes_a_liveness_probe` в bmv-signal). Дальше
+    /// подсказку в канал СЕССИИ обязана донести вот эта функция.
+    ///
+    /// Её не касался ни один тест: `relay_peer_checks` можно было удалить
+    /// целиком — подсказка не доходила бы никогда, обнаружение обрыва
+    /// откатывалось бы к обычной тишине (8с вместо 4с), и падало бы ноль тестов.
+    /// Здесь пир «убит» (молчит, попрощаться не мог) — ждать его обязаны по
+    /// КОРОТКОМУ сроку.
+    #[tokio::test(start_paused = true)]
+    async fn a_coordinator_hint_reaches_the_live_session() {
+        let (a, b) = bmv_common::wire::memory_pair(64);
+        let link: Arc<dyn Link> = Arc::new(bmv_common::KeepaliveLink::new(a));
+        let _killed_peer = b; // конец провода держим, но молчим — как убитое приложение
+
+        let (hints, rx) = tokio::sync::watch::channel(0u64);
+        let started = tokio::time::Instant::now();
+        let session = {
+            let link = link.clone();
+            tokio::spawn(async move {
+                let mut buf = Vec::new();
+                tokio::select! {
+                    r = link.recv_into(&mut buf) => (r.unwrap(), tokio::time::Instant::now()),
+                    // Ровно как в бою: ретранслятор стоит в select! рядом с сессией.
+                    _ = BmvEngine::relay_peer_checks(&*link, Some(rx)) => unreachable!(),
+                }
+            })
+        };
+        tokio::task::yield_now().await;
+        hints.send_modify(|v| *v += 1); // координатор: «проверь соседа»
+
+        let (alive, ended) = session.await.unwrap();
+        let took = ended.duration_since(started);
+        assert!(!alive, "молчащий пир обязан кончиться EOF");
+        // 8с — обычный срок тишины (`DEAD_AFTER`), 4с — ужатый по подсказке
+        // (`PEER_CHECK_GRACE`); оба живут в bmv-common::wire.
+        assert!(took < Duration::from_secs(8), "подсказка не доехала до канала: ждали {took:?} ≈ обычную тишину");
+        assert!(took >= Duration::from_secs(4), "срок ужат сильнее, чем живой пир успевает ответить ({took:?})");
+    }
+
+    /// ПРОБА ЗАДЕРЖКИ НЕ ОТПРАВЛЯЕТСЯ НА ПЕТЛЮ.
+    ///
+    /// `probe_host_rtt` была ЕДИНСТВЕННЫМ путём, где адрес из карточки каталога
+    /// уходил в сокет без проверки: пробитие свои цели чистит через `parse_addrs`,
+    /// а проба брала список как есть. Зовут её все четыре оболочки, причём в
+    /// цикле раз в секунду, пока открыта карточка хоста, — то есть подменённая
+    /// карточка превращала бы каждое запущенное приложение в исправный сканер
+    /// петли, локальной сети и облачных метаданных (169.254.169.254) чужими
+    /// руками. Это эшелон обороны: против честного координатора ничего не
+    /// менялось, но полагаться на его честность здесь незачем.
+    ///
+    /// Проверяем не возвращаемое значение (оно и так `None` — на петле никто не
+    /// ответит), а ФАКТ ОТПРАВКИ: слушатель на 127.0.0.1 обязан не получить ни
+    /// байта.
+    #[tokio::test]
+    async fn a_probe_never_reaches_the_loopback() {
+        let eng = offline_engine(Config::default());
+        // «Жертва» из подменённой карточки каталога — настоящий сокет на петле.
+        let victim = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let addr = victim.local_addr().unwrap().to_string();
+
+        let rtt = eng.probe_host_rtt("host-id", std::slice::from_ref(&addr)).await;
+        assert_eq!(rtt, None, "с петли пришёл ответ — значит проба туда сходила");
+
+        let mut buf = [0u8; 128];
+        let got = tokio::time::timeout(Duration::from_millis(400), victim.recv_from(&mut buf)).await;
+        assert!(got.is_err(), "на петлю ({addr}) улетел пакет пробы: {} байт", got.map(|r| r.map(|(n, _)| n).unwrap_or(0)).unwrap_or(0));
     }
 
     /// Поднять гостя на другом конце канала (то же рукопожатие, что в бою).

@@ -18,4 +18,6 @@ tracing.workspace = true
 log.workspace = true
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+# `test-util` — виртуальные часы: без них тест подсказки «проверь соседа» ждал бы
+# срок тишины по-настоящему (4 секунды на ровном месте).
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "test-util"] }

@@ -36,9 +36,30 @@ pub struct Config {
     pub default_protocol: String,
     pub guest: GuestConfig,
     pub host: HostConfig,
-    pub protocols: ProtocolsConfig,
     pub stun: StunConfig,
-    pub log: LogConfig,
+    // Здесь были `protocols: ProtocolsConfig` (секции `[protocols.reality]` и
+    // `[protocols.wireguard]`) и `log: LogConfig` (`level` + `file`) — четыре
+    // ключа, у которых на весь репозиторий НОЛЬ читателей.
+    //
+    // `[protocols.*]` описывали протоколы, которых нет: в реестре
+    // (`bmv_protocol::Registry::with_builtins`) только `noise-obfs`, `noise` и
+    // `plain`; файлов `reality.rs`/`wireguard.rs` не существует, `sing-box`
+    // ниоткуда не запускается, `boringtun` не подключён. `WireguardConfig` был
+    // даже без единого поля — пустая секция «на будущее». Задел, который не
+    // стоит ничего: когда протокол появится, он придёт со СВОИМИ настройками, и
+    // угадать их заранее всё равно нельзя. А пока `sni = "www.mi.com"` в файле
+    // выглядит как работающая мимикрия — то есть врёт.
+    //
+    // `[log]` врал сильнее. Уровень логов задаётся ТОЛЬКО через `RUST_LOG`
+    // (`EnvFilter` в `bmv-cli` и в координаторе — две единственные инициализации
+    // логгера в проекте), причём у клиента дефолт `off`: логов нет вовсе, это
+    // осознанный выбор ради приватности. Файл `bemyvpn.log` не открывался
+    // никогда и никем. То есть человек ставил `level = "debug"`, ничего не
+    // получал и не понимал почему; либо наоборот — видел в конфиге имя лог-файла
+    // и считал, что его переписка с координатором лежит на диске.
+    //
+    // Понадобится настройка уровня из UI — это ручка `RUST_LOG`-фильтра рядом с
+    // инициализацией подписчика в каждой оболочке, а не мёртвая строка в TOML.
     /// Настройки режима СЕРВЕРА (свой координатор). Тот же бинарь `bemyvpn`
     /// поднимает координатор командой `server` или из меню — отдельного бинаря нет.
     pub server: ServerConfig,
@@ -92,8 +113,28 @@ impl Default for ServerConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct GuestConfig {
-    /// DNS всегда через туннель (анти-утечка). Менять только осознанно.
-    pub dns: String, // "tunnel" | "1.1.1.1" | "system"
+    // Здесь был `dns: String` ("tunnel" | "1.1.1.1" | "system") — объявленный,
+    // задокументированный и НИГДЕ не читаемый. DNS назначается в каждой оболочке
+    // и всегда одинаково — 8.8.8.8: RouteGuard (три ветки: linux/macos/windows),
+    // NEDNSSettings на iOS, addDnsServer на Android. То есть "system" НЕ отключал подмену, а
+    // "1.1.1.1" НЕ менял сервер — ручка врала обоими значениями сразу.
+    //
+    // Убрана, а не реализована, по двум причинам. Первая: "system" — это ручка,
+    // ОТКЛЮЧАЮЩАЯ защиту. Резолв ушёл бы к DNS провайдера мимо туннеля, то есть
+    // провайдер снова видел бы список посещаемых сайтов, а на экране висело бы
+    // «Защищено». Ровно тот тихий дефект, из-за которого убран `kill_switch`,
+    // только вывернутый наизнанку. Вторая: конфига НЕТ на двух оболочках из
+    // четырёх — iOS получает настройки через providerConfiguration, Android через
+    // intent-extras, файла bemyvpn.toml у них нет вовсе. «Провести значение до
+    // всех» означало бы новый FFI-параметр плюс экран настройки в каждом из двух
+    // приложений — это отдельная фича, а не починка. Сделать наполовину (работает
+    // на десктопе, молчит на телефоне) — снова обещание, которого нет.
+    //
+    // Выбор сервера (8.8.8.8 → 1.1.1.1) сам по себе безвреден, но и бесполезен:
+    // оба запроса идут через туннель и резолвит их сеть хоста. Понадобится защита
+    // от подмены DNS на стороне хоста — это DoH/DoT в `bmv-tunnel`, а не строчка
+    // в конфиге гостя.
+    //
     // Здесь был `kill_switch: bool` — объявленный, задокументированный и НИГДЕ не
     // реализованный. Защитная ручка, которая ничего не делает, хуже отсутствующей:
     // человек её включает и считает себя защищённым. Настоящий рубильник — это
@@ -105,7 +146,17 @@ pub struct GuestConfig {
     /// Что делать с IPv6 на время сеанса: `"block"` (по умолчанию) | `"allow"`.
     /// Разбирается через [`Ipv6Mode::parse`] — см. там, почему это не косметика.
     pub ipv6: String,
-    pub auto_reconnect: bool,
+    // Здесь был `auto_reconnect: bool` (дефолт `true`) — тоже никем не читаемый,
+    // и вдобавок описывавший поведение не той оболочки. Авто-реконнекта на
+    // десктопе НЕТ: `bmv_desktop::tunnel::run_tunnel` при обрыве завершается в
+    // `State::Off`, и переподключение — это кнопка «Старт». Цикл живёт в
+    // `bmv-ffi` (мобильные оболочки: машина, метро, смена сети), включён всегда
+    // и конфига не читает. То есть ручка стояла в файле, которого нет на той
+    // единственной платформе, где есть само поведение.
+    //
+    // Отключать авто-реконнект незачем: туннель рвётся не по желанию человека, а
+    // от сети. Понадобится «не поднимать сам» — это переключатель в UI приложения
+    // рядом с кнопкой, а не ключ в TOML, до которого с телефона не добраться.
 }
 
 /// Что делать с IPv6, пока поднят туннель.
@@ -156,7 +207,16 @@ impl GuestConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct HostConfig {
-    pub enabled: bool,
+    // Здесь был `enabled: bool` — тоже без читателей. Раздача НИКОГДА не
+    // стартовала по конфигу: её включает человек — подкоманда `bemyvpn host`,
+    // кнопка в TUI/GUI, `bmv_host_start` через FFI на iOS и Android (там
+    // состояние вообще живёт в prefs, а файла конфига нет). Ключ обещал
+    // автозапуск при старте приложения, которого не было: поставив
+    // `enabled = true`, человек получал ровно ничего.
+    //
+    // Автозапуск раздачи — это не строка в конфиге, а служба системы (systemd на
+    // сервере) плюс отдельное решение, что делать с паролем и токеном владения
+    // при старте без человека. Понадобится — заводить целиком, а не флагом.
     /// Стабильный id хоста. Пусто → генерится случайный на сессию.
     pub id: String,
     /// Секрет владельца записи в каталоге. Координатор привязывает id→token при
@@ -175,27 +235,6 @@ pub struct HostConfig {
     pub max_guests: u32,
     pub country_hint: String,
 }
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(default)]
-pub struct ProtocolsConfig {
-    pub reality: RealityConfig,
-    pub wireguard: WireguardConfig,
-}
-
-/// ЗАДЕЛ на будущее: REALITY (TLS-мимикрия через внешний sing-box) ещё НЕ в
-/// реестре протоколов (см. bmv-protocol). Секция читается, но пока не
-/// задействована — оставлено как план, чтобы конфиг не менялся при внедрении.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
-pub struct RealityConfig {
-    pub sing_box_path: String,
-    pub sni: String,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(default)]
-pub struct WireguardConfig {}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -240,13 +279,6 @@ pub fn parse_stun_file(text: &str) -> Vec<String> {
         .collect()
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
-pub struct LogConfig {
-    pub level: String,
-    pub file: String,
-}
-
 // ── дефолты (единственное место) ────────────────────────────────────────────
 
 impl Default for Config {
@@ -261,9 +293,7 @@ impl Default for Config {
             guest: GuestConfig::default(),
             host: HostConfig::default(),
             source: None,
-            protocols: ProtocolsConfig::default(),
             stun: StunConfig::default(),
-            log: LogConfig::default(),
             server: ServerConfig::default(),
         }
     }
@@ -272,9 +302,7 @@ impl Default for Config {
 impl Default for GuestConfig {
     fn default() -> Self {
         GuestConfig {
-            dns: "tunnel".into(),
             ipv6: "block".into(),
-            auto_reconnect: true,
         }
     }
 }
@@ -282,7 +310,6 @@ impl Default for GuestConfig {
 impl Default for HostConfig {
     fn default() -> Self {
         HostConfig {
-            enabled: false,
             id: String::new(),
             token: String::new(),
             name: String::new(),
@@ -291,24 +318,6 @@ impl Default for HostConfig {
             password: String::new(),
             max_guests: suggested_max_guests(),
             country_hint: "auto".into(),
-        }
-    }
-}
-
-impl Default for RealityConfig {
-    fn default() -> Self {
-        RealityConfig {
-            sing_box_path: String::new(),
-            sni: "www.mi.com".into(),
-        }
-    }
-}
-
-impl Default for LogConfig {
-    fn default() -> Self {
-        LogConfig {
-            level: "info".into(),
-            file: "bemyvpn.log".into(),
         }
     }
 }
@@ -497,8 +506,6 @@ mod tests {
         let c = Config::default();
         // По умолчанию «Маскировка» — шифрование плюс защита от DPI.
         assert_eq!(c.default_protocol, DEFAULT_PROTOCOL);
-        assert_eq!(c.guest.dns, "tunnel");
-        assert_eq!(c.protocols.reality.sni, "www.mi.com");
         // Лимит подбирается от числа ядер, поэтому проверяем не число, а рамки:
         // не ниже минимума и не выше потолка, и всегда одно из значений пресетов.
         assert!((4..=128).contains(&c.host.max_guests), "лимит вне рамок: {}", c.host.max_guests);
@@ -609,6 +616,161 @@ mod tests {
         let c = Config::from_toml("default_protocol = \"plain\"").unwrap();
         assert_eq!(c.default_protocol, "plain");
         // остальное — дефолты
-        assert_eq!(c.guest.dns, "tunnel");
+        assert_eq!(c.guest.ipv6, "block");
+    }
+
+    /// СТАРЫЙ КОНФИГ ОБЯЗАН ЧИТАТЬСЯ ПОСЛЕ УБОРКИ МЁРТВЫХ РУЧЕК.
+    ///
+    /// Здесь лежит НАСТОЯЩИЙ файл из документации (docs/ARCHITECTURE.md, раздел
+    /// «ОДИН конфиг») — тот, что люди копировали к себе целиком. В нём разом все
+    /// убранные ключи: `guest.dns`, `guest.auto_reconnect`, `kill_switch`,
+    /// `host.enabled`, секции `[protocols.reality]`, `[protocols.wireguard]` и
+    /// `[log]`. Убрать поле из структуры безопасно ровно до тех пор, пока serde
+    /// молча пропускает незнакомые ключи: стоит кому-нибудь дописать сюда
+    /// `deny_unknown_fields` — и у этих людей приложение перестанет стартовать
+    /// на строках, которые и раньше ничего не делали. Тест держит эту дверь.
+    ///
+    /// Заодно проверяем ЖИВЫХ соседей — и по секции (`guest.ipv6` рядом с
+    /// выкинутыми `dns`/`auto_reconnect`, `host.max_guests` рядом с `enabled`), и
+    /// целой секцией после выкинутых (`[stun]` идёт следом за `[protocols.*]`):
+    /// удаление полей не должно сдвинуть разбор остального.
+    #[test]
+    fn the_documented_old_config_still_loads_whole() {
+        let c = Config::from_toml(
+            r#"
+# ─────────────── BeMyVPN — единственный конфиг ───────────────
+coordinators = [
+  "https://coord.bemyvpn.org",
+]
+default_protocol = "reality"          # plain | wireguard | webrtc | reality
+
+[guest]                                # когда я подключаюсь
+dns          = "tunnel"                # tunnel (по умолч., принудительно) | 1.1.1.1 | system
+kill_switch  = true
+ipv6         = "allow"                 # block | allow
+auto_reconnect = true
+
+[host]                                 # когда я раздаю интернет
+enabled      = false
+public       = false
+password     = ""
+max_guests   = 4
+country_hint = "auto"
+
+[protocols.reality]
+sing_box_path = ""
+sni           = "www.mi.com"
+
+[protocols.wireguard]
+
+[stun]
+servers = ["stun.example.org:3478"]
+
+[log]
+level = "info"                         # error | warn | info | debug
+file  = "bemyvpn.log"
+"#,
+        )
+        .expect("документированный конфиг обязан читаться, а не ронять запуск");
+
+        // Живое до выкинутых ключей.
+        assert_eq!(c.coordinators, vec!["https://coord.bemyvpn.org".to_string()]);
+        assert_eq!(c.default_protocol, "reality");
+        // Живой сосед по [guest] — между выкинутыми dns/kill_switch и auto_reconnect.
+        assert_eq!(c.guest.ipv6_mode(), Ipv6Mode::Allow, "ipv6 потерялся среди мусора");
+        // Живые соседи по [host] — сразу после выкинутого enabled.
+        assert_eq!(c.host.max_guests, 4);
+        assert_eq!(c.host.country_hint, "auto");
+        // Целая живая секция ПОСЛЕ выкинутых [protocols.*].
+        assert_eq!(c.stun.servers, vec!["stun.example.org:3478".to_string()]);
+    }
+
+    /// МЁРТВАЯ НАСТРОЙКА НЕ ДОЛЖНА ПЕРЕЖИТЬ СБОРКУ.
+    ///
+    /// За одну сессию разбора в конфиге нашлось ШЕСТЬ ручек без единого читателя,
+    /// две из них — защитные (`kill_switch`, `guest.dns`), то есть обещавшие
+    /// защиту, которой нет. Ловить такое глазами раз в полгода — не механизм.
+    ///
+    /// Компилятор здесь не помощник: поля `pub` в библиотечном крейте считаются
+    /// частью публичного API, а `derive(Serialize)` читает КАЖДОЕ поле, поэтому
+    /// `dead_code` молчит по построению. Поэтому проверка простая и грубая: взять
+    /// имена полей из ЭТОГО же файла (`include_str!` — список не ведётся руками и
+    /// не устареет) и убедиться, что каждое имя где-то читается как `.имя`.
+    ///
+    /// Читателем считается ТОЛЬКО боевой код: у каждого файла отрезается всё от
+    /// `#[cfg(test)]`, каталоги `tests/` пропускаются целиком. Иначе ручку
+    /// «оживлял» бы её собственный тест — ровно так `guest.dns` и держался
+    /// живым на вид. Зато свой же `impl` — читатель настоящий: `stun.file`
+    /// никто снаружи не трогает, его читает `StunConfig::resolve`, и это
+    /// нормально.
+    ///
+    /// ЧЕСТНО ПРО ПОТОЛОК: это грубый текстовый поиск. Он надёжно ловит новую
+    /// ручку со своим именем (`kill_switch`, `auto_reconnect`, `sing_box_path`,
+    /// `max_guests`) и НЕ ловит ту, чьё имя — частое слово (`file`, `level`,
+    /// `name`): у неё найдётся случайный однофамилец в чужом коде, и тест
+    /// промолчит. Ошибка только в сторону «пропустил», не в сторону ложной
+    /// тревоги — то есть хуже сегодняшнего не станет. Настоящая непроходимость
+    /// (поле физически не существует без читателя) стоит proc-macro и перевода
+    /// всего конфига на методы-читатели вместо `pub`-полей; за шесть находок это
+    /// не окупается.
+    #[test]
+    fn every_knob_is_read_by_someone() {
+        let me = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let root = me.parent().and_then(|p| p.parent()).expect("корень репозитория");
+
+        // Имена полей всех структур конфига — из собственного исходника.
+        let src = include_str!("lib.rs");
+        let knobs: Vec<&str> = src
+            .lines()
+            .map(str::trim)
+            .filter_map(|l| l.strip_prefix("pub "))
+            .filter_map(|l| l.split_once(':'))
+            // `pub fn`/`pub struct`/`pub enum` сюда не попадают: у них нет `:` до `(`.
+            .filter(|(name, _)| !name.contains(' ') && !name.contains('('))
+            .map(|(name, _)| name)
+            // `source` живёт под `#[serde(skip)]` и читается внутри самого
+            // bmv-config (`save`) — искать его снаружи бессмысленно.
+            .filter(|name| *name != "source")
+            .collect();
+        assert!(knobs.len() > 10, "разбор полей сломался, нашлось всего {}", knobs.len());
+
+        let mut haystack = String::new();
+        for dir in ["crates", "apps"] {
+            collect_rust_sources(&root.join(dir), &mut haystack);
+        }
+        assert!(haystack.len() > 100_000, "исходники не собрались: {} байт", haystack.len());
+
+        let dead: Vec<&str> = knobs
+            .iter()
+            .filter(|k| !haystack.contains(&format!(".{k}")))
+            .copied()
+            .collect();
+        assert!(
+            dead.is_empty(),
+            "настройки объявлены, но их никто не читает: {dead:?}\n\
+             Ручка без читателя — обещание, которого нет. Либо подключи её к делу, \
+             либо убери из конфига (см. историю kill_switch и guest.dns)."
+        );
+    }
+
+    /// Сложить БОЕВОЙ код (все .rs из `dir`) в одну строку: у каждого файла
+    /// отрезаем всё от `#[cfg(test)]`, каталоги `tests`/`target`/`vendor`
+    /// пропускаем целиком. Тест — не читатель: ручка, которую трогает только
+    /// её собственная проверка, обязана считаться мёртвой.
+    fn collect_rust_sources(dir: &std::path::Path, out: &mut String) {
+        let Ok(entries) = std::fs::read_dir(dir) else { return };
+        for e in entries.flatten() {
+            let p = e.path();
+            if p.file_name().is_some_and(|n| n == "target" || n == "vendor" || n == "tests") {
+                continue;
+            }
+            if p.is_dir() {
+                collect_rust_sources(&p, out);
+            } else if p.extension().is_some_and(|x| x == "rs") {
+                if let Ok(text) = std::fs::read_to_string(&p) {
+                    out.push_str(text.split("#[cfg(test)]").next().unwrap_or(""));
+                }
+            }
+        }
     }
 }

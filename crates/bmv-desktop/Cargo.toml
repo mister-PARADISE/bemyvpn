@@ -11,8 +11,9 @@ rust-version.workspace = true
 
 [dependencies]
 bmv-tunnel = { path = "../bmv-tunnel" }
-# Только ради `bmv_common::command` — единой точки порождения процессов
-# (на Windows она гасит мигающее окно консоли у route/netsh).
+# `bmv_common::command` — единая точка порождения процессов (на Windows она
+# гасит мигающее окно консоли у route/netsh) и `bmv_common::view` — общий
+# справочник правил показа (годность хоста в переборе кандидатов).
 bmv-common = { path = "../bmv-common" }
 # Гостевой перебор кандидатов и дерево задач раздачи (tunnel.rs / hosting.rs):
 # они одинаковы для GUI и терминала, поэтому живут здесь, а не в бинаре.

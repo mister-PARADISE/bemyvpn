@@ -13,6 +13,7 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use bmv_common::view;
 use bmv_config::Config;
 use bmv_core::BmvEngine;
 use bmv_signal::HostInfo;
@@ -37,34 +38,15 @@ type Ts = Arc<Mutex<Option<std::time::Instant>>>;
 /// зависел бы от того, как мы подписали значение.
 type Pings = Arc<Mutex<std::collections::HashMap<String, Option<u32>>>>;
 
-/// Часы сессии: MM:SS, после часа H:MM:SS (как uptimeText на iOS).
-fn uptime_text(sec: u64) -> String {
-    let (h, m, s) = (sec / 3600, (sec % 3600) / 60, sec % 60);
-    if h > 0 { format!("{h}:{m:02}:{s:02}") } else { format!("{m:02}:{s:02}") }
-}
+// Часы сеанса, подпись протокола, подпись пинга, годность хоста, имя хоста и
+// приведение адреса координатора живут в ОБЩЕМ справочнике `bmv_common::view` —
+// одном на все оболочки. Своих копий здесь больше нет: именно копии и разошлись
+// (пустой протокол окно звало «Обычный», телефон — «Без шифра»). Часовой против
+// второй копии — `crates/bmv-common/tests/one_place_per_rule.rs`.
 
-/// Имя протокола по-человечески (protoName на iOS).
-///
-/// ПУСТАЯ СТРОКА — ЭТО «ОБЫЧНЫЙ», А НЕ «БЕЗ ШИФРА». Хост, не объявивший
-/// протокол в каталоге, всё равно поднимает шифрованный канал (noise — значение
-/// по умолчанию у ядра). Раньше такой хост показывался как незашифрованный:
-/// человек видел «Без шифра» там, где шифр есть, и та же самая запись каталога
-/// в терминале подписывалась «Обычный» — две оболочки говорили противоположное
-/// об одном и том же хосте.
-///
-/// Незнакомое имя показываем КАК ЕСТЬ. Врать «Без шифра» про неизвестный
-/// протокол так же неверно, как врать про пустой: мы про него ничего не знаем.
-fn proto_name(p: &str) -> &str {
-    match p {
-        "" | "noise" | "noise-aes" => "Обычный",
-        "noise-obfs" => "Маскировка",
-        "plain" => "Без шифра",
-        other => other,
-    }
-}
-
+/// Как подписать хост: имя, а без имени — код.
 fn display_name(h: &HostInfo) -> String {
-    if h.name.is_empty() { h.id.clone() } else { h.name.clone() }
+    view::host_display_name(&h.name, &h.id).to_string()
 }
 
 /// Код страны хоста: сперва локально по IP (как iOS), фолбэк — announce-поле.
@@ -112,7 +94,7 @@ fn fill_vpn_card(ui: &AppWindow, h: &HostInfo) {
     ui.set_vpn_ip(if h.ip.is_empty() { "—".into() } else { h.ip.clone().into() });
     ui.set_vpn_country(host_cc(h).unwrap_or_else(|| "—".into()).into());
     ui.set_vpn_guests(format!("{} / {}", h.guests, h.max_guests).into());
-    ui.set_vpn_proto(proto_name(&h.protocol).into());
+    ui.set_vpn_proto(view::proto_name(&h.protocol).into());
     ui.set_vpn_proto_id(h.protocol.clone().into());
 }
 
@@ -250,8 +232,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // app.slint.
         ui.set_resizable(cfg!(windows));
     }
-    ui.set_coord_url(pretty_url(&coord).into());
-    ui.set_coord_field(pretty_url(&coord).into());
+    ui.set_coord_url(view::without_scheme(&coord).into());
+    ui.set_coord_field(view::without_scheme(&coord).into());
     ui.set_coord_is_default(coord == DEFAULT_COORD);
     ui.set_config_error(config_error.into());
     ui.set_vpn_status("VPN выключен".into());
@@ -265,7 +247,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ui.set_host_protocol(saved_proto.into());
     }
     ui.set_server_history(str_model(
-        &store::load_server_history().iter().map(|u| pretty_url(u)).collect::<Vec<_>>(),
+        &store::load_server_history().iter().map(|u| view::without_scheme(u)).collect::<Vec<_>>(),
     ));
 
     // Недавние (для текущего координатора) — id хранятся, имена берём из каталога.
@@ -648,7 +630,7 @@ fn set_row_ping(ui: &AppWindow, id: &str, ms: Option<u32>) {
     for i in 0..rows.row_count() {
         if let Some(mut r) = rows.row_data(i) {
             if r.id == id {
-                r.ping = ms.map(|v| format!("{v} мс")).unwrap_or_else(|| "—".into()).into();
+                r.ping = view::ping(ms).0.into();
                 r.ping_ms = ms.map(|v| v.min(i32::MAX as u32) as i32).unwrap_or(-1);
                 rows.set_row_data(i, r);
                 break;
@@ -695,15 +677,17 @@ fn host_row(h: &HostInfo, pings: &Pings) -> HostRow {
     let (ping_text, ping_ms) = {
         let map = pings.lock().unwrap();
         match map.get(&h.id) {
-            Some(Some(ms)) => (
-                SharedString::from(format!("{ms} мс")),
-                (*ms).min(i32::MAX as u32) as i32,
+            // Подпись — общая (`view::ping`), число уезжает в разметку отдельно:
+            // цвет там считается по нему же, одной линейкой на оба пинга.
+            Some(measured) => (
+                SharedString::from(view::ping(*measured).0),
+                measured.map_or(-1, |ms| ms.min(i32::MAX as u32) as i32),
             ),
-            Some(None) => (SharedString::from("—"), -1),
+            // Ключа нет — ещё не мерили: пусто, у плитки на это своя анимация.
             None => (SharedString::new(), -1),
         }
     };
-    let usable = h.online && h.guests < h.max_guests;
+    let usable = view::host_usable(h.online, h.guests, h.max_guests);
     let cc = host_cc(h);
     let flag_img = cc.as_deref().and_then(flags::flag);
     // Подпись под именем. В свёрнутой строке места мало и она ужимается
@@ -746,7 +730,7 @@ fn host_row(h: &HostInfo, pings: &Pings) -> HostRow {
         country: cc.clone().unwrap_or_else(|| "—".into()).into(),
         guests: format!("{} / {}", h.guests, h.max_guests).into(),
         access: if h.has_password { "по паролю".into() } else { "открытый".into() },
-        proto: proto_name(&h.protocol).into(),
+        proto: view::proto_name(&h.protocol).into(),
         proto_id: h.protocol.clone().into(),
         // Пусто до раскрытия карточки: мерить отклик для строк, на которые никто
         // не смотрит, — зря дёргать чужие машины.
@@ -792,8 +776,8 @@ fn spawn_refresh(
                         *vs = None;
                     }
                 }
-                let vpn_el = vpn_since.lock().unwrap().map(|t| uptime_text(t.elapsed().as_secs()));
-                let host_el = host_started.lock().unwrap().map(|t| uptime_text(t.elapsed().as_secs()));
+                let vpn_el = vpn_since.lock().unwrap().map(|t| view::session_clock(t.elapsed().as_secs()));
+                let host_el = host_started.lock().unwrap().map(|t| view::session_clock(t.elapsed().as_secs()));
                 let (weak2, names) = (weak.clone(), hosts.clone());
                 let _ = slint::invoke_from_event_loop(move || {
                     let Some(ui) = weak2.upgrade() else { return };
@@ -846,7 +830,7 @@ fn spawn_refresh(
             let eng = engine.lock().unwrap().clone();
             // Смена координатора пересоздаёт движок — прерываем ожидание watch.
             let upd = tokio::select! {
-                r = eng.guest_watch(None, false, ver) => Some(r),
+                r = eng.guest_watch(None, ver) => Some(r),
                 _ = async {
                     loop {
                         tokio::time::sleep(Duration::from_millis(500)).await;
@@ -893,7 +877,7 @@ fn spawn_refresh(
                 ui.set_coord_ping(if alive { ping } else { 0 });
                 ui.set_coord_ip(ip.into());
                 if let Some(h) = hist {
-                    ui.set_server_history(str_model(&h.iter().map(|u| pretty_url(u)).collect::<Vec<_>>()));
+                    ui.set_server_history(str_model(&h.iter().map(|u| view::without_scheme(u)).collect::<Vec<_>>()));
                 }
                 if let Some(n) = hosts_n { ui.set_coord_hosts(n); }
 
@@ -1329,49 +1313,26 @@ fn set_host_err(weak: &Weak<AppWindow>, msg: String) {
 
 // ── Сервер (смена координатора) ──────────────────────────────────────────────
 
-/// Адрес для ПОКАЗА — без схемы.
-///
-/// Соединение у нас всегда https, поэтому «https://» перед каждым адресом
-/// занимает место и ничего не сообщает. Хранение и запросы схему сохраняют —
-/// срезается она только на экране.
-pub fn pretty_url(url: &str) -> String {
-    url.trim_start_matches("https://").trim_start_matches("http://").trim_end_matches('/').to_string()
-}
-
-/// Обратно: то, что ввёл человек, → пригодный адрес.
-///
-/// Раз схему мы не показываем, набирать её человек тоже не станет — «bemyvpn.net»
-/// обязано работать. Голому имени приписываем https: небезопасную схему нужно
-/// указать явно, случайно на неё не свалишься.
-fn full_url(input: &str) -> String {
-    // Схему отделяем ДО обрезки хвостовых слэшей. Иначе одинокое «https://»
-    // (человек стёр адрес, оставив схему) превращалось в «https:» и получало
-    // ВТОРУЮ схему спереди — «https://https:», и приложение честно уходило
-    // искать координатор по этому адресу.
-    let t = input.trim();
-    let (scheme, rest) = match (t.strip_prefix("https://"), t.strip_prefix("http://")) {
-        (Some(r), _) => ("https://", r),
-        (_, Some(r)) => ("http://", r),
-        _ => ("https://", t),
-    };
-    format!("{scheme}{}", rest.trim_end_matches('/'))
-}
+// Показ адреса без схемы (`view::without_scheme`) и обратное приведение
+// набранного (`view::coordinator_url`) — тоже в общем справочнике: телефоны на
+// том же вводе молча выходили из настройки, ничего не сохранив.
 
 fn wire_coord(ui: &AppWindow, engine: EngineSlot, coord_full: Arc<Mutex<String>>) {
     let apply = {
         let engine = engine.clone();
         let weak = ui.as_weak();
         move |url: String| {
-            let url = full_url(&url);
-            if url.len() <= "https://".len() { return; }
+            // Пустой ввод — отказ: раньше здесь стояло `url.len() <= "https://".len()`,
+            // и заодно отвергался годный «http://x».
+            let Some(url) = view::coordinator_url(&url) else { return };
             *coord_full.lock().unwrap() = url.clone();
             let mut cfg = engine.lock().unwrap().config().clone();
             cfg.coordinators = vec![url.clone()];
             *engine.lock().unwrap() = Arc::new(BmvEngine::from_config(cfg));
             if let Some(ui) = weak.upgrade() {
                 ui.set_coord_is_default(url == DEFAULT_COORD);
-                ui.set_coord_url(pretty_url(&url).into());
-                ui.set_coord_field(pretty_url(&url).into());
+                ui.set_coord_url(view::without_scheme(&url).into());
+                ui.set_coord_field(view::without_scheme(&url).into());
                 ui.set_coord_state(0);
                 // Выбранный сервер обязан пережить перезапуск: раньше человек
                 // вбивал свой адрес заново после каждого запуска приложения.
@@ -1510,46 +1471,9 @@ mod tests {
         }
     }
 
-    #[test]
-    fn address_loses_its_scheme_on_screen_but_keeps_it_in_use() {
-        assert_eq!(pretty_url("https://bemyvpn.net"), "bemyvpn.net");
-        assert_eq!(pretty_url("http://10.0.0.5:3330"), "10.0.0.5:3330");
-        assert_eq!(pretty_url("https://bemyvpn.net/"), "bemyvpn.net");
-
-        assert_eq!(full_url("bemyvpn.net"), "https://bemyvpn.net");
-        assert_eq!(full_url("  bemyvpn.net/ "), "https://bemyvpn.net");
-        // Явную схему не трогаем — в том числе незашифрованную.
-        assert_eq!(full_url("http://10.0.0.5:3330"), "http://10.0.0.5:3330");
-        // Одна схема без адреса адресом НЕ становится — раньше отсюда выходило
-        // «https://https:», и приложение уходило искать координатор по нему.
-        assert_eq!(full_url("https://"), "https://");
-        assert_eq!(full_url("  "), "https://");
-
-        // Показали → ввели обратно → адрес тот же.
-        for u in ["https://bemyvpn.net", "http://10.0.0.5:3330"] {
-            let shown = pretty_url(u);
-            let back = full_url(&shown);
-            assert_eq!(back.trim_start_matches("https://").trim_start_matches("http://"), shown);
-        }
-    }
-
-    /// Показ и работа используют РАЗНЫЕ формы адреса — и путать их нельзя.
-    ///
-    /// На экране адрес идёт доменом. Но тем же значением подключаются и по нему
-    /// же ключуются «Недавние». Подставь туда домен — запрос не соберётся, а
-    /// недавние запишутся под один ключ и прочитаются под другой, то есть тихо
-    /// исчезнут.
-    #[test]
-    fn display_address_is_never_the_one_used_for_work() {
-        let full = "https://bemyvpn.net";
-        let shown = pretty_url(full);
-        assert_ne!(shown, full, "показ и работа обязаны различаться");
-        // Полный адрес разбирается как URL, домен — нет.
-        assert!(full.starts_with("https://"));
-        assert!(!shown.contains("://"));
-        // Из показанного всегда восстанавливается рабочий.
-        assert_eq!(full_url(&shown), full);
-    }
+    // Адрес координатора (показ без схемы и обратное приведение) проверяется
+    // там, где теперь и живёт, — `bmv_common::view`. Здесь остаются проверки
+    // самого окна.
 
     #[test]
     fn building_a_row_with_a_known_ping_does_not_deadlock() {
@@ -1582,53 +1506,9 @@ mod tests {
         assert_eq!(seen[2], (String::new(), -1));
     }
 
-    /// ХОСТ БЕЗ ОБЪЯВЛЕННОГО ПРОТОКОЛА — ЭТО «ОБЫЧНЫЙ», А НЕ «БЕЗ ШИФРА».
-    ///
-    /// Он поднимает шифрованный канал (noise по умолчанию), но подписывался как
-    /// незашифрованный — самый опасный вид ошибки в подписи: человек отказывался
-    /// от безопасного хоста или, наоборот, переставал верить надписи вообще.
-    /// Тот же вход в терминале давал «Обычный» — оболочки противоречили друг другу.
-    #[test]
-    fn a_host_that_did_not_name_its_protocol_is_not_called_unencrypted() {
-        assert_eq!(proto_name(""), "Обычный");
-        assert_eq!(proto_name("noise"), "Обычный");
-        assert_eq!(proto_name("noise-aes"), "Обычный");
-        assert_eq!(proto_name("noise-obfs"), "Маскировка");
-        // «Без шифра» остаётся ровно за тем протоколом, который и правда без шифра.
-        assert_eq!(proto_name("plain"), "Без шифра");
-        // Незнакомое имя показываем как есть: врать про него мы тоже не вправе.
-        assert_eq!(proto_name("wireguard"), "wireguard");
-        // И терминальная оболочка обязана говорить о том же самом то же самое.
-        for p in ["", "noise", "noise-obfs", "plain"] {
-            assert!(
-                bmv_cli_proto_agrees(p, proto_name(p)),
-                "оболочки расходятся в подписи протокола «{p}»",
-            );
-        }
-    }
-
-    /// Что о протоколе говорит терминал (tui.rs::proto_short без эмодзи).
-    fn bmv_cli_proto_agrees(p: &str, gui: &str) -> bool {
-        let cli = match p {
-            "noise-obfs" => "Маскировка",
-            "plain" => "Без шифра",
-            "" | "noise" => "Обычный",
-            other => other,
-        };
-        cli == gui
-    }
-
-    #[test]
-    fn session_clock_reads_like_a_clock() {
-        assert_eq!(uptime_text(0), "00:00");
-        assert_eq!(uptime_text(9), "00:09");
-        assert_eq!(uptime_text(75), "01:15");
-        assert_eq!(uptime_text(3599), "59:59");
-        // После часа появляется разряд часов — и минуты остаются двузначными.
-        assert_eq!(uptime_text(3600), "1:00:00");
-        assert_eq!(uptime_text(3661), "1:01:01");
-        assert_eq!(uptime_text(36_000), "10:00:00");
-    }
+    // Подпись протокола и часы сеанса переехали в `bmv_common::view` вместе со
+    // своими проверками. Здесь стоял ещё и ручной пересказ терминальной ветки
+    // (`bmv_cli_proto_agrees`) — сверка копии с копией. Копия теперь одна.
 
     fn h(id: &str, online: bool) -> HostInfo {
         HostInfo { id: id.into(), online, ..HostInfo::default() }

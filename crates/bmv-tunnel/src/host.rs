@@ -615,6 +615,63 @@ mod tests {
         assert_eq!(embedded_v4(v6("2001:db8::1")), None);
     }
 
+    // ── КАТЕГОРИЯ Б: фильтр ПРИМЕНЁН, а не просто написан ────────────────────
+    //
+    // Все тесты выше проверяют ЧИСТУЮ ФУНКЦИЮ `dst_allowed_with`. Ни один не
+    // ловил удаление строки `if !dst_allowed(&dst) { continue }` в `accept_loop`:
+    // фильтр оставался безупречным и никем не вызванным, а дыра — открытой.
+    // Ниже — настоящий `run_host` и настоящий сокет-жертва на петле.
+
+    /// Собрать IP-пакет гостя к жертве. `tcp = true` — SYN, иначе датаграмма.
+    fn packet_to(victim: std::net::SocketAddr, tcp: bool) -> Vec<u8> {
+        let dst = match victim.ip() {
+            std::net::IpAddr::V4(v4) => v4.octets(),
+            _ => unreachable!("жертва слушает на IPv4"),
+        };
+        let ip = etherparse::PacketBuilder::ipv4([10, 7, 0, 2], dst, 64);
+        let mut out = Vec::new();
+        if tcp {
+            let b = ip.tcp(40000, victim.port(), 1000, 32 * 1024).syn();
+            b.write(&mut out, &[]).unwrap();
+        } else {
+            let b = ip.udp(40000, victim.port());
+            b.write(&mut out, b"payload").unwrap();
+        }
+        out
+    }
+
+    /// TCP-ПОТОК ГОСТЯ ВО ВНУТРЕННЮЮ СЕТЬ НЕ ОТКРЫВАЕТСЯ. Гость сам пишет адрес
+    /// назначения — здесь это 127.0.0.1, то есть локальная админка/БД хозяина.
+    #[tokio::test]
+    async fn a_guest_tcp_stream_never_reaches_the_loopback() {
+        let victim = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = victim.local_addr().unwrap();
+
+        let (host_link, guest) = bmv_common::wire::memory_pair(64);
+        let _session = tokio::spawn(super::run_host(std::sync::Arc::from(host_link)));
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await; // стек поднимается
+        bmv_common::Link::send(&*guest, &packet_to(addr, true)).await.unwrap();
+
+        let got = tokio::time::timeout(std::time::Duration::from_secs(2), victim.accept()).await;
+        assert!(got.is_err(), "хост открыл гостю TCP-сокет на петлю ({addr}) — SSRF-фильтр не применён");
+    }
+
+    /// То же для UDP: своя ветка в `accept_loop`, свой `continue`, своя дыра.
+    #[tokio::test]
+    async fn a_guest_udp_datagram_never_reaches_the_loopback() {
+        let victim = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let addr = victim.local_addr().unwrap();
+
+        let (host_link, guest) = bmv_common::wire::memory_pair(64);
+        let _session = tokio::spawn(super::run_host(std::sync::Arc::from(host_link)));
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        bmv_common::Link::send(&*guest, &packet_to(addr, false)).await.unwrap();
+
+        let mut buf = [0u8; 64];
+        let got = tokio::time::timeout(std::time::Duration::from_secs(2), victim.recv_from(&mut buf)).await;
+        assert!(got.is_err(), "хост отправил датаграмму гостя на петлю ({addr}) — SSRF-фильтр не применён");
+    }
+
     #[test]
     fn ssrf_blocks_internal_allows_public() {
         // По умолчанию env не задан → приватка/петля/метаданные запрещены.

@@ -10,6 +10,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use bmv_common::view::{self, Alarm};
 use bmv_config::Config;
 use bmv_core::BmvEngine;
 use bmv_signal::HostInfo;
@@ -410,7 +411,7 @@ fn handle_input_key(
                     app.lock().unwrap().toast("Пароль обновлён");
                     persist(engine, app);
                 }
-                InputKind::Coordinator => match full_url(&buf) {
+                InputKind::Coordinator => match view::coordinator_url(&buf) {
                     Some(url) => {
                         switch_coordinator(engine, app, url);
                         persist(engine, app);
@@ -420,7 +421,8 @@ fn handle_input_key(
                     None => app.lock().unwrap().toast("Адрес пустой — введите адрес сервера"),
                 },
                 InputKind::SrvDomain => {
-                    let d = buf.trim().trim_end_matches('/').trim_start_matches("https://").trim_start_matches("http://").to_string();
+                    // Схему срезаем тем же правилом, что и на экране адреса.
+                    let d = view::without_scheme(&buf);
                     {
                         let mut a = app.lock().unwrap();
                         a.srv_cfg.domain = d.clone();
@@ -825,25 +827,6 @@ fn spawn_autostart_toggle(host: bool, engine: &EngineSlot, app: &Shared) {
     });
 }
 
-/// То, что набрал человек, → пригодный адрес координатора. Пусто → None.
-///
-/// Голому имени приписываем https: незашифрованную схему нужно указывать явно,
-/// случайно на неё свалиться нельзя. Ровно та же логика, что в окне
-/// (main.rs::full_url) — иначе один и тот же адрес принимался бы в одной
-/// оболочке и отвергался в другой.
-fn full_url(input: &str) -> Option<String> {
-    // Схему отделяем ДО обрезки хвостовых слэшей: иначе «https://» само
-    // превращалось в «https:» и получало ещё одну схему спереди.
-    let t = input.trim();
-    let (scheme, rest) = match (t.strip_prefix("https://"), t.strip_prefix("http://")) {
-        (Some(r), _) => ("https://", r),
-        (_, Some(r)) => ("http://", r),
-        _ => ("https://", t),
-    };
-    let rest = rest.trim_end_matches('/');
-    (!rest.is_empty()).then(|| format!("{scheme}{rest}"))
-}
-
 /// Сменить координатор: пересоздаём движок с новым адресом (список станет живым в фоне).
 fn switch_coordinator(engine: &EngineSlot, app: &Shared, url: String) {
     let mut cfg = engine.lock().unwrap().config().clone();
@@ -886,6 +869,17 @@ fn start_vpn(engine: &EngineSlot, app: &Shared, vpn_task: &mut VpnTask) {
         app.lock().unwrap().toast("Сначала выберите хост в списке");
         return;
     };
+    // Забитый (и мёртвый) хост не годится — то же правило, по которому в трёх
+    // других оболочках гаснет кнопка. Раньше терминал позволял нажать, уходил в
+    // сеть и возвращался отказом: выглядело как «программа не работает».
+    if !view::host_usable(host.online, host.guests, host.max_guests) {
+        app.lock().unwrap().toast(if host.online {
+            "На этом хосте нет свободных мест — выберите другой"
+        } else {
+            "Этот хост не на связи — выберите другой"
+        });
+        return;
+    }
     if host.has_password {
         app.lock().unwrap().input = Some(Input { kind: InputKind::GuestPassword(host), buffer: String::new(), masked: true });
     } else {
@@ -965,8 +959,9 @@ fn connect_to(engine: &EngineSlot, app: &Shared, vpn_task: &mut VpnTask, host: H
     connect_queue(engine, app, vpn_task, vec![host], password);
 }
 
+/// Как подписать хост: имя, а без имени — код (общее правило, `bmv_common::view`).
 fn host_name(h: &HostInfo) -> String {
-    if h.name.is_empty() { h.id.clone() } else { h.name.clone() }
+    view::host_display_name(&h.name, &h.id).to_string()
 }
 
 /// Отключиться ВЕЖЛИВО: сначала «стоп» (задача успеет отправить BYE и откатить
@@ -1032,7 +1027,11 @@ fn start_host(engine: &EngineSlot, app: &Shared, host_engine: &HostEngine, host_
             hcfg.host.code_sig = sig;
         }
         let mut used_sig = hcfg.host.code_sig.clone();
-        let mut engine = Arc::new(BmvEngine::from_config(hcfg.clone()));
+        // `with_owner_token` — владельческий токен записи в каталоге. Без него
+        // каждый запуск приходил к координатору новым устройством и на свой же
+        // код получал «занят другим устройством», пока прежняя запись не
+        // протухнет. См. крышку функции в main.rs.
+        let mut engine = Arc::new(BmvEngine::from_config(crate::with_owner_token(hcfg.clone())));
         let mut announce = engine.host_bind_announce().await;
         // 403 = координатор не признаёт нашу пару код+подпись (сервер сменили,
         // код отозвали, конфиг переехал). Раньше терминал на этом просто вставал
@@ -1045,7 +1044,7 @@ fn start_host(engine: &EngineSlot, app: &Shared, host_engine: &HostEngine, host_
                     fresh.host.id = c;
                     fresh.host.code_sig = s.clone();
                     used_sig = s;
-                    engine = Arc::new(BmvEngine::from_config(fresh));
+                    engine = Arc::new(BmvEngine::from_config(crate::with_owner_token(fresh)));
                     announce = engine.host_bind_announce().await;
                 }
             }
@@ -1191,7 +1190,7 @@ fn spawn_refresh(engine: EngineSlot, app: Shared) {
             // видно), либо ~25с тишины как idle-heartbeat. Смена координатора
             // в меню прерывает ожидание (движок пересоздан — ptr сменился).
             let upd = tokio::select! {
-                r = eng.guest_watch(None, false, ver) => Some(r),
+                r = eng.guest_watch(None, ver) => Some(r),
                 _ = async {
                     loop {
                         tokio::time::sleep(Duration::from_millis(500)).await;
@@ -1398,7 +1397,7 @@ fn vpn_tab(f: &mut Frame, area: Rect, a: &App) {
             let h = a.hosts.iter().find(|h| &h.id == id);
             let ip = h.and_then(|h| h.endpoints.first()).map(|e| e.as_str()).unwrap_or("—");
             let guests = h.map(|h| format!("{}/{}", h.guests, h.max_guests)).unwrap_or_else(|| "—".into());
-            let proto = h.map(|h| proto_short(&h.protocol)).unwrap_or("");
+            let proto = h.map(|h| proto_short(&h.protocol)).unwrap_or_default();
             vec![
                 Line::from(vec![
                     Span::styled(format!("{} Подключено", dot_on()), Style::default().fg(GREEN).add_modifier(Modifier::BOLD)),
@@ -1424,18 +1423,30 @@ fn vpn_tab(f: &mut Frame, area: Rect, a: &App) {
         a.hosts
             .iter()
             .map(|h| {
-                let name = if h.name.is_empty() { h.id.as_str() } else { h.name.as_str() };
+                let name = view::host_display_name(&h.name, &h.id);
                 let dot = if h.online { dot_on() } else { dot_off() };
                 let lock = if h.has_password { " 🔒" } else { "" };
                 let cc = if h.country.is_empty() { String::new() } else { format!("  {}", h.country) };
-                ListItem::new(Line::from(vec![
+                // Забитый хост ГАСНЕТ — здесь это замена погашенной кнопке из
+                // трёх других оболочек: подключиться к нему всё равно нельзя.
+                let usable = view::host_usable(h.online, h.guests, h.max_guests);
+                let mut spans = vec![
                     Span::raw(format!("{dot} ")),
-                    Span::styled(format!("{name}{lock}"), Style::default().fg(Color::White)),
+                    Span::styled(format!("{name}{lock}"), Style::default().fg(if usable { Color::White } else { DIM })),
                     Span::styled(
-                        format!("   👥 {}/{}{cc}   {}{}", h.guests, h.max_guests, proto_short(&h.protocol), ping_text(a, &h.id)),
+                        format!("   👥 {}/{}{cc}   {}", h.guests, h.max_guests, proto_short(&h.protocol)),
                         Style::default().fg(DIM),
                     ),
-                ]))
+                ];
+                // Отклик есть только у выбранного хоста (меряем один — см.
+                // spawn_refresh), и цифра красится по общей линейке тревоги.
+                if let Some((pid, ms)) = &a.host_ping {
+                    if pid == &h.id {
+                        let (text, alarm) = view::ping(*ms);
+                        spans.push(Span::styled(format!("   ⏱ {text}"), Style::default().fg(alarm_color(alarm))));
+                    }
+                }
+                ListItem::new(Line::from(spans))
             })
             .collect()
     };
@@ -1455,16 +1466,6 @@ fn vpn_tab(f: &mut Frame, area: Rect, a: &App) {
         .highlight_style(Style::default().bg(SEL).fg(Color::White).add_modifier(Modifier::BOLD))
         .highlight_symbol("");
     f.render_stateful_widget(list, rows[1], &mut st);
-}
-
-/// Подпись отклика для строки хоста: «· 24 мс», «· нет ответа» или пусто, если
-/// этот хост ещё не мерили (меряется только выбранный — см. spawn_refresh).
-fn ping_text(a: &App, id: &str) -> String {
-    match &a.host_ping {
-        Some((pid, Some(ms))) if pid == id => format!("   ⏱ {ms} мс"),
-        Some((pid, None)) if pid == id => "   ⏱ не отвечает".to_string(),
-        _ => String::new(),
-    }
 }
 
 fn host_tab(f: &mut Frame, area: Rect, a: &App) {
@@ -1563,10 +1564,19 @@ fn server_tab(f: &mut Frame, area: Rect, a: &App) {
         .split(area);
 
     // ── Статус-карточка: связь с координатором + состояние своего сервера.
-    let link = match a.coord_ok {
-        Some(true) => Span::styled(format!("{} на связи · {} мс", dot_on(), a.coord_ping), Style::default().fg(GREEN)),
-        Some(false) => Span::styled(format!("{} нет связи — восстанавливаю", dot_err()), Style::default().fg(Color::Red)),
-        None => Span::styled(format!("{} проверяю…", dot_wait()), Style::default().fg(DIM)),
+    // Пинг координатора — по той же линейке, что и до хоста. Зелёным осталось
+    // «на связи»: зелёный тут значит «работает», а не «быстро», и на цифре он
+    // хвалил бы любой отклик, включая красный.
+    let link: Vec<Span> = match a.coord_ok {
+        Some(true) => {
+            let (text, alarm) = view::ping(Some(a.coord_ping));
+            vec![
+                Span::styled(format!("{} на связи · ", dot_on()), Style::default().fg(GREEN)),
+                Span::styled(text, Style::default().fg(alarm_color(alarm))),
+            ]
+        }
+        Some(false) => vec![Span::styled(format!("{} нет связи — восстанавливаю", dot_err()), Style::default().fg(Color::Red))],
+        None => vec![Span::styled(format!("{} проверяю…", dot_wait()), Style::default().fg(DIM))],
     };
     let ip = if a.my_ip.is_empty() { "—".to_string() } else { a.my_ip.clone() };
     let srv_line = if a.auto_srv == Some(true) {
@@ -1579,7 +1589,7 @@ fn server_tab(f: &mut Frame, area: Rect, a: &App) {
         }
     };
     let head = vec![
-        Line::from(vec![link, Span::styled(format!("    🌍 ваш IP: {ip}"), Style::default().fg(DIM))]),
+        Line::from([link, vec![Span::styled(format!("    🌍 ваш IP: {ip}"), Style::default().fg(DIM))]].concat()),
         Line::from(srv_line),
     ];
     f.render_widget(Paragraph::new(head).wrap(Wrap { trim: true }).block(card(" Связь ")), rows[0]);
@@ -1623,15 +1633,13 @@ fn qr_lines(text: &str) -> Vec<String> {
     }
 }
 
+/// Часы сеанса — общие с окном: «12:34», а не «12 мин».
+///
+/// Минутная подпись стояла на месте по шестьдесят секунд и читалась как
+/// зависшая программа — а смотрят на неё как раз тогда, когда сомневаются,
+/// работает ли VPN.
 fn uptime(since: Instant) -> String {
-    let s = since.elapsed().as_secs();
-    if s < 60 {
-        format!("{s} сек")
-    } else if s < 3600 {
-        format!("{} мин", s / 60)
-    } else {
-        format!("{} ч {} мин", s / 3600, (s % 3600) / 60)
-    }
+    view::session_clock(since.elapsed().as_secs())
 }
 
 /// Имя хоста по умолчанию. НЕ имя машины: оно уходит в публичный каталог,
@@ -1645,14 +1653,30 @@ fn default_host_name() -> String {
     bmv_common::default_host_name(None)
 }
 
-// Значки — эмодзи-презентации (ширина 2 в любом Unicode), чтобы терминал не
-// «съедал» пробел после них (🕶/🛡 были текст-презентации шириной 1 → липли).
-fn proto_short(p: &str) -> &str {
-    match p {
-        "noise-obfs" => "🎭 Маскировка",
-        "plain" => "🔓 Без шифра",
-        "" | "noise" => "🔐 Обычный",
-        other => other,
+/// Протокол: подпись из общего справочника, значок — свой, терминальный.
+///
+/// Значки — эмодзи-презентации (ширина 2 в любом Unicode), чтобы терминал не
+/// «съедал» пробел после них (🕶/🛡 были текст-презентации шириной 1 → липли).
+/// Именно поэтому справочник отдаёт УРОВЕНЬ защиты, а не имя картинки: у окна и
+/// телефонов на его месте свои наборы значков.
+fn proto_short(p: &str) -> String {
+    let name = view::proto_name(p);
+    match view::protection(p) {
+        view::Protection::Encrypted => format!("🔐 {name}"),
+        view::Protection::Masked => format!("🎭 {name}"),
+        view::Protection::Plain => format!("🔓 {name}"),
+        // Про незнакомый протокол значок соврал бы в любую сторону.
+        view::Protection::Unknown => name.to_string(),
+    }
+}
+
+/// Чем красить цифру отклика. Порог задаёт справочник, цвет выбирает оболочка.
+/// «Норма молчит» и «нет ответа» в терминале одинаково тихие — тревога цветная.
+fn alarm_color(a: Alarm) -> Color {
+    match a {
+        Alarm::Amber => Color::Yellow,
+        Alarm::Red => Color::Red,
+        Alarm::Calm | Alarm::Muted => DIM,
     }
 }
 
@@ -1733,29 +1757,41 @@ mod tests {
 
     #[test]
     fn helpers() {
-        assert_eq!(uptime(Instant::now()), "0 сек");
+        // Часы сеанса и подпись протокола — общие (`bmv_common::view`), там же
+        // их проверки. Здесь остаётся то, что делает сам терминал: свой значок
+        // поверх общей подписи и QR.
+        assert_eq!(uptime(Instant::now()), "00:00");
         assert_eq!(proto_short("noise-obfs"), "🎭 Маскировка");
         assert_eq!(proto_short(""), "🔐 Обычный");
+        assert_eq!(proto_short("plain"), "🔓 Без шифра");
+        // Незнакомому протоколу значка не выдаём — врать нечем.
+        assert_eq!(proto_short("wireguard"), "wireguard");
         assert!(!qr_lines("bemyvpn://ABCD1234").is_empty());
     }
 
-    /// Адрес координатора можно набрать без схемы.
+    /// Забитый хост не подключается: нажатие отвечает словами, а не сетью.
     ///
-    /// Раньше «bemyvpn.net» отвергалось с требованием начать с http, хотя в окне
-    /// то же самое работает — одна и та же строка принималась в одной оболочке и
-    /// не принималась в другой.
+    /// Раньше терминал пускал попытку к хосту без мест — она уходила наружу и
+    /// возвращалась отказом, а выглядело это как «программа не работает». Три
+    /// другие оболочки в тот же момент гасили кнопку.
     #[test]
-    fn a_coordinator_address_does_not_need_its_scheme_typed_by_hand() {
-        assert_eq!(full_url("bemyvpn.net").as_deref(), Some("https://bemyvpn.net"));
-        assert_eq!(full_url("  bemyvpn.net/ ").as_deref(), Some("https://bemyvpn.net"));
-        // Явную схему не трогаем — в том числе незашифрованную: на неё нужно
-        // сваливаться осознанно, а не молча.
-        assert_eq!(full_url("http://10.0.0.5:3330").as_deref(), Some("http://10.0.0.5:3330"));
-        assert_eq!(full_url("https://свой.сервер").as_deref(), Some("https://свой.сервер"));
-        // А вот из ничего адреса не бывает.
-        assert!(full_url("").is_none());
-        assert!(full_url("   ").is_none());
-        assert!(full_url("https://").is_none());
+    fn a_full_host_is_refused_before_anything_goes_to_the_network() {
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let _g = rt.enter();
+
+        let mut a = mk(Tab::Vpn, Vpn::Off, HostMode::Off);
+        a.hosts = vec![HostInfo { id: "FULL".into(), online: true, guests: 8, max_guests: 8, ..Default::default() }];
+        a.toast = None;
+        let app: Shared = Arc::new(Mutex::new(a));
+        let engine: EngineSlot = Arc::new(Mutex::new(Arc::new(BmvEngine::from_config(Config::default()))));
+        let mut task: VpnTask = None;
+
+        start_vpn(&engine, &app, &mut task);
+
+        let a = app.lock().unwrap();
+        assert!(task.is_none(), "к забитому хосту не должно уходить ни одной попытки");
+        assert!(matches!(a.vpn, Vpn::Off), "состояние VPN трогать не за что");
+        assert!(a.toast.as_ref().is_some_and(|(t, _)| t.contains("нет свободных мест")), "молчаливый отказ — это «ничего не произошло»: {:?}", a.toast);
     }
 
     /// ЧАСОВОЙ НА САМОДЕДЛОК: `apply_host` не должна держать лок, пока крутится

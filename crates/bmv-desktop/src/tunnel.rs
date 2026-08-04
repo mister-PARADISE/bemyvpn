@@ -39,9 +39,16 @@ pub fn rank_candidates(
 ) -> Vec<HostInfo> {
     let mut cands: Vec<HostInfo> = hosts
         .iter()
-        // Хост с паролем в «Старт» не годится: пароля у нас нет, а спрашивать
-        // его у человека — это уже не «одна кнопка».
-        .filter(|h| h.online && !h.has_password && h.guests < h.max_guests && h.id != own_id)
+        // Годность («живой и есть место») — общее правило, одно на все оболочки:
+        // терминал по нему же гасит подключение к забитому хосту.
+        //
+        // Хост с паролем в «Старт» не годится сверх того: пароля у нас нет, а
+        // спрашивать его у человека — это уже не «одна кнопка».
+        .filter(|h| {
+            bmv_common::view::host_usable(h.online, h.guests, h.max_guests)
+                && !h.has_password
+                && h.id != own_id
+        })
         .cloned()
         .collect();
     cands.sort_by(|a, b| {

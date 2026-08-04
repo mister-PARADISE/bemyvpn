@@ -2477,6 +2477,72 @@ mod tests {
             }
         }
 
+        /// Анонс с ПРОИЗВОЛЬНЫМИ флагами видимости — ровно то, что может прислать
+        /// подменённый клиент (в `announce` они всегда дефолтные).
+        async fn announce_as<S>(ws: &mut S, id: &str, public: bool, has_password: bool) -> String
+        where
+            S: SinkExt<CMsg, Error = tokio_tungstenite::tungstenite::Error>
+                + StreamExt<Item = std::result::Result<CMsg, tokio_tungstenite::tungstenite::Error>>
+                + Unpin,
+        {
+            let mut a = serde_json::to_value(ann(id, "tok", "Сеть")).unwrap();
+            a["t"] = serde_json::json!("host");
+            a["public"] = serde_json::json!(public);
+            a["has_password"] = serde_json::json!(has_password);
+            ws.send(CMsg::Text(a.to_string())).await.unwrap();
+            reply(ws).await
+        }
+
+        /// Подписаться на каталог и вернуть id из первого же снимка (`dirfull`).
+        async fn dir_ids(addr: SocketAddr) -> Vec<String> {
+            let mut ws = client(addr, "45.11.22.77").await;
+            ws.send(CMsg::Text(serde_json::json!({"t":"watch"}).to_string())).await.unwrap();
+            loop {
+                match tokio::time::timeout(Duration::from_secs(5), ws.next()).await {
+                    Ok(Some(Ok(CMsg::Text(t)))) => {
+                        let v: serde_json::Value = serde_json::from_str(&t).unwrap();
+                        if v["t"] == "dirfull" {
+                            return v["hosts"]
+                                .as_array()
+                                .unwrap()
+                                .iter()
+                                .map(|h| h["id"].as_str().unwrap_or("").to_string())
+                                .collect();
+                        }
+                    }
+                    Ok(Some(Ok(_))) => continue,
+                    other => panic!("каталог не приехал: {other:?}"),
+                }
+            }
+        }
+
+        /// ПАРОЛЬ ⇒ СЕТЬ СКРЫТА, И РЕШАЕТ ЭТО СЕРВЕР. Ядро правило соблюдает, но
+        /// клиент подменяем: сюда приходит анонс, где `has_password` и `public`
+        /// стоят ОБА. Запись каталога содержит `id` — то есть код доступа, — и
+        /// одного лишнего хоста в снимке достаточно, чтобы раздать код запароленной
+        /// сети всем гостям сразу.
+        ///
+        /// Проверять это на клиенте (единственный прежний тест жил в `bmv-core`)
+        /// бессмысленно: недоверенная сторона не может доказывать правило о себе.
+        /// Три строки на сервере удалялись без единого красного теста.
+        #[tokio::test]
+        async fn a_password_hides_the_network_whatever_the_client_claims() {
+            let addr = spawn_coord().await;
+            let mut hidden = client(addr, "45.11.22.33").await;
+            assert_eq!(announce_as(&mut hidden, "PWDHOST00001", true, true).await, "hostok");
+            // Контроль: без пароля публичная сеть в каталоге БЫТЬ обязана —
+            // иначе тест зеленел бы и на сломанной подписке.
+            let mut open = client(addr, "45.11.22.55").await;
+            assert_eq!(announce_as(&mut open, "OPENHOST0001", true, false).await, "hostok");
+
+            let ids = dir_ids(addr).await;
+            assert!(ids.iter().any(|i| i == "OPENHOST0001"), "публичной сети нет в каталоге — сломана подписка, а не правило: {ids:?}");
+            assert!(
+                !ids.iter().any(|i| i == "PWDHOST00001"),
+                "запароленная сеть попала в каталог: её КОД ДОСТУПА уехал всем гостям ({ids:?})",
+            );
+        }
+
         /// ХОСТЫ-ПРИЗРАКИ. Один сокет присылает `host` с РАЗНЫМИ id (так делает
         /// живой клиент, когда меняет код сети, не разрывая соединение). Канал
         /// заводился только для первого id, а «жив» ставилось каждому — и все,

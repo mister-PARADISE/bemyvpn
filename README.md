@@ -238,8 +238,21 @@ Let's Encrypt — см. [docs/RUNNING.md](docs/RUNNING.md).</sub>
 ```bash
 cargo build --release -p bmv-cli   # → target/release/bemyvpn (клиент+хост+сервер+меню)
 cargo build --release -p bmv-gui   # → десктопное GUI-приложение
-cargo test --workspace             # тесты ядра
 ```
+
+Тесты — **три прогона**, и это не забывчивость: координатор и форк `ipstack`
+намеренно вне workspace (свои зависимости), поэтому `--workspace` их НЕ ВИДИТ и
+молча пропускает. Гонять надо все три — ровно это делает CI
+(`.github/workflows/ci.yml`):
+
+```bash
+cargo test --workspace                                    # ядро и оболочки
+cargo test --manifest-path server/coordinator/Cargo.toml  # координатор
+cargo test --manifest-path vendor/ipstack/Cargo.toml      # форк ipstack
+```
+
+Четвёртый, форк `wintun`, собирается только под Windows — там же его и гоняем
+(`cargo test --manifest-path vendor/wintun/Cargo.toml`).
 
 Android: `apps/android` (JDK 17 + Android SDK/NDK, см. gradlew).
 

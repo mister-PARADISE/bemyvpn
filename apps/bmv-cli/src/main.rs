@@ -89,9 +89,10 @@ enum Cmd {
         /// Фильтр по стране (например RU).
         #[arg(long)]
         country: Option<String>,
-        /// Только публичные хосты.
-        #[arg(long)]
-        public: bool,
+        // Здесь был `--public`: «только публичные хосты». Каталог координатора
+        // и так состоит ТОЛЬКО из публичных, поэтому `--public` и его отсутствие
+        // давали побайтово один и тот же список — ручка обещала фильтр, которого
+        // не было. Скрытая сеть ищется по коду (`--connect <код>`), а не флагом.
         /// id хоста, к которому подключиться (иначе просто список).
         #[arg(long)]
         connect: Option<String>,
@@ -251,7 +252,10 @@ async fn main() {
         }
     }
 
-    let engine = std::sync::Arc::new(BmvEngine::from_config(config));
+    // `with_owner_token`: раздача из терминала переживает перезапуск как ТОТ ЖЕ
+    // владелец записи в каталоге (иначе координатор отвечает «код занят другим
+    // устройством» и служба молчит 15–30 секунд).
+    let engine = std::sync::Arc::new(BmvEngine::from_config(with_owner_token(config)));
 
     match cmd {
         Cmd::Version => println!("{}", bmv_common::version::VERSION),
@@ -291,11 +295,10 @@ async fn main() {
 
         Cmd::Guest {
             country,
-            public,
             connect,
             password,
             tunnel,
-        } => run_guest(&engine, country, public, connect, password, tunnel).await,
+        } => run_guest(&engine, country, connect, password, tunnel).await,
 
         Cmd::Server { .. } => run_server(engine.config()).await,
 
@@ -401,7 +404,6 @@ async fn run_host(engine: std::sync::Arc<BmvEngine>, tunnel: bool) {
 async fn run_guest(
     engine: &BmvEngine,
     country: Option<String>,
-    public: bool,
     connect: Option<String>,
     password: Option<String>,
     tunnel: bool,
@@ -409,7 +411,7 @@ async fn run_guest(
     match connect {
         None => {
             print!("Беру список хостов из каталога… ");
-            match engine.guest_list(country, public).await {
+            match engine.guest_list(country).await {
                 Ok(hosts) if hosts.is_empty() => println!("пусто (нет живых хостов)"),
                 Ok(hosts) => {
                     println!("нашёл {}:", hosts.len());
@@ -417,7 +419,7 @@ async fn run_guest(
                         let lock = if h.has_password { "🔒приват" } else { "🔓откр" };
                         let vis = if h.public { "публичный" } else { "скрытый" };
                         let status = if h.online { "🟢" } else { "⚪️" };
-                        let name = if h.name.is_empty() { h.id.clone() } else { h.name.clone() };
+                        let name = bmv_common::view::host_display_name(&h.name, &h.id);
                         let ip = h.endpoints.first().map(|e| e.as_str()).unwrap_or("—");
                         println!(
                             "  {status} {name} ({})  [{}]  {}  {}/{} гостей  {}",
@@ -435,56 +437,46 @@ async fn run_guest(
                     "Поднимаю ТУННЕЛЬ к {host_id} (знакомимся через сервер → пробиваем прямой канал → {})…",
                     engine.active_protocol()
                 );
-                // Узнаём протокол хоста из каталога — гость обязан ему следовать.
-                let host_proto = engine
-                    .guest_list(None, false)
-                    .await
-                    .ok()
-                    .and_then(|hs| hs.into_iter().find(|h| h.id == host_id))
-                    .map(|h| h.protocol)
-                    .filter(|p| !p.is_empty());
-                let (peer, link) = match engine
-                    .guest_establish(&host_id, password.as_deref(), host_proto.as_deref())
-                    .await
-                {
-                    Ok(v) => v,
-                    Err(e) => fail(format!("не соединился. {e}")),
+                // Карточка хоста нужна за протоколом — гость обязан следовать
+                // хостовому. Спрашиваем ПО КОДУ, а не перебором каталога: так
+                // находится и СКРЫТАЯ сеть (её в каталоге нет), а неверный код
+                // отсекается прямо здесь понятным текстом — не общим «не удалось
+                // подключиться» через полминуты попыток.
+                let proto = match engine.guest_resolve(&host_id).await {
+                    Ok(Some(h)) => h.protocol,
+                    Ok(None) => fail(format!("хоста с кодом {host_id} нет — проверьте код.")),
+                    Err(e) => fail(format!("каталог недоступен. {e}")),
                 };
-                let params = bmv_tunnel::TunParams::guest();
-                let (device, ifname) = match bmv_desktop::make_tun(&params) {
-                    Ok(d) => d,
-                    Err(e) => fail(format!("не создать сетевой интерфейс — нужен sudo. {e}")),
-                };
-                // Полный туннель: split-default заворачивает ВЕСЬ трафик через хост,
-                // хост пинуется через реальный шлюз (анти-петля), DNS → 8.8.8.8.
-                // Снимается на Drop (тот же RouteGuard, что и в GUI). Ctrl+C → откат.
-                // Режим IPv6 берём ИЗ КОНФИГА, а не подразумеваем. Здесь стоял
-                // `install()`, у которого он всегда «блокировать», и прописанное
-                // человеком `guest.ipv6 = "allow"` до маршрутов не доезжало — а оно
-                // нужно там, где v6 единственный транспорт (NAT64/464XLAT): глухая
-                // блокировка оставляет не «без VPN», а вообще без интернета.
-                let _guard = match bmv_desktop::RouteGuard::install_with(
-                    peer.ip(),
-                    &ifname,
-                    engine.config().guest.ipv6_mode(),
-                ) {
-                    Ok(g) => g,
-                    Err(e) => fail(format!("не настроить маршруты — нужен sudo. {e}")),
-                };
-                println!("  соединён с {peer}. Весь трафик идёт через хост (интерфейс {ifname}).");
-                let link: std::sync::Arc<dyn bmv_common::Link> = std::sync::Arc::from(link);
-                // Подсказки координатора «проверь соседа» — ТРЕТИЙ слой обнаружения
-                // разрыва (первые два: прощание хоста и таймаут тишины). В TUI и в
-                // окне он есть, здесь его не было: убитый хост, не успевший послать
-                // BYE по UDP, оставлял этот туннель качать в пустоту.
-                let res = tokio::select! {
-                    r = bmv_tunnel::run_guest(device, link.clone()) => r,
-                    _ = BmvEngine::relay_peer_checks(&*link, engine.peer_check()) => unreachable!(),
-                };
-                if let Err(e) = res {
-                    fail(format!("туннель оборвался. {e}"));
+                // Гостевой путь — ОДИН на обе оболочки (`bmv_desktop::tunnel`),
+                // тот же, что зовёт меню. Здесь жила своя копия: без прощания
+                // (хост держал ушедшего гостя лишние 8с, до keepalive-таймаута),
+                // без различения «хост погасил раздачу» и обрыва, без запасных.
+                // Кандидат тут ровно один — человек назвал конкретный хост.
+                // Подписка на подсказки координатора «проверь соседа» тоже там,
+                // и на ВСЁ время туннеля, а не только до первого события.
+                let last = std::sync::Arc::new(std::sync::Mutex::new(None));
+                let seen = last.clone();
+                bmv_desktop::tunnel::run_candidates(
+                    engine.config().clone(),
+                    vec![(host_id, password.unwrap_or_default(), proto)],
+                    move |s| {
+                        if let bmv_desktop::tunnel::State::Up(id) = &s {
+                            println!("  соединён. Весь трафик идёт через хост {id}.");
+                        }
+                        // Итог кладём в ячейку, а не выходим прямо отсюда: на
+                        // этот момент маршруты ещё завёрнуты (RouteGuard
+                        // снимается ПОСЛЕ того, как состояние сообщили), и
+                        // `exit` из середины оставил бы машину без интернета.
+                        *seen.lock().unwrap() = Some(s);
+                    },
+                    std::sync::Arc::new(tokio::sync::Notify::new()),
+                )
+                .await;
+                let outcome = last.lock().unwrap().take();
+                match tunnel_outcome(outcome) {
+                    Ok(msg) => println!("{msg}"),
+                    Err(msg) => fail(msg),
                 }
-                println!("  туннель завершён.");
                 return;
             }
             let msg = "привет от гостя BeMyVPN";
@@ -505,6 +497,48 @@ async fn run_guest(
             }
         }
     }
+}
+
+/// Чем кончился гостевой сеанс: что сказать человеку и с каким кодом выйти.
+/// `Ok` — сработало (выход 0), `Err` — неудача (выход 1). Ровно те же коды, что
+/// и у прежней копии, — скрипт и служба различают исход как раньше.
+///
+/// Отдельной функцией ради теста: на живом туннеле разницу между «хост погасил
+/// раздачу» и «оборвалось» иначе видно только с чужим хостом в руках.
+fn tunnel_outcome(last: Option<bmv_desktop::tunnel::State>) -> Result<String, String> {
+    use bmv_desktop::tunnel::State;
+    match last {
+        // Хост САМ погасил раздачу (прислал BYE) — сеанс окончен штатно. Своя
+        // копия про BYE не знала и печатала здесь «туннель оборвался» с кодом 1:
+        // человек видел отказ там, где всё сработало правильно.
+        Some(State::HostLeft) => Ok("Хост завершил раздачу — сеанс окончен.".into()),
+        Some(State::Failed(e)) => Err(e),
+        // Туннель кончился сам, и хост не прощался, — это обрыв. «Стоп» снаружи
+        // здесь никто не даёт (в headless некому), так что других причин нет.
+        _ => Err("туннель оборвался.".into()),
+    }
+}
+
+/// Токен владельца записи в каталоге: если своего нет — берём подпись кода.
+///
+/// Координатор привязывает код к токену того, кто им анонсировался первым, и на
+/// чужой отвечает «этот код сети занят другим устройством». Пустой токен движок
+/// заменяет случайным НА СЕССИЮ — то есть после каждого перезапуска служба
+/// приходила к координатору новым устройством и получала отказ, пока прежняя
+/// запись не протухнет (15–30 секунд молчания на боевом сервере).
+///
+/// Подпись кода на эту роль годится: она стабильна, лежит в конфиге рядом с
+/// самим кодом, известна только владельцу кода и в каталоге не показывается.
+/// Ровно так делает окно (`apps/bmv-gui`).
+///
+/// Токен НЕ сохраняем в файл — он всегда выводится из подписи в момент запуска.
+/// Поэтому смена кода автоматически меняет и токен, а непустое значение в файле
+/// означает «человек задал свой» и остаётся главнее.
+pub(crate) fn with_owner_token(mut c: Config) -> Config {
+    if c.host.token.is_empty() {
+        c.host.token = c.host.code_sig.clone();
+    }
+    c
 }
 
 /// Собрать режим TLS из `[server]`: домен → авто Let's Encrypt; свой cert+key →
@@ -833,6 +867,63 @@ async fn run_update(check_only: bool) {
             println!("  закройте программу — обновление применится само");
         }
         Err(e) => fail(format!("замена не удалась: {e}")),
+    }
+}
+
+#[cfg(test)]
+mod guest_tests {
+    use super::{tunnel_outcome, with_owner_token};
+    use bmv_config::Config;
+    use bmv_desktop::tunnel::State;
+
+    /// Хост, погасивший раздачу, — это НЕ ошибка: код возврата 0 и человеческий
+    /// текст. Прежняя копия гостевого пути про прощание хоста не знала и писала
+    /// здесь «туннель оборвался» с кодом 1 — отказ там, где всё сработало.
+    #[test]
+    fn a_host_ending_the_session_is_not_a_failure() {
+        assert_eq!(
+            tunnel_outcome(Some(State::HostLeft)),
+            Ok("Хост завершил раздачу — сеанс окончен.".to_string())
+        );
+    }
+
+    /// Всё остальное — неудача: скрипт и служба различают исход по коду возврата,
+    /// и он обязан остаться прежним (1).
+    #[test]
+    fn a_break_or_a_refusal_still_exits_with_an_error() {
+        // Текст отказа отдаём как есть — он уже написан для человека.
+        assert_eq!(tunnel_outcome(Some(State::Failed("нет связи".into()))), Err("нет связи".to_string()));
+        // Туннель кончился сам, хост не прощался — обрыв.
+        assert!(tunnel_outcome(Some(State::Off)).is_err());
+        // Ни одного состояния вообще (общий путь ушёл молча) — тоже не успех.
+        assert!(tunnel_outcome(None).is_err());
+    }
+
+    /// Перезапуск обязан приходить к координатору ТЕМ ЖЕ владельцем записи.
+    /// Подпись кода для этого и берётся: она в конфиге постоянна, а пустой токен
+    /// движок заменяет случайным на сессию — и служба ловит «код занят другим».
+    #[test]
+    fn the_owner_token_comes_from_the_code_signature() {
+        let mut c = Config::default();
+        c.host.code_sig = "SIG".into();
+        assert_eq!(with_owner_token(c).host.token, "SIG");
+    }
+
+    /// Заданный руками токен главнее: перебей мы его — живой хост получил бы
+    /// отказ на собственную же запись в каталоге.
+    #[test]
+    fn a_token_set_by_hand_wins() {
+        let mut c = Config::default();
+        c.host.code_sig = "SIG".into();
+        c.host.token = "MOY".into();
+        assert_eq!(with_owner_token(c).host.token, "MOY");
+    }
+
+    /// Одноразовый запуск без сохранённого кода: токен остаётся пустым, движок
+    /// сгенерит случайный на сессию — ровно как раньше.
+    #[test]
+    fn a_throwaway_run_keeps_the_token_empty() {
+        assert!(with_owner_token(Config::default()).host.token.is_empty());
     }
 }
 

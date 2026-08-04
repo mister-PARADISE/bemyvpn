@@ -214,7 +214,7 @@ pub unsafe extern "C" fn bmv_free_string(p: *mut c_char) {
 pub extern "C" fn bmv_list_watch(coordinator: *const c_char, since: u64) -> *mut c_char {
     ffi!(std::ptr::null_mut(), {
         let engine = sig_engine(&unsafe { cstr(coordinator) });
-        let r = RUNTIME.block_on(async { engine.guest_watch(None, true, since).await });
+        let r = RUNTIME.block_on(async { engine.guest_watch(None, since).await });
         let json = match r {
             Ok(u) => format!("{{\"version\":{},\"hosts\":{}}}", u.version, hosts_to_json(&u.hosts)),
             Err(e) => {
@@ -569,6 +569,28 @@ pub extern "C" fn bmv_nudge_reconnect() {
 
 // ── хост-режим ───────────────────────────────────────────────────────────────
 
+/// Отказ координатора «подпись кода не наша» (403) — единственный, который
+/// лечится сам: берём свежий код и повторяем анонс.
+///
+/// Отдельной функцией, потому что решение принимается ПО КОДУ, а не по буквам
+/// в тексте. Тексты отказов координатора — русские фразы без единой цифры, так
+/// что прежнее `e.to_string().contains("403")` было ложью ВСЕГДА: самолечение
+/// на iOS и Android не включалось ни разу.
+fn stale_code_signature(e: &bmv_common::Error) -> bool {
+    e.refusal_code() == Some(403)
+}
+
+/// Сентинел для оболочки по КОДУ отказа: "!NAT" — снаружи до хоста не
+/// достучаться (422), "!SIG" — код не наш и свежий взять не вышло (403).
+/// Пусто — ошибка не от сервера (нет связи, кривой адрес и т.п.).
+fn host_start_sentinel(e: &bmv_common::Error) -> &'static str {
+    match e.refusal_code() {
+        Some(422) => "!NAT",
+        Some(403) => "!SIG",
+        _ => "",
+    }
+}
+
 /// Стать хостом: раздать интернет (userspace).
 ///
 /// Возвращает "КОД|ПОДПИСЬ" — пару, а не один код: при протухшей подписи ядро
@@ -632,7 +654,7 @@ pub extern "C" fn bmv_host_start(
         // включалась с первого раза без всякой его вины. Десктоп уже давно берёт
         // свежий код молча и повторяет анонс — делаем то же здесь, и правило
         // становится общим для Android и iOS сразу.
-        if announce.as_ref().err().map(|e| e.to_string().contains("403")).unwrap_or(false) {
+        if announce.as_ref().err().is_some_and(stale_code_signature) {
             log::warn!("хост-режим: подпись кода не принята — беру свежий код");
             let fresh = RUNTIME.block_on(async {
                 bmv_core::BmvEngine::from_config(bmv_config::Config {
@@ -662,16 +684,8 @@ pub extern "C" fn bmv_host_start(
                 hub
             }
             Err(e) => {
-                let msg = e.to_string();
-                log::error!("хост-режим не поднялся: {msg}");
-                let sentinel = if msg.contains("422") {
-                    "!NAT"
-                } else if msg.contains("403") {
-                    "!SIG"
-                } else {
-                    ""
-                };
-                return to_c(sentinel.to_string());
+                log::error!("хост-режим не поднялся: {e}");
+                return to_c(host_start_sentinel(&e).to_string());
             }
         };
 
@@ -1135,6 +1149,34 @@ mod tests {
     use std::sync::atomic::AtomicBool;
     use std::sync::Arc;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    /// САМОЛЕЧЕНИЕ ПРОТУХШЕЙ ПОДПИСИ ОБЯЗАНО ВКЛЮЧАТЬСЯ. Смотрим со стороны
+    /// ПОТРЕБИТЕЛЯ: даём ровно тот отказ, что приезжает с координатора, и
+    /// требуем, чтобы ветка сработала.
+    ///
+    /// Здесь стоял `e.to_string().contains("403")`, а `Display` у `Refused`
+    /// показывает ТОЛЬКО человеческую причину — русскую фразу без единой цифры.
+    /// Условие было ложным всегда: на iOS и Android человек читал «Код устарел»
+    /// и жал «Новый код» руками, хотя весь код самолечения написан.
+    #[test]
+    fn stale_signature_heals_itself_and_maps_to_sentinels() {
+        let refused = |code, reason: &str| bmv_common::Error::Refused { code, reason: reason.into() };
+
+        let sig = refused(403, "Код сети не подтверждён этим сервером.");
+        assert!(!sig.to_string().contains("403"), "текст отказа с цифрами — тест перестал ловить старый приём");
+        assert!(stale_code_signature(&sig), "403 не опознан: самолечение протухшей подписи снова мертво");
+        assert_eq!(host_start_sentinel(&sig), "!SIG");
+
+        let nat = refused(422, "Ваша сеть не пропускает гостей внутрь.");
+        assert!(!nat.to_string().contains("422"), "текст отказа с цифрами — тест перестал ловить старый приём");
+        assert!(!stale_code_signature(&nat), "422 — это не протухшая подпись, свежий код тут не поможет");
+        assert_eq!(host_start_sentinel(&nat), "!NAT");
+
+        // Не отказ сервера (нет связи) — ни лечения, ни сентинела.
+        let net = bmv_common::Error::Net("Сервер недоступен.".into());
+        assert!(!stale_code_signature(&net));
+        assert_eq!(host_start_sentinel(&net), "");
+    }
 
     /// Тесты трогают ОДНИ И ТЕ ЖЕ глобальные статики (STOP/SESSION/ACTIVE_LINK/
     /// TUNNEL_FD), а cargo гоняет их параллельно в одном процессе. Без этой

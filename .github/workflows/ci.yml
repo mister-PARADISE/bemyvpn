@@ -46,6 +46,14 @@ jobs:
       - name: Тесты (координатор)
         run: cargo test --manifest-path server/coordinator/Cargo.toml
 
+      # ФОРК ipstack (vendor/ipstack) тоже вне workspace — он подключается через
+      # `[patch.crates-io]`, а патч собирает только библиотеку: его 23 теста не
+      # гонял НИКТО. А охраняют они ровно наши правки, давшие ускорение в 7.5–13.5
+      # раз (window scaling, восстановление после потерь, адаптивный RTO, закрытие
+      # окна приёма) — то есть цену отката молча платил бы человек на телефоне.
+      - name: Тесты (форк ipstack)
+        run: cargo test --manifest-path vendor/ipstack/Cargo.toml
+
       - name: Линтер
         run: cargo clippy --workspace --all-targets -- -D warnings
 
@@ -75,3 +83,9 @@ jobs:
       # Windows собирается голым тулчейном (см. job gui-windows в release.yml).
       - name: Check GUI (Windows)
         run: cargo check -p bmv-gui
+
+      # Fork of wintun (vendor/wintun) is excluded from the workspace as well and
+      # is Windows-only: on Linux it does not even compile (std::os::windows), so
+      # its tests can live in this job and nowhere else.
+      - name: Test wintun fork (Windows)
+        run: cargo test --manifest-path vendor/wintun/Cargo.toml
