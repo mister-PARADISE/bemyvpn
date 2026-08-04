@@ -133,7 +133,7 @@ export component HostPage inherits Rectangle {
                     height: 34px;
                     horizontal-stretch: 1;
                     border-radius: 10px;
-                    background: root.host-max == v ? Theme.accent.with-alpha(0.15) : Theme.card-sel;
+                    background: root.host-max == v ? Theme.accent.with-alpha(0.15) : Theme.card-hi;
                     border-width: 1px;
                     border-color: root.host-max == v ? Theme.accent.with-alpha(0.4) : transparent;
                     Text { text: v; color: root.host-max == v ? Theme.accent : Theme.dim; font-size: 13px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; }
@@ -198,8 +198,11 @@ export component HostPage inherits Rectangle {
             padding-bottom: 12px;
             // Общий парящий блок: фон и тень — те же, что у нав-бара.
             FloatCard {
-                // Рамка берёт цвет состояния: на «нет связи» контур красный.
-                stroke: root.tint.with-alpha(0.45);
+                // Кольцо состояния — ТИШЕ СОДЕРЖИМОГО и уведено под кромку
+                // света: на 0.45 обводка была ярче самой панели, и вся «высота»
+                // держалась на ней. Покажут состояние иначе — панель не станет
+                // от этого плоской.
+                stroke: root.tint.with-alpha(0.30);
                 // Глушит клики по пустым местам карточки: без неё тап
                 // проваливался бы на карточку хоста, лежащую ПОД панелью.
                 // Стоит ПЕРВОЙ — содержимое объявлено ниже и в попадании

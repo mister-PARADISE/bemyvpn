@@ -31,11 +31,18 @@ export component ServerPage inherits Rectangle {
     callback reset-coord();
     callback copy-text(string);
 
-    property <color> tint: coord-state == 1 ? Theme.green : coord-state == 2 ? Theme.red : Theme.amber;
+    // ОБРЫВ СВЯЗИ — НЕ БЕДА, а янтарь. Он чинится сам за секунды, и кричать о
+    // нём красным (кружок, значок, рамка вокруг самого большого блока экрана,
+    // точка на нав-баре — четырьмя способами разом) значит расходовать цвет
+    // тревоги на то, что пройдёт само. Красный остаётся там, где само не
+    // пройдёт: ошибка настроек и ошибка подключения.
+    property <color> tint: coord-state == 1 ? Theme.green : Theme.amber;
     // При обрыве важно сказать, что связь восстанавливается САМА: клиент
     // переподключается по дедлайну тишины, вручную ничего делать не нужно.
     property <string> status-text: coord-state == 1 ? "На связи" : coord-state == 2 ? "Нет связи — восстанавливаю…" : "Проверяю связь…";
-    property <color> ping-color: coord-ping < 200 ? Theme.green : coord-ping < 600 ? Theme.fg : Theme.amber;
+    // ТА ЖЕ ЛИНЕЙКА, ЧТО У ПИНГА ДО ХОСТА (components.slint, PingTile). Раньше
+    // линеек было две, и меньшее число выходило тревожнее большего.
+    property <color> ping-color: coord-ping < 250 ? Theme.fg : coord-ping <= 500 ? Theme.amber : Theme.red;
 
     // ── ПРОКРУЧИВАЕМОЕ (во всю высоту; панель ПАРИТ поверх) ─────────────
     ScrollView {
@@ -78,7 +85,7 @@ export component ServerPage inherits Rectangle {
                 for url in root.history: Rectangle {
                     height: 36px;
                     border-radius: 16px;
-                    background: Theme.card-sel;
+                    background: Theme.card-hi;
                     HorizontalLayout {
                         padding-left: 14px; padding-right: 14px;
                         Text { text: url; color: Theme.fg; font-size: 13px; font-weight: 700; vertical-alignment: center; }
@@ -118,8 +125,11 @@ export component ServerPage inherits Rectangle {
             padding-bottom: 12px;
             // Общий парящий блок: фон и тень — те же, что у нав-бара.
             FloatCard {
-                // Рамка берёт цвет состояния: на «нет связи» контур красный.
-                stroke: root.tint.with-alpha(0.45);
+                // Кольцо состояния — ТИШЕ СОДЕРЖИМОГО и уведено под кромку
+                // света: на 0.45 обводка была ярче самой панели, и вся «высота»
+                // держалась на ней. Покажут состояние иначе — панель не станет
+                // от этого плоской.
+                stroke: root.tint.with-alpha(0.30);
                 // Глушит клики по пустым местам карточки: без неё тап
                 // проваливался бы на карточку хоста, лежащую ПОД панелью.
                 // Стоит ПЕРВОЙ — содержимое объявлено ниже и в попадании

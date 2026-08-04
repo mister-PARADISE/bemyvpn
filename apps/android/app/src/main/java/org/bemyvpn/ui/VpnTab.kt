@@ -202,7 +202,7 @@ private fun CodeField(app: AppState, code: String, onCode: (String) -> Unit) {
         )
         Box(
             Modifier.size(width = 44.dp, height = 44.dp)
-                .background(Color(0xFF2A3244), RoundedCornerShape(10.dp))
+                .background(Theme.cardHi, RoundedCornerShape(10.dp))
                 .border(1.dp, Color.White.copy(alpha = 0.08f), RoundedCornerShape(10.dp))
                 .pressable { clipboard.getText()?.text?.let(onCode) },
             contentAlignment = Alignment.Center,
@@ -229,7 +229,7 @@ private fun RecentChip(app: AppState, id: String, highlighted: Boolean) {
     val host = app.hostById(id)
     Row(
         Modifier
-            .background(if (highlighted) Theme.accent.copy(alpha = 0.16f) else Theme.cardSel, RoundedCornerShape(16.dp))
+            .background(if (highlighted) Theme.accent.copy(alpha = 0.16f) else Theme.cardHi, RoundedCornerShape(16.dp))
             .border(1.dp, if (highlighted) Theme.accent.copy(alpha = 0.5f) else Color.Transparent, RoundedCornerShape(16.dp))
             .tappable { if (app.vpnState == 0) app.connectByCode(id) }
             .padding(horizontal = 13.dp, vertical = 9.dp),
@@ -389,12 +389,17 @@ fun HostCard(app: AppState, host: Host) {
             verticalAlignment = Alignment.CenterVertically,
         ) {
             // Флаг страны крупно слева — как аватарка, на всю высоту строки.
+            //
+            // ПЛАШКА НА СТУПЕНЬ НИЖЕ ПЛИТКИ (s2, а не s3), САМ ФЛАГ ПРИГЛУШЁН.
+            // Флаг — единственное полностью насыщенное пятно на экране, и сидел
+            // он на самой светлой подложке темы: в списке глаз ловил его раньше
+            // имени хоста, ради которого на строку и смотрят.
             Box(
                 Modifier.size(56.dp)
-                    .background(Theme.tile, RoundedCornerShape(14.dp))
+                    .background(Theme.cardHi, RoundedCornerShape(14.dp))
                     .border(1.dp, Color.White.copy(alpha = 0.08f), RoundedCornerShape(14.dp)),
                 contentAlignment = Alignment.Center,
-            ) { Text(hostFlag(host), fontSize = 29.sp) }
+            ) { Text(hostFlag(host), fontSize = 29.sp, modifier = Modifier.alpha(0.85f)) }
 
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(5.dp)) {
                 // ЗНАЧОК ПРОТОКОЛА — В СТРОКЕ ИМЕНИ, ПЕРЕД НИМ.
@@ -604,13 +609,17 @@ private fun PingTile(value: String, modifier: Modifier = Modifier) {
     }
 }
 
-/// Цвет по величине задержки — чтобы годность хоста читалась без чтения цифр.
-/// Пороги под VPN: до 60мс разницы не чувствуешь, после 150мс уже мешает.
+/// ОДНА ЛИНЕЙКА НА ОБА ПИНГА (здесь и на вкладке «Сервер»). Раньше их было две,
+/// и меньшее число выходило тревожнее большего: 137 мс до хоста краснело, 162 мс
+/// до координатора числилось «хорошо».
+///
+/// ЗЕЛЁНОГО В ПИНГЕ НЕТ ВОВСЕ: в этом приложении зелёный значит «работает», а не
+/// «быстро». Норма молчит — обычный цвет текста.
 private fun pingTint(value: String): Color {
     val ms = value.substringBefore(' ').toIntOrNull() ?: return Theme.fg
     return when {
-        ms < 60 -> Theme.green
-        ms <= 150 -> Theme.amber
+        ms < 250 -> Theme.fg
+        ms <= 500 -> Theme.amber
         else -> Theme.red
     }
 }

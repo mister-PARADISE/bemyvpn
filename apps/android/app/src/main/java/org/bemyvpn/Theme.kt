@@ -4,19 +4,19 @@ import androidx.compose.ui.graphics.Color
 
 /** Палитра — та же, что в iOS-приложении (Theme.swift), тёмная тема. */
 object Theme {
-    val bg      = Color(0xFF0B0E14)
-    val card    = Color(0xFF161B26)
-    val cardSel = Color(0xFF1E2A44)
-    val panel   = Color(0xFF121722)
-    /** Слои внутри карточки хоста. В тёмной теме поверхность СВЕТЛЕЕТ по мере
-     *  подъёма: страница → карточка → плитка. */
-    val cardHi  = Color(0xFF1A2233)   // раскрытая карточка хоста
-    val tile    = Color(0xFF242D3E)   // плитка внутри неё
-    val accent  = Color(0xFF5E93FF)
-    val accent2 = Color(0xFF3D6FE0)
+    // ── ЛЕСТНИЦА ПОВЕРХНОСТЕЙ: ЧЕТЫРЕ СТУПЕНИ, А НЕ ОДИННАДЦАТЬ ──
+    //
+    // Замер по снимкам давал одиннадцать разных подложек, и порядок в них был
+    // нарушен: парящая панель оказывалась ТЕМНЕЕ карточки под ней — оттого и не
+    // парила. Ступеней теперь ровно четыре, и каждая значит одно:
+    val bg      = Color(0xFF0B0E14)   // s0 — страница
+    val card    = Color(0xFF161B26)   // s1 — карточка списка, поле, «поделиться»
+    val cardHi  = Color(0xFF1C2434)   // s2 — раскрытая карточка, выбранное, чип
+    val tile    = Color(0xFF242D3E)   // s3 — плитка внутри панели/карточки
+    val accent  = Color(0xFF7BA6F0)
     val fg      = Color(0xFFEAECEF)
-    val dim     = Color(0xFF8B93A7)
+    val dim     = Color(0xFF99A1B4)
     val green   = Color(0xFF34E29E)
-    val red     = Color(0xFFFF5A6A)
+    val red     = Color(0xFFF2707E)
     val amber   = Color(0xFFF5B14C)
 }

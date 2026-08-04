@@ -68,7 +68,8 @@ import org.bemyvpn.Host
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Dp
@@ -334,7 +335,7 @@ fun CalmButton(title: String, modifier: Modifier = Modifier, enabled: Boolean = 
 @Composable
 fun Card(modifier: Modifier = Modifier, content: @Composable () -> Unit) {
     Column(
-        modifier.fillMaxWidth().background(Theme.panel, RoundedCornerShape(16.dp)).padding(16.dp).animateContentSize(),
+        modifier.fillMaxWidth().background(Theme.card, RoundedCornerShape(16.dp)).padding(16.dp).animateContentSize(),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) { content() }
 }
@@ -399,42 +400,49 @@ fun BmvTextField(
 // ── Прижатая панель и её содержимое ─────────────────────────────────────────
 
 /**
- * ФОН ПАРЯЩЕГО СЛОЯ — один на панель состояния и нав-бар.
+ * ЗАЛИВКА ПАРЯЩЕГО СЛОЯ — одна на панель состояния и нав-бар. Разъехаться в
+ * цвете им нельзя: над страницей висят два блока, и свой оттенок, подобранный на
+ * глаз, разошёлся бы с соседом при первой же правке темы.
  *
- * Разъехаться в цвете им нельзя: над страницей висят два блока, и свой оттенок,
- * подобранный на глаз, разошёлся бы с соседом при первой же правке темы.
+ * НЕПРОЗРАЧНАЯ. Прежние 0.97 не покупали ничего: размытия под блоком нет и быть
+ * не может (`Modifier.blur` размывает сам элемент, а не фон под ним, а
+ * перерисовывать фон в отдельный слой каждый кадр прокрутки — расход батареи
+ * ради эффекта, почти невидимого в тёмной теме), зато сквозь панель на снимке в
+ * прокрутке читался текст списка под ней.
  *
- * Плотность 0.97 — НЕ «стекло». Под слоями едет пёстрый список (флаги стран,
- * цветные значки, белые подписи), и это ПОДОБРАНО ПО СНИМКУ В ПРОКРУТКЕ: на
- * 0.92 сквозь панель и бар читался текст списка — призрак «Подключиться по
- * коду» лез на собственную надпись панели. Размытия под элементом здесь нет: `Modifier.blur` размывает сам
- * элемент, а не фон под ним, а перерисовывать фон в отдельный слой каждый кадр
- * прокрутки — расход батареи ради эффекта, почти невидимого в тёмной теме.
- * Ощущение парения несут ТЕНЬ и содержимое, видимое по бокам.
+ * Оттенок НАМЕРЕННО между s2 и s3: парящий блок выше карточек списка, но ниже
+ * плиток, которые лежат внутри него самого.
  */
-val floatFill = Color(0xFF161C2B).copy(alpha = 0.97f)
+val floatFill = Color(0xFF1E2636)
 
 /**
- * Отделка парящего слоя: тень + фон + рамка. Одна на панель и нав-бар.
+ * Отделка парящего слоя: заливка + тихая рамка + кромка света сверху. Одна на
+ * панель и нав-бар.
  *
- * ТЕНЬ ЗДЕСЬ ОБЯЗАТЕЛЬНА. Её однажды убирали — но убирали у НЕПРОЗРАЧНОЙ ЛЕНТЫ
- * во всю ширину с острыми углами: там она рисовала тёмную полосу и читалась
- * лишним слоем. У скруглённого блока, под которым едет содержимое, тень делает
- * обратное: говорит, что блок лежит НАД страницей. Без неё он выглядит дыркой,
- * вырезанной в списке.
+ * ТЕНИ ЗДЕСЬ НЕТ, И ЭТО ЗАМЕР, А НЕ ЛЕНЬ. `Modifier.shadow(22.dp)` на почти
+ * чёрном фоне (#0B0E14) темнил подложку под панелью на ОДНУ единицу из 255 —
+ * чёрной тени на почти чёрном фоне физически быть не может. Штатный механизм
+ * Android вдобавок не умеет направить тень вверх (нав-бар прижат снизу, и тень
+ * уезжала под него, в полосу, на которую никто не смотрит). Высоту держат
+ * непрозрачная заливка светлее того, что под ней, и кромка света по верху.
  */
 fun Modifier.floatSurface(radius: Dp, stroke: Color): Modifier {
     val shape = RoundedCornerShape(radius)
     return this
-        .shadow(
-            22.dp, shape, clip = false,
-            // На почти-чёрном фоне (#0B0E14) чёрная тень сливается с фоном,
-            // поэтому «подъём» держат обе: плотная тёмная снизу и светлый ореол.
-            spotColor = Color.Black.copy(alpha = 0.85f),
-            ambientColor = Color.White.copy(alpha = 0.10f),
-        )
         .background(floatFill, shape)
         .border(1.dp, stroke, shape)
+        .drawWithContent {
+            drawContent()
+            // Кромка света — 1px по верхнему краю: это и есть физический край
+            // блока. Поджата на радиус с боков, иначе полоса торчала бы из
+            // скруглённых углов.
+            val r = radius.toPx()
+            val w = 1.dp.toPx()
+            drawLine(
+                Color.White.copy(alpha = 0.14f),
+                Offset(r, w / 2), Offset(size.width - r, w / 2), strokeWidth = w,
+            )
+        }
 }
 
 /**
@@ -560,7 +568,10 @@ private fun ShareButton(icon: ImageVector, title: String, green: Boolean, modifi
     Row(
         modifier
             .height(48.dp)
-            .background(Color(0xFF1B2333), RoundedCornerShape(15.dp))
+            // Ступень s3 — та же, что у плиток рядом: кнопка живёт только внутри
+            // парящей панели, а панель светлее карточек списка (см. ShareButton
+            // в components.slint).
+            .background(Theme.tile, RoundedCornerShape(15.dp))
             .border(1.dp, hue.copy(alpha = if (green) 0.5f else 0.24f), RoundedCornerShape(15.dp))
             .pressable(onTap = tap),
         verticalAlignment = Alignment.CenterVertically,

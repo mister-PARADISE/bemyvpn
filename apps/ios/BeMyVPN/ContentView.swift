@@ -94,15 +94,10 @@ struct NavBar: View {
             hostCell
         }
         .padding(6)
-        // ВТОРОЙ ПАРЯЩИЙ СЛОЙ: фон и тень — те же, что у панели состояния
-        // (floatFill/floatShadow). Свой цвет, подобранный на глаз, разошёлся бы
-        // с панелью при первой же правке темы.
-        .background(
-            RoundedRectangle(cornerRadius: 28, style: .continuous)
-                .fill(floatFill)
-                .overlay(RoundedRectangle(cornerRadius: 28, style: .continuous).stroke(Color.white.opacity(0.06), lineWidth: 1))
-        )
-        .floatShadow()
+        // ВТОРОЙ ПАРЯЩИЙ СЛОЙ: отделка та же, что у панели состояния
+        // (floatSurface). Свой цвет, подобранный на глаз, разошёлся бы с
+        // панелью при первой же правке темы. `up` — бар прижат снизу.
+        .background(floatSurface(radius: 28, stroke: Color.white.opacity(0.05), up: true))
         .padding(.horizontal, 18)
         // safe-area пробита на корне (ContentView), поэтому зазор снизу задаём
         // руками. Нужно ОДНОВРЕМЕННО: (1) не влезать в зону home-indicator внизу
@@ -141,7 +136,7 @@ struct NavBar: View {
         .overlay(alignment: .top) {
             if let live {
                 Circle().fill(live).frame(width: 7, height: 7)
-                    .overlay(Circle().stroke(Color(hex: 0x161C2B), lineWidth: 2))
+                    .overlay(Circle().stroke(floatFill, lineWidth: 2))
                     .offset(x: 19, y: 3)
             }
         }
@@ -172,8 +167,9 @@ struct NavBar: View {
     // горит состояние связи, видное С ЛЮБОЙ вкладки. Когда всё хорошо — точки
     // нет: молчание и есть «ок». Раньше об обрыве кричала полоса на вкладке VPN.
     private var serverCell: some View {
+        // Обрыв — янтарь, как и «проверяю»: он чинится сам за секунды.
         cell(.server, icon: "server.rack", label: "Сервер",
-             live: app.serverOnline == true ? nil : (app.serverOnline == false ? Theme.red : Theme.amber))
+             live: app.serverOnline == true ? nil : Theme.amber)
     }
 
     @ViewBuilder private var vpnCell: some View {
@@ -181,7 +177,14 @@ struct NavBar: View {
             cell(.vpn, icon: "shield.fill", label: "VPN",
                  live: app.vpnState == 0 ? nil : (app.vpnState == 2 ? Theme.green : Theme.amber))
         } else if app.vpnState == 0 {
-            action("bolt.fill", "Старт", hue: Theme.green) { app.quickConnect() }
+            // ЗАПУСК — АКЦЕНТ, А НЕ ЗЕЛЁНЫЙ. Зелёный горел ровно тогда, когда
+            // человек НЕ защищён; для приложения, у которого главный вопрос «я
+            // сейчас под защитой?», это обман глазом. Кнопка — действие, а не
+            // состояние. Зелёный освободился под состояние: поднятый туннель,
+            // идущая раздача, живая связь с сервером. «Стоп» остаётся красным:
+            // на кнопке выхода красный понятен без обучения и читается как
+            // «прервать», а не как «беда».
+            action("bolt.fill", "Старт", hue: Theme.accent) { app.quickConnect() }
         } else {
             action("xmark", app.vpnState == 1 ? "Отмена" : "Стоп", hue: Theme.red) { app.stop() }
         }
@@ -194,7 +197,8 @@ struct NavBar: View {
         } else if app.hosting || app.starting {
             action("xmark", app.starting ? "Отмена" : "Стоп", hue: Theme.red) { app.stopHost() }
         } else {
-            action("power", "Раздать", hue: Theme.green) { app.becomeHost() }
+            // «Раздать» — акцент по тому же правилу, что и «Старт».
+            action("power", "Раздать", hue: Theme.accent) { app.becomeHost() }
         }
     }
 }
@@ -323,7 +327,10 @@ struct ShareButtons: View {
             }
             .foregroundColor(green ? Theme.green : Theme.accent)
             .frame(maxWidth: .infinity).frame(height: 48)
-            .background(RoundedRectangle(cornerRadius: 15, style: .continuous).fill(Color(hex: 0x1B2333))
+            // Ступень s3 — та же, что у плиток рядом: кнопка живёт только внутри
+            // парящей панели, а панель светлее карточек списка (см. ShareButton
+            // в components.slint).
+            .background(RoundedRectangle(cornerRadius: 15, style: .continuous).fill(Theme.tile)
                 .overlay(RoundedRectangle(cornerRadius: 15, style: .continuous)
                     .stroke(green ? Theme.green.opacity(0.5) : Theme.accent.opacity(0.24), lineWidth: 1)))
         }.buttonStyle(PressStyle())
@@ -381,29 +388,15 @@ struct PinnedPanel<Content: View>: View {
         VStack(spacing: 8) { content }
             .frame(maxWidth: .infinity)
             .padding(.vertical, 16).padding(.horizontal, 18)
-            // ФОН И ТЕНЬ — ТЕ ЖЕ, ЧТО У НАВ-БАРА (floatFill/floatShadow): два
-            // парящих слоя должны читаться одним языком.
+            // ОТДЕЛКА — ТА ЖЕ, ЧТО У НАВ-БАРА (floatSurface): два парящих слоя
+            // должны читаться одним языком. Тень навешена ВНУТРИ `.background`,
+            // на саму фигуру: снаружи она легла бы и на текст панели.
             //
-            // Фон нужен ПЛОТНЫЙ: под панелью едет список с флагами стран и
-            // цветными значками, и сквозь редкую заливку светлое пятно лезло бы
-            // в текст. Рамка по-прежнему берёт цвет состояния — на «нет связи»
-            // контур красный.
-            //
-            // Тень навешена ВНУТРИ `.background`, на саму фигуру: снаружи она
-            // легла бы и на текст панели. Однажды тень отсюда убирали — но
-            // убирали у НЕПРОЗРАЧНОЙ ЛЕНТЫ во всю ширину: там она рисовала
-            // тёмную полосу и читалась лишним слоем. У скруглённого блока, под
-            // которым едет содержимое, она делает обратное — говорит, что блок
-            // лежит НАД страницей.
-            .background(
-                RoundedRectangle(cornerRadius: 22, style: .continuous)
-                    .fill(floatFill)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 22, style: .continuous)
-                            .stroke(tint.opacity(0.45), lineWidth: 1)
-                    )
-                    .floatShadow()
-            )
+            // КОЛЬЦО СОСТОЯНИЯ ТИШЕ СОДЕРЖИМОГО (0.30, было 0.45) и уведено под
+            // кромку света: на 0.45 обводка была ярче самой панели, и вся
+            // «высота» держалась на ней. Покажут состояние иначе — панель не
+            // станет от этого плоской.
+            .background(floatSurface(radius: 22, stroke: tint.opacity(0.30)))
             .padding(.horizontal, 20).padding(.top, 20).padding(.bottom, 12)
             // Смена состояния меняет ЦЕЛУЮ ВЕТКУ разметки (при связи — цифры, без
             // связи — крупный круг), а SwiftUI играет такую подмену переходом по
@@ -546,12 +539,16 @@ struct PingTile: View {
     private var noAnswer: Bool { value == "—" }
     @State private var spin = false
 
-    /// Цвет по величине задержки — чтобы годность хоста читалась без чтения цифр.
-    /// Пороги под VPN: до 60мс разницы не чувствуешь, после 150мс уже мешает.
+    /// ОДНА ЛИНЕЙКА НА ОБА ПИНГА (здесь и на вкладке «Сервер»). Раньше их было
+    /// две, и меньшее число выходило тревожнее большего: 137 мс до хоста
+    /// краснело, 162 мс до координатора числилось «хорошо».
+    ///
+    /// ЗЕЛЁНОГО В ПИНГЕ НЕТ ВОВСЕ: в этом приложении зелёный значит «работает»,
+    /// а не «быстро». Норма молчит — обычный цвет текста.
     private var tint: Color {
         guard let ms = Int(value.split(separator: " ").first.map(String.init) ?? "") else { return Theme.fg }
-        if ms < 60 { return Theme.green }
-        if ms <= 150 { return Theme.amber }
+        if ms < 250 { return Theme.fg }
+        if ms <= 500 { return Theme.amber }
         return Theme.red
     }
 
@@ -651,7 +648,7 @@ struct Card<Content: View>: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) { content }
             .padding(16).frame(maxWidth: .infinity, alignment: .leading)
-            .background(Theme.panel).cornerRadius(16)
+            .background(Theme.card).cornerRadius(16)
     }
 }
 
@@ -665,34 +662,43 @@ func tabHeader(_ icon: String, _ title: String) -> some View {
         Text(title).font(.system(size: 26, weight: .heavy)).foregroundColor(Theme.fg)
     }
 }
-/// ОТДЕЛКА ПАРЯЩИХ СЛОЁВ — панели состояния и нав-бара.
+/// ЗАЛИВКА ПАРЯЩИХ СЛОЁВ — панели состояния и нав-бара. Одна на оба: над
+/// страницей висят два блока, и свой оттенок, подобранный на глаз, разошёлся бы
+/// с соседом при первой же правке темы.
 ///
-/// Фон у обоих ОДИН: над страницей висят два блока, и разъехаться в цвете им
-/// нельзя — свой оттенок, подобранный на глаз, разошёлся бы с соседом при
-/// первой же правке темы.
+/// НЕПРОЗРАЧНАЯ. Прежние 0.97 не покупали ничего: размытия под блоком нет ни на
+/// одной оболочке (родного `.ultraThinMaterial` здесь намеренно нет — с ним одна
+/// платформа выглядела бы иначе, чем две другие), зато сквозь панель на снимке в
+/// прокрутке читался текст списка под ней.
 ///
-/// Плотность 0.97 — НЕ «стекло». Под слоями едет пёстрый список (флаги стран,
-/// цветные значки, белые подписи), и это ПОДОБРАНО ПО СНИМКУ В ПРОКРУТКЕ: на
-/// 0.92 сквозь панель и бар читался текст списка. Родного `.ultraThinMaterial`
-/// здесь намеренно нет: он даёт
-/// заметно более прозрачную подложку, и одна платформа выглядела бы иначе, чем
-/// две другие, где размытия под элементом нет вовсе. Ощущение парения несут
-/// ТЕНЬ и содержимое, видимое по бокам, а не прозрачность самой карточки.
-let floatFill = Color(hex: 0x161C2B).opacity(0.97)
+/// Оттенок НАМЕРЕННО между s2 и s3: парящий блок выше карточек списка, но ниже
+/// плиток, которые лежат внутри него самого.
+let floatFill = Color(hex: 0x1E2636)
 
-/// Тень парящего слоя — та же у панели и у бара.
+/// ОТДЕЛКА ПАРЯЩЕГО БЛОКА: заливка, тихая рамка, кромка света сверху, короткая
+/// тень в сторону подъезда.
 ///
-/// На почти-чёрном фоне (#0B0E14) чёрная тень СЛИВАЕТСЯ с фоном, поэтому
-/// «подъём» держат три слоя: плотная ближняя, глубокая дальняя и светлый ореол
-/// сверху. Тень тут не украшение: под блоком едет содержимое, и без неё блок
-/// читается не как парящий, а как дырка, вырезанная в списке.
-extension View {
-    func floatShadow() -> some View {
-        self
-            .shadow(color: .black.opacity(0.65), radius: 5, x: 0, y: 2)
-            .shadow(color: .black.opacity(0.8), radius: 22, x: 0, y: 12)
-            .shadow(color: .white.opacity(0.10), radius: 14, x: 0, y: -6)
-    }
+/// Высоту держат ТРИ носителя, а не одна тень. Прежняя дальняя тень (radius 22,
+/// y 12) на почти-чёрном фоне (#0B0E14) размывалась в грязь и не сообщала
+/// ничего; «кромка света» из ореола сверху заменена честной линией по верхнему
+/// краю — это и есть физический край блока.
+///
+/// `up` — блок прижат снизу (нав-бар), тень уходит ВВЕРХ, к содержимому. Вниз
+/// она уезжала под сам бар, в полосу, на которую никто не смотрит.
+func floatSurface(radius: CGFloat, stroke: Color, up: Bool = false) -> some View {
+    RoundedRectangle(cornerRadius: radius, style: .continuous)
+        .fill(floatFill)
+        .overlay(
+            RoundedRectangle(cornerRadius: radius, style: .continuous)
+                .stroke(stroke, lineWidth: 1)
+        )
+        // Кромка света. Поджата на радиус с боков — иначе полоса торчала бы из
+        // скруглённых углов.
+        .overlay(alignment: .top) {
+            Rectangle().fill(Color.white.opacity(0.14))
+                .frame(height: 1).padding(.horizontal, radius)
+        }
+        .shadow(color: .black.opacity(0.9), radius: 5, x: 0, y: up ? -5 : 5)
 }
 
 // Ниже плавает нав-бар; он приподнят над краем на 42pt (было 34), поэтому
@@ -752,12 +758,13 @@ struct ServerTab: View {
     // Кольцо отвечает на «сервер доступен?» — это ДА/НЕТ. Качество связи
     // показывает пинг отдельной плиткой. Раньше кольцо краснело от медленного
     // пинга, и «На связи» с красной точкой читалось как поломка.
+    // ОБРЫВ СВЯЗИ — НЕ БЕДА, а янтарь. Он чинится сам за секунды, и кричать о
+    // нём красным (кружок, значок, рамка вокруг самого большого блока экрана,
+    // точка на нав-баре — четырьмя способами разом) значит расходовать цвет
+    // тревоги на то, что пройдёт само. Красный остаётся там, где само не
+    // пройдёт: ошибка настроек и ошибка подключения.
     private var tint: Color {
-        switch app.serverOnline {
-        case .some(true): return Theme.green
-        case .some(false): return Theme.red
-        default: return Theme.amber
-        }
+        app.serverOnline == true ? Theme.green : Theme.amber
     }
     private var icon: String {
         app.serverOnline == false ? "antenna.radiowaves.left.and.right.slash" : "antenna.radiowaves.left.and.right"
@@ -765,8 +772,9 @@ struct ServerTab: View {
     private var statusText: String {
         switch app.serverOnline { case .some(true): return "На связи"; case .some(false): return "Нет связи — восстанавливаю…"; default: return "Проверяю связь…" }
     }
+    /// Та же линейка, что у пинга до хоста (см. `PingTile`).
     private var pingColor: Color {
-        app.ping < 200 ? Theme.green : (app.ping < 600 ? Theme.fg : Theme.amber)
+        app.ping < 250 ? Theme.fg : (app.ping <= 500 ? Theme.amber : Theme.red)
     }
     private var addr: String { app.coordinator.replacingOccurrences(of: "https://", with: "").replacingOccurrences(of: "http://", with: "") }
 
@@ -810,7 +818,7 @@ struct ServerTab: View {
                             ForEach(hist, id: \.self) { url in
                                 Text(url.replacingOccurrences(of: "https://", with: "").replacingOccurrences(of: "http://", with: ""))
                                     .font(.system(size: 13, weight: .bold)).foregroundColor(Theme.fg)
-                                    .padding(.horizontal, 14).padding(.vertical, 9).background(Theme.cardSel).cornerRadius(16)
+                                    .padding(.horizontal, 14).padding(.vertical, 9).background(Theme.cardHi).cornerRadius(16)
                                     .onTapGesture { coordField = url; app.saveCoordinator(url) }
                             }
                         }.padding(.horizontal, 1)
@@ -886,7 +894,7 @@ struct VPNTab: View {
         .padding(.horizontal, 13).padding(.vertical, 9)
         .background(
             RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(highlighted ? Theme.accent.opacity(0.16) : Theme.cardSel)
+                .fill(highlighted ? Theme.accent.opacity(0.16) : Theme.cardHi)
                 .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous)
                     .stroke(highlighted ? Theme.accent.opacity(0.5) : Color.clear, lineWidth: 1))
         )
@@ -915,7 +923,7 @@ struct VPNTab: View {
                     Button { if let s = UIPasteboard.general.string { code = s } } label: {
                         Image(systemName: "doc.on.clipboard").font(.system(size: 17, weight: .semibold)).foregroundColor(Theme.dim)
                             .frame(width: 44, height: 44)
-                            .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color(hex: 0x2A3244))
+                            .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Theme.cardHi)
                                 .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(Color.white.opacity(0.08), lineWidth: 1)))
                     }
                     // Подкраска вместо сплошного синего: он спорил с акцентом
@@ -1184,11 +1192,16 @@ struct HostCard: View {
     }
 
     /// Флаг страны крупно слева — как аватарка, на всю высоту строки.
+    ///
+    /// ПЛАШКА НА СТУПЕНЬ НИЖЕ ПЛИТКИ (s2, а не s3), САМ ФЛАГ ПРИГЛУШЁН. Флаг —
+    /// единственное полностью насыщенное пятно на экране, и сидел он на самой
+    /// светлой подложке темы: в списке глаз ловил его раньше имени хоста, ради
+    /// которого на строку и смотрят.
     private var flagAvatar: some View {
         ZStack {
-            RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Theme.tile)
+            RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Theme.cardHi)
             RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(Color.white.opacity(0.08), lineWidth: 1)
-            Text(hostFlag(host)).font(.system(size: 29))
+            Text(hostFlag(host)).font(.system(size: 29)).opacity(0.85)
         }
         .frame(width: 56, height: 56)
     }
@@ -1365,7 +1378,7 @@ struct HostTab: View {
                         Button { app.hostMax = v; app.applyHostNow() } label: {
                             Text("\(v)").font(.system(size: 13, weight: .bold)).foregroundColor(app.hostMax == v ? Theme.accent : Theme.dim)
                                 .frame(maxWidth: .infinity).padding(.vertical, 8)
-                                .background(app.hostMax == v ? AnyShapeStyle(Theme.accent.opacity(0.15)) : AnyShapeStyle(Theme.cardSel))
+                                .background(app.hostMax == v ? AnyShapeStyle(Theme.accent.opacity(0.15)) : AnyShapeStyle(Theme.cardHi))
                                 .cornerRadius(10)
                                 .overlay(RoundedRectangle(cornerRadius: 10)
                                     .stroke(app.hostMax == v ? Theme.accent.opacity(0.4) : Color.clear, lineWidth: 1))

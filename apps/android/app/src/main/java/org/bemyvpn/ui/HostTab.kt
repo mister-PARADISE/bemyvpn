@@ -201,7 +201,7 @@ fun HostTab(app: AppState, bottomPad: Dp) {
                 val on = app.hostMax == v
                 Box(
                     Modifier.weight(1f)
-                        .background(if (on) Theme.accent.copy(alpha = 0.15f) else Theme.cardSel, RoundedCornerShape(10.dp))
+                        .background(if (on) Theme.accent.copy(alpha = 0.15f) else Theme.cardHi, RoundedCornerShape(10.dp))
                         .border(1.dp, if (on) Theme.accent.copy(alpha = 0.4f) else Color.Transparent, RoundedCornerShape(10.dp))
                         .tappable { app.hostMax = v; app.applyHostNow() }
                         .padding(vertical = 8.dp),

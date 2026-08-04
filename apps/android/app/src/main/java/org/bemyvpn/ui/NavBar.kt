@@ -52,7 +52,7 @@ fun NavBar(app: AppState, modifier: Modifier = Modifier) {
             // ВТОРОЙ ПАРЯЩИЙ СЛОЙ: фон и тень — те же, что у панели состояния
             // (floatSurface). Свой цвет, подобранный на глаз, разошёлся бы с
             // панелью при первой же правке темы.
-            .floatSurface(28.dp, Color.White.copy(alpha = 0.06f))
+            .floatSurface(28.dp, Color.White.copy(alpha = 0.05f))
             .padding(6.dp),
         horizontalArrangement = Arrangement.spacedBy(4.dp),
     ) {
@@ -62,11 +62,8 @@ fun NavBar(app: AppState, modifier: Modifier = Modifier) {
         // есть «ок». Раньше об обрыве кричала полоса на вкладке VPN.
         Cell(
             app, Tab.SERVER, Icons.Filled.Dns, "Сервер", Modifier.weight(1f),
-            live = when (app.serverOnline) {
-                true -> null
-                false -> Theme.red
-                else -> Theme.amber
-            },
+            // Обрыв — янтарь, как и «проверяю»: он чинится сам за секунды.
+            live = if (app.serverOnline == true) null else Theme.amber,
         )
         VpnCell(app, Modifier.weight(1f))
         HostCell(app, Modifier.weight(1f))
@@ -122,7 +119,7 @@ private fun Cell(
                     .align(Alignment.TopCenter)
                     .padding(start = 38.dp, top = 3.dp)
                     .size(11.dp)
-                    .background(Color(0xFF161C2B), androidx.compose.foundation.shape.CircleShape)
+                    .background(floatFill, androidx.compose.foundation.shape.CircleShape)
                     .padding(2.dp)
                     .background(live, androidx.compose.foundation.shape.CircleShape),
             )
@@ -137,7 +134,14 @@ private fun VpnCell(app: AppState, modifier: Modifier) {
             app, Tab.VPN, Icons.Filled.Shield, "VPN", modifier,
             live = when (app.vpnState) { 0 -> null; 2 -> Theme.green; else -> Theme.amber },
         )
-        app.vpnState == 0 -> Action(modifier, Icons.Filled.Bolt, "Старт", Theme.green) { app.quickConnect() }
+        // ЗАПУСК — АКЦЕНТ, А НЕ ЗЕЛЁНЫЙ. Зелёный горел ровно тогда, когда
+        // человек НЕ защищён; для приложения, у которого главный вопрос «я
+        // сейчас под защитой?», это обман глазом. Кнопка — действие, а не
+        // состояние. Зелёный освободился под состояние: поднятый туннель,
+        // идущая раздача, живая связь с сервером. «Стоп» остаётся красным: на
+        // кнопке выхода красный понятен без обучения и читается как «прервать»,
+        // а не как «беда».
+        app.vpnState == 0 -> Action(modifier, Icons.Filled.Bolt, "Старт", Theme.accent) { app.quickConnect() }
         else -> Action(
             modifier, Icons.Filled.Close,
             if (app.vpnState == 1) "Отмена" else "Стоп", Theme.red,
@@ -157,7 +161,8 @@ private fun HostCell(app: AppState, modifier: Modifier) {
             modifier, Icons.Filled.Close,
             if (app.starting) "Отмена" else "Стоп", Theme.red,
         ) { app.stopHost() }
-        else -> Action(modifier, Icons.Filled.PowerSettingsNew, "Раздать", Theme.green) { app.becomeHost() }
+        // «Раздать» — акцент по тому же правилу, что и «Старт».
+        else -> Action(modifier, Icons.Filled.PowerSettingsNew, "Раздать", Theme.accent) { app.becomeHost() }
     }
 }
 

@@ -2,21 +2,20 @@ import SwiftUI
 
 /// Палитра — та же, что в Android-приложении (тёмная тема).
 enum Theme {
-    static let bg      = Color(hex: 0x0B0E14)
-    static let card    = Color(hex: 0x161B26)
-    static let cardSel = Color(hex: 0x1E2A44)
-    static let panel   = Color(hex: 0x121722)
-    /// Слои внутри карточки хоста. В тёмной теме поверхность СВЕТЛЕЕТ по мере
-    /// подъёма: страница → карточка → плитка. Раньше плитки красились в `bg`
-    /// (самый тёмный) и читались как дыры, пробитые в карточке.
-    static let cardHi  = Color(hex: 0x1A2233)   // раскрытая карточка хоста
-    static let tile    = Color(hex: 0x242D3E)   // плитка внутри неё
-    static let accent  = Color(hex: 0x5E93FF)
-    static let accent2 = Color(hex: 0x3D6FE0)
+    // ── ЛЕСТНИЦА ПОВЕРХНОСТЕЙ: ЧЕТЫРЕ СТУПЕНИ, А НЕ ОДИННАДЦАТЬ ──
+    //
+    // Замер по снимкам давал одиннадцать разных подложек, и порядок в них был
+    // нарушен: парящая панель оказывалась ТЕМНЕЕ карточки под ней — оттого и не
+    // парила. Ступеней теперь ровно четыре, и каждая значит одно:
+    static let bg      = Color(hex: 0x0B0E14)   // s0 — страница
+    static let card    = Color(hex: 0x161B26)   // s1 — карточка списка, поле, «поделиться»
+    static let cardHi  = Color(hex: 0x1C2434)   // s2 — раскрытая карточка, выбранное, чип
+    static let tile    = Color(hex: 0x242D3E)   // s3 — плитка внутри панели/карточки
+    static let accent  = Color(hex: 0x7BA6F0)
     static let fg      = Color(hex: 0xEAECEF)
-    static let dim     = Color(hex: 0x8B93A7)
+    static let dim     = Color(hex: 0x99A1B4)
     static let green   = Color(hex: 0x34E29E)
-    static let red     = Color(hex: 0xFF5A6A)
+    static let red     = Color(hex: 0xF2707E)
     static let amber   = Color(hex: 0xF5B14C)
 }
 

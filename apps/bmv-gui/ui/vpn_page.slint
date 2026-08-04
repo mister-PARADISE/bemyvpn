@@ -51,14 +51,19 @@ component HostCard inherits Rectangle {
             HorizontalLayout {
                 spacing: 12px;
                 // Флаг-аватарка слева.
+                //
+                // ПЛАШКА НА СТУПЕНЬ НИЖЕ ПЛИТКИ (s2, а не s3), САМ ФЛАГ ПРИГЛУШЁН.
+                // Флаг — единственное полностью насыщенное пятно на экране, и
+                // сидел он на самой светлой подложке темы: в списке глаз ловил
+                // его раньше имени хоста, ради которого на строку и смотрят.
                 Rectangle {
                     width: 56px; height: 56px;
                     border-radius: 14px;
-                    background: Theme.tile;
+                    background: Theme.card-hi;
                     border-width: 1px;
                     border-color: #FFFFFF14;
-                    if h.has-flag: Image { source: h.flag-img; width: 34px; height: 24px; }
-                    if !h.has-flag: Text { text: "🌍"; font-size: 26px; }
+                    if h.has-flag: Image { source: h.flag-img; width: 34px; height: 24px; opacity: 0.85; }
+                    if !h.has-flag: Text { text: "🌍"; font-size: 26px; opacity: 0.85; }
                 }
                 VerticalLayout {
                     alignment: center;
@@ -303,7 +308,7 @@ export component VpnPage inherits Rectangle {
                     Rectangle {
                         width: 44px; height: 44px;
                         border-radius: 10px;
-                        background: paste-ta.has-hover ? #333D52 : #2A3244;
+                        background: paste-ta.has-hover ? Theme.card-hi.brighter(0.12) : Theme.card-hi;
                         border-width: 1px;
                         border-color: #FFFFFF14;
                         VerticalLayout { alignment: center; HorizontalLayout { alignment: center; IconPaste { width: 18px; height: 18px; tint: Theme.dim; } } }
@@ -332,7 +337,7 @@ export component VpnPage inherits Rectangle {
                     property <bool> hot: root.recent-ids[i] == root.vpn-host-id;
                     height: 38px;
                     border-radius: 16px;
-                    background: hot ? Theme.accent.with-alpha(0.16) : Theme.card-sel;
+                    background: hot ? Theme.accent.with-alpha(0.16) : Theme.card-hi;
                     border-width: 1px;
                     border-color: hot ? Theme.accent.with-alpha(0.5) : transparent;
                     HorizontalLayout {
@@ -414,8 +419,11 @@ export component VpnPage inherits Rectangle {
             padding-bottom: 12px;
             // Общий парящий блок: фон и тень — те же, что у нав-бара.
             FloatCard {
-                // Рамка берёт цвет состояния: на «нет связи» контур красный.
-                stroke: root.tint.with-alpha(0.45);
+                // Кольцо состояния — ТИШЕ СОДЕРЖИМОГО и уведено под кромку
+                // света: на 0.45 обводка была ярче самой панели, и вся «высота»
+                // держалась на ней. Покажут состояние иначе — панель не станет
+                // от этого плоской.
+                stroke: root.tint.with-alpha(0.30);
                 // Глушит клики по пустым местам карточки: без неё тап
                 // проваливался бы на карточку хоста, лежащую ПОД панелью.
                 // Стоит ПЕРВОЙ — содержимое объявлено ниже и в попадании

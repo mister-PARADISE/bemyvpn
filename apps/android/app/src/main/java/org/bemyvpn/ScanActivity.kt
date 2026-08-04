@@ -14,6 +14,7 @@ import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
 import android.widget.FrameLayout
 import android.widget.TextView
 import android.widget.Toast
+import androidx.compose.ui.graphics.toArgb
 import androidx.core.view.WindowCompat
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.ResultPoint
@@ -75,32 +76,45 @@ class ScanActivity : Activity() {
             layoutParams = FrameLayout.LayoutParams(dp(230), dp(230), Gravity.CENTER)
         })
 
+        // ПОДЛОЖКА-ЗАТЕМНЕНИЕ под всеми надписями поверх кадра. Плотность 0.80,
+        // а НЕ 0.50: под ней не фон темы, а КАДР С КАМЕРЫ, и на белой стене или
+        // на небе половинное затемнение садится ровно в средне-серый — худшую из
+        // возможных подложек. Замер на эмуляторе со светлой сценой: синяя
+        // «Отмена» на 0.50 давала 1.63:1, на 0.80 даёт 5.2:1; белый заголовок —
+        // 3.9:1 и 12.6:1.
+        val scrim = { GradientDrawable().apply { setColor(0xCC000000.toInt()); cornerRadius = dp(10).toFloat() } }
+
         // Подпись снизу.
         root.addView(TextView(this).apply {
             text = "Наведите камеру на QR приглашения"
             setTextColor(Color.WHITE); textSize = 14f
             setPadding(dp(12), dp(10), dp(12), dp(10))
-            background = GradientDrawable().apply {
-                setColor(0x80000000.toInt()); cornerRadius = dp(10).toFloat()
-            }
+            background = scrim()
             layoutParams = FrameLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL)
                 .apply { bottomMargin = dp(60) }
         })
 
-        // Шапка: «Отмена» слева, заголовок по центру.
+        // Шапка: «Отмена» слева, заголовок по центру. Подложка та же, что у
+        // подписи снизу: без неё на светлой сцене обе надписи пропадают.
         root.addView(TextView(this).apply {
             text = "Отмена"
-            setTextColor(0xFF5E93FF.toInt()); textSize = 16f
-            setPadding(dp(16), dp(52), dp(16), dp(12))
+            // Токен темы, а не сырой шестнадцатеричный близнец акцента: он молча
+            // разошёлся бы с палитрой при первой же её правке.
+            setTextColor(Theme.accent.toArgb()); textSize = 16f
+            setPadding(dp(12), dp(8), dp(12), dp(8))
+            background = scrim()
             layoutParams = FrameLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT, Gravity.TOP or Gravity.START)
+                .apply { topMargin = dp(52); leftMargin = dp(12) }
             setOnClickListener { finish() }
         })
         root.addView(TextView(this).apply {
             text = "Сканировать QR"
             setTextColor(Color.WHITE); textSize = 17f
             setTypeface(typeface, Typeface.BOLD)
-            setPadding(0, dp(52), 0, dp(12))
+            setPadding(dp(12), dp(8), dp(12), dp(8))
+            background = scrim()
             layoutParams = FrameLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT, Gravity.TOP or Gravity.CENTER_HORIZONTAL)
+                .apply { topMargin = dp(52) }
         })
 
         setContentView(root)

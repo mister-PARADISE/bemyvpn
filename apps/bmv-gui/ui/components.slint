@@ -176,12 +176,16 @@ export component PingTile inherits StatTile {
     property <bool> dim: false;
 
     in property <int> ms: -1;
-    // Цвет по величине задержки — чтобы годность хоста читалась без чтения цифр.
-    // Пороги под VPN: до 60мс разницы не чувствуешь, после 150мс уже мешает.
+    // ОДНА ЛИНЕЙКА НА ОБА ПИНГА (здесь и на вкладке «Сервер»). Раньше их было
+    // две, и меньшее число выходило тревожнее большего: 137 мс до хоста
+    // краснело, 162 мс до координатора числилось «хорошо».
+    //
+    // ЗЕЛЁНОГО В ПИНГЕ НЕТ ВОВСЕ: в этом приложении зелёный значит «работает», а
+    // не «быстро». Норма молчит — обычный цвет текста.
     property <color> ping-tint:
         root.ms < 0 ? Theme.fg
-        : root.ms < 60 ? Theme.green
-        : root.ms <= 150 ? Theme.amber
+        : root.ms < 250 ? Theme.fg
+        : root.ms <= 500 ? Theme.amber
         : Theme.red;
 
     label: "ПИНГ";
@@ -280,35 +284,44 @@ export component ActionTile inherits TileFrame {
     TouchArea { clicked => { root.action(); } }
 }
 
-/// ПАРЯЩИЙ БЛОК — панель состояния и нав-бар. Один фон, одна тень: два слоя
-/// над страницей читаются как один язык, а не как две разные плашки.
+/// ПАРЯЩИЙ БЛОК — панель состояния и нав-бар. Одна отделка на оба: два слоя над
+/// страницей читаются как один язык, а не как две разные плашки.
 ///
-/// ТЕНЬ ЗДЕСЬ ОБЯЗАТЕЛЬНА. Её однажды убирали — но убирали у НЕПРОЗРАЧНОЙ
-/// ЛЕНТЫ во всю ширину с острыми углами: там она рисовала тёмную полосу и
-/// читалась лишним слоем. У скруглённого блока, под которым едет содержимое,
-/// тень делает ровно обратное — говорит, что блок лежит НАД страницей. Без неё
-/// он выглядит дыркой, вырезанной в списке.
+/// ВЫСОТУ ДЕРЖАТ ТРИ НОСИТЕЛЯ, А НЕ ОДНА ТЕНЬ.
 ///
-/// Слоёв два: ближний даёт край, дальний мягко отрывает блок от страницы. Одна
-/// широкая размывалась в грязь, и блок «лежал» на списке.
+///  1. ЗАЛИВКА НЕПРОЗРАЧНАЯ. Прежние 0.97 не покупали ничего: размытия под
+///     блоком нет ни на одной оболочке, зато сквозь панель на снимке читался
+///     текст списка под ней.
+///  2. КРОМКА СВЕТА 1px ТОЛЬКО СВЕРХУ. Это и есть физический верхний край
+///     блока; по бокам и снизу остаётся тихая рамка (`stroke`).
+///  3. ТЕНЬ КОРОТКАЯ. Дальняя 30-пиксельная убрана: на почти-чёрном фоне
+///     (#0B0E14) она размывалась в грязь и не сообщала ничего. Сторона подъезда
+///     — параметр: у панели (прижата сверху) тень ВНИЗ, у нав-бара (прижат
+///     снизу) — ВВЕРХ. Раньше у бара тень уезжала под него, в полосу, на
+///     которую никто не смотрит.
 export component FloatCard inherits Rectangle {
     in property <length> radius: 22px;
-    in property <color> stroke: #FFFFFF10;
-    // У внешней коробки фона нет — она носит только дальнюю тень.
-    background: transparent;
-    drop-shadow-blur: 30px;
-    drop-shadow-color: #000000CC;
-    drop-shadow-offset-y: 14px;
+    /// Рамка по бокам и снизу. У панели её место занимает кольцо состояния.
+    in property <color> stroke: #FFFFFF0D;
+    /// Блок прижат снизу (нав-бар) — тень уходит ВВЕРХ, к содержимому.
+    in property <bool> lift-up: false;
+    border-radius: root.radius;
+    background: Theme.float-bg;
+    border-width: 1px;
+    border-color: root.stroke;
+    drop-shadow-blur: 9px;
+    drop-shadow-color: #000000E6;
+    drop-shadow-offset-y: root.lift-up ? -5px : 5px;
+    // Кромка света. Поджата на радиус с боков — иначе полоса торчала бы из
+    // скруглённых углов.
     Rectangle {
-        border-radius: root.radius;
-        background: Theme.float-bg;
-        border-width: 1px;
-        border-color: root.stroke;
-        drop-shadow-blur: 6px;
-        drop-shadow-color: #000000A6;
-        drop-shadow-offset-y: 2px;
-        @children
+        x: root.radius;
+        y: 0px;
+        width: root.width - 2 * root.radius;
+        height: 1px;
+        background: #FFFFFF24;
     }
+    @children
 }
 
 // ── Кнопки ───────────────────────────────────────────────────────────────────
@@ -378,7 +391,7 @@ export component CalmButton inherits Rectangle {
 
 export component Card inherits Rectangle {
     border-radius: 16px;
-    background: Theme.panel;
+    background: Theme.card;
     VerticalLayout {
         padding: 16px;
         spacing: 10px;
@@ -554,7 +567,13 @@ export component ShareButton inherits Rectangle {
     preferred-width: 0px;
     clip: true;
     border-radius: 15px;
-    background: ta.has-hover ? #232D42 : #1B2333;
+    // Ступень s3 — ТА ЖЕ, ЧТО У ПЛИТОК РЯДОМ. Кнопка живёт ТОЛЬКО внутри
+    // парящей панели, а панель светлее карточек списка: увести кнопку на s1
+    // значило бы посадить её НИЖЕ собственной подложки — в одной панели плитки
+    // были бы над фоном, а кнопки под ним. Правило приложения одно: кнопка на
+    // поверхности — на ступень выше этой поверхности (так же покрашены
+    // CardButton и «Сканировать QR» на карточке).
+    background: ta.has-hover ? Theme.tile.brighter(0.12) : Theme.tile;
     border-width: 1px;
     border-color: root.did ? Theme.green.with-alpha(0.5) : Theme.accent.with-alpha(0.24);
     animate border-color, background { duration: 160ms; easing: ease-out; }

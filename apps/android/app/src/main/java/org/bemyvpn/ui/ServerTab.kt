@@ -103,7 +103,7 @@ fun ServerTab(app: AppState, bottomPad: androidx.compose.ui.unit.Dp) {
                         url.removePrefix("https://").removePrefix("http://"),
                         color = Theme.fg, fontSize = 13.sp, fontWeight = FontWeight.Bold,
                         modifier = Modifier
-                            .background(Theme.cardSel, RoundedCornerShape(16.dp))
+                            .background(Theme.cardHi, RoundedCornerShape(16.dp))
                             .tappable { coordField = url; app.saveCoordinator(url) }
                             .padding(horizontal = 14.dp, vertical = 9.dp),
                     )
@@ -119,18 +119,21 @@ fun ServerTab(app: AppState, bottomPad: androidx.compose.ui.unit.Dp) {
 private fun ServerHero(app: AppState) {
     // Кольцо отвечает на «сервер доступен?» — это ДА/НЕТ. Качество связи
     // показывает пинг отдельной плиткой.
+    // ОБРЫВ СВЯЗИ — НЕ БЕДА, а янтарь. Он чинится сам за секунды, и кричать о
+    // нём красным (кружок, значок, рамка вокруг самого большого блока экрана,
+    // точка на нав-баре — четырьмя способами разом) значит расходовать цвет
+    // тревоги на то, что пройдёт само. Красный остаётся там, где само не
+    // пройдёт: ошибка настроек и ошибка подключения.
     val tint by animateColorAsState(
-        when (app.serverOnline) {
-            true -> Theme.green
-            false -> Theme.red
-            null -> Theme.amber
-        }, tween(300), label = "srvTint",
+        if (app.serverOnline == true) Theme.green else Theme.amber,
+        tween(300), label = "srvTint",
     )
     val icon = if (app.serverOnline == false) Icons.Filled.PortableWifiOff else Icons.Filled.SettingsInputAntenna
     val statusText = when (app.serverOnline) {
         true -> "На связи"; false -> "Нет связи — восстанавливаю…"; null -> "Проверяю связь…"
     }
-    val pingColor = if (app.ping < 200) Theme.green else if (app.ping < 600) Theme.fg else Theme.amber
+    // Та же линейка, что у пинга до хоста (см. pingTint в VpnTab).
+    val pingColor = if (app.ping < 250) Theme.fg else if (app.ping <= 500) Theme.amber else Theme.red
     val addr = app.coordinator.removePrefix("https://").removePrefix("http://")
 
     // Когда связь есть, круг уступает место цифрам: смотреть на большой значок
