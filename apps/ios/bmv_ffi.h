@@ -24,6 +24,10 @@ void  bmv_free_string(char *s);
 char *bmv_coordinator_url(const char *input);
 /* Адрес координатора ДЛЯ ПОКАЗА — без схемы и без хвостового слэша. */
 char *bmv_display_coordinator(const char *url);
+/* Имя протокола по-человечески — слово в пару к значку из bmv_protection.
+   ПУСТОЙ ПРОТОКОЛ — «Обычный», А НЕ «БЕЗ ШИФРА»: хост, не объявивший протокол,
+   всё равно шифрует. Незнакомое имя приезжает как есть. */
+char *bmv_proto_name(const char *protocol);
 /* Уровень защиты по имени протокола: 0 шифр · 1 маскировка · 2 без шифра ·
    3 неизвестно (номера — варианты view::Protection). */
 int32_t bmv_protection(const char *protocol);

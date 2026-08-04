@@ -90,18 +90,10 @@ const RULES: &[Rule] = &[
 /// ПУСТОЙ СПИСОК — ЦЕЛЬ. Пополнять его новыми строками нельзя: новая копия — это
 /// то самое расхождение, ради поимки которого здесь всё и стоит.
 const MIGRATING: &[(&str, &str)] = &[
-    // Терминал: своя тройка состояний связи, разошедшаяся с тремя другими
-    // оболочками регистром и многоточием, и свой набор подписей VPN.
-    ("apps/bmv-cli/src/tui.rs", "на связи"),
-    ("apps/bmv-cli/src/tui.rs", "восстанавлива"),
-    ("apps/bmv-cli/src/tui.rs", "vpn выключен"),
-    ("apps/bmv-cli/src/tui.rs", "подключаюсь"),
-    ("apps/bmv-cli/src/tui.rs", "завершил раздачу"),
-    ("apps/bmv-cli/src/main.rs", "завершил раздачу"),
-    // Окно: подписи состояния VPN раздаются из Rust в разметку строками.
-    ("apps/bmv-gui/src/main.rs", "vpn выключен"),
-    ("apps/bmv-gui/src/main.rs", "подключаюсь"),
-    ("apps/bmv-gui/src/main.rs", "завершил раздачу"),
+    // Терминал и окно ПЕРЕЕХАЛИ ЦЕЛИКОМ: обе Rust-оболочки зовут `view::*` и
+    // своих подписей не держат. Здесь стояли девять строк — тройка состояний
+    // связи и набор подписей VPN терминала, три подписи VPN окна; их убрали
+    // тем же заходом, что и сами копии.
     // ── НЕ-RUST ОБОЛОЧКИ ──────────────────────────────────────────────────
     // Телефоны и разметка окна живут на СОБСТВЕННЫХ копиях всего справочника:
     // позвать `view.rs` оттуда сегодня нечем, дверь открывает мост `bmv-ffi`
@@ -109,19 +101,8 @@ const MIGRATING: &[(&str, &str)] = &[
     // жива — она названа здесь поимённо; переедет — строка обязана уйти, иначе
     // часовой напомнит сам. Пополнять этот кусок новыми строками НЕЛЬЗЯ: новая
     // копия и есть то расхождение, ради поимки которого всё это стоит.
-    ("apps/android/app/src/main/java/org/bemyvpn/AppState.kt", "восстанавлива"),
-    ("apps/android/app/src/main/java/org/bemyvpn/AppState.kt", "завершил раздачу"),
-    ("apps/android/app/src/main/java/org/bemyvpn/AppState.kt", "мс\""),
-    ("apps/android/app/src/main/java/org/bemyvpn/AppState.kt", "подключаюсь"),
-    ("apps/android/app/src/main/java/org/bemyvpn/AppState.kt", "связь с хостом пропала"),
     ("apps/android/app/src/main/java/org/bemyvpn/BmvVpnService.kt", "подключаюсь"),
-    ("apps/android/app/src/main/java/org/bemyvpn/HostService.kt", "восстанавлива"),
-    ("apps/android/app/src/main/java/org/bemyvpn/Model.kt", "% 3600"),
     ("apps/android/app/src/main/java/org/bemyvpn/Model.kt", "маскировка"),
-    ("apps/android/app/src/main/java/org/bemyvpn/Native.kt", "завершил раздачу"),
-    ("apps/android/app/src/main/java/org/bemyvpn/Native.kt", "маскировка"),
-    ("apps/android/app/src/main/java/org/bemyvpn/Native.kt", "переподключение"),
-    ("apps/android/app/src/main/java/org/bemyvpn/Native.kt", "подключаюсь"),
     ("apps/android/app/src/main/java/org/bemyvpn/ui/Common.kt", "маскировка"),
     ("apps/android/app/src/main/java/org/bemyvpn/ui/ServerTab.kt", "\"http://\""),
     ("apps/android/app/src/main/java/org/bemyvpn/ui/ServerTab.kt", "восстанавлива"),
@@ -141,10 +122,6 @@ const MIGRATING: &[(&str, &str)] = &[
     ("apps/bmv-gui/ui/server_page.slint", "проверяю связ"),
     ("apps/bmv-gui/ui/vpn_page.slint", "восстанавлива"),
     ("apps/bmv-gui/ui/vpn_page.slint", "хостов пока нет"),
-    ("apps/ios/BeMyVPN/BeMyVPNApp.swift", "% 3600"),
-    ("apps/ios/BeMyVPN/BeMyVPNApp.swift", "завершил раздачу"),
-    ("apps/ios/BeMyVPN/BeMyVPNApp.swift", "мс\""),
-    ("apps/ios/BeMyVPN/BeMyVPNApp.swift", "подключаюсь"),
     ("apps/ios/BeMyVPN/ContentView.swift", "\"http://\""),
     ("apps/ios/BeMyVPN/ContentView.swift", "vpn выключен"),
     ("apps/ios/BeMyVPN/ContentView.swift", "восстанавлива"),
@@ -220,8 +197,17 @@ fn a_display_rule_exists_in_exactly_one_place() {
         let code = src.split("#[cfg(test)]").next().unwrap_or("");
         for (i, line) in code.lines().enumerate() {
             let t = line.trim_start().to_lowercase();
-            if t.starts_with("//") {
-                continue; // комментарии как раз ОБЪЯСНЯЮТ правило, а не повторяют
+            // Комментарии как раз ОБЪЯСНЯЮТ правило, а не повторяют. Кроме `//`
+            // пропускаем продолжение блочного комментария (`* …`, `*/`) — в
+            // Kotlin, Swift и Slint пояснения пишут через `/** … */`, и второй
+            // строкой такого блока часовой ловил слово «переподключение» из
+            // фразы о том, что подпись берётся из справочника.
+            //
+            // Именно `* ` со ПРОБЕЛОМ, а не любой `*`: строка кода вида
+            // `*slot.lock().unwrap() = "VPN выключен".into();` начинается с
+            // звёздочки и обязана остаться видимой — это настоящая копия.
+            if t.starts_with("//") || t.starts_with("* ") || t.starts_with("*/") || t == "*" {
+                continue;
             }
             for (rule, needles, allowed) in RULES {
                 if allowed.contains(&&*rel) {

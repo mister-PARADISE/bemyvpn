@@ -269,9 +269,12 @@ async fn main() {
         Cmd::Protocols => {
             println!("Протоколы (порядок = приоритет фолбэка):");
             for p in engine.protocols() {
-                let lock = if p.encrypts { "🔒 шифрует" } else { "🔓 без шифра" };
+                // Подпись и значок — те же, что в меню (`tui::proto_short` поверх
+                // `view::proto_name`/`view::protection`). Здесь был свой словарь
+                // из поля «шифрует ли»: одна и та же строка каталога называлась
+                // тут «шифрует», а в меню — «Обычный»/«Маскировка».
                 let avail = if p.available { "доступен" } else { "недоступен" };
-                println!("  {:<10} {lock:<14} [{avail}]", p.name);
+                println!("  {:<10} {:<16} [{avail}]", p.name, tui::proto_short(p.name));
             }
             let order: Vec<_> = engine.connect_order().iter().map(|p| p.name()).collect();
             println!("\nПорядок соединения: {}", order.join(" → "));
@@ -284,7 +287,9 @@ async fn main() {
 
         Cmd::Ping => {
             let base = engine.config().coordinators.first().cloned().unwrap_or_default();
-            print!("Координатор {base} … ");
+            // Схему на экран не выводим (`view::without_scheme`): человек её и не
+            // набирает — «bemyvpn.net» справочник сам достраивает до https.
+            print!("Координатор {} … ", bmv_common::view::without_scheme(&base));
             match engine.coordinator_health().await {
                 Ok(()) => println!("жив ✅"),
                 Err(e) => fail(format!("недоступен. {e}")),
@@ -339,7 +344,10 @@ async fn run_host(engine: std::sync::Arc<BmvEngine>, tunnel: bool) {
         let h = hub.clone();
         tokio::spawn(async move {
             loop {
-                tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+                // Период — общий с двумя другими деревьями хоста
+                // (`bmv_core::HOST_HEARTBEAT`), а не своё число: разъехавшись,
+                // они дают то хост-призрак в каталоге, то лишний трафик.
+                tokio::time::sleep(bmv_core::HOST_HEARTBEAT).await;
                 let _ = e.host_heartbeat(&h).await;
             }
         });
@@ -421,8 +429,17 @@ async fn run_guest(
                         let status = if h.online { "🟢" } else { "⚪️" };
                         let name = bmv_common::view::host_display_name(&h.name, &h.id);
                         let ip = h.endpoints.first().map(|e| e.as_str()).unwrap_or("—");
+                        // Годен ли хост — по общему правилу (`view::host_usable`),
+                        // тому самому, по которому в оболочках гаснет кнопка.
+                        // Список этого не спрашивал совсем, и `--connect` на
+                        // забитый хост уходил в сеть за отказом.
+                        let refuse = if bmv_common::view::host_usable(h.online, h.guests, h.max_guests) {
+                            ""
+                        } else {
+                            "  (подключиться нельзя)"
+                        };
                         println!(
-                            "  {status} {name} ({})  [{}]  {}  {}/{} гостей  {}",
+                            "  {status} {name} ({})  [{}]  {}  {}/{} гостей  {}{refuse}",
                             h.id, lock, vis, h.guests, h.max_guests, ip
                         );
                     }
@@ -510,8 +527,10 @@ fn tunnel_outcome(last: Option<bmv_desktop::tunnel::State>) -> Result<String, St
     match last {
         // Хост САМ погасил раздачу (прислал BYE) — сеанс окончен штатно. Своя
         // копия про BYE не знала и печатала здесь «туннель оборвался» с кодом 1:
-        // человек видел отказ там, где всё сработало правильно.
-        Some(State::HostLeft) => Ok("Хост завершил раздачу — сеанс окончен.".into()),
+        // человек видел отказ там, где всё сработало правильно. Слова — из
+        // справочника (`view::vpn_text`): здесь стояла своя вторая формулировка
+        // того же состояния.
+        Some(State::HostLeft) => Ok(bmv_common::view::vpn_text(bmv_common::view::Vpn::Ended).to_string()),
         Some(State::Failed(e)) => Err(e),
         // Туннель кончился сам, и хост не прощался, — это обрыв. «Стоп» снаружи
         // здесь никто не даёт (в headless некому), так что других причин нет.
@@ -881,9 +900,11 @@ mod guest_tests {
     /// здесь «туннель оборвался» с кодом 1 — отказ там, где всё сработало.
     #[test]
     fn a_host_ending_the_session_is_not_a_failure() {
+        // Текст — тот же, что видят три другие оболочки (`view::vpn_text`);
+        // здесь у терминала была своя вторая формулировка.
         assert_eq!(
             tunnel_outcome(Some(State::HostLeft)),
-            Ok("Хост завершил раздачу — сеанс окончен.".to_string())
+            Ok("Хост завершил раздачу — выберите другой".to_string())
         );
     }
 

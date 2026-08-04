@@ -18,7 +18,9 @@ bmv-core = { path = "../../crates/bmv-core" }
 bmv-config = { path = "../../crates/bmv-config" }
 bmv-common = { path = "../../crates/bmv-common" }
 bmv-signal = { path = "../../crates/bmv-signal" }
-bmv-tunnel = { path = "../../crates/bmv-tunnel" }
+# bmv-tunnel здесь больше не нужен: и TUN, и качание трафика поднимает
+# bmv-desktop (общий с терминалом путь), а прямых обращений к крейту в src/ и
+# tests/ не осталось ни одного. Так же вычищено у bmv-cli.
 # Роутинг гостя (TUN + завернуть трафик) — общий с bmv-cli.
 bmv-desktop = { path = "../../crates/bmv-desktop" }
 # femtovg (GPU) — HiDPI/Retina, сглаживание. Флаги-эмодзи он не умеет, поэтому

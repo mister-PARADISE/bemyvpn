@@ -1010,7 +1010,6 @@ dependencies = [
  "bmv-core",
  "bmv-desktop",
  "bmv-signal",
- "bmv-tunnel",
  "directories",
  "display-info",
  "embed-resource",

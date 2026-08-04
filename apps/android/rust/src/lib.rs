@@ -68,6 +68,15 @@ pub extern "system" fn Java_org_bemyvpn_Native_nativeDisplayCoordinator(
 }
 
 #[no_mangle]
+pub extern "system" fn Java_org_bemyvpn_Native_nativeProtoName(
+    mut env: JNIEnv, _c: JClass, protocol: JString,
+) -> jstring {
+    let s = c_arg(&mut env, &protocol);
+    let r = bmv_ffi::bmv_proto_name(s.as_ptr());
+    take(&mut env, r)
+}
+
+#[no_mangle]
 pub extern "system" fn Java_org_bemyvpn_Native_nativeProtection(
     mut env: JNIEnv, _c: JClass, protocol: JString,
 ) -> jint {

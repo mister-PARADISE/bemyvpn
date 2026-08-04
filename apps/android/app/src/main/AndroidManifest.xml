@@ -32,7 +32,12 @@
             </intent-filter>
             <!-- Инвайт — децентрализованный: код / QR / кастомная схема (работает
                  вставкой в поле кода и встроенным сканером; без доменов/сайтов):
-                 bemyvpn://connect?code=…, bemyvpn://server?url=…, bemyvpn://CODE -->
+                 bemyvpn://connect?code=…, bemyvpn://CODE.
+                 Схемы bemyvpn://server?url=… ЗДЕСЬ НЕ БЫЛО НИКОГДА: разбор ссылок
+                 её не знает, и такая ссылка уезжала в «подключиться по коду» с
+                 кодом «SERVER». Обещание убрано, а не дописано нарочно: по чужой
+                 ссылке молча менять адрес координатора — это менять то, кому
+                 приложение доверяет искать хостов. -->
             <intent-filter android:autoVerify="false">
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />

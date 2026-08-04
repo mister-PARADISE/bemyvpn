@@ -28,6 +28,14 @@ slint::include_modules!();
 
 const DEFAULT_COORD: &str = "https://bemyvpn.net";
 
+/// Заголовок неудачного подключения — ОДИН на все четыре места, где он ставится.
+///
+/// В справочник он не едет: `view::Vpn` состояния «не вышло» не знает вовсе —
+/// на телефонах отказ живёт отдельной веткой с текстом ошибки, а не состоянием
+/// VPN. Пока правило одно на одну оболочку, его место здесь; разъедется с
+/// телефонами — переедет в `view` вместе с ними.
+const VPN_FAILED: &str = "Не удалось подключиться";
+
 type EngineSlot = Arc<Mutex<Arc<BmvEngine>>>;
 type Ts = Arc<Mutex<Option<std::time::Instant>>>;
 /// Замеры отклика: id хоста → готовая строка для плитки («24 мс» / «—» / «…»).
@@ -236,7 +244,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ui.set_coord_field(view::without_scheme(&coord).into());
     ui.set_coord_is_default(coord == DEFAULT_COORD);
     ui.set_config_error(config_error.into());
-    ui.set_vpn_status("VPN выключен".into());
+    // Подписи состояния VPN — ТОЛЬКО из справочника (`view::vpn_text`). Здесь
+    // они раздавались строками из одиннадцати мест сразу.
+    ui.set_vpn_status(view::vpn_text(view::Vpn::Off).into());
     ui.set_host_status("Раздача выключена".into());
     // Сохранённые настройки раздачи — на экран.
     ui.set_host_name(saved_host.name.into());
@@ -401,7 +411,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let found = hosts.lock().unwrap().iter().find(|h| h.id == id).cloned();
                 let name = found.as_ref().map(display_name).unwrap_or_else(|| id.clone());
                 match n {
-                    1 => { ui.set_vpn_state(1); ui.set_vpn_host_id(id.clone().into()); ui.set_vpn_status("Подключаюсь…".into()); ui.set_vpn_sub(format!("к {name}").into()); }
+                    1 => { ui.set_vpn_state(1); ui.set_vpn_host_id(id.clone().into()); ui.set_vpn_status(view::vpn_text(view::Vpn::Connecting).into()); ui.set_vpn_sub(format!("к {name}").into()); }
                     2 => {
                         ui.set_vpn_state(2); ui.set_vpn_host_id(id.clone().into()); ui.set_vpn_status(name.into());
                         // Кто именно подключился, знает хелпер: при «Старте» он сам
@@ -421,7 +431,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     // телефонах так уже сделано — теперь одинаково везде.
                     3 => {
                         ui.set_vpn_state(3);
-                        ui.set_vpn_status("Не удалось подключиться".into());
+                        ui.set_vpn_status(VPN_FAILED.into());
                         ui.set_vpn_sub(if err.is_empty() { "Попробуйте ещё раз или выберите другой хост.".into() } else { err.into() });
                     }
                     // ХОСТ ЗАВЕРШИЛ РАЗДАЧУ. Состояние — обычное «выключено» (0), то
@@ -429,13 +439,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     // ошибки здесь нет, всё сработало правильно. Меняются только
                     // слова — вместо «VPN выключен» человек читает, что случилось и
                     // что делать дальше.
+                    //
+                    // ОБЕ ФРАЗЫ — ИЗ СПРАВОЧНИКА, и обе целиком: заголовок
+                    // говорит, что VPN выключен, подпись — почему и что делать.
+                    // Своей формулировки («Хост завершил раздачу» + «Выберите
+                    // другой хост или нажмите «Старт»») здесь больше нет.
+                    //
+                    // ПОЧЕМУ ОБЪЯСНЕНИЕ ВНИЗУ, А НЕ В ЗАГОЛОВКЕ: заголовок —
+                    // 21px жирным без переноса и с `elide`, и на настоящем окне
+                    // (400 точек ширины) фраза правила обрезалась на «Хост
+                    // завершил раздачу — в…». Подпись же переносится по словам.
+                    // Тот же порядок здесь уже принят для отказа: короткий
+                    // заголовок, объяснение строкой ниже.
                     4 => {
                         ui.set_vpn_state(0);
                         ui.set_vpn_host_id("".into());
-                        ui.set_vpn_status("Хост завершил раздачу".into());
-                        ui.set_vpn_sub("Выберите другой хост или нажмите «Старт»".into());
+                        ui.set_vpn_status(view::vpn_text(view::Vpn::Off).into());
+                        ui.set_vpn_sub(view::vpn_text(view::Vpn::Ended).into());
                     }
-                    _ => { ui.set_vpn_state(0); ui.set_vpn_host_id("".into()); ui.set_vpn_status("VPN выключен".into()); ui.set_vpn_sub("".into()); }
+                    _ => { ui.set_vpn_state(0); ui.set_vpn_host_id("".into()); ui.set_vpn_status(view::vpn_text(view::Vpn::Off).into()); ui.set_vpn_sub("".into()); }
                 }
             });
         })
@@ -809,7 +831,7 @@ fn spawn_refresh(
                     if helper_up.is_none() && ui.get_vpn_state() == 2 {
                         ui.set_vpn_state(0);
                         ui.set_vpn_host_id("".into());
-                        ui.set_vpn_status("VPN выключен".into());
+                        ui.set_vpn_status(view::vpn_text(view::Vpn::Off).into());
                         ui.set_vpn_sub("".into());
                     }
                     if ui.get_vpn_state() == 2 { ui.set_vpn_elapsed(vpn_el.unwrap_or_default().into()); }
@@ -944,7 +966,7 @@ fn wire_vpn(
     // Оптимистичный статус до ответа хелпера (как iOS connect()).
     fn begin(ui: &AppWindow, id: &str, name: &str) {
         ui.set_vpn_state(1);
-        ui.set_vpn_status("Подключаюсь…".into());
+        ui.set_vpn_status(view::vpn_text(view::Vpn::Connecting).into());
         ui.set_vpn_sub(format!("к {name}").into());
         ui.set_vpn_host_id(id.into());
         // Чистим карточку: иначе от прошлого подключения остаются чужие IP и
@@ -976,7 +998,7 @@ fn wire_vpn(
             let Some(host) = hosts.lock().unwrap().iter().find(|h| h.id == id.as_str()).cloned() else { return };
             if u.get_host_state() == 2 && u.get_host_code() == host.id.as_str() {
                 u.set_vpn_state(3);
-                u.set_vpn_status("Не удалось подключиться".into());
+                u.set_vpn_status(VPN_FAILED.into());
                 u.set_vpn_sub("Это ваш собственный хост — выберите другой.".into());
                 return;
             }
@@ -1000,7 +1022,7 @@ fn wire_vpn(
             if code.is_empty() { return; }
             if u.get_host_state() == 2 && u.get_host_code() == code.as_str() {
                 u.set_vpn_state(3);
-                u.set_vpn_status("Не удалось подключиться".into());
+                u.set_vpn_status(VPN_FAILED.into());
                 u.set_vpn_sub("Это код вашего же хоста — введите чужой.".into());
                 u.set_code("".into());
                 return;
@@ -1048,7 +1070,7 @@ fn wire_vpn(
             };
             let Some(first) = cands.first() else {
                 u.set_vpn_state(3);
-                u.set_vpn_status("Не удалось подключиться".into());
+                u.set_vpn_status(VPN_FAILED.into());
                 u.set_vpn_sub("Сейчас нет свободного хоста без пароля. Выберите хост в списке ниже.".into());
                 return;
             };
@@ -1067,7 +1089,7 @@ fn wire_vpn(
             if let Some(u) = weak.upgrade() {
                 u.set_vpn_state(0);
                 u.set_vpn_host_id("".into());
-                u.set_vpn_status("VPN выключен".into());
+                u.set_vpn_status(view::vpn_text(view::Vpn::Off).into());
                 u.set_vpn_sub("".into());
             }
         });

@@ -9,8 +9,6 @@ enum GeoFlags {
     private static let lock = NSLock()
     private static var loaded = false
 
-    static var ready: Bool { !starts.isEmpty }
-
     /// Загрузить базу (звать из фонового потока один раз).
     static func load() {
         lock.lock(); defer { lock.unlock() }

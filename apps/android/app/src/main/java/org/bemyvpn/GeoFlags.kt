@@ -21,9 +21,6 @@ object GeoFlags {
     private var ends: IntArray = IntArray(0)
     private var cc: ByteArray = ByteArray(0)
 
-    /** База загружена — можно определять страну по IP (иначе только фолбэк). */
-    val ready: Boolean get() = starts != null
-
     /** Загрузить базу в память (звать из фонового потока один раз). */
     fun load(ctx: Context) {
         if (starts != null) return
@@ -70,12 +67,7 @@ object GeoFlags {
         return "${cc[i * 2].toInt().toChar()}${cc[i * 2 + 1].toInt().toChar()}"
     }
 
-    /** Эмодзи-флаг по IPv4; при неудаче — по фолбэк-коду; иначе глобус. */
-    fun flagOf(ip: String, fallbackCc: String): String {
-        val c = countryOf(ip) ?: fallbackCc
-        return flagOfCc(c)
-    }
-
+    /** Эмодзи-флаг по коду страны (🌍, если код не двухбуквенный). */
     fun flagOfCc(country: String): String {
         val c = country.trim().uppercase()
         if (c.length != 2 || !c.all { it in 'A'..'Z' }) return "🌍"

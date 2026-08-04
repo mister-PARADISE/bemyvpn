@@ -54,6 +54,17 @@ impl Tab {
     }
 }
 
+/// Состояние VPN так, как его видит ТЕРМИНАЛ: те же смыслы, что в справочнике
+/// (`view::Vpn`), плюс то, что справочник не знает и знать не должен, — имя
+/// текущего хоста, отметка начала сеанса и текст отказа.
+///
+/// ПОДПИСИ ЗДЕСЬ НЕТ НИ ОДНОЙ: каждая берётся из `view::vpn_text`. Раньше меню
+/// писало их само, и они разошлись с тремя другими оболочками.
+///
+/// Состояния `view::Vpn::Reconnecting` тут нет намеренно: десктопный гостевой
+/// путь (`bmv_desktop::tunnel`) о переподключении не сообщает — после обрыва он
+/// заканчивает сеанс, а не поднимает его заново. Завести вариант, в который
+/// нечем попасть, значит соврать про то, чего оболочка не умеет.
 enum Vpn {
     Off,
     Connecting(String),
@@ -62,6 +73,14 @@ enum Vpn {
     /// мы, но и не сломалось ничего — сеанс просто окончен, и надо взять другой
     /// хост. С `Off` это выглядело как VPN, погасший сам по себе.
     Ended,
+    /// Туннель кончился, а «Стоп» никто не жал — связь с хостом пропала.
+    ///
+    /// Отличить это от `Off` может только оболочка: общий гостевой путь в обоих
+    /// случаях говорит `State::Off`, зато меню точно знает, само ли оно гасило
+    /// (`disconnect_vpn` ставит `Off` сразу и синхронно). Раньше на этом месте
+    /// был четырёхсекундный тост «Туннель закрыт», после которого оставалось
+    /// «VPN выключен», — то есть обрыв выглядел как выключение по своей воле.
+    Lost,
     Failed(String),
 }
 
@@ -876,7 +895,10 @@ fn start_vpn(engine: &EngineSlot, app: &Shared, vpn_task: &mut VpnTask) {
         app.lock().unwrap().toast(if host.online {
             "На этом хосте нет свободных мест — выберите другой"
         } else {
-            "Этот хост не на связи — выберите другой"
+            // «не в сети», а не «не на связи»: «на связи» — подпись СВЯЗИ С
+            // КООРДИНАТОРОМ (`view::link_state`), и часовому против второй
+            // копии правила эта фраза здесь неотличима от неё.
+            "Этот хост не в сети — выберите другой"
         });
         return;
     }
@@ -927,16 +949,16 @@ fn connect_queue(engine: &EngineSlot, app: &Shared, vpn_task: &mut VpnTask, cand
                     bmv_desktop::tunnel::State::Up(id) => {
                         a.vpn = Vpn::On { name: name(&id), id, since: Instant::now() }
                     }
+                    // Туннель кончился. ПО ЧЬЕЙ ВОЛЕ — видно отсюда: «Стоп»
+                    // гасит состояние сам и синхронно (`disconnect_vpn`),
+                    // поэтому застать здесь `On` можно только на обрыве.
                     bmv_desktop::tunnel::State::Off => {
-                        if matches!(a.vpn, Vpn::On { .. }) {
-                            a.toast("Туннель закрыт");
-                        }
-                        a.vpn = Vpn::Off;
+                        a.vpn = if matches!(a.vpn, Vpn::On { .. }) { Vpn::Lost } else { Vpn::Off };
                     }
                     // Хост выключил раздачу — говорим об этом словами и без
                     // красного: подключение сработало, просто хоста больше нет.
                     bmv_desktop::tunnel::State::HostLeft => {
-                        a.toast("Хост завершил раздачу — выберите другой");
+                        a.toast(view::vpn_text(view::Vpn::Ended));
                         a.vpn = Vpn::Ended;
                     }
                     bmv_desktop::tunnel::State::Failed(e) => {
@@ -1308,8 +1330,12 @@ fn card(title: &str) -> Block<'_> {
 }
 
 /// Эмодзи-индикатор состояния — одинаковый на всех вкладках.
+///
+/// ВСЕ ЧЕТЫРЕ — ЭМОДЗИ-ПРЕЗЕНТАЦИИ (ширина 2). У «выключено» здесь стоял голый
+/// U+26AA без селектора: терминал считает его шириной 1, и строка с ним ехала на
+/// знак левее соседних — ровно та ловушка, что описана у `proto_short`.
 fn dot_on() -> &'static str { "🟢" }
-fn dot_off() -> &'static str { "⚪" }
+fn dot_off() -> &'static str { "⚪️" }
 fn dot_wait() -> &'static str { "🟡" }
 fn dot_err() -> &'static str { "🔴" }
 
@@ -1416,9 +1442,20 @@ fn vpn_tab(f: &mut Frame, area: Rect, a: &App) {
         .split(area);
 
     // Статус-карточка (при подключении — детали хоста из каталога).
+    // ПОДПИСИ — ИЗ СПРАВОЧНИКА (`view::vpn_text`), своё тут только оформление:
+    // эмодзи-кружок и цвет. Раньше меню писало слова само, и они разошлись с
+    // тремя другими оболочками.
     let status: Vec<Line> = match &a.vpn {
-        Vpn::Off => vec![Line::from(Span::styled(format!("{} VPN выключен", dot_off()), Style::default().fg(DIM)))],
-        Vpn::Connecting(h) => vec![Line::from(Span::styled(format!("{} Подключаюсь к {h}…", dot_wait()), Style::default().fg(AMBER)))],
+        Vpn::Off => vec![Line::from(Span::styled(
+            format!("{} {}", dot_off(), view::vpn_text(view::Vpn::Off)),
+            Style::default().fg(DIM),
+        ))],
+        // Имя хоста — отдельным приглушённым куском, как подпись под заголовком
+        // в окне: сама подпись состояния общая и имени не знает.
+        Vpn::Connecting(h) => vec![Line::from(vec![
+            Span::styled(format!("{} {}", dot_wait(), view::vpn_text(view::Vpn::Connecting)), Style::default().fg(AMBER)),
+            Span::styled(format!("   к {h}"), Style::default().fg(DIM)),
+        ])],
         Vpn::On { id, name, since } => {
             let h = a.hosts.iter().find(|h| &h.id == id);
             let ip = h.and_then(|h| h.endpoints.first()).map(|e| e.as_str()).unwrap_or("—");
@@ -1426,25 +1463,37 @@ fn vpn_tab(f: &mut Frame, area: Rect, a: &App) {
             let proto = h.map(|h| proto_short(&h.protocol)).unwrap_or_default();
             vec![
                 Line::from(vec![
-                    Span::styled(format!("{} Подключено", dot_on()), Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
+                    Span::styled(format!("{} {}", dot_on(), view::vpn_text(view::Vpn::On)), Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
                     Span::styled(format!("   {name}   ⏳ {}", uptime(*since)), Style::default().fg(DIM)),
                 ]),
                 Line::from(Span::styled(format!("🌍 {ip}    👥 {guests}    {proto}"), Style::default().fg(DIM))),
             ]
         }
         // Тот же тихий серый, что и у «Отключено»: конец раздачи — не отказ.
-        // Подсказка в той же строке, потому что без неё «завершил» звучит как
-        // приговор, а на деле рядом стоят другие хосты.
+        // Про «Старт» дописываем клавишу — это уже про терминал, а не про
+        // состояние: в трёх других оболочках на её месте кнопка.
         Vpn::Ended => vec![Line::from(Span::styled(
-            format!("{} Хост завершил раздачу — выберите другой (c — «Старт»)", dot_off()),
+            format!("{} {} (c — «Старт»)", dot_off(), view::vpn_text(view::Vpn::Ended)),
             Style::default().fg(DIM),
+        ))],
+        // Обрыв — красным: сам он не пройдёт, десктопный путь заново не встаёт.
+        Vpn::Lost => vec![Line::from(Span::styled(
+            format!("{} {}", dot_err(), view::vpn_text(view::Vpn::Lost)),
+            Style::default().fg(RED),
         ))],
         Vpn::Failed(e) => vec![Line::from(Span::styled(format!("{} {e}", dot_err()), Style::default().fg(RED)))],
     };
     f.render_widget(Paragraph::new(status).wrap(Wrap { trim: true }).block(card(" Статус ")), rows[0]);
 
     let items: Vec<ListItem> = if a.hosts.is_empty() {
-        vec![ListItem::new(Line::from(Span::styled("Живых хостов сейчас нет…", Style::default().fg(DIM))))]
+        // ПУСТО ПО ДВУМ РАЗНЫМ ПРИЧИНАМ, и человеку нужно разное: ждать связи
+        // или действовать (`view::empty_directory_hint`). Здесь на оба случая
+        // стояла одна фраза «Живых хостов сейчас нет…» — она отправляла искать
+        // чужой хост того, у кого просто отвалился интернет.
+        let hint = view::empty_directory_hint(a.coord_ok);
+        vec![ListItem::new(Text::from(
+            hint.lines().map(|l| Line::from(Span::styled(l, Style::default().fg(DIM)))).collect::<Vec<_>>(),
+        ))]
     } else {
         a.hosts
             .iter()
@@ -1590,23 +1639,26 @@ fn server_tab(f: &mut Frame, area: Rect, a: &App) {
         .split(area);
 
     // ── Статус-карточка: связь с координатором + состояние своего сервера.
-    // Пинг координатора — по той же линейке, что и до хоста. Мятой осталось
-    // «на связи»: мята тут значит «работает», а не «быстро», и на цифре она
-    // хвалила бы любой отклик, включая красный.
-    let link: Vec<Span> = match a.coord_ok {
-        Some(true) => {
-            let (text, alarm) = view::ping(Some(a.coord_ping));
-            vec![
-                Span::styled(format!("{} на связи · ", dot_on()), Style::default().fg(ACCENT)),
-                Span::styled(text, Style::default().fg(alarm_color(alarm))),
-            ]
-        }
-        // Янтарь, а не красный: связь восстанавливается САМА за секунды. Красный
-        // бережём для того, что само не пройдёт, — иначе настоящую беду нечем
-        // будет покрасить. Так же сделано в трёх графических оболочках.
-        Some(false) => vec![Span::styled(format!("{} нет связи — восстанавливаю", dot_wait()), Style::default().fg(AMBER))],
-        None => vec![Span::styled(format!("{} проверяю…", dot_wait()), Style::default().fg(DIM))],
-    };
+    //
+    // ПОДПИСЬ И УРОВЕНЬ ТРЕВОГИ — ИЗ СПРАВОЧНИКА (`view::link_state`). Здесь
+    // лежала четвёртая копия этой тройки, и она уже разошлась с тремя другими
+    // оболочками: строчное «на связи», «восстанавливаю» без многоточия и
+    // «проверяю…» без слова «связь».
+    //
+    // Оболочке остаются значок и цвет. Мята на «На связи» — своё решение
+    // терминала: мята тут значит «работает», а на цифре отклика она хвалила бы
+    // любой пинг, включая красный. Обрыв — янтарь (так велит справочник):
+    // сокет чинит супервизор за секунды, красный бережём для непроходящего.
+    let (link_text, link_alarm) = view::link_state(a.coord_ok);
+    let online = a.coord_ok == Some(true);
+    let mut link = vec![Span::styled(
+        format!("{} {link_text}", if online { dot_on() } else { dot_wait() }),
+        Style::default().fg(if online { ACCENT } else { alarm_color(link_alarm) }),
+    )];
+    if online {
+        let (ping, alarm) = view::ping(Some(a.coord_ping));
+        link.push(Span::styled(format!(" · {ping}"), Style::default().fg(alarm_color(alarm))));
+    }
     let ip = if a.my_ip.is_empty() { "—".to_string() } else { a.my_ip.clone() };
     let srv_line = if a.auto_srv == Some(true) {
         Span::styled(format!("{} свой сервер работает — 24/7 (живёт и после выхода)", dot_on()), Style::default().fg(ACCENT).add_modifier(Modifier::BOLD))
@@ -1635,7 +1687,10 @@ fn server_tab(f: &mut Frame, area: Rect, a: &App) {
         ]))
     };
     let items = vec![
-        frow("Координатор", a.coord.clone()),
+        // Схему на экране не показываем (`view::without_scheme`) — она у нас
+        // всегда https и не сообщает ничего. Хранится и запрашивается адрес
+        // по-прежнему целиком.
+        frow("Координатор", view::without_scheme(&a.coord)),
         frow("Свой домен", domain),
         frow("Свой порт", a.srv_cfg.bind.clone()),
         ListItem::new(Line::from(Span::styled(action, Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)))),
@@ -1688,7 +1743,7 @@ fn default_host_name() -> String {
 /// «съедал» пробел после них (🕶/🛡 были текст-презентации шириной 1 → липли).
 /// Именно поэтому справочник отдаёт УРОВЕНЬ защиты, а не имя картинки: у окна и
 /// телефонов на его месте свои наборы значков.
-fn proto_short(p: &str) -> String {
+pub(crate) fn proto_short(p: &str) -> String {
     let name = view::proto_name(p);
     match view::protection(p) {
         view::Protection::Encrypted => format!("🔐 {name}"),
@@ -1750,6 +1805,8 @@ mod tests {
             mk(Tab::Vpn, Vpn::Off, HostMode::Off),
             mk(Tab::Vpn, Vpn::Connecting("Хост".into()), HostMode::Off),
             mk(Tab::Vpn, Vpn::On { id: "X".into(), name: "Хост".into(), since: Instant::now() }, HostMode::Off),
+            mk(Tab::Vpn, Vpn::Ended, HostMode::Off),
+            mk(Tab::Vpn, Vpn::Lost, HostMode::Off),
             mk(Tab::Vpn, Vpn::Failed("ошибка".into()), HostMode::Off),
             mk(Tab::Host, Vpn::Off, HostMode::On { code: "ABCD1234".into() }),
             mk(Tab::Server, Vpn::Off, HostMode::Off),

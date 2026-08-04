@@ -18,6 +18,15 @@ struct BeMyVPNApp: App {
                 .onChange(of: scenePhase) { phase in
                     if phase == .active { app.resumedFromBackground() }
                 }
+                // ОТКАЗ ВСЛУХ. Кнопка «Сохранить и проверить» на непонятном
+                // адресе раньше просто ничего не делала: ни сохранения, ни
+                // слова. Алерт живёт здесь, а не на вкладке «Сервер», чтобы не
+                // трогать разметку экрана ради одной строки.
+                .alert("Адрес не сохранён", isPresented: $app.coordinatorRejected) {
+                    Button("Ясно", role: .cancel) {}
+                } message: {
+                    Text("Не понял адрес — наберите, например, bemyvpn.net")
+                }
         }
     }
 }
@@ -109,7 +118,32 @@ final class AppState: ObservableObject {
     @Published var checking = false
 
     // гость / VPN
-    @Published var vpnState: Int32 = 0            // 0 выкл · 1 подключаюсь · 2 канал поднят · 3 ошибка
+    /// СЫРОЙ статус ядра/системы. Толковать его самостоятельно больше не надо —
+    /// для показа есть `vpnKind` и `vpnText`.
+    @Published private(set) var vpnState: Int32 = 0
+
+    /// Состояние ДЛЯ ПОКАЗА — варианты view::Vpn, склеены мостом (bmv_vpn_kind).
+    @Published private(set) var vpnKind = 0
+
+    /// Подпись состояния — мост (bmv_vpn_text).
+    @Published private(set) var vpnText = Core.vpnText(status: 0, stopReason: 0, wasConnected: false)
+
+    /// ЕДИНСТВЕННОЕ место, где меняется состояние VPN.
+    ///
+    /// Кто и когда опрашивает систему — не меняется; меняется только ТОЛКОВАНИЕ:
+    /// два числа в одно состояние склеивает справочник, а не экран. Оттуда же
+    /// берётся «Переподключение…» вместо «Подключаюсь…», когда сеанс уже был.
+    ///
+    /// Причину конца сеанса сюда НЕ передаём: она держится до следующей попытки
+    /// подключения, и постоянная подпись залипла бы на конце раздачи. Причина
+    /// живёт в разовом сообщении (`showVpnError`) со своим таймером.
+    private func setVpn(_ status: Int32) {
+        let was = connectedSince != nil
+        vpnState = status
+        vpnKind = Core.vpnKind(status: status, stopReason: 0, wasConnected: was)
+        vpnText = Core.vpnText(status: status, stopReason: 0, wasConnected: was)
+    }
+
     @Published var connectedTo: String? = nil
     @Published var connectedSince: Date? = nil
     @Published var resolvedHost: Host? = nil
@@ -141,9 +175,14 @@ final class AppState: ObservableObject {
         }
     }
     @Published var expandedId: String? = nil
-    /// Отклик до раскрытого хоста: «24 мс» / «—» (не ответил) / «…» (первый замер).
+    /// Отклик до раскрытого хоста — подпись и уровень тревоги вместе (см. `Ping`).
     /// Держим ТОЛЬКО для раскрытой карточки — закрыли, значит больше не интересно.
-    @Published var pings: [String: String] = [:]
+    @Published private(set) var pingOf: [String: Ping] = [:]
+
+    /// СОВМЕСТИМОСТЬ: экран пока читает только подпись. Убрать, когда
+    /// ContentView перейдёт на `pingOf` и перестанет разбирать подпись обратно
+    /// в число ради цвета.
+    var pings: [String: String] { pingOf.mapValues(\.text) }
     private var pingTask: Task<Void, Never>?
 
     /// Мерить отклик до хоста ПОКА ОТКРЫТА его карточка — раз в секунду.
@@ -159,8 +198,8 @@ final class AppState: ObservableObject {
         pingTask?.cancel()
         guard let h else { return }
         let eps = h.endpoints ?? ""
-        guard !eps.isEmpty else { pings[h.id] = "—"; return }
-        if pings[h.id] == nil { pings[h.id] = "…" }
+        guard !eps.isEmpty else { pingOf[h.id] = Core.ping(nil); return }
+        if pingOf[h.id] == nil { pingOf[h.id] = .measuring }
         let coord = coordinator
         pingTask = Task { [weak self] in
             while !Task.isCancelled {
@@ -168,7 +207,7 @@ final class AppState: ObservableObject {
                 guard !Task.isCancelled else { return }
                 // Честное «не ответил»: хост может быть за таким NAT, что без
                 // пробивания до него не достучаться. Выдумывать число нельзя.
-                self?.pings[h.id] = ms.map { "\($0) мс" } ?? "—"
+                self?.pingOf[h.id] = Core.ping(ms)
                 // Пауза ПОСЛЕ замера, а не параллельно: у пробы свой срок (1.5с),
                 // и запуск нового замера поверх незакрытого копил бы их.
                 try? await Task.sleep(nanoseconds: 1_000_000_000)
@@ -197,6 +236,10 @@ final class AppState: ObservableObject {
 
     // недавние (для текущего координатора)
     @Published var recent: [String] = []
+
+    /// Адрес координатора не понят — показать отказ (алерт вешает сцена).
+    /// Раньше кнопка «Сохранить и проверить» на таком вводе просто молчала.
+    @Published var coordinatorRejected = false
 
     // Реальный VPN-туннель (Network Extension). На симуляторе не используется.
     let tunnel = TunnelManager()
@@ -231,8 +274,8 @@ final class AppState: ObservableObject {
     ///
     /// Пока оно спало, система заморозила наши задачи, а сокет к координатору за
     /// это время наверняка умер. Само по себе приложение об этом НЕ УЗНАЁТ:
-    /// `serverOnline` остаётся прежним, список выглядит живым, и полоса
-    /// «восстанавливаю связь» не появляется — хотя данные давно не актуальны.
+    /// `serverOnline` остаётся прежним, список выглядит живым, и полоса обрыва
+    /// связи не появляется — хотя данные давно не актуальны.
     /// Поэтому на возврате переспрашиваем связь и переустанавливаем подписку на
     /// каталог: если связи нет, состояние честно станет «нет связи», и человек
     /// увидит и приглушённый список, и дышащую полосу.
@@ -256,13 +299,14 @@ final class AppState: ObservableObject {
         withAnimation {
             switch status {
             case .connecting, .reasserting:
-                vpnState = 1
+                // Первый коннект или авто-реконнект — решает мост (по отметке начала).
+                setVpn(1)
             case .connected:
-                vpnState = 2
                 cancelQuick()   // подключились — прекращаем перебор кандидатов
                 // Успех-хаптик ТОЛЬКО на первое подключение (не на каждый
                 // авто-реконнект — иначе в машине телефон бы дребезжал).
                 if connectedSince == nil { connectedSince = Date(); Haptics.success() }
+                setVpn(2)
                 // В «недавние» — ТОЛЬКО по факту реального подключения.
                 if let id = connectedTo { addRecent(id) }
                 // Туннель забрал маршрут — прежний WS к координатору повис.
@@ -275,7 +319,7 @@ final class AppState: ObservableObject {
                 // раздачу, — это не поломка: карточка просто гаснет, а словами
                 // объясняем, что произошло и что делать дальше.
                 if vpnState != 0 { explainUnexpectedDisconnect() }
-                vpnState = 0; connectedTo = nil; connectedSince = nil
+                connectedTo = nil; connectedSince = nil; setVpn(0)
                 startWatch()   // и обратно на прямой маршрут
             case .disconnecting:
                 break
@@ -298,17 +342,19 @@ final class AppState: ObservableObject {
         Task { [weak self] in
             guard let self, let err = await self.tunnel.lastDisconnectError() as NSError? else { return }
             guard err.domain == TunnelManager.stopDomain else { return }
-            // code 1 — «хост завершил раздачу»: спокойно, не красным.
-            self.showVpnError(err.localizedDescription, calm: err.code == 1)
+            // Код ошибки — это причина конца сеанса (та же нумерация, что у
+            // bmv_stop_reason). Что она значит и какими словами это сказать,
+            // решает справочник: обе причины — не поломка, поэтому спокойно.
+            let why = Int32(err.code)
+            let kind = Core.vpnKind(status: 0, stopReason: why, wasConnected: true)
+            guard kind != 0 else { return }
+            self.showVpnError(Core.vpnText(status: 0, stopReason: why, wasConnected: true), calm: true)
         }
     }
 
     func addServerHistory(_ url: String) {
         var h = serverHistory.filter { $0 != url }; h.insert(url, at: 0); h = Array(h.prefix(6))
         serverHistory = h; UserDefaults.standard.set(h, forKey: "server_history")
-    }
-    func removeServerHistory(_ url: String) {
-        serverHistory = serverHistory.filter { $0 != url }; UserDefaults.standard.set(serverHistory, forKey: "server_history")
     }
 
     /// Открыть по deep-link (bemyvpn://CODE или bemyvpn://connect?code=CODE).
@@ -345,10 +391,11 @@ final class AppState: ObservableObject {
                 // сама, и без этой проверки объяснение переписывалось бы каждые
                 // 0.9с, а его собственный таймер не истекал бы никогда.
                 if s == 3 && vpnState != 0 {
-                    if await bg({ Core.stopReason() }) == 1 {
-                        showVpnError("Хост завершил раздачу — выберите другой", calm: true)
+                    let why = await bg { Core.stopReason() }
+                    if Core.vpnKind(status: 0, stopReason: why, wasConnected: true) != 0 {
+                        showVpnError(Core.vpnText(status: 0, stopReason: why, wasConnected: true), calm: true)
                     }
-                    vpnState = 0; connectedTo = nil; connectedSince = nil
+                    connectedTo = nil; connectedSince = nil; setVpn(0)
                 }
                 try? await Task.sleep(nanoseconds: 900_000_000)
             }
@@ -407,10 +454,16 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// Сменить адрес координатора.
+    ///
+    /// Разбор набранного — у моста (`bmv_coordinator_url`): «bemyvpn.net» без
+    /// схемы ОБЯЗАНО работать, схему нигде не показывают, значит и набирать её
+    /// человек не станет. Свой разбор здесь начинался с `hasPrefix("http")`,
+    /// поэтому такой ввод МОЛЧА не сохранялся: кнопка нажата, ничего не
+    /// произошло, ни слова. Пустая строка от моста — отказ, и о нём говорят.
     func saveCoordinator(_ url: String) {
-        var u = url.trimmingCharacters(in: .whitespaces)
-        if u.hasSuffix("/") { u.removeLast() }
-        guard u.hasPrefix("http") else { return }
+        let u = Core.coordinatorUrl(url)
+        guard !u.isEmpty else { coordinatorRejected = true; return }
         coordinator = u
         UserDefaults.standard.set(u, forKey: "coordinator")
         hosts = []; resolvedHost = nil
@@ -473,7 +526,7 @@ final class AppState: ObservableObject {
     /// Взять следующего кандидата и подключаться; на таймаут — рекурсивно дальше.
     private func tryNextQuick() {
         guard !qcQueue.isEmpty else {
-            if vpnState != 2 { withAnimation { vpnState = 0; connectedTo = nil } }
+            if vpnState != 2 { withAnimation { connectedTo = nil; setVpn(0) } }
             return
         }
         let host = qcQueue.removeFirst()
@@ -507,7 +560,7 @@ final class AppState: ObservableObject {
         }
         vpnError = nil
         let coord = coordinator
-        withAnimation { connectedTo = host.id; vpnState = 1; expandedId = nil }
+        withAnimation { connectedTo = host.id; expandedId = nil; setVpn(1) }
         let proto = host.proto, id = host.id
         let title = host.name.isEmpty ? host.id : host.name
 
@@ -521,7 +574,7 @@ final class AppState: ObservableObject {
                     // applyTunnelStatus, когда система сообщит .connected.
                     try await tunnel.start(coordinator: coord, hostId: id, password: password, proto: proto, title: title)
                 } catch {
-                    withAnimation { vpnState = 0; connectedTo = nil }
+                    withAnimation { connectedTo = nil; setVpn(0) }
                     self.tryNextQuick()   // не поднялось — следующий кандидат
                 }
             }
@@ -531,8 +584,8 @@ final class AppState: ObservableObject {
             Task {
                 let ok = await bg { Core.connect(coord, host: id, password: password, proto: proto) }
                 withAnimation {
-                    if ok { vpnState = 2; connectedSince = Date(); addRecent(id) }
-                    else { vpnState = 0; connectedTo = nil }
+                    if ok { connectedSince = Date(); setVpn(2); addRecent(id) }
+                    else { connectedTo = nil; setVpn(0) }
                 }
                 if ok { self.cancelQuick() } else { self.tryNextQuick() }
             }
@@ -564,7 +617,7 @@ final class AppState: ObservableObject {
             tunnel.stop()   // vpnState обнулит applyTunnelStatus по факту разрыва
         } else {
             Core.stop()
-            withAnimation { connectedTo = nil; vpnState = 0; connectedSince = nil }
+            withAnimation { connectedTo = nil; connectedSince = nil; setVpn(0) }
         }
     }
 
@@ -693,25 +746,7 @@ final class AppState: ObservableObject {
         var r = recent.filter { $0 != id }; r.insert(id, at: 0); r = Array(r.prefix(6))
         recent = r; UserDefaults.standard.set(r, forKey: recentKey)
     }
-    func removeRecent(_ id: String) {
-        recent = recent.filter { $0 != id }; UserDefaults.standard.set(recent, forKey: recentKey)
-    }
 }
 
-// Флаг-эмодзи из 2-буквенного кода страны ("" если не код).
-func flagEmoji(_ code: String) -> String {
-    let c = code.uppercased()
-    guard c.count == 2, c.unicodeScalars.allSatisfy({ $0.value >= 65 && $0.value <= 90 }) else { return "" }
-    return String(c.unicodeScalars.compactMap { UnicodeScalar(127397 + $0.value).map(Character.init) })
-}
-
-// «5 мин», «1 ч 20 мин» из секунд.
-/// Часы сессии — тикают посекундно: MM:SS, после часа H:MM:SS.
-/// Именно посекундно: блок перерисовывается раз в секунду, и «12 мин»,
-/// застывшее на минуту, выглядело бы зависшим.
-func uptimeText(_ since: Date?) -> String {
-    guard let since else { return "00:00" }
-    let s = max(0, Int(Date().timeIntervalSince(since)))
-    let h = s / 3600, m = (s % 3600) / 60, sec = s % 60
-    return h > 0 ? String(format: "%d:%02d:%02d", h, m, sec) : String(format: "%02d:%02d", m, sec)
-}
+/// Часы сеанса от отметки начала — правило и формат живут в справочнике (мост).
+func uptimeText(_ since: Date?) -> String { Core.sessionClock(since: since) }

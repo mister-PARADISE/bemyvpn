@@ -267,6 +267,20 @@ pub extern "C" fn bmv_display_coordinator(url: *const c_char) -> *mut c_char {
     })
 }
 
+/// Имя протокола по-человечески — СЛОВО, в пару к значку из `bmv_protection`.
+///
+/// ПУСТОЙ ПРОТОКОЛ — «Обычный», А НЕ «БЕЗ ШИФРА»: хост, не объявивший протокол
+/// в каталоге, всё равно поднимает шифрованный канал. Незнакомое имя едет как
+/// есть. Null и битая строка — то же, что пустая: врать про шифр нельзя даже на
+/// мусоре с границы C.
+#[no_mangle]
+pub extern "C" fn bmv_proto_name(protocol: *const c_char) -> *mut c_char {
+    ffi!(std::ptr::null_mut(), {
+        let p = unsafe { cstr(protocol) };
+        to_c(bmv_common::view::proto_name(&p).to_string())
+    })
+}
+
 /// Уровень защиты по имени протокола: 0 шифр · 1 маскировка · 2 без шифра ·
 /// 3 неизвестно (номера — варианты `view::Protection`).
 #[no_mangle]
@@ -1706,6 +1720,23 @@ mod tests {
         assert_eq!(c_out(bmv_display_coordinator(c_in("https://bemyvpn.net/").as_ptr())), "bemyvpn.net");
         let shown = c_out(bmv_display_coordinator(c_in("https://свой.сервер:8443").as_ptr()));
         assert_eq!(c_out(bmv_coordinator_url(c_in(&shown).as_ptr())), "https://свой.сервер:8443");
+    }
+
+    /// СЛОВО ПРО ПРОТОКОЛ ЕДЕТ ОТТУДА ЖЕ, ОТКУДА ЗНАЧОК. Двери у этого правила
+    /// не было дольше всех: телефоны подписывали протокол своими копиями, и на
+    /// хосте без объявленного протокола писали «Без шифра» — про хост, у
+    /// которого шифр есть (ядро поднимает noise по умолчанию).
+    #[test]
+    fn an_undeclared_protocol_crosses_the_border_as_ordinary_not_unencrypted() {
+        assert_eq!(c_out(bmv_proto_name(c_in("").as_ptr())), "Обычный", "хост без протокола шифрует");
+        assert_eq!(c_out(bmv_proto_name(std::ptr::null())), "Обычный", "null не должен ронять границу C");
+        assert_eq!(c_out(bmv_proto_name(c_in("noise").as_ptr())), "Обычный");
+        assert_eq!(c_out(bmv_proto_name(c_in("noise-obfs").as_ptr())), "Маскировка");
+        assert_eq!(c_out(bmv_proto_name(c_in("plain").as_ptr())), "Без шифра");
+        // Про незнакомый протокол мы не знаем ничего — показываем как есть, а не
+        // приписываем ему отсутствие шифра.
+        assert_eq!(c_out(bmv_proto_name(c_in("wireguard").as_ptr())), "wireguard");
+        assert_ne!(c_out(bmv_proto_name(c_in("").as_ptr())), c_out(bmv_proto_name(c_in("plain").as_ptr())));
     }
 
     /// Уровни едут ЧИСЛОМ, и номера совпадают со справочником — на них телефон

@@ -12,20 +12,18 @@ import android.os.PowerManager
 
 /**
  * Общее состояние хост-режима (сервис пишет, AppState читает).
- * result — вердикт запуска: id хоста, "!NAT", "!SIG" или "" (ошибка).
+ * result — вердикт запуска: «код|подпись», "!NAT", "!SIG" или "" (ошибка).
  */
 object HostState {
     @Volatile var running = false
-    @Volatile var starting = false
-    @Volatile var hostId = ""
     @Volatile var result: String? = null
 }
 
 /**
  * Foreground-сервис хост-режима: телефон раздаёт интернет. VPN-права НЕ нужны —
  * хост работает через обычные сокеты (userspace-стек в ядре). Foreground +
- * START_STICKY + восстановление параметров из prefs → раздача живёт, когда
- * приложение свёрнуто, и восстанавливается после перезапуска сервиса системой.
+ * START_STICKY + параметры из prefs → раздача живёт, когда приложение свёрнуто,
+ * и поднимается заново, если сервис перезапустила система.
  *
  * Код/подпись выдаёт СЕРВЕР (AppState.ensureHostCode). Если подпись протухла
  * (сменился секрет координатора → анонс 403 → "!SIG"), сервис сам берёт свежий
@@ -56,13 +54,12 @@ class HostService : Service() {
         val name = intent?.getStringExtra(EXTRA_NAME) ?: prefs.getString("host_name", null) ?: DEFAULT_NAME
         val max = intent?.getIntExtra(EXTRA_MAX, 8) ?: prefs.getInt("host_max", 8)
         val password = intent?.getStringExtra(EXTRA_PASSWORD) ?: prefs.getString("host_pw", "") ?: ""
-        val protocol = intent?.getStringExtra(EXTRA_PROTOCOL) ?: prefs.getString("host_proto", "noise") ?: "noise"
+        val protocol = intent?.getStringExtra(EXTRA_PROTOCOL)
+            ?: prefs.getString("host_proto", null) ?: DEFAULT_PROTOCOL
         val public = intent?.getBooleanExtra(EXTRA_PUBLIC, true) ?: prefs.getBoolean("host_public", true)
 
-        prefs.edit().putBoolean("host_active", true).apply()
         foreground()
         acquireWakeLock() // чтобы heartbeat не «засыпал» в Doze при погашенном экране
-        HostState.starting = true
 
         Thread {
             fun freshCode(): Pair<String, String> {
@@ -90,7 +87,6 @@ class HostService : Service() {
                     id = tryStart(stableId, codeSig)
                 }
             }
-            HostState.starting = false
             if (id.isEmpty() || id.startsWith("!")) {
                 HostState.running = false
                 HostState.result = id
@@ -98,10 +94,7 @@ class HostService : Service() {
                 stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
             } else {
-                // Ядро отдаёт «код|подпись». В hostId кладём только КОД — его
-                // показывают в уведомлении и в интерфейсе; подпись едет дальше в
-                // result, её сохраняет AppState.
-                HostState.hostId = id.substringBefore('|')
+                // Ядро отдаёт «код|подпись» целиком — разбирает и сохраняет AppState.
                 HostState.running = true
                 HostState.result = id
                 // Время старта раздачи — для «РАЗДАЮ …» на вкладке Хост.
@@ -114,10 +107,7 @@ class HostService : Service() {
     private fun stopHost() {
         try { Native.nativeHostStop() } catch (_: Throwable) {}
         HostState.running = false
-        HostState.starting = false
-        HostState.hostId = ""
-        getSharedPreferences("bmv", MODE_PRIVATE).edit()
-            .putBoolean("host_active", false).remove("host_started_at").apply()
+        getSharedPreferences("bmv", MODE_PRIVATE).edit().remove("host_started_at").apply()
         releaseWakeLock()
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
@@ -176,5 +166,16 @@ class HostService : Service() {
         const val ACTION_STOP = "org.bemyvpn.HOST_STOP"
         /** Умолчание имени хоста — одно на приложение (см. AppState.hostName). */
         const val DEFAULT_NAME = "Хост"
+
+        /**
+         * Умолчание протокола раздачи — ОДНО на приложение (см. AppState.hostProtocol).
+         *
+         * Здесь и в AppState умолчания были РАЗНЫЕ под одним ключом настроек
+         * («noise» против «noise-obfs»), и раздача, поднятая системой заново,
+         * уезжала на другой протокол, чем показывал экран. Значение живёт в ядре
+         * (bmv_config::DEFAULT_PROTOCOL), но двери в мост у него пока нет —
+         * поэтому строка одна и здесь.
+         */
+        const val DEFAULT_PROTOCOL = "noise-obfs"
     }
 }

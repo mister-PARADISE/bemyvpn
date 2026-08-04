@@ -126,7 +126,39 @@ class AppState private constructor(val ctx: Context) {
     }
 
     // гость / VPN
-    var vpnState by mutableStateOf(0)             // 0 выкл · 1 подключаюсь · 2 канал поднят · 3 ошибка
+    /**
+     * СЫРОЙ статус ядра (см. Native.nativeVpnStatus). Толковать его самостоятельно
+     * больше не надо — для показа есть vpnKind/vpnText.
+     */
+    var vpnState by mutableStateOf(0)
+        private set
+
+    /** Состояние ДЛЯ ПОКАЗА — варианты view::Vpn, склеены мостом (bmv_vpn_kind). */
+    var vpnKind by mutableStateOf(0)
+        private set
+
+    /** Подпись состояния — мост (bmv_vpn_text). */
+    var vpnText by mutableStateOf(Native.nativeVpnText(0, 0, false))
+        private set
+
+    /**
+     * ЕДИНСТВЕННОЕ место, где меняется состояние VPN.
+     *
+     * Кто и когда опрашивает ядро — не меняется; меняется только ТОЛКОВАНИЕ: два
+     * числа моста в одно состояние склеивает справочник, а не экран. Оттуда же
+     * берётся «переподключение» вместо «подключаюсь», когда сеанс уже был.
+     *
+     * Причину конца сеанса сюда НЕ передаём: она держится до следующей попытки
+     * подключения, и постоянная подпись залипла бы на «хост завершил раздачу».
+     * Причина живёт в разовом сообщении (showVpnError) со своим таймером.
+     */
+    private fun setVpn(status: Int) {
+        val was = connectedSince != null
+        vpnState = status
+        vpnKind = Native.nativeVpnKind(status, 0, was)
+        vpnText = Native.nativeVpnText(status, 0, was)
+    }
+
     var connectedTo by mutableStateOf<String?>(null)
     var connectedSince by mutableStateOf<Long?>(null)
     var resolvedHost by mutableStateOf<Host?>(null)
@@ -158,9 +190,14 @@ class AppState private constructor(val ctx: Context) {
         vpnErrorJob = scope.launch { delay(5000); vpnError = null }
     }
     var expandedId by mutableStateOf<String?>(null)
-    /** Отклик до раскрытого хоста: «24 мс» / «—» (не ответил) / «…» (первый замер).
+    /** Отклик до раскрытого хоста — подпись и уровень тревоги вместе (см. Ping).
      *  Держим ТОЛЬКО для раскрытой карточки — закрыли, значит больше не интересно. */
-    var pings by mutableStateOf<Map<String, String>>(emptyMap())
+    var pingOf by mutableStateOf<Map<String, Ping>>(emptyMap())
+        private set
+
+    /** СОВМЕСТИМОСТЬ: экран пока читает только подпись. Убрать, когда VpnTab
+     *  перейдёт на pingOf и перестанет разбирать подпись обратно в число. */
+    val pings: Map<String, String> get() = pingOf.mapValues { it.value.text }
     private var pingJob: Job? = null
 
     /**
@@ -177,8 +214,8 @@ class AppState private constructor(val ctx: Context) {
     fun watchPing(h: Host?) {
         pingJob?.cancel()
         if (h == null) return
-        if (h.endpoints.isEmpty()) { pings = pings + (h.id to "—"); return }
-        if (pings[h.id] == null) pings = pings + (h.id to "…")
+        if (h.endpoints.isEmpty()) { pingOf = pingOf + (h.id to Ping.of(null)); return }
+        if (pingOf[h.id] == null) pingOf = pingOf + (h.id to Ping.measuring)
         val coord = coordinator
         pingJob = scope.launch {
             while (isActive) {
@@ -188,7 +225,7 @@ class AppState private constructor(val ctx: Context) {
                 if (!isActive) return@launch
                 // Честное «не ответил»: хост может быть за таким NAT, что без
                 // пробивания до него не достучаться. Выдумывать число нельзя.
-                pings = pings + (h.id to if (ms >= 0) "$ms мс" else "—")
+                pingOf = pingOf + (h.id to Ping.of(ms.takeIf { it >= 0 }))
                 // Пауза ПОСЛЕ замера, а не параллельно: у пробы свой срок (1.5с),
                 // и запуск нового замера поверх незакрытого копил бы их.
                 delay(1000)
@@ -209,11 +246,10 @@ class AppState private constructor(val ctx: Context) {
     var hostName by mutableStateOf(prefs.getString("host_name", null) ?: HostService.DEFAULT_NAME)
     var hostMax by mutableStateOf(prefs.getInt("host_max", 8))
     var hostPassword by mutableStateOf(prefs.getString("host_pw", null) ?: "")
-    // «noise-obfs» (Маскировка) — как на iOS и в ядре. Android оставался на голом
-    // «noise»: правку от 26.07 сюда не перенесли, и поднятая с телефона сеть была
-    // заметнее для DPI, чем ровно такая же с iPhone. Ради этого проект и делается,
-    // так что расхождение здесь дороже, чем разница в скорости.
-    var hostProtocol by mutableStateOf(prefs.getString("host_proto", null) ?: "noise-obfs")
+    // Умолчание ОДНО на приложение (HostService.DEFAULT_PROTOCOL). Здесь и в
+    // сервисе они были РАЗНЫЕ под одним ключом настроек, и раздача, поднятая
+    // системой заново, уезжала на другой протокол, чем показывал экран.
+    var hostProtocol by mutableStateOf(prefs.getString("host_proto", null) ?: HostService.DEFAULT_PROTOCOL)
     var hostPublic by mutableStateOf(prefs.getBoolean("host_public", true))
     var hostError by mutableStateOf<String?>(null)
     var myHostInfo by mutableStateOf<Host?>(null) // своя запись в каталоге (гости/IP/…)
@@ -256,7 +292,7 @@ class AppState private constructor(val ctx: Context) {
      * Пока оно было свёрнуто, система могла заморозить наши корутины, а сокет к
      * координатору за это время наверняка умер. Само по себе приложение об этом
      * НЕ УЗНАЁТ: serverOnline остаётся прежним, список выглядит живым, и полоса
-     * «восстанавливаю связь» не появляется — хотя данные давно не актуальны.
+     * обрыва связи не появляется — хотя данные давно не актуальны.
      * Поэтому на возврате переспрашиваем связь и переустанавливаем подписку на
      * каталог: если связи нет, состояние честно станет «нет связи», и человек
      * увидит и приглушённый список, и дышащую полосу.
@@ -291,10 +327,6 @@ class AppState private constructor(val ctx: Context) {
     fun addServerHistory(url: String) {
         val h = (listOf(url) + serverHistory.filter { it != url }).take(6)
         serverHistory = h; saveList("server_history", h)
-    }
-
-    fun removeServerHistory(url: String) {
-        serverHistory = serverHistory.filter { it != url }; saveList("server_history", serverHistory)
     }
 
     /** Открыть по deep-link (bemyvpn://CODE или bemyvpn://connect?code=CODE). */
@@ -344,37 +376,38 @@ class AppState private constructor(val ctx: Context) {
                 // сервис гасится) — не даём UI мигнуть обратно в «подключено».
                 if (System.currentTimeMillis() - lastStopAt < 1500) return
                 if (vpnState != 2) {
-                    vpnState = 2
                     cancelQuick()   // подключились — прекращаем перебор кандидатов
                     // Успех-хаптик ТОЛЬКО на первое подключение (не на каждый
                     // авто-реконнект — иначе в машине телефон бы дребезжал).
                     if (connectedSince == null) { connectedSince = System.currentTimeMillis(); Haptics.success(ctx) }
+                    setVpn(2)
                     // В «недавние» — ТОЛЬКО по факту реального подключения.
                     connectedTo?.let { addRecent(it) }
                 }
             }
-            1 -> vpnState = 1   // подключаюсь / авто-реконнект (reasserting)
+            1 -> setVpn(1)   // первый коннект или авто-реконнект — решает мост
             else -> {
                 // 0/3. Грейс после тапа «Старт»: сервис ещё не дошёл до nativeConnect,
                 // ядро пока отдаёт 0 — не сбрасываем оптимистичный статус UI.
                 val grace = System.currentTimeMillis() - lastConnectTapAt < 6000
                 if (!grace && vpnState != 0) {
-                    // ПОЧЕМУ сеанс кончился. Хост, выключивший раздачу, — это не
-                    // поломка: карточка просто гаснет, а словами объясняем, что
-                    // произошло и что делать. Спрашиваем ядро именно здесь, на
+                    // ПОЧЕМУ сеанс кончился. Спрашиваем ядро именно здесь, на
                     // переходе в «выключено», и ровно один раз.
                     //
                     // Статус к этому моменту может быть уже 0, а не 3: сторож в
                     // BmvVpnService гасит сервис, едва увидев 3. Поэтому смотрим
                     // на причину, а не на статус — она держится до следующей
                     // попытки подключения.
+                    //
+                    // Что означает пара «статус + причина» и какими словами это
+                    // сказать, решает справочник через мост: конец раздачи и
+                    // обрыв — не поломка, поэтому сообщение спокойное.
                     val why = try { Native.nativeStopReason() } catch (_: Throwable) { 0 }
-                    if (why == 1) showVpnError("Хост завершил раздачу — выберите другой", calm = true)
-                    // Потеря связи (2) на Android МОЛЧАЛА: карточка гасла без
-                    // единого слова, и человек не знал, оборвалось у него или он
-                    // сам что-то нажал. На iOS про это говорят — теперь одинаково.
-                    else if (why == 2) showVpnError("Связь с хостом пропала — подключитесь заново", calm = true)
-                    vpnState = 0; connectedTo = null; connectedSince = null
+                    if (Native.nativeVpnKind(0, why, true) != 0) {
+                        showVpnError(Native.nativeVpnText(0, why, true), calm = true)
+                    }
+                    connectedTo = null; connectedSince = null
+                    setVpn(0)
                 }
             }
         }
@@ -413,9 +446,7 @@ class AppState private constructor(val ctx: Context) {
         val coord = coordinator
         checking = true
         checkJob = scope.launch {
-            val t0 = System.currentTimeMillis()
             val ok = withContext(Dispatchers.IO) { try { Native.nativeHealth(coord) } catch (_: Throwable) { false } }
-            val ms = (System.currentTimeMillis() - t0).toInt()
             val ip = if (ok) withContext(Dispatchers.IO) { try { Native.nativeMyIp(coord) } catch (_: Throwable) { "" } } else ""
             // Ответ ПРО ПРОШЛЫЙ сервер не должен затирать свежий результат:
             // health() к недоступному адресу висит на TCP-таймауте и возвращается,
@@ -433,10 +464,23 @@ class AppState private constructor(val ctx: Context) {
         }
     }
 
+    /**
+     * Сменить адрес координатора.
+     *
+     * Разбор набранного — у моста (bmv_coordinator_url): «bemyvpn.net» без схемы
+     * ОБЯЗАНО работать, схему нигде не показывают, значит и набирать её человек
+     * не станет. Свой разбор здесь начинался с `startsWith("http")`, поэтому
+     * такой ввод МОЛЧА не сохранялся: кнопка нажата, ничего не произошло, ни
+     * слова. Пустая строка от моста — отказ, и о нём теперь говорят вслух.
+     */
     fun saveCoordinator(url: String) {
-        var u = url.trim()
-        if (u.endsWith("/")) u = u.dropLast(1)
-        if (!u.startsWith("http")) return
+        val u = try { Native.nativeCoordinatorUrl(url) } catch (_: Throwable) { "" }
+        if (u.isEmpty()) {
+            android.widget.Toast
+                .makeText(ctx, "Не понял адрес — наберите, например, bemyvpn.net", android.widget.Toast.LENGTH_SHORT)
+                .show()
+            return
+        }
         coordinator = u
         prefs.edit().putString("coordinator", u).apply()
         hosts = emptyList(); resolvedHost = null
@@ -498,7 +542,7 @@ class AppState private constructor(val ctx: Context) {
     /** Взять следующего кандидата и подключаться; на таймаут — дальше по очереди. */
     private fun tryNextQuick() {
         if (qcQueue.isEmpty()) {
-            if (vpnState != 2) { vpnState = 0; connectedTo = null }
+            if (vpnState != 2) { connectedTo = null; setVpn(0) }
             return
         }
         val host = qcQueue.removeFirst()
@@ -531,7 +575,7 @@ class AppState private constructor(val ctx: Context) {
             return
         }
         vpnError = null
-        connectedTo = host.id; vpnState = 1; expandedId = null
+        connectedTo = host.id; expandedId = null; setVpn(1)
         lastConnectTapAt = System.currentTimeMillis()
         // Согласие системы на VPN + запуск сервиса — в Activity (нужен её контекст).
         onStartVpn?.invoke(host, password)
@@ -539,7 +583,7 @@ class AppState private constructor(val ctx: Context) {
 
     /** Activity: согласие на VPN не дали / сервис не стартовал → следующий кандидат. */
     fun connectFailed() {
-        vpnState = 0; connectedTo = null
+        connectedTo = null; setVpn(0)
         tryNextQuick()
     }
 
@@ -569,7 +613,7 @@ class AppState private constructor(val ctx: Context) {
         cancelQuick()   // пользователь остановил — гасим перебор кандидатов
         lastConnectTapAt = 0
         stopVpnService()
-        connectedTo = null; vpnState = 0; connectedSince = null
+        connectedTo = null; connectedSince = null; setVpn(0)
     }
 
     private fun stopVpnService() {
@@ -712,9 +756,5 @@ class AppState private constructor(val ctx: Context) {
     private fun addRecent(id: String) {
         val r = (listOf(id) + recent.filter { it != id }).take(6)
         recent = r; saveList(recentKey, r)
-    }
-
-    fun removeRecent(id: String) {
-        recent = recent.filter { it != id }; saveList(recentKey, recent)
     }
 }
