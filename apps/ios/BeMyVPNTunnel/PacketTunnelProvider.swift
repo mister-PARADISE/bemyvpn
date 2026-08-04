@@ -1,12 +1,17 @@
 import NetworkExtension
 import Foundation
 import Network
-import os
 import BmvFFI
 
-// ДИАГНОСТИКА (временно, для отладки Mac Catalyst): смотреть в Console.app,
-// фильтр по subsystem «org.bemyvpn.tunnel». Убрать после починки.
-private let tlog = Logger(subsystem: "org.bemyvpn.tunnel", category: "tunnel")
+// ЖУРНАЛА ЗДЕСЬ НЕТ — И НЕ ДОЛЖНО БЫТЬ. Стоявшая тут временная диагностика
+// (`os.Logger`, subsystem «org.bemyvpn.tunnel») писала адрес координатора и код
+// хоста с `privacy: .public`, то есть открытым текстом в системный журнал
+// устройства: он читается другими приложениями и уезжает в диагностические
+// выгрузки. Ядро логгер не ставит СОЗНАТЕЛЬНО (см. шапку crates/bmv-ffi) —
+// хост не хранит записей о трафике гостей и не может их выдать; расширение
+// туннеля обязано жить по тому же правилу. Понадобится отладка — временный
+// Logger только с `privacy: .private` на всём, что указывает на человека или
+// его сеть, и снимать сразу после починки.
 
 /// Расширение Packet Tunnel — отдельный процесс, который iOS поднимает при
 /// старте VPN. Здесь живёт РЕАЛЬНЫЙ туннель: фаза 1 (пробитие NAT + Noise) уже
@@ -29,9 +34,7 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
         let hostId      = conf["hostId"] as? String ?? ""
         let password    = conf["password"] as? String ?? ""
         let proto       = conf["proto"] as? String ?? ""
-        tlog.notice("startTunnel: coord=\(coordinator, privacy: .public) host=\(hostId, privacy: .public) proto=\(proto, privacy: .public)")
         guard !coordinator.isEmpty, !hostId.isEmpty else {
-            tlog.error("badConfig: пустой coordinator/host")
             completionHandler(TunnelError.badConfig); return
         }
 
@@ -43,7 +46,6 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
                 password.withCString { p in proto.withCString { pr in
                     bmv_connect(c, h, p, pr)
                 }}}}
-            tlog.notice("bmv_connect → \(ok ? "OK" : "FAIL", privacy: .public)")
             guard ok else { completionHandler(TunnelError.connectFailed); return }
 
             // Сеть туннеля — 1-в-1 как на Android (10.7.0.2/24, дефолт-маршрут,
@@ -89,20 +91,16 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
 
             self.setTunnelNetworkSettings(settings) { error in
                 if let error = error {
-                    tlog.error("setTunnelNetworkSettings error: \(error.localizedDescription, privacy: .public)")
                     completionHandler(error); return
                 }
                 guard let tunFd = self.utunFileDescriptor() else {
-                    tlog.error("utun fd НЕ найден")
                     completionHandler(TunnelError.noTunFd); return
                 }
-                tlog.notice("utun fd = \(tunFd, privacy: .public)")
                 // dup: ядро берёт fd во владение и закроет его на остановке;
                 // оригинал остаётся за системой NE, чтобы туннель жил.
                 let owned = dup(tunFd)
                 // utun=true — ядро снимает/добавляет 4-байтовый заголовок пакета.
                 let started = bmv_start_tunnel(owned, true)
-                tlog.notice("bmv_start_tunnel → \(started ? "OK" : "FAIL", privacy: .public)")
                 if !started { close(owned) }
                 if started { self.startPathMonitor(); self.startCoreWatchdog() }
                 completionHandler(started ? nil : TunnelError.connectFailed)
@@ -151,8 +149,6 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
                 guard bmv_vpn_status() == 3 else { continue }
                 // 1 — хост завершил раздачу (ошибки НЕТ), иначе связь потеряна.
                 let hostLeft = bmv_stop_reason() == 1
-                let text = hostLeft ? "Хост завершил раздачу" : "Связь с хостом пропала"
-                tlog.notice("ядро завершило сеанс (\(text, privacy: .public)) — гашу туннель")
                 self.cancelTunnelWithError(NSError(
                     domain: Self.stopDomain,
                     code: hostLeft ? 1 : 2,

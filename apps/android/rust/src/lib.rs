@@ -41,6 +41,108 @@ fn b(v: bool) -> jboolean {
     if v { JNI_TRUE } else { JNI_FALSE }
 }
 
+// ── правила показа (справочник bmv_common::view) ─────────────────────────────
+//
+// Чистые функции: ни сети, ни рантайма, ни блокировок — их можно звать прямо с
+// UI-потока, в отличие от всего остального в этом файле. Пока Kotlin их не
+// видел, каждое правило жило здесь ВТОРОЙ копией на другом языке, и копии
+// расходились молча. Уровни отдаются ЧИСЛОМ, а не цветом и не именем значка:
+// наборы значков у оболочек разные (см. шапку view.rs).
+
+#[no_mangle]
+pub extern "system" fn Java_org_bemyvpn_Native_nativeCoordinatorUrl(
+    mut env: JNIEnv, _c: JClass, input: JString,
+) -> jstring {
+    let s = c_arg(&mut env, &input);
+    let r = bmv_ffi::bmv_coordinator_url(s.as_ptr());
+    take(&mut env, r)
+}
+
+#[no_mangle]
+pub extern "system" fn Java_org_bemyvpn_Native_nativeDisplayCoordinator(
+    mut env: JNIEnv, _c: JClass, url: JString,
+) -> jstring {
+    let s = c_arg(&mut env, &url);
+    let r = bmv_ffi::bmv_display_coordinator(s.as_ptr());
+    take(&mut env, r)
+}
+
+#[no_mangle]
+pub extern "system" fn Java_org_bemyvpn_Native_nativeProtection(
+    mut env: JNIEnv, _c: JClass, protocol: JString,
+) -> jint {
+    let s = c_arg(&mut env, &protocol);
+    bmv_ffi::bmv_protection(s.as_ptr())
+}
+
+#[no_mangle]
+pub extern "system" fn Java_org_bemyvpn_Native_nativeSessionClock(
+    mut env: JNIEnv, _c: JClass, seconds: jlong,
+) -> jstring {
+    let r = bmv_ffi::bmv_session_clock(seconds.max(0) as u64);
+    take(&mut env, r)
+}
+
+#[no_mangle]
+pub extern "system" fn Java_org_bemyvpn_Native_nativePingText(
+    mut env: JNIEnv, _c: JClass, ms: jint,
+) -> jstring {
+    let r = bmv_ffi::bmv_ping_text(ms);
+    take(&mut env, r)
+}
+
+#[no_mangle]
+pub extern "system" fn Java_org_bemyvpn_Native_nativePingAlarm(
+    _env: JNIEnv, _c: JClass, ms: jint,
+) -> jint {
+    bmv_ffi::bmv_ping_alarm(ms)
+}
+
+#[no_mangle]
+pub extern "system" fn Java_org_bemyvpn_Native_nativeHostUsable(
+    _env: JNIEnv, _c: JClass, online: jboolean, guests: jint, max_guests: jint,
+) -> jboolean {
+    b(bmv_ffi::bmv_host_usable(online == JNI_TRUE, guests.max(0) as u32, max_guests.max(0) as u32))
+}
+
+#[no_mangle]
+pub extern "system" fn Java_org_bemyvpn_Native_nativeLinkText(
+    mut env: JNIEnv, _c: JClass, online: jint,
+) -> jstring {
+    let r = bmv_ffi::bmv_link_text(online);
+    take(&mut env, r)
+}
+
+#[no_mangle]
+pub extern "system" fn Java_org_bemyvpn_Native_nativeLinkAlarm(
+    _env: JNIEnv, _c: JClass, online: jint,
+) -> jint {
+    bmv_ffi::bmv_link_alarm(online)
+}
+
+#[no_mangle]
+pub extern "system" fn Java_org_bemyvpn_Native_nativeEmptyDirectoryHint(
+    mut env: JNIEnv, _c: JClass, online: jint,
+) -> jstring {
+    let r = bmv_ffi::bmv_empty_directory_hint(online);
+    take(&mut env, r)
+}
+
+#[no_mangle]
+pub extern "system" fn Java_org_bemyvpn_Native_nativeVpnKind(
+    _env: JNIEnv, _c: JClass, status: jint, stop_reason: jint, was_connected: jboolean,
+) -> jint {
+    bmv_ffi::bmv_vpn_kind(status, stop_reason, was_connected == JNI_TRUE)
+}
+
+#[no_mangle]
+pub extern "system" fn Java_org_bemyvpn_Native_nativeVpnText(
+    mut env: JNIEnv, _c: JClass, status: jint, stop_reason: jint, was_connected: jboolean,
+) -> jstring {
+    let r = bmv_ffi::bmv_vpn_text(status, stop_reason, was_connected == JNI_TRUE);
+    take(&mut env, r)
+}
+
 // ── сигналинг (каталог / коды / IP / связь) ──────────────────────────────────
 
 #[no_mangle]

@@ -10,6 +10,65 @@ object Native {
         System.loadLibrary("bmv_android")
     }
 
+    // ── Правила показа (справочник bmv_common::view) ─────────────────────────
+    // Чистые функции: ни сети, ни блокировок — можно звать прямо с UI-потока.
+    // Уровни отдаются ЧИСЛОМ, а не цветом и не именем значка: наборы значков у
+    // оболочек разные, общего имени у них нет.
+
+    /**
+     * Набранный человеком адрес координатора → пригодный для работы.
+     * ПУСТАЯ СТРОКА — ОТКАЗ, о котором экран обязан сказать вслух
+     * («bemyvpn.net» без схемы раньше просто НЕ СОХРАНЯЛСЯ, молча).
+     */
+    external fun nativeCoordinatorUrl(input: String): String
+
+    /** Адрес координатора ДЛЯ ПОКАЗА — без схемы и без хвостового слэша. */
+    external fun nativeDisplayCoordinator(url: String): String
+
+    /**
+     * Уровень защиты по имени протокола: 0 шифр · 1 маскировка · 2 без шифра ·
+     * 3 неизвестно (номера — варианты view::Protection).
+     */
+    external fun nativeProtection(protocol: String): Int
+
+    /** Часы сеанса: MM:SS, после часа H:MM:SS. */
+    external fun nativeSessionClock(seconds: Long): String
+
+    /** Подпись пинга («24 мс» или прочерк). Отрицательное ms — ответа не было. */
+    external fun nativePingText(ms: Int): String
+
+    /**
+     * Тревожность пинга: 0 спокойно · 1 янтарь · 2 красный · 3 приглушённо
+     * (номера — варианты view::Alarm). Пороги живут в справочнике.
+     */
+    external fun nativePingAlarm(ms: Int): Int
+
+    /** Годен ли хост (живой и есть место) — на этом гасится кнопка «Подключить». */
+    external fun nativeHostUsable(online: Boolean, guests: Int, maxGuests: Int): Boolean
+
+    /** Подпись состояния связи. online: 1 да · 0 нет · -1 ещё не знаем. */
+    external fun nativeLinkText(online: Int): String
+
+    /**
+     * Тревожность состояния связи (номера — варианты view::Alarm).
+     * Обрыв — ЯНТАРЬ: сокет чинит супервизор сам, красным тут пугать нечем.
+     */
+    external fun nativeLinkAlarm(online: Int): Int
+
+    /** Что написать на месте ПУСТОГО списка хостов: ждать связи или действовать. */
+    external fun nativeEmptyDirectoryHint(online: Int): String
+
+    /**
+     * Состояние VPN числом: 0 выкл · 1 подключаюсь · 2 переподключение ·
+     * 3 работает · 4 хост завершил раздачу · 5 связь потеряна (варианты view::Vpn).
+     * На входе — ровно то, что отдают nativeVpnStatus и nativeStopReason, плюс
+     * «сеанс уже был» (у экрана есть отметка начала).
+     */
+    external fun nativeVpnKind(status: Int, stopReason: Int, wasConnected: Boolean): Int
+
+    /** Подпись состояния VPN. Аргументы те же, что у nativeVpnKind. */
+    external fun nativeVpnText(status: Int, stopReason: Int, wasConnected: Boolean): String
+
     // ── Сигналинг (координатор) ──────────────────────────────────────────────
     /** Живой каталог (long-poll): JSON {"version":N,"hosts":[...]}. since — из прошлого ответа. */
     external fun nativeListWatch(coordinator: String, since: Long): String

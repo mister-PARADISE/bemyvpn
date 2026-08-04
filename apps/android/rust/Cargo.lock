@@ -185,6 +185,7 @@ dependencies = [
  "async-trait",
  "bmv-common",
  "curve25519-elligator2",
+ "log",
  "rand 0.8.6",
  "sha2",
  "snow",
@@ -210,6 +211,7 @@ name = "bmv-tunnel"
 version = "1.0.0"
 dependencies = [
  "bmv-common",
+ "bmv-net",
  "ipstack",
  "tokio",
  "tokio-util",
