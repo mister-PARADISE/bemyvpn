@@ -1264,11 +1264,23 @@ fn spawn_refresh(engine: EngineSlot, app: Shared) {
 
 // ── отрисовка ────────────────────────────────────────────────────────────────
 
-const ACCENT: Color = Color::Rgb(94, 147, 255);
-const GREEN: Color = Color::Rgb(35, 220, 160);
-const DIM: Color = Color::Rgb(150, 160, 180);
+// ЦВЕТА — ТЕ ЖЕ, ЧТО В ТРЁХ ГРАФИЧЕСКИХ ОБОЛОЧКАХ (палитра «Подъём»).
+//
+// Терминал жил своей палитрой и держал самый первый акцент `#5E93FF` — его не
+// трогали ни в одну из двух переделок цвета. Итог: одна и та же запись каталога
+// на четырёх экранах выглядела по-разному, а «синий» означал два разных синих.
+//
+// Здесь только те роли, что есть в терминале: поверхностей у него нет, кроме
+// подсветки строки. Значения — из `theme.slint` / `Theme.swift` / `Theme.kt`,
+// менять их надо ВО ВСЕХ ЧЕТЫРЁХ местах разом.
+const ACCENT: Color = Color::Rgb(0x08, 0xAB, 0xFF); // #08ABFF
+const GREEN: Color = Color::Rgb(0x34, 0xE2, 0x9E); // #34E29E — «работает»
+const AMBER: Color = Color::Rgb(0xF5, 0xB1, 0x4C); // #F5B14C — «само пройдёт»
+const RED: Color = Color::Rgb(0xFF, 0x79, 0x74); // #FF7974 — «само не пройдёт»
+const DIM: Color = Color::Rgb(0xA9, 0xB0, 0xBF); // #A9B0BF
 /// Фон выбранной строки — ненавязчивая подсветка вместо стрелки слева.
-const SEL: Color = Color::Rgb(38, 50, 78);
+/// Ступень «приподнятое» из общей палитры (s2).
+const SEL: Color = Color::Rgb(0x1E, 0x2E, 0x4E); // #1E2E4E
 
 /// Единый вид карточки: скруглённая рамка, тусклый контур, акцентный жирный
 /// заголовок и горизонтальный паддинг, чтобы текст не липнул к рамке.
@@ -1392,7 +1404,7 @@ fn vpn_tab(f: &mut Frame, area: Rect, a: &App) {
     // Статус-карточка (при подключении — детали хоста из каталога).
     let status: Vec<Line> = match &a.vpn {
         Vpn::Off => vec![Line::from(Span::styled(format!("{} VPN выключен", dot_off()), Style::default().fg(DIM)))],
-        Vpn::Connecting(h) => vec![Line::from(Span::styled(format!("{} Подключаюсь к {h}…", dot_wait()), Style::default().fg(Color::Yellow)))],
+        Vpn::Connecting(h) => vec![Line::from(Span::styled(format!("{} Подключаюсь к {h}…", dot_wait()), Style::default().fg(AMBER)))],
         Vpn::On { id, name, since } => {
             let h = a.hosts.iter().find(|h| &h.id == id);
             let ip = h.and_then(|h| h.endpoints.first()).map(|e| e.as_str()).unwrap_or("—");
@@ -1413,7 +1425,7 @@ fn vpn_tab(f: &mut Frame, area: Rect, a: &App) {
             format!("{} Хост завершил раздачу — выберите другой (c — «Старт»)", dot_off()),
             Style::default().fg(DIM),
         ))],
-        Vpn::Failed(e) => vec![Line::from(Span::styled(format!("{} {e}", dot_err()), Style::default().fg(Color::Red)))],
+        Vpn::Failed(e) => vec![Line::from(Span::styled(format!("{} {e}", dot_err()), Style::default().fg(RED)))],
     };
     f.render_widget(Paragraph::new(status).wrap(Wrap { trim: true }).block(card(" Статус ")), rows[0]);
 
@@ -1499,9 +1511,9 @@ fn host_tab(f: &mut Frame, area: Rect, a: &App) {
     } else {
         match &a.host {
             HostMode::Off => Span::styled(format!("{} Раздача выключена", dot_off()), Style::default().fg(DIM)),
-            HostMode::Starting => Span::styled(format!("{} Запускаюсь…", dot_wait()), Style::default().fg(Color::Yellow)),
+            HostMode::Starting => Span::styled(format!("{} Запускаюсь…", dot_wait()), Style::default().fg(AMBER)),
             HostMode::On { .. } => Span::styled(format!("{} Раздаю", dot_on()), Style::default().fg(GREEN).add_modifier(Modifier::BOLD)),
-            HostMode::Failed(e) => Span::styled(format!("{} {e}", dot_err()), Style::default().fg(Color::Red)),
+            HostMode::Failed(e) => Span::styled(format!("{} {e}", dot_err()), Style::default().fg(RED)),
         }
     };
     let mut head = vec![Line::from(vec![
@@ -1575,7 +1587,10 @@ fn server_tab(f: &mut Frame, area: Rect, a: &App) {
                 Span::styled(text, Style::default().fg(alarm_color(alarm))),
             ]
         }
-        Some(false) => vec![Span::styled(format!("{} нет связи — восстанавливаю", dot_err()), Style::default().fg(Color::Red))],
+        // Янтарь, а не красный: связь восстанавливается САМА за секунды. Красный
+        // бережём для того, что само не пройдёт, — иначе настоящую беду нечем
+        // будет покрасить. Так же сделано в трёх графических оболочках.
+        Some(false) => vec![Span::styled(format!("{} нет связи — восстанавливаю", dot_wait()), Style::default().fg(AMBER))],
         None => vec![Span::styled(format!("{} проверяю…", dot_wait()), Style::default().fg(DIM))],
     };
     let ip = if a.my_ip.is_empty() { "—".to_string() } else { a.my_ip.clone() };
@@ -1585,7 +1600,7 @@ fn server_tab(f: &mut Frame, area: Rect, a: &App) {
         match &a.srv {
             SrvState::Off => Span::styled(format!("{} свой сервер выключен", dot_off()), Style::default().fg(DIM)),
             SrvState::On => Span::styled(format!("{} свой сервер работает", dot_on()), Style::default().fg(GREEN).add_modifier(Modifier::BOLD)),
-            SrvState::Failed(e) => Span::styled(format!("{} {e}", dot_err()), Style::default().fg(Color::Red)),
+            SrvState::Failed(e) => Span::styled(format!("{} {e}", dot_err()), Style::default().fg(RED)),
         }
     };
     let head = vec![
@@ -1674,8 +1689,8 @@ fn proto_short(p: &str) -> String {
 /// «Норма молчит» и «нет ответа» в терминале одинаково тихие — тревога цветная.
 fn alarm_color(a: Alarm) -> Color {
     match a {
-        Alarm::Amber => Color::Yellow,
-        Alarm::Red => Color::Red,
+        Alarm::Amber => AMBER,
+        Alarm::Red => RED,
         Alarm::Calm | Alarm::Muted => DIM,
     }
 }
