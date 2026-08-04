@@ -354,9 +354,14 @@ private struct TileBody<Trailing: View>: View {
 }
 
 /// Фон плитки: единый для всех — разница только в содержимом, не в оформлении.
-private func tileBackground(_ accent: Color?) -> some View {
+///
+/// `fill` по умолчанию нейтральная s3; в РАСКРЫТОЙ карточке хоста сюда приходит
+/// s3 с подкраской. Подкраска лежит на плитках, а не на самой карточке: карточка
+/// — это ступень (место в стопке), плитки — содержимое, ради которого её
+/// раскрывают, и цвет должен быть на содержимом.
+private func tileBackground(_ accent: Color?, fill: Color = Theme.tile) -> some View {
     RoundedRectangle(cornerRadius: 12, style: .continuous)
-        .fill(Theme.tile)
+        .fill(fill)
         .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous)
             .stroke(accent ?? Theme.hairline, lineWidth: 1))
 }
@@ -576,6 +581,8 @@ struct BigCopyButton: View {
 
 struct PingTile: View {
     let value: String
+    /// См. `tileBackground`: s3, а в раскрытой карточке хоста — s3 с подкраской.
+    var fill: Color = Theme.tile
     private var waiting: Bool { value == "…" }
     private var noAnswer: Bool { value == "—" }
     @State private var spin = false
@@ -604,13 +611,14 @@ struct PingTile: View {
                         .animation(.linear(duration: 0.9).repeatForever(autoreverses: false), value: spin)
                         .onAppear { spin = true }
                 }
-                .background(tileBackground(nil))
+                .background(tileBackground(nil, fill: fill))
             } else if noAnswer {
                 // Только знак, без слова: перечёркнутая антенна говорит сама,
                 // а «нет» рядом с ней — это то же самое ещё раз.
-                StatTile(label: "ПИНГ", value: "", symbol: "antenna.radiowaves.left.and.right.slash", tint: Theme.dim)
+                StatTile(label: "ПИНГ", value: "", symbol: "antenna.radiowaves.left.and.right.slash",
+                         tint: Theme.dim, fill: fill)
             } else {
-                StatTile(label: "ПИНГ", value: value, tint: tint)
+                StatTile(label: "ПИНГ", value: value, tint: tint, fill: fill)
             }
         }
         // АНИМАЦИИ ПО `value` ЗДЕСЬ НЕТ, И ЭТО НАМЕРЕННО. Стояла
@@ -628,9 +636,11 @@ struct StatTile: View {
     let label: String; let value: String
     var symbol: String? = nil
     var tint: Color = Theme.fg
+    /// См. `tileBackground`: s3, а в раскрытой карточке хоста — s3 с подкраской.
+    var fill: Color = Theme.tile
     var body: some View {
         TileBody(label: label, value: value, symbol: symbol, valueColor: tint) { EmptyView() }
-            .background(tileBackground(nil))
+            .background(tileBackground(nil, fill: fill))
     }
 }
 
@@ -639,6 +649,8 @@ struct StatTile: View {
 /// иначе плитки в одном блоке выглядят разнородными.
 struct CopyTile: View {
     let label: String; let value: String
+    /// См. `tileBackground`: s3, а в раскрытой карточке хоста — s3 с подкраской.
+    var fill: Color = Theme.tile
     @State private var copied = false
     private var empty: Bool { value.isEmpty || value == "—" }
     var body: some View {
@@ -656,7 +668,7 @@ struct CopyTile: View {
                         .foregroundColor(Theme.accent).font(.system(size: 11, weight: .bold))
                 }
             }
-            .background(tileBackground(copied ? Theme.edgeDone() : nil))
+            .background(tileBackground(copied ? Theme.edgeDone() : nil, fill: fill))
         }.buttonStyle(.plain)
     }
 }
@@ -692,7 +704,7 @@ let haloBack: CGFloat = 200
 /// подъезда.
 ///
 /// Высоту держит ПЕРЕПАД К ФОНУ: заливка (Theme.float — одна на панель и на
-/// нав-бар) светлее страницы на 13.5 по L*. НЕПРОЗРАЧНАЯ: прежние 0.97 не
+/// нав-бар) светлее страницы на 11.5 по L*. НЕПРОЗРАЧНАЯ: прежние 0.97 не
 /// покупали ничего — размытия под блоком нет ни на одной оболочке (родного
 /// `.ultraThinMaterial` здесь намеренно нет: с ним одна платформа выглядела бы
 /// иначе, чем две другие), зато сквозь панель на снимке в прокрутке читался
@@ -717,7 +729,13 @@ func floatSurface(radius: CGFloat, stroke: Color, up: Bool = false) -> some View
         // ТЕНЬ КОРОТКАЯ, НО С ПОЛОГИМ СПАДОМ. Прежняя (radius 5 при 90 %) у самой
         // кромки роняла фон почти в чёрный — край ОБРЫВАЛСЯ, а не спадал.
         // Размытие больше, непрозрачность меньше: вылет тот же, кривая пологая.
-        .shadow(color: .black.opacity(0.6), radius: 8, x: 0, y: up ? -5 : 5)
+        //
+        // ПЛОТНОСТЬ УБАВЛЕНА С 0.6 ДО 0.35, РАДИУС И СМЕЩЕНИЕ НЕ ТРОНУТЫ. Замер
+        // по снимку симулятора: при 0.6 самая тёмная точка тени была 6/255 при
+        // фоне 9/255 — глубина 3 единицы из 255, то есть тень и в полную силу
+        // почти ничего не делала. Это не свойство настройки, а свойство фона: до
+        // чёрного странице остаётся восемь единиц, глубже падать некуда.
+        .shadow(color: .black.opacity(0.35), radius: 8, x: 0, y: up ? -5 : 5)
         // ОРЕОЛ — ПОД всем блоком, включая его чёрную тень: та должна ложиться
         // на уже погашенный фон, ровно как она лежит на пустой странице при
         // коротком списке. `.background` ставится последним именно поэтому.
@@ -1209,6 +1227,12 @@ struct HostCard: View {
     let host: Host
     @State private var password = ""
     private var expanded: Bool { app.expandedId == host.id }
+    /// Заливка плиток внутри раскрытой карточки: s3 ПЛЮС ПОДКРАСКА — то самое
+    /// общее правило приложения (`picked`), взятое готовым, а не вписанное сюда
+    /// вторым числом. Совпадение не случайное: 0.14 мяты подобрана так, чтобы
+    /// подкрашенное вставало ровно вровень с s3 (L* 19.54 против 19.31), поэтому
+    /// плитка меняет ЦВЕТ, не меняя своей ступени.
+    private var tileFill: Color { Theme.picked() }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -1266,18 +1290,19 @@ struct HostCard: View {
                 VStack(spacing: 8) {
                     // Код и IP — тап копирует.
                     HStack(spacing: 8) {
-                        CopyTile(label: "КОД", value: host.id)
-                        CopyTile(label: "IP", value: host.ip.isEmpty ? "—" : host.ip)
+                        CopyTile(label: "КОД", value: host.id, fill: tileFill)
+                        CopyTile(label: "IP", value: host.ip.isEmpty ? "—" : host.ip, fill: tileFill)
                     }
                     HStack(spacing: 8) {
-                        StatTile(label: "СТРАНА", value: countryLabel(host))
-                        StatTile(label: "ГОСТЕЙ", value: "\(host.guests) / \(host.max)")
-                        PingTile(value: app.pings[host.id] ?? "…")
+                        StatTile(label: "СТРАНА", value: countryLabel(host), fill: tileFill)
+                        StatTile(label: "ГОСТЕЙ", value: "\(host.guests) / \(host.max)", fill: tileFill)
+                        PingTile(value: app.pings[host.id] ?? "…", fill: tileFill)
                     }
                     HStack(spacing: 8) {
                         StatTile(label: "ДОСТУП", value: host.hasPassword ? "по паролю" : "открытый",
-                                 symbol: host.hasPassword ? "lock.fill" : "lock.open.fill")
-                        StatTile(label: "ПРОТОКОЛ", value: protoName(host.proto), symbol: protoIcon(host.proto))
+                                 symbol: host.hasPassword ? "lock.fill" : "lock.open.fill", fill: tileFill)
+                        StatTile(label: "ПРОТОКОЛ", value: protoName(host.proto),
+                                 symbol: protoIcon(host.proto), fill: tileFill)
                     }
                 }
 
@@ -1295,14 +1320,20 @@ struct HostCard: View {
             }
         }
         .padding(14)
-        // РАСКРЫТАЯ КАРТОЧКА — ТА ЖЕ ПОДКРАСКА, ЧТО У ВЫБРАННОГО, НО СЛАБАЯ.
-        // Полную сюда класть нельзя: карточка не пустая — внутри неё лежат
-        // плитки s3 (L* 23.8), и подкраска в полную силу подняла бы саму
-        // карточку до 23.9, то есть утопила бы собственное содержимое. Слабая
-        // даёт 18.9: карточка выше свёрнутых соседей (15.5), плитки выше её на 4.9.
+        // ПОДКРАСКА ЛЕЖИТ НА ПЛИТКАХ, А САМА КАРТОЧКА — ЧИСТАЯ СТУПЕНЬ.
+        //
+        // Было наоборот: мятой красили карточку целиком, а плитки внутри
+        // оставались серыми. Цвет тогда доставался ОБОЛОЧКЕ, а не содержимому —
+        // раскрытая карточка выглядела «подсвеченной сеткой», в которой лежат
+        // чужие серые ячейки. Теперь карточка встаёт на s2 (L* 11.6 против 8.1 у
+        // свёрнутых соседей), а мята уходит внутрь, на плитки: они и есть то,
+        // ради чего карточку раскрывают.
+        //
+        // «РАСКРЫТА» ЧИТАЕТСЯ БЕЗ ПОДКРАСКИ — ступенью и рамкой; рамка осталась
+        // мятной (edgeSoft), так что признак не один.
         .background(
             RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(expanded ? Theme.touched() : Theme.card)
+                .fill(expanded ? Theme.cardHi : Theme.card)
                 .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous)
                     .stroke(expanded ? Theme.edgeSoft() : Theme.hairline, lineWidth: 1))
         )

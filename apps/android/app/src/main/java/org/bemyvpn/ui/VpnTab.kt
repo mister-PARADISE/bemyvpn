@@ -347,12 +347,22 @@ private fun ConnectedExtras(app: AppState, showInvite: (String) -> Unit) {
 fun HostCard(app: AppState, host: Host) {
     var password by remember(host.id) { mutableStateOf("") }
     val expanded = app.expandedId == host.id
-    // РАСКРЫТАЯ КАРТОЧКА — ТА ЖЕ ПОДКРАСКА, ЧТО У ВЫБРАННОГО, НО СЛАБАЯ.
-    // Полную сюда класть нельзя: карточка не пустая — внутри неё лежат плитки s3
-    // (L* 23.8), и подкраска в полную силу подняла бы саму карточку до 23.9, то
-    // есть утопила бы собственное содержимое. Слабая даёт 18.9: карточка выше
-    // свёрнутых соседей (15.5), а плитки по-прежнему выше её на 4.9.
-    val bg by animateColorAsState(if (expanded) Theme.touched() else Theme.card, tween(200), label = "cardBg")
+    // ПОДКРАСКА ЛЕЖИТ НА ПЛИТКАХ, А САМА КАРТОЧКА — ЧИСТАЯ СТУПЕНЬ.
+    //
+    // Было наоборот: мятой красили карточку целиком, а плитки внутри оставались
+    // серыми. Цвет тогда доставался ОБОЛОЧКЕ, а не содержимому — раскрытая
+    // карточка выглядела «подсвеченной сеткой», в которой лежат чужие серые
+    // ячейки. Теперь карточка встаёт на s2 (L* 11.6 против 8.1 у свёрнутых
+    // соседей), а мята уходит внутрь, на плитки: они и есть то, ради чего
+    // карточку раскрывают. «Раскрыта» читается ступенью и мятной рамкой
+    // (edgeSoft), так что признак не один.
+    val bg by animateColorAsState(if (expanded) Theme.cardHi else Theme.card, tween(200), label = "cardBg")
+    // Заливка плиток внутри: s3 ПЛЮС ПОДКРАСКА — то самое общее правило
+    // приложения (`picked`), взятое готовым, а не вписанное сюда вторым числом.
+    // Совпадение не случайное: 0.14 мяты подобрана так, чтобы подкрашенное
+    // вставало ровно вровень с s3 (L* 19.54 против 19.31), поэтому плитка меняет
+    // ЦВЕТ, не меняя своей ступени.
+    val tileFill = Theme.picked()
     val stroke by animateColorAsState(
         if (expanded) Theme.edgeSoft() else Theme.hairline,
         tween(200), label = "cardStroke",
@@ -451,20 +461,24 @@ fun HostCard(app: AppState, host: Host) {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 // Код и IP — тап копирует.
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    CopyTile("КОД", host.id, Modifier.weight(1f))
-                    CopyTile("IP", host.ip.ifEmpty { "—" }, Modifier.weight(1f))
+                    CopyTile("КОД", host.id, Modifier.weight(1f), fill = tileFill)
+                    CopyTile("IP", host.ip.ifEmpty { "—" }, Modifier.weight(1f), fill = tileFill)
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    StatTile("СТРАНА", countryLabel(host), Modifier.weight(1f))
-                    StatTile("ГОСТЕЙ", "${host.guests} / ${host.max}", Modifier.weight(1f))
-                    PingTile(app.pings[host.id] ?: "…", Modifier.weight(1f))
+                    StatTile("СТРАНА", countryLabel(host), Modifier.weight(1f), fill = tileFill)
+                    StatTile("ГОСТЕЙ", "${host.guests} / ${host.max}", Modifier.weight(1f), fill = tileFill)
+                    PingTile(app.pings[host.id] ?: "…", Modifier.weight(1f), fill = tileFill)
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     StatTile(
                         "ДОСТУП", if (host.hasPassword) "по паролю" else "открытый", Modifier.weight(1f),
                         symbol = if (host.hasPassword) Icons.Filled.Lock else Icons.Filled.LockOpen,
+                        fill = tileFill,
                     )
-                    StatTile("ПРОТОКОЛ", protoName(host.proto), Modifier.weight(1f), symbol = protoIcon(host.proto))
+                    StatTile(
+                        "ПРОТОКОЛ", protoName(host.proto), Modifier.weight(1f),
+                        symbol = protoIcon(host.proto), fill = tileFill,
+                    )
                 }
 
                 if (host.hasPassword) {
@@ -576,7 +590,7 @@ private fun UpdateBanner(app: AppState) {
  *     значения значит намекать, что оно ещё не готово.
  */
 @Composable
-private fun PingTile(value: String, modifier: Modifier = Modifier) {
+private fun PingTile(value: String, modifier: Modifier = Modifier, fill: Color = Theme.tile) {
     when (value) {
         "…" -> {
             val t = rememberInfiniteTransition(label = "ping")
@@ -587,7 +601,7 @@ private fun PingTile(value: String, modifier: Modifier = Modifier) {
             )
             // Через trailing у TileBody, чтобы не менять общий StatTile ради
             // одного случая: вращение нужно только здесь.
-            Box(modifier.tileBackground()) {
+            Box(modifier.tileBackground(fill = fill)) {
                 TileBody("ПИНГ", "") {
                     Icon(
                         Icons.Filled.Autorenew, null,
@@ -599,8 +613,8 @@ private fun PingTile(value: String, modifier: Modifier = Modifier) {
         }
         // Только знак, без слова: перечёркнутая антенна говорит сама, а «нет»
         // рядом с ней — это то же самое ещё раз.
-        "—" -> StatTile("ПИНГ", "", modifier, symbol = Icons.Filled.SignalWifiOff, tint = Theme.dim)
-        else -> StatTile("ПИНГ", value, modifier, tint = pingTint(value))
+        "—" -> StatTile("ПИНГ", "", modifier, symbol = Icons.Filled.SignalWifiOff, tint = Theme.dim, fill = fill)
+        else -> StatTile("ПИНГ", value, modifier, tint = pingTint(value), fill = fill)
     }
 }
 

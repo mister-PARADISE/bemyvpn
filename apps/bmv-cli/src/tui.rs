@@ -1293,7 +1293,7 @@ const RED: Color = Color::Rgb(0xFF, 0x79, 0x74);    // #FF7974 — беда, к�
 const DIM: Color = Color::Rgb(0xA5, 0xAA, 0xB5);    // #A5AAB5 — второстепенный текст и «выключено»
 const FG: Color = Color::Rgb(0xED, 0xF1, 0xF8);     // #EDF1F8 — основной текст
 const BG: Color = Color::Rgb(0x08, 0x09, 0x0B);     // #08090B — s0 — страница
-const SEL: Color = Color::Rgb(0x1D, 0x21, 0x28);    // #1D2128 — s2 — раскрытая карточка, чип
+const SEL: Color = Color::Rgb(0x1B, 0x1F, 0x25);    // #1B1F25 — s2 — раскрытая карточка, чип
 // ── КОНЕЦ: значения из design/palette.toml ──
 
 /// Единый вид карточки: скруглённая рамка, тусклый контур, акцентный жирный

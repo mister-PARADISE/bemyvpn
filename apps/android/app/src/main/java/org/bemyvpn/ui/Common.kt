@@ -213,9 +213,16 @@ fun rememberSecondTick(): Long {
 
 // ── Плитки ───────────────────────────────────────────────────────────────────
 
-/** Фон плитки: единый для всех — разница только в содержимом, не в оформлении. */
-fun Modifier.tileBackground(accent: Color? = null): Modifier = this
-    .background(Theme.tile, RoundedCornerShape(12.dp))
+/**
+ * Фон плитки: единый для всех — разница только в содержимом, не в оформлении.
+ *
+ * `fill` по умолчанию нейтральная s3; в РАСКРЫТОЙ карточке хоста сюда приходит s3
+ * с подкраской. Подкраска лежит на плитках, а не на самой карточке: карточка —
+ * это ступень (место в стопке), плитки — содержимое, ради которого её
+ * раскрывают, и цвет должен быть на содержимом.
+ */
+fun Modifier.tileBackground(accent: Color? = null, fill: Color = Theme.tile): Modifier = this
+    .background(fill, RoundedCornerShape(12.dp))
     .border(1.dp, accent ?: Theme.hairline, RoundedCornerShape(12.dp))
 
 /** Общая «шапка» плитки — подпись мелко сверху, значение снизу. */
@@ -268,19 +275,26 @@ fun TileBody(
 
 /** Плитка-факт. */
 @Composable
-fun StatTile(label: String, value: String, modifier: Modifier = Modifier, symbol: ImageVector? = null, tint: Color = Theme.fg) {
-    Box(modifier.tileBackground()) { TileBody(label, value, symbol, tint) }
+fun StatTile(
+    label: String,
+    value: String,
+    modifier: Modifier = Modifier,
+    symbol: ImageVector? = null,
+    tint: Color = Theme.fg,
+    fill: Color = Theme.tile,
+) {
+    Box(modifier.tileBackground(fill = fill)) { TileBody(label, value, symbol, tint) }
 }
 
 /** Плитка со значением, которое копируется тапом (код, IP). */
 @Composable
-fun CopyTile(label: String, value: String, modifier: Modifier = Modifier) {
+fun CopyTile(label: String, value: String, modifier: Modifier = Modifier, fill: Color = Theme.tile) {
     val clipboard = LocalClipboardManager.current
     val ctx = LocalContext.current
     var copied by remember { mutableStateOf(false) }
     val empty = value.isEmpty() || value == "—"
     LaunchedEffect(copied) { if (copied) { delay(Theme.COPIED_MS); copied = false } }
-    Box(modifier.tileBackground(if (copied) Theme.edgeDone() else null).tappable {
+    Box(modifier.tileBackground(if (copied) Theme.edgeDone() else null, fill).tappable {
         if (!empty) { clipboard.setText(AnnotatedString(value)); Haptics.tap(ctx); copied = true }
     }) {
         TileBody(
@@ -526,7 +540,7 @@ private fun DrawScope.panelHalo(r: Float, v: Float, s: Float, back: Float) {
  * КРОМКИ СВЕТА 1px СВЕРХУ БОЛЬШЕ НЕТ. Она была подпоркой под тёмную палитру: на
  * прежних поверхностях блок отличался от фона на 6.4 по L*, край приходилось
  * обводить руками, и полоска бросалась в глаза. Теперь высоту держит ОДИН
- * носитель — непрозрачная заливка светлее страницы на 13.5 по L*.
+ * носитель — непрозрачная заливка светлее страницы на 11.5 по L*.
  */
 fun Modifier.floatSurface(radius: Dp, stroke: Color): Modifier {
     val shape = RoundedCornerShape(radius)

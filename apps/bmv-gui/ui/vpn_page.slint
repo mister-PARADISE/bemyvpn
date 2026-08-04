@@ -40,13 +40,26 @@ component HostCard inherits Rectangle {
     // обновление каталога, и номер к моменту нажатия мог указывать на другой хост.
     callback connect(string);
     callback copy-text(string);
+    /// Заливка плиток внутри раскрытой карточки: s3 ПЛЮС ПОДКРАСКА — то самое
+    /// общее правило приложения (`picked`), и берётся оно готовым, а не пишется
+    /// здесь вторым числом. Совпадение не случайное: 0.14 мяты подобрана так,
+    /// чтобы подкрашенное вставало ровно вровень с s3 (19.54 против 19.31),
+    /// поэтому плитка меняет ЦВЕТ, не меняя своей ступени.
+    property <color> tile-fill: Theme.picked(Theme.accent);
     border-radius: 16px;
-    // РАСКРЫТАЯ КАРТОЧКА — ТА ЖЕ ПОДКРАСКА, ЧТО У ВЫБРАННОГО, НО СЛАБАЯ.
-    // Полную сюда класть нельзя: карточка не пустая — внутри неё лежат плитки
-    // s3 (L* 19.3), и подкраска в полную силу подняла бы саму карточку до 19.5,
-    // то есть утопила бы собственное содержимое. Слабая даёт 13.1 — карточка
-    // выше свёрнутых соседей (8.1), а плитки по-прежнему выше её на 6.2.
-    background: root.expanded ? Theme.touched(Theme.accent) : Theme.card;
+    /// ПОДКРАСКА ЛЕЖИТ НА ПЛИТКАХ, А САМА КАРТОЧКА — ЧИСТАЯ СТУПЕНЬ.
+    ///
+    /// Было наоборот: мятой красили карточку целиком, а плитки внутри оставались
+    /// серыми. Цвет тогда доставался ОБОЛОЧКЕ, а не содержимому — раскрытая
+    /// карточка выглядела «подсвеченной сеткой», в которой лежат чужие серые
+    /// ячейки. Теперь карточка встаёт на s2 (11.6 против 8.1 у свёрнутых
+    /// соседей), а мята уходит внутрь, на плитки: они и есть то, ради чего
+    /// карточку раскрывают.
+    ///
+    /// «РАСКРЫТА» ЧИТАЕТСЯ БЕЗ ПОДКРАСКИ — ступенью и рамкой. Рамка при этом
+    /// осталась мятной (`edge-soft`), так что признак не один: человеку с
+    /// нарушением цветовосприятия остаётся ступень, которой у свёрнутых нет.
+    background: root.expanded ? Theme.card-hi : Theme.card;
     border-width: 1px;
     border-color: root.expanded ? Theme.edge-soft(Theme.accent) : Theme.hairline;
     animate background, border-color { duration: 200ms; easing: ease-in-out; }
@@ -106,7 +119,7 @@ component HostCard inherits Rectangle {
                             alignment: center;   // иначе значок липнет к верху строки
                             ProtoIcon {
                                 id: h.proto-id; width: 14px; height: 14px;
-                                hole: root.expanded ? Theme.touched(Theme.accent) : Theme.card;
+                                hole: root.expanded ? Theme.card-hi : Theme.card;
                             }
                         }
                         Text {
@@ -152,25 +165,25 @@ component HostCard inherits Rectangle {
                 spacing: 8px;
                 HorizontalLayout {
                     spacing: 8px;
-                    CopyTile { label: "КОД"; value: h.code; horizontal-stretch: 1; copy(t) => { root.copy-text(t); } }
-                    CopyTile { label: "IP"; value: h.ip; horizontal-stretch: 1; copy(t) => { root.copy-text(t); } }
+                    CopyTile { label: "КОД"; value: h.code; fill: root.tile-fill; horizontal-stretch: 1; copy(t) => { root.copy-text(t); } }
+                    CopyTile { label: "IP"; value: h.ip; fill: root.tile-fill; horizontal-stretch: 1; copy(t) => { root.copy-text(t); } }
                 }
                 HorizontalLayout {
                     spacing: 8px;
-                    StatTile { label: "СТРАНА"; value: h.country; horizontal-stretch: 1; }
-                    StatTile { label: "ГОСТЕЙ"; value: h.guests; horizontal-stretch: 1; }
-                    PingTile { ping: h.ping; ms: h.ping-ms; horizontal-stretch: 1; }
+                    StatTile { label: "СТРАНА"; value: h.country; fill: root.tile-fill; horizontal-stretch: 1; }
+                    StatTile { label: "ГОСТЕЙ"; value: h.guests; fill: root.tile-fill; horizontal-stretch: 1; }
+                    PingTile { ping: h.ping; ms: h.ping-ms; fill: root.tile-fill; horizontal-stretch: 1; }
                 }
                 HorizontalLayout {
                     spacing: 8px;
                     StatTile {
-                        label: "ДОСТУП"; value: h.access; horizontal-stretch: 1;
+                        label: "ДОСТУП"; value: h.access; fill: root.tile-fill; horizontal-stretch: 1;
                         if h.locked: IconLock { width: 12px; height: 12px; tint: Theme.fg; }
                         if !h.locked: IconLockOpen { width: 12px; height: 12px; tint: Theme.fg; }
                     }
                     StatTile {
-                        label: "ПРОТОКОЛ"; value: h.proto; horizontal-stretch: 1;
-                        ProtoIcon { id: h.proto-id; width: 12px; height: 12px; tint: Theme.fg; hole: Theme.tile; }
+                        label: "ПРОТОКОЛ"; value: h.proto; fill: root.tile-fill; horizontal-stretch: 1;
+                        ProtoIcon { id: h.proto-id; width: 12px; height: 12px; tint: Theme.fg; hole: root.tile-fill; }
                     }
                 }
                 if h.locked: Field { placeholder: "Пароль"; secure: true; text <=> root.guest-password; }
