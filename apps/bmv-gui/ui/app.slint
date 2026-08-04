@@ -3,7 +3,7 @@
 // центральной ячейкой (Старт/Стоп). Всё состояние — входные свойства, действия —
 // колбэки; заполняет их Rust (main.rs).
 import { Theme } from "theme.slint";
-import { HostRow, CalmButton, FloatCard } from "components.slint";
+import { HostRow, CalmButton, FloatCard, FloatHalo } from "components.slint";
 import { IconServer, IconRouter, IconShield, IconBolt, IconX, IconQr, IconRenew, IconPower } from "icons.slint";
 import { VpnPage } from "vpn_page.slint";
 import { HostPage } from "host_page.slint";
@@ -258,8 +258,15 @@ export component AppWindow inherits Window {
     // Приподнят над нижним краем на 30px (было 22): бар и так парит, а лишние
     // несколько точек воздуха под ним читаются как «лежит поверх», а не
     // «приклеен к краю». Нижний отступ прокрутки на страницах подрос на ту же
-    // величину (116px), иначе последняя карточка списка пряталась бы под баром.
-    FloatCard {
+    // величину (120px), иначе последняя карточка списка пряталась бы под баром.
+    // Ореол бара — ОТДЕЛЬНЫМ СОСЕДОМ ПЕРЕД ним, иначе он лёг бы поверх заливки:
+    // в Slint дети рисуются над фоном родителя, а `z` нет вовсе.
+    FloatHalo {
+        radius: 28px;
+        lift-up: true;
+        x: bar.x; y: bar.y; width: bar.width; height: bar.height;
+    }
+    bar := FloatCard {
         radius: 28px;
         // Бар прижат снизу — тень уходит ВВЕРХ, к содержимому. Вниз она уезжала
         // под сам бар, в полосу, на которую никто не смотрит.

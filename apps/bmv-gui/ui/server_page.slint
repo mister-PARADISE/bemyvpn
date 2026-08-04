@@ -8,7 +8,7 @@
 // Адрес показывается доменом, без «https://»: схема у нас всегда одна, и шесть
 // символов перед каждым адресом ничего не сообщают.
 import { Theme } from "theme.slint";
-import { StatTile, CopyTile, SectionLabel, CalmButton, Field, Badge, StatusLine, FloatCard } from "components.slint";
+import { StatTile, CopyTile, SectionLabel, CalmButton, Field, Badge, StatusLine, FloatCard, FloatHalo } from "components.slint";
 import { IconAntenna, IconAntennaOff } from "icons.slint";
 import { ScrollView } from "std-widgets.slint";
 
@@ -120,6 +120,15 @@ export component ServerPage inherits Rectangle {
         // У ОБЁРТКИ НЕТ НИ ФОНА, НИ ТЕНИ — ровно затем, чтобы сквозь боковые
         // зазоры было видно, как список проходит насквозь. Фон и тень — только
         // у самой карточки (FloatCard), по её скруглённому контуру.
+        // Ореол панели — ОТДЕЛЬНЫМ СОСЕДОМ ПЕРЕД ней: в Slint дети рисуются над
+        // фоном родителя, а `z` нет вовсе, поэтому гашение может лежать под
+        // карточкой только раньше её в объявлении. Геометрия — ровно коробка
+        // карточки: отступ страницы сверху и с боков, 12 снизу.
+        FloatHalo {
+            x: Theme.pad; y: Theme.pad;
+            width: parent.width - 2 * Theme.pad;
+            height: parent.height - Theme.pad - 12px;
+        }
         panel-box := VerticalLayout {
             padding: Theme.pad;
             padding-bottom: 12px;

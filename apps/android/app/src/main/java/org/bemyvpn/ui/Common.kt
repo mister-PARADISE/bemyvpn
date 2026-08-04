@@ -17,7 +17,6 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -70,8 +69,12 @@ import org.bemyvpn.Host
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Dp
@@ -81,9 +84,12 @@ import org.bemyvpn.Theme
 // ── Значки протоколов (аналоги SF Symbols из iOS) ─────────────────────────────
 // Семейство ЩИТА — уровень защиты трафика: есть / замаскирована / нет.
 fun protoIcon(p: String): ImageVector = when (p) {
-    "noise", "noise-aes" -> Icons.Filled.Security          // защищено (щит с замком)
+    // Пустая строка — «Обычный», см. `protoName`: хост без объявленного
+    // протокола шифрует. Перечёркнутый щит здесь означал бы то же враньё, что и
+    // подпись «Без шифра», только картинкой — а её замечают раньше слов.
+    "", "noise", "noise-aes" -> Icons.Filled.Security       // защищено (щит с замком)
     "noise-obfs" -> MaskIcon                               // «Маскировка» — маска (как iOS theatermasks)
-    "plain", "" -> Icons.Filled.RemoveModerator            // защиты нет (щит перечёркнут)
+    "plain" -> Icons.Filled.RemoveModerator                // защиты нет (щит перечёркнут)
     else -> Icons.AutoMirrored.Filled.HelpOutline
 }
 
@@ -418,30 +424,106 @@ fun BmvTextField(
 val floatFill = Color(0xFF1B2740)   // L* 15.8 — та же лестница, что в Theme.kt
 
 /**
- * Ширина завесы под парящим блоком: содержимое, уходящее под него, ГАСНЕТ, а не
- * срезается ножом. Отступы прокрутки считаются ОТ НЕЁ — покоящееся содержимое не
- * должно попадать в полосу гашения, иначе завеса выглядит тенью на пустом месте.
+ * Вылет гашения от контура парящего блока наружу. Отступы прокрутки считаются ОТ
+ * НЕГО — покоящееся содержимое не должно попадать в зону гашения, иначе оно
+ * выглядит подтенённым на пустом месте.
  */
 val veilWidth = 24.dp
 
 /**
- * Полоса гашения у кромки парящего блока. `toBar = true` — блок снизу
- * (нав-бар), гасим вверх→вниз; иначе блок сверху (панель), вниз→вверх.
- *
- * Кликов не перехватывает: фон в Compose ловит жесты только через
- * `pointerInput`/`clickable`.
- *
- * На коротком списке невидима: это фон страницы, растворяющийся в фоне
- * страницы, — тенью посреди пустоты она стать не может по построению.
+ * Насколько ореол уходит ЗА блок, к ближнему краю экрана. Блок прижат к краю, но
+ * не вплотную; в этот просвет содержимое пролезало и обрывалось о край экрана.
+ * Ореол закрывает просвет ТЕМ ЖЕ силуэтом — одна форма, без второго механизма и
+ * без стыка. С запасом на любую высоту системной панели: за экраном лишний фон
+ * ничего не стоит, а не хватило бы — вышла бы жёсткая кромка поперёк экрана.
  */
-@Composable
-fun Veil(modifier: Modifier = Modifier, toBar: Boolean = false) {
+private val haloBack = 200.dp
+
+/**
+ * Сплошная часть ореола: до неё гашение ПОЛНОЕ, дальше сходит на нет к `veilWidth`.
+ *
+ * ЧИСЛО НЕ ИЗ ВКУСА, А ИЗ ГЕОМЕТРИИ ВЫРЕЗА. Самая дальняя от контура точка выреза
+ * скруглённого угла — сам угол габаритной коробки, и он отстоит от дуги на
+ * R·(√2−1): 9.1 при радиусе панели 22 и 11.6 при радиусе бара 28. Гашение,
+ * которое начинает спадать прямо от контура, в этой точке даёт уже половину
+ * яркости — то есть вырез принципиально не вычистить, пока сплошная часть не
+ * перекрывает его целиком. 12 перекрывает оба с запасом.
+ */
+private val haloSolid = 12.dp
+
+/**
+ * ГАШЕНИЕ — ОРЕОЛ ПО КОНТУРУ БЛОКА, А НЕ ПОЛОСА РЯДОМ С НИМ. Вешается на ТОТ ЖЕ
+ * элемент, что и `floatSurface`, но РАНЬШЕ него в цепочке — тогда рисуется под
+ * ним.
+ *
+ * Полоса гасила только «до» и «после» блока: сбоку от карточки содержимое шло в
+ * полную яркость, а в вырезах скруглённых углов пролезало наружу и обрывалось
+ * ножом (замер: 73 точки текста в левом верхнем вырезе панели). Ореол считает
+ * расстояние ДО КОНТУРА, одинаково сверху, снизу, сбоку и в вырезах углов.
+ *
+ * СОБРАН ИЗ ГРАДИЕНТОВ, А НЕ ИЗ РАЗМЫТИЯ, и это не выбор вкуса: `Modifier.blur`
+ * появился только в API 31, а minSdk здесь 24 — на старых устройствах он молча
+ * ничего не делает, и вместо гашения остался бы жёсткий силуэт. Градиенты дают
+ * ТОЧНЫЙ линейный ход и работают везде.
+ *
+ * Кликов не перехватывает: рисование в Compose жестов не ловит вовсе.
+ *
+ * На коротком списке невидим по построению: это фон страницы, растворяющийся в
+ * фоне страницы, — тенью посреди пустоты он стать не может.
+ */
+fun Modifier.floatHalo(radius: Dp, up: Boolean = false): Modifier = this.drawBehind {
+    // Нав-бар — тот же ореол, отражённый по вертикали: форма симметрична, и
+    // вторая система координат ради этого не нужна.
+    scale(1f, if (up) -1f else 1f, pivot = Offset(size.width / 2f, size.height / 2f)) {
+        panelHalo(radius.toPx(), veilWidth.toPx(), haloSolid.toPx(), haloBack.toPx())
+    }
+}
+
+/** Ореол блока, прижатого СВЕРХУ: гашение по нижней кромке, бокам и низким углам. */
+private fun DrawScope.panelHalo(r: Float, v: Float, s: Float, back: Float) {
+    val w = size.width
+    val h = size.height
+    val bg = Theme.bg
     // Прозрачный конец — ФОН С НУЛЕВОЙ АЛЬФОЙ, а не Color.Transparent: тот
     // прозрачно-ЧЁРНЫЙ, и на непремультиплицированной интерполяции середина
     // градиента вышла бы темнее обоих концов — тёмной полосой поперёк экрана.
-    val clear = Theme.bg.copy(alpha = 0f)
-    val stops = if (toBar) listOf(clear, Theme.bg) else listOf(Theme.bg, clear)
-    Box(modifier.fillMaxWidth().height(veilWidth).background(Brush.verticalGradient(stops)))
+    val clear = bg.copy(alpha = 0f)
+    // Высота прямой части: ниже начинаются дуги углов, там считает радиальный.
+    val straight = back + h - r
+    // 1. За блоком, к краю экрана, — сплошной фон во всю его ширину.
+    drawRect(bg, Offset(0f, -back), Size(w, straight))
+    // Ход одинаков на всех кромках: сплошное до s, дальше линейно на нет к v.
+    val out = arrayOf(0f to bg, s / v to bg, 1f to clear)
+    val inn = arrayOf(0f to clear, 1f - s / v to bg, 1f to bg)
+    // 2. Бока: гаснут наружу по горизонтали.
+    drawRect(
+        Brush.horizontalGradient(*inn, startX = -v, endX = 0f),
+        Offset(-v, -back), Size(v, straight),
+    )
+    drawRect(
+        Brush.horizontalGradient(*out, startX = w, endX = w + v),
+        Offset(w, -back), Size(v, straight),
+    )
+    // 3. Кромка подъезда: гаснет вниз. Только между дугами — по краям её
+    //    продолжают углы, иначе на стыке сложились бы два гашения и вышло бы
+    //    тёмное пятно.
+    drawRect(
+        Brush.verticalGradient(*out, startY = h, endY = h + v),
+        Offset(r, h), Size(w - 2 * r, v),
+    )
+    // 4. ВЫРЕЗЫ УГЛОВ. Снаружи дуги расстояние до контура — радиальное от центра
+    //    дуги, поэтому и гашение здесь радиальное: сплошное до r + s, дальше на
+    //    нет к r + v — тот же ход, что и на прямых кромках. Ровно из-за этого
+    //    куска текст больше не торчит из-под скруглений.
+    val stops = arrayOf(0f to bg, (r + s) / (r + v) to bg, 1f to clear)
+    drawRect(
+        Brush.radialGradient(*stops, center = Offset(r, h - r), radius = r + v),
+        Offset(-v, h - r), Size(r + v, r + v),
+    )
+    drawRect(
+        Brush.radialGradient(*stops, center = Offset(w - r, h - r), radius = r + v),
+        Offset(w - r, h - r), Size(r + v, r + v),
+    )
 }
 
 /**
@@ -496,24 +578,9 @@ fun FloatingPanelLayout(
     val density = LocalDensity.current
     Box(Modifier.fillMaxSize()) {
         content(panelH)
-        // ЗАВЕСА У КРОМКИ ПАНЕЛИ: содержимое, уходящее под неё, ГАСНЕТ, а не
-        // срезается ножом. Стоит МЕЖДУ прокруткой и панелью — порядок в Box и
-        // есть порядок отрисовки. Смещение −12dp: столько у обёртки панели
-        // нижнего отступа, то есть завеса начинается точно от края карточки, а
-        // не от края её невидимой обёртки.
-        Veil(Modifier.align(Alignment.TopStart).offset(y = panelH - 12.dp))
-        // ПОЛОСКА НАД ПАНЕЛЬЮ. Панель отстоит от верхнего края на 20dp, и в этот
-        // просвет пролезали обрывки содержимого — над карточкой читался
-        // заголовок «Подключиться по коду». Ничего полезного там нет: гасить
-        // нечего, просто фон, а сверху полосу обрезает край экрана.
-        Box(
-            Modifier
-                .align(Alignment.TopStart)
-                .offset(y = (-60).dp)
-                .fillMaxWidth()
-                .height(60.dp)
-                .background(Theme.bg),
-        )
+        // Гашение живёт НА САМОЙ карточке панели (floatHalo в PinnedPanel), а не
+        // отдельным слоем здесь: оно свойство блока, а не полоса рядом с ним.
+        // Порядок в Box и есть порядок отрисовки — панель поверх прокрутки.
         Box(Modifier.onSizeChanged { panelH = with(density) { it.height.toDp() } }) { panel() }
     }
 }
@@ -535,6 +602,8 @@ fun PinnedPanel(tint: Color, content: @Composable ColumnScope.() -> Unit) {
         Column(
             Modifier
                 .fillMaxWidth()
+                // Ореол — РАНЬШЕ отделки: рисуется под карточкой, а не поверх.
+                .floatHalo(22.dp)
                 // Рамка берёт цвет состояния: на «нет связи» контур красный.
                 .floatSurface(22.dp, tint.copy(alpha = 0.45f))
                 // Глушит тапы по пустым местам карточки: без этого палец

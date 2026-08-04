@@ -6,7 +6,7 @@
 // полке (app.slint), под большим пальцем.
 import { Theme } from "theme.slint";
 import { HostRow, Card, StatTile, PingTile, CopyTile, SectionLabel, Field,
-         Badge, StatusLine, StateChip, ShareButton, CalmButton, FloatCard } from "components.slint";
+         Badge, StatusLine, StateChip, ShareButton, CalmButton, FloatCard, FloatHalo } from "components.slint";
 import { IconShield, IconShieldCheck, IconShieldSlash, IconShieldLock, IconMask, IconLock, IconLockOpen,
          IconPeople, IconCopy, IconCheck, IconClose, IconQr, IconScan, IconPaste, IconArrowRight, IconChevronRight, IconChevronUp } from "icons.slint";
 import { ScrollView } from "std-widgets.slint";
@@ -414,6 +414,15 @@ export component VpnPage inherits Rectangle {
         // У ОБЁРТКИ НЕТ НИ ФОНА, НИ ТЕНИ — ровно затем, чтобы сквозь боковые
         // зазоры было видно, как список проходит насквозь. Фон и тень — только
         // у самой карточки (FloatCard), по её скруглённому контуру.
+        // Ореол панели — ОТДЕЛЬНЫМ СОСЕДОМ ПЕРЕД ней: в Slint дети рисуются над
+        // фоном родителя, а `z` нет вовсе, поэтому гашение может лежать под
+        // карточкой только раньше её в объявлении. Геометрия — ровно коробка
+        // карточки: отступ страницы сверху и с боков, 12 снизу.
+        FloatHalo {
+            x: Theme.pad; y: Theme.pad;
+            width: parent.width - 2 * Theme.pad;
+            height: parent.height - Theme.pad - 12px;
+        }
         panel-box := VerticalLayout {
             padding: Theme.pad;
             padding-bottom: 12px;
