@@ -75,6 +75,8 @@ fun HostTab(app: AppState, bottomPad: Dp) {
     // уходят ПОД неё (см. FloatingPanelLayout).
     FloatingPanelLayout(panel = {
     PinnedPanel(tint) {
+        val starting = app.starting
+        val err = app.hostError
         if (app.hosting) {
             rememberSecondTick()
             StatusLine(Icons.Filled.Router, "Раздаю", tint, uptimeText(app.hostStartedAt))
@@ -111,11 +113,11 @@ fun HostTab(app: AppState, bottomPad: Dp) {
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                HeroCircle(tint = tint, icon = Icons.Filled.Router, pulsing = app.starting)
+                HeroCircle(tint = tint, icon = Icons.Filled.Router, pulsing = starting)
                 Text(
                     when {
-                        app.starting -> "Запускаюсь…"
-                        app.hostError != null -> "Не удалось начать раздачу"
+                        starting -> "Запускаюсь…"
+                        err != null -> "Не удалось начать раздачу"
                         else -> "Раздача выключена"
                     },
                     color = Theme.fg, fontSize = 21.sp, fontWeight = FontWeight.ExtraBold,
@@ -123,11 +125,11 @@ fun HostTab(app: AppState, bottomPad: Dp) {
                 )
                 Text(
                     when {
-                        app.starting -> "Пробиваю канал наружу…"
-                        app.hostError != null -> app.hostError!!
+                        starting -> "Пробиваю канал наружу…"
+                        err != null -> err
                         else -> "Станьте выходной точкой для друзей"
                     },
-                    color = if (app.hostError != null && !app.starting) Theme.red else Theme.dim,
+                    color = if (err != null && !starting) Theme.red else Theme.dim,
                     fontSize = 13.sp, textAlign = androidx.compose.ui.text.style.TextAlign.Center,
                 )
             }
@@ -139,8 +141,9 @@ fun HostTab(app: AppState, bottomPad: Dp) {
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
             .padding(horizontal = 20.dp)
-            // Отступ РОВНО в высоту панели: содержимое начинается сразу под ней.
-            .padding(top = panelH + 12.dp, bottom = bottomPad),
+            // Отступ = высота панели плюс ОСТАТОК ЗАВЕСЫ (18 гашения − 12 нижней
+            // рамки, уже посчитанной в panelH). См. VpnTab.
+            .padding(top = panelH + 6.dp, bottom = bottomPad),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
         Text(

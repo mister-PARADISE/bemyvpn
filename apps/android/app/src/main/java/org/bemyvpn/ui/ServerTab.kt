@@ -54,8 +54,9 @@ fun ServerTab(app: AppState, bottomPad: androidx.compose.ui.unit.Dp) {
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
             .padding(horizontal = 20.dp)
-            // Отступ РОВНО в высоту панели: содержимое начинается сразу под ней.
-            .padding(top = panelH + 12.dp, bottom = bottomPad),
+            // Отступ = высота панели плюс ОСТАТОК ЗАВЕСЫ (18 гашения − 12 нижней
+            // рамки, уже посчитанной в panelH). См. VpnTab.
+            .padding(top = panelH + 6.dp, bottom = bottomPad),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
         Text(
@@ -115,10 +116,6 @@ private fun ServerHero(app: AppState) {
         if (app.serverOnline == true) Theme.accent else Theme.amber,
         tween(300), label = "srvTint",
     )
-    val icon = if (app.serverOnline == false) Icons.Filled.PortableWifiOff else Icons.Filled.SettingsInputAntenna
-    val statusText = when (app.serverOnline) {
-        true -> "На связи"; false -> "Нет связи — восстанавливаю…"; null -> "Проверяю связь…"
-    }
     // Та же линейка, что у пинга до хоста (см. pingTint в VpnTab).
     val pingColor = if (app.ping < 250) Theme.fg else if (app.ping <= 500) Theme.amber else Theme.red
     val addr = app.coordinator.removePrefix("https://").removePrefix("http://")
@@ -126,8 +123,9 @@ private fun ServerHero(app: AppState) {
     // Когда связь есть, круг уступает место цифрам: смотреть на большой значок
     // «всё хорошо» смысла нет, а панель висит на экране постоянно.
     PinnedPanel(tint) {
-        if (app.serverOnline == true) {
-            StatusLine(icon, statusText, tint)
+        val online = app.serverOnline
+        if (online == true) {
+            StatusLine(Icons.Filled.SettingsInputAntenna, "На связи", tint)
             Text(addr, color = Theme.dim, fontSize = 13.sp, fontFamily = FontFamily.Monospace)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 // Обычная плитка, а не кнопка: проверка идёт сама каждую секунду
@@ -142,8 +140,15 @@ private fun ServerHero(app: AppState) {
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                HeroCircle(tint = tint, icon = icon, pulsing = app.checking)
-                Text(statusText, color = Theme.fg, fontSize = 21.sp, fontWeight = FontWeight.ExtraBold, textAlign = TextAlign.Center)
+                HeroCircle(
+                    tint = tint,
+                    icon = if (online == false) Icons.Filled.PortableWifiOff else Icons.Filled.SettingsInputAntenna,
+                    pulsing = app.checking,
+                )
+                Text(
+                    if (online == false) "Нет связи — восстанавливаю…" else "Проверяю связь…",
+                    color = Theme.fg, fontSize = 21.sp, fontWeight = FontWeight.ExtraBold, textAlign = TextAlign.Center,
+                )
                 Text(addr, color = Theme.dim, fontSize = 13.sp, fontFamily = FontFamily.Monospace)
             }
         }

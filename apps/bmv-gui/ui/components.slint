@@ -325,20 +325,36 @@ export component FloatCard inherits Rectangle {
 ///
 /// На коротком списке невидим по построению: это фон страницы, растворяющийся в
 /// фоне страницы. Тенью посреди пустоты он стать не может.
+/// ЧИСЛА ВЫВЕДЕНЫ ИЗ ГЕОМЕТРИИ ВЫРЕЗА, А НЕ ПОДОБРАНЫ, И СЧИТАЮТСЯ ПО СВОЕМУ
+/// РАДИУСУ. Самая дальняя от контура точка выреза скруглённого угла — сам угол
+/// габаритной коробки, и он отстоит от дуги ровно на R·(√2−1): 9.11 у панели
+/// (R 22) и 11.60 у бара (R 28). Гашение, спадающее прямо от контура, в этой
+/// точке даёт уже половину яркости — вырез не вычистить, пока гашение не полное
+/// на этом расстоянии. Отсюда `solid` (плюс полпункта на округление); раньше
+/// здесь стояло плоское 12 — потолок обоих блоков, и панель гасила в полную силу
+/// на 20% дольше, чем ей нужно.
+///
+/// Для гауссианы «полное» = 3.09σ, а вся протяжённость = spread + blur, отсюда:
+///   solid + 5.09σ = veil,  spread = solid + 3.09σ,  blur = 2σ.
+/// Тень Slint размывает силуэт с σ = blur/2 и доходит наружу ровно на blur.
+/// При veil = 18: панель — spread 14.7, blur 3.3; бар — spread 15.7, blur 2.3.
 export component FloatHalo inherits Rectangle {
     /// Радиус скругления блока, который ореол обнимает.
     in property <length> radius: 22px;
     /// Блок прижат снизу (нав-бар) — «за блок» значит вниз, а не вверх.
     in property <bool> lift-up: false;
+    property <length> solid: root.radius * 0.4142136 + 0.5px;
+    property <length> sigma: (Theme.veil - root.solid) / 5.09;
+    property <length> spread: root.solid + 3.09 * root.sigma;
     Rectangle {
-        x: -Theme.halo-spread;
-        y: root.lift-up ? -Theme.halo-spread : -Theme.halo-back;
-        width: root.width + 2 * Theme.halo-spread;
-        height: root.height + Theme.halo-spread + Theme.halo-back;
+        x: -root.spread;
+        y: root.lift-up ? -root.spread : -Theme.halo-back;
+        width: root.width + 2 * root.spread;
+        height: root.height + root.spread + Theme.halo-back;
         // Раздутый контур блока: смещение наружу на d превращает скругление
         // радиуса R в скругление R + d — потому силуэт и повторяет форму.
-        border-radius: root.radius + Theme.halo-spread;
-        drop-shadow-blur: Theme.halo-blur;
+        border-radius: root.radius + root.spread;
+        drop-shadow-blur: 2 * root.sigma;
         drop-shadow-color: Theme.bg;
     }
 }
@@ -539,8 +555,9 @@ export component ShareButton inherits Rectangle {
     // парящей панели, а панель светлее карточек списка: увести кнопку на s1
     // значило бы посадить её НИЖЕ собственной подложки — в одной панели плитки
     // были бы над фоном, а кнопки под ним. Правило приложения одно: кнопка на
-    // поверхности — на ступень выше этой поверхности (так же покрашены
-    // «Сканировать QR» на карточке).
+    // поверхности — на ступень выше этой поверхности. Кнопки НА СТРАНИЦЕ
+    // («вставить», «перейти», «Сканировать QR» на телефонах) по тому же правилу
+    // стоят на s2 — все три на одной ступени.
     background: ta.has-hover ? Theme.tile.brighter(0.12) : Theme.tile;
     border-width: 1px;
     border-color: root.did ? Theme.edge-done(Theme.accent) : Theme.accent.with-alpha(0.24);

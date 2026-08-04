@@ -97,8 +97,11 @@ fun VpnTab(app: AppState, bottomPad: Dp, openScanner: () -> Unit) {
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
             .padding(horizontal = 20.dp)
-            // Отступ РОВНО в высоту панели: содержимое начинается сразу под ней.
-            .padding(top = panelH + 12.dp, bottom = bottomPad),
+            // Отступ = высота панели плюс ОСТАТОК ЗАВЕСЫ: панель меряется вместе
+            // со своей нижней рамкой в 12dp, а гашение уходит от контура на 18 —
+            // значит содержимому остаётся отступить ещё 6, чтобы покоиться ровно
+            // за краем гашения, а не в нём (подтенённым на пустом месте).
+            .padding(top = panelH + 6.dp, bottom = bottomPad),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
         UpdateBanner(app)
@@ -106,11 +109,16 @@ fun VpnTab(app: AppState, bottomPad: Dp, openScanner: () -> Unit) {
         SectionLabel("Подключиться по коду")
         CodeField(app, code, { code = it })
 
-        // «Сканировать QR» — как кнопка-плитка на iOS.
+        // «Сканировать QR» — ТА ЖЕ СТУПЕНЬ, ЧТО У ДВУХ КНОПОК КОДА (s2). Стояла
+        // на s3 и была самым светлым пятном страницы, хотя это не главное
+        // действие экрана. Ступень s1 («на ступень выше своей подложки», а
+        // подложка здесь — страница) не годится: рядом лежит поле кода, оно
+        // ровно на s1, и кнопка слилась бы с ним в одно пятно. Один экран —
+        // одна ступень для кнопки.
         Row(
             Modifier
                 .fillMaxWidth()
-                .background(Theme.tile, RoundedCornerShape(12.dp))
+                .background(Theme.cardHi, RoundedCornerShape(12.dp))
                 .border(1.dp, Theme.hairline, RoundedCornerShape(12.dp))
                 .pressable(onTap = openScanner)
                 .padding(vertical = 13.dp),
@@ -202,14 +210,14 @@ private fun CodeField(app: AppState, code: String, onCode: (String) -> Unit) {
             Icon(Icons.Filled.ContentPaste, null, Modifier.size(18.dp), tint = Theme.dim)
         }
         Box(
-            // Перейти — НА СТУПЕНЬ ВЫШЕ СОСЕДКИ. Мята отсюда снята: она обещает
-            // «работает/включено», а это просто переход. Но отделать главное
-            // действие строки ровно как вспомогательное «вставить» нельзя — в
-            // спешке промахнёшься. Поэтому здесь s3 (перепад к полю L* 11.2
-            // против 3.5 у «вставить»), а отделка та же тихая: ступень плюс
-            // кромка hairline.
+            // Перейти — ТА ЖЕ СТУПЕНЬ, ЧТО У «ВСТАВИТЬ» (s2). Мята отсюда снята:
+            // она обещает «работает/включено», а это просто переход. Ступень
+            // выше соседки тут тоже была лишней — на одном экране выходило три
+            // ступени кнопок; владелец посмотрел и выбрал одну. Старшинство
+            // несут ДРУГИЕ признаки, и их два: кнопка шире (52 против 44) и глиф
+            // в ней светлый (fg против dim у «вставить»).
             Modifier.size(width = 52.dp, height = 44.dp)
-                .background(Theme.tile, RoundedCornerShape(10.dp))
+                .background(Theme.cardHi, RoundedCornerShape(10.dp))
                 .border(1.dp, Theme.hairline, RoundedCornerShape(10.dp))
                 .pressable { val c = code; onCode(""); app.connectByCode(c) },
             contentAlignment = Alignment.Center,
@@ -258,34 +266,46 @@ private fun VpnHero(app: AppState, showInvite: (String) -> Unit) {
         when (app.vpnState) { 1 -> Theme.amber; 2 -> Theme.accent; else -> Theme.dim },
         tween(300), label = "vpnTint",
     )
-    val icon: ImageVector = when (app.vpnState) {
-        1 -> Icons.Filled.Shield
-        2 -> Icons.Filled.VerifiedUser
-        else -> Icons.Filled.RemoveModerator
-    }
-    val host = app.connectedTo?.let { app.hostById(it) }
-    val title = when (app.vpnState) {
-        // Уже были подключены и снова состояние 1 → это авто-реконнект (сменилась
-        // сеть), а не первый коннект. Показываем это честно.
-        1 -> if (app.connectedSince != null) "Переподключение…" else "Подключаюсь…"
-        2 -> host?.name ?: app.connectedTo ?: "Подключено"
-        else -> "VPN выключен"
-    }
+    // ПОСЛЕДНИЙ ИЗВЕСТНЫЙ хост, а не только живой: плитки с его цифрами уходят
+    // растворением, и гасить нужно ЕГО цифры, а не пустоту (`connectedTo`
+    // обнуляется в тот же миг, что и состояние).
+    val live = app.connectedTo?.let { app.hostById(it) }
+    val known = remember { mutableStateOf<Host?>(null) }
+    if (live != null) known.value = live
+    val host = known.value
 
     PinnedPanel(tint) {
-        if (app.vpnState == 2) {
+        val st = app.vpnState
+        val icon: ImageVector = when (st) {
+            1 -> Icons.Filled.Shield
+            2 -> Icons.Filled.VerifiedUser
+            else -> Icons.Filled.RemoveModerator
+        }
+        val title = when (st) {
+            // Уже были подключены и снова состояние 1 → это авто-реконнект (сменилась
+            // сеть), а не первый коннект. Показываем это честно.
+            1 -> if (app.connectedSince != null) "Переподключение…" else "Подключаюсь…"
+            2 -> host?.name ?: app.connectedTo ?: "Подключено"
+            else -> "VPN выключен"
+        }
+        if (st == 2) {
             // Подключено — круг уступает место пользе: сколько идёт, куда,
             // адрес хоста, гости и чем позвать друзей.
             StatusLine(Icons.Filled.VerifiedUser, title, tint, uptimeText(app.connectedSince))
-            if (host != null) {
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
-                    Text(countryLabel(host), color = Theme.dim, fontSize = 13.sp)
-                    Text("·", color = Theme.dim, fontSize = 13.sp)
-                    Icon(protoIcon(host.proto), null, Modifier.size(13.dp), tint = Theme.dim)
-                    Text(protoName(host.proto), color = Theme.dim, fontSize = 13.sp)
+            // Строка «страна · протокол» есть, только пока хост виден в каталоге
+            // (он может из него выпасть, а канал остаться). Переход у неё ЯВНЫЙ —
+            // растворение НА МЕСТЕ, без сдвига и без разъезжания соседей.
+            AnimatedVisibility(live != null, enter = fadeIn(tween(160)), exit = fadeOut(tween(140))) {
+                host?.let { h ->
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                        Text(countryLabel(h), color = Theme.dim, fontSize = 13.sp)
+                        Text("·", color = Theme.dim, fontSize = 13.sp)
+                        Icon(protoIcon(h.proto), null, Modifier.size(13.dp), tint = Theme.dim)
+                        Text(protoName(h.proto), color = Theme.dim, fontSize = 13.sp)
+                    }
                 }
             }
-            ConnectedExtras(app, showInvite)
+            ConnectedExtras(host, live != null, app.connectedTo.orEmpty(), showInvite)
         } else {
             // Показывать нечего, кроме статуса — круг честно занимает место.
             Column(
@@ -293,12 +313,12 @@ private fun VpnHero(app: AppState, showInvite: (String) -> Unit) {
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                HeroCircle(tint = tint, icon = icon, pulsing = app.vpnState == 1)
+                HeroCircle(tint = tint, icon = icon, pulsing = st == 1)
                 Text(
                     title, color = Theme.fg, fontSize = 21.sp, fontWeight = FontWeight.ExtraBold,
                     maxLines = 1, overflow = TextOverflow.Ellipsis,
                 )
-                if (app.vpnState == 1) {
+                if (st == 1) {
                     Text(host?.name ?: "Пробиваю канал к хосту", color = Theme.dim, fontSize = 13.sp, textAlign = TextAlign.Center)
                 } else {
                     val n = app.displayedHosts().size
@@ -312,9 +332,17 @@ private fun VpnHero(app: AppState, showInvite: (String) -> Unit) {
                 // статуса ядра его затирает (или оставляет навсегда). Красный —
                 // только для настоящего отказа; штатно завершённая раздача идёт
                 // тем же приглушённым цветом, что и строка над ней.
-                app.vpnError?.let { err ->
+                //
+                // Строка живёт своей жизнью — сама гаснет через пять секунд, без
+                // смены состояния, — поэтому переход у неё ЯВНЫЙ: растворение НА
+                // МЕСТЕ. Текст запоминается: иначе на выходе гасить было бы
+                // нечего, строка пропала бы рывком.
+                val err = app.vpnError
+                val lastErr = remember { mutableStateOf("") }
+                if (err != null) lastErr.value = err
+                AnimatedVisibility(err != null, enter = fadeIn(tween(160)), exit = fadeOut(tween(140))) {
                     Text(
-                        err,
+                        lastErr.value,
                         color = if (app.vpnNoticeCalm) Theme.dim else Theme.red,
                         fontSize = 13.sp,
                         textAlign = TextAlign.Center,
@@ -326,18 +354,20 @@ private fun VpnHero(app: AppState, showInvite: (String) -> Unit) {
 }
 
 @Composable
-private fun ConnectedExtras(app: AppState, showInvite: (String) -> Unit) {
-    val host = app.connectedTo?.let { app.hostById(it) }
-    // Живая инфа о хосте: IP (копируется тапом) + сколько сейчас гостей.
-    if (host != null) {
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            CopyTile("IP ХОСТА", host.ip.ifEmpty { "—" }, Modifier.weight(1f))
-            StatTile("ГОСТЕЙ", "${host.guests} / ${host.max}", Modifier.weight(1f), symbol = Icons.Filled.People)
+private fun ConnectedExtras(host: Host?, live: Boolean, code: String, showInvite: (String) -> Unit) {
+    // Живая инфа о хосте: IP (копируется тапом) + сколько сейчас гостей. Есть,
+    // только пока хост виден в каталоге, — отсюда явное растворение НА МЕСТЕ.
+    AnimatedVisibility(live && host != null, enter = fadeIn(tween(160)), exit = fadeOut(tween(140))) {
+        host?.let { h ->
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                CopyTile("IP ХОСТА", h.ip.ifEmpty { "—" }, Modifier.weight(1f))
+                StatTile("ГОСТЕЙ", "${h.guests} / ${h.max}", Modifier.weight(1f), symbol = Icons.Filled.People)
+            }
         }
     }
     // Поделиться сетью — В НИЗУ панели, прямо под тем, что копируют.
-    app.connectedTo?.let { id ->
-        ShareButtons(id, showInvite)
+    if (code.isNotEmpty()) {
+        ShareButtons(code, showInvite)
         Text(
             "Позвать друзей в эту же сеть", color = Theme.dim, fontSize = 11.sp,
             textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth(),

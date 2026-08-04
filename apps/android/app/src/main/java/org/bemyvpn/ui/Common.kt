@@ -1,7 +1,8 @@
 package org.bemyvpn.ui
 
-import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.EaseOut
+import androidx.compose.animation.core.VectorConverter
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
@@ -37,6 +38,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -48,6 +50,8 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.BlendMode
+import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -71,10 +75,12 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.scale
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Dp
@@ -423,7 +429,7 @@ fun BmvTextField(
  * НЕГО — покоящееся содержимое не должно попадать в зону гашения, иначе оно
  * выглядит подтенённым на пустом месте.
  */
-val veilWidth = 24.dp
+val veilWidth = 18.dp   // было 24, укорочено на четверть по просьбе владельца
 
 /**
  * Насколько ореол уходит ЗА блок, к ближнему краю экрана. Блок прижат к краю, но
@@ -437,14 +443,20 @@ private val haloBack = 200.dp
 /**
  * Сплошная часть ореола: до неё гашение ПОЛНОЕ, дальше сходит на нет к `veilWidth`.
  *
- * ЧИСЛО НЕ ИЗ ВКУСА, А ИЗ ГЕОМЕТРИИ ВЫРЕЗА. Самая дальняя от контура точка выреза
- * скруглённого угла — сам угол габаритной коробки, и он отстоит от дуги на
- * R·(√2−1): 9.1 при радиусе панели 22 и 11.6 при радиусе бара 28. Гашение,
- * которое начинает спадать прямо от контура, в этой точке даёт уже половину
- * яркости — то есть вырез принципиально не вычистить, пока сплошная часть не
- * перекрывает его целиком. 12 перекрывает оба с запасом.
+ * ЧИСЛО НЕ ИЗ ВКУСА, А ИЗ ГЕОМЕТРИИ ВЫРЕЗА, И ТЕПЕРЬ ОНО ЕЙ И СЧИТАЕТСЯ. Самая
+ * дальняя от контура точка выреза скруглённого угла — сам угол габаритной
+ * коробки, и он отстоит от дуги ровно на R·(√2−1): 9.11 при радиусе панели 22 и
+ * 11.60 при радиусе бара 28. Гашение, которое начинает спадать прямо от контура,
+ * в этой точке даёт уже половину яркости — вырез принципиально не вычистить,
+ * пока сплошная часть не перекрывает его ЦЕЛИКОМ.
+ *
+ * Раньше здесь стояло плоское 12 — потолок из двух блоков, взятый с запасом.
+ * Теперь считается по своему радиусу: панели хватает 9.61, бару нужно 12.10.
+ * Панель от этого гасит на 20% короче в полную силу — ровно та «менее
+ * интенсивная» часть, которую просили; бару уступить нечего, его 11.60 и есть
+ * физический предел. Полпункта сверху — запас на округление до пикселя.
  */
-private val haloSolid = 12.dp
+private fun haloSolid(radius: Dp) = radius * 0.4142136f + 0.5.dp
 
 /**
  * ГАШЕНИЕ — ОРЕОЛ ПО КОНТУРУ БЛОКА, А НЕ ПОЛОСА РЯДОМ С НИМ. Вешается на ТОТ ЖЕ
@@ -470,7 +482,7 @@ fun Modifier.floatHalo(radius: Dp, up: Boolean = false): Modifier = this.drawBeh
     // Нав-бар — тот же ореол, отражённый по вертикали: форма симметрична, и
     // вторая система координат ради этого не нужна.
     scale(1f, if (up) -1f else 1f, pivot = Offset(size.width / 2f, size.height / 2f)) {
-        panelHalo(radius.toPx(), veilWidth.toPx(), haloSolid.toPx(), haloBack.toPx())
+        panelHalo(radius.toPx(), veilWidth.toPx(), haloSolid(radius).toPx(), haloBack.toPx())
     }
 }
 
@@ -578,9 +590,82 @@ fun FloatingPanelLayout(
     }
 }
 
+// ── Плавная высота панели ────────────────────────────────────────────────────
+
+/** Сколько едет высота панели. Столько же на iOS и в окне. */
+private const val PANEL_H_MS = 170
+
+/**
+ * Зона растворения у нижней кромки панели — РОВНО её нижний внутренний отступ.
+ * В покое там пусто, поэтому маска в покое не видна: замер низа панели до и
+ * после её появления совпал.
+ */
+private val panelFade = 16.dp
+
+/**
+ * ПЛАВНАЯ ВЫСОТА. Содержимое меряется ЦЕЛИКОМ (обычными входными
+ * ограничениями), наружу отдаётся едущая высота — то, что пока не поместилось,
+ * гасит маска (см. `fadeBottom`), а не нож.
+ *
+ * `animateContentSize` для этого не годится: он НАЧИНАЕТСЯ с `clipToBounds()`,
+ * то есть режет содержимое жёстким краем по едущему размеру. Ровно оттого слово
+ * «Старт» и разрезало пополам.
+ *
+ * `onSizeChanged` стоит ПОСЛЕ `layout` в цепочке, то есть меряет содержимое, а
+ * не то, что мы отдали наружу: обратной связи «отдали меньше → содержимое
+ * сжалось» не возникает.
+ */
+private fun Modifier.smoothHeight(): Modifier = composed {
+    var natural by remember { mutableIntStateOf(-1) }
+    val h = remember { Animatable(0, Int.VectorConverter) }
+    LaunchedEffect(natural) {
+        if (natural < 0) return@LaunchedEffect
+        // Первая высота встаёт мгновенно: ехать от нуля значило бы ронять панель
+        // сверху при каждом запуске.
+        if (h.value == 0) h.snapTo(natural) else h.animateTo(natural, tween(PANEL_H_MS))
+    }
+    this
+        .layout { measurable, constraints ->
+            val p = measurable.measure(constraints)
+            layout(p.width, if (h.value == 0) p.height else h.value) { p.place(0, 0) }
+        }
+        .onSizeChanged { natural = it.height }
+}
+
+/**
+ * МАСКА ВМЕСТО НОЖА: последние `panelFade` высоты растворяются в прозрачность.
+ *
+ * Вешается на узел, который ВКЛЮЧАЕТ нижний отступ панели, — тогда зона
+ * растворения приходится ровно на этот отступ, где в покое ничего нет. Пока
+ * высота едет, строка, ещё не поместившаяся в карточку, не обрывается краем, а
+ * проявляется сквозь растворение.
+ *
+ * `Offscreen` здесь обязателен: без него `DstIn` смешивался бы со всем, что уже
+ * нарисовано в родительском слое, а не только с содержимым панели.
+ */
+private fun Modifier.fadeBottom(): Modifier = this
+    .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
+    .drawWithContent {
+        drawContent()
+        val fade = panelFade.toPx()
+        drawRect(
+            Brush.verticalGradient(
+                listOf(Color.Black, Color.Transparent),
+                startY = size.height - fade,
+                endY = size.height,
+            ),
+            blendMode = BlendMode.DstIn,
+        )
+    }
+
 /**
  * Обёртка парящей панели: карточка состояния, лежащая НАД прокруткой
  * (см. FloatingPanelLayout).
+ *
+ * Содержимое подменяется МГНОВЕННО — гашения начинки здесь нет и не должно
+ * быть. Пробовали: панель на время переезда оставалась пустой, и мигание блока
+ * во весь верх экрана заметнее того рывка, ради которого всё затевалось. Едет
+ * ТОЛЬКО высота, а лишнее у нижней кромки снимает маска (`fadeBottom`).
  */
 @Composable
 fun PinnedPanel(tint: Color, content: @Composable ColumnScope.() -> Unit) {
@@ -609,14 +694,19 @@ fun PinnedPanel(tint: Color, content: @Composable ColumnScope.() -> Unit) {
                 // Прокрутке не мешает — при протяжке жест выигрывает скролл, а
                 // кнопки внутри панели перехватывают тап раньше, чем сюда.
                 .tappable {}
+                // Высота едет ЗДЕСЬ, выше отступов и ниже отделки: карточка,
+                // рамка и ореол берут размер отсюда и едут вместе с ней, а
+                // `FloatingPanelLayout` меряет эту же коробку — значит и верхний
+                // отступ прокрутки едет в ногу, без подскока содержимого.
+                // МАСКА — СТРОГО ПЕРЕД `smoothHeight`, И ЭТО НЕ ВКУСОВЩИНА.
+                // Модификатор рисования видит размер того, что стоит ПОСЛЕ него:
+                // за `smoothHeight` он получил бы натуральную высоту содержимого,
+                // растворял бы его собственный низ и не обрезал ничего — на
+                // кадрах текст торчал из карточки (5 кадров из 40). Перед ним —
+                // видит едущую высоту, ту же, что карточка и ореол.
+                .fadeBottom()
+                .smoothHeight()
                 .padding(vertical = 16.dp, horizontal = 18.dp),
-            // БЕЗ `animateContentSize()`. Смена состояния меняет высоту панели
-            // (у ветки со связью — цифры, без связи — крупный круг и текст в две
-            // строки), а `animateContentSize` тянет эту высоту плавно И ОБРЕЗАЕТ
-            // содержимое по текущему размеру. На записи видно, как нижняя строка
-            // статуса («Старт») режется краем панели пополам и проявляется
-            // постепенно. Панель висит на экране постоянно, статус в ней должен
-            // меняться НА МЕСТЕ и целиком — как на iOS и на десктопе.
             verticalArrangement = Arrangement.spacedBy(8.dp),
             content = content,
         )

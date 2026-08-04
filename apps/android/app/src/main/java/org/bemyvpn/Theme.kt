@@ -95,7 +95,7 @@ object Theme {
     val card   = Color(0xFF15181D)                // s1 — карточка списка, поле ввода, кнопка «поделиться»
     val cardHi = Color(0xFF1B1F25)                // s2 — раскрытая карточка, чип
     val tile   = Color(0xFF2A2F39)                // s3 — плитка внутри панели или карточки
-    val float  = Color(0xFF1F242B)                // парящее: панель состояния и нав-бар
+    val float  = Color(0xFF232930)                // парящее: панель состояния и нав-бар
     val accent = Color(0xFF2FE0A8)                // мята: и «это можно нажать», и «это работает»
     val fg     = Color(0xFFEDF1F8)                // основной текст
     val dim    = Color(0xFFA5AAB5)                // второстепенный текст и «выключено»

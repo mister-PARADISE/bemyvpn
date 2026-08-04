@@ -92,7 +92,7 @@ enum Theme {
     static let card   = Color(hex: 0x15181D)      // s1 — карточка списка, поле ввода, кнопка «поделиться»
     static let cardHi = Color(hex: 0x1B1F25)      // s2 — раскрытая карточка, чип
     static let tile   = Color(hex: 0x2A2F39)      // s3 — плитка внутри панели или карточки
-    static let float  = Color(hex: 0x1F242B)      // парящее: панель состояния и нав-бар
+    static let float  = Color(hex: 0x232930)      // парящее: панель состояния и нав-бар
     static let accent = Color(hex: 0x2FE0A8)      // мята: и «это можно нажать», и «это работает»
     static let fg     = Color(hex: 0xEDF1F8)      // основной текст
     static let dim    = Color(hex: 0xA5AAB5)      // второстепенный текст и «выключено»

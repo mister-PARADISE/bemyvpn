@@ -282,12 +282,12 @@ struct StateDisc<Icon: View>: View {
         ZStack {
             if pulsing {
                 // Фаза волны считается от ЧАСОВ, а не от анимации состояния.
-                // Диск живёт внутри прижатой панели, а та гасит анимацию у всего
-                // поддерева (см. PinnedPanel) — и `withAnimation`, и
-                // `.animation(_:value:)` там просто не проигрываются, кольцо
-                // замирало бы на первом кадре. TimelineView от транзакций не
-                // зависит вовсе. Ровно так же пульс сделан на десктопе
-                // (animation-tick) и на Android (rememberInfiniteTransition).
+                // Так пульс сделан и на десктопе (animation-tick), и на Android
+                // (rememberInfiniteTransition) — одна механика на три оболочки.
+                // Запрета анимаций в панели больше нет (см. PinnedPanel), то
+                // есть обычный `.repeatForever` здесь бы тоже завёлся; менять
+                // не на что: от часов волна идёт ровно так же, а лишнего
+                // состояния и перезапуска при смене `pulsing` не требует.
                 TimelineView(.animation) { ctx in
                     let t = ctx.date.timeIntervalSinceReferenceDate
                         .truncatingRemainder(dividingBy: 1.2) / 1.2
@@ -333,11 +333,6 @@ private struct TileBody<Trailing: View>: View {
                         // «38 мс» ширина разная — строка здесь центрируется, и
                         // значение дёргалось влево-вправо на каждом замере.
                         .monospacedDigit()
-                        // Значение меняется НА МЕСТЕ. Без этого SwiftUI, когда в
-                        // области видимости есть любая анимация, растворяет
-                        // старый текст в новый; вместе с перецентровкой это и
-                        // читается как «уехал вправо и исчез».
-                        .contentTransition(.identity)
                         .lineLimit(1).minimumScaleFactor(0.6)
                 }
                 trailing
@@ -479,10 +474,49 @@ struct StateChip: View {
 struct PinnedPanel<Content: View>: View {
     let tint: Color
     @ViewBuilder let content: Content
+    /// Высота содержимого по замеру. `nil` — ещё не мерили: панель встаёт своей
+    /// высотой, без «разворачивания» на запуске.
+    @State private var h: CGFloat? = nil
     var body: some View {
         VStack(spacing: 8) { content }
             .frame(maxWidth: .infinity)
             .padding(.vertical, 16).padding(.horizontal, 18)
+            // СОДЕРЖИМОЕ ВСЕГДА СЧИТАЕТ СВОЮ ВЫСОТУ, а не ту, что предлагает
+            // зажатая рамка ниже по цепочке, — иначе замер зациклится сам на
+            // себя: рамка сжимает, замер видит сжатое, рамка сжимает ещё.
+            .fixedSize(horizontal: false, vertical: true)
+            .background(GeometryReader { g in
+                // ПЕРВЫЙ замер — без плавности и ТОЛЬКО первый: если сюда
+                // прилетит готовая высота в обход анимации, панель прыгнет.
+                Color.clear.onAppear { if h == nil { h = g.size.height } }
+                    // Плавность — транзакцией на самом присвоении. Модификатор
+                    // `.animation(_:value:)` на рамке эту смену не ловит: замер
+                    // приходит из прохода разметки (проверено на записи — высота
+                    // менялась за ОДИН кадр).
+                    .onChange(of: g.size.height) { new in
+                        if h == nil { h = new }
+                        else { withAnimation(.easeInOut(duration: 0.18)) { h = new } }
+                    }
+            })
+            // ЕДЕТ ИМЕННО РАЗМЕТОЧНАЯ ВЫСОТА, а не только нарисованная. Это и
+            // держит содержимое под панелью: она подвешена через
+            // `safeAreaInset`, и верхний отступ прокрутки считается от этой
+            // рамки — замер по записи: зазор 90–92px во всё время хода.
+            .frame(height: h, alignment: .top)
+            // КРОМКА НЕ РЕЖЕТ, А ГАСИТ. Пока рамка догоняет выросшее содержимое,
+            // лишнее нельзя выпускать на фон страницы — но и обрубать его
+            // жёстко нельзя: на записи было видно, как нижний край панели режет
+            // пополам слова на кнопках («Скопировать», «QR-код»). Ровно на это
+            // жаловались на Android. Поэтому вместо `.clipped()` — маска с
+            // растворением на последних 16pt рамки.
+            //
+            // В ПОКОЕ НА ВИД НЕ МЕНЯЕТСЯ НИЧЕГО: там ровно те же 16pt пустого
+            // вертикального отступа панели, гасить в них нечего.
+            .mask(VStack(spacing: 0) {
+                Color.black
+                LinearGradient(colors: [.black, .clear], startPoint: .top, endPoint: .bottom)
+                    .frame(height: 16)
+            })
             // ОТДЕЛКА — ТА ЖЕ, ЧТО У НАВ-БАРА (floatSurface): два парящих слоя
             // должны читаться одним языком. Тень навешена ВНУТРИ `.background`,
             // на саму фигуру: снаружи она легла бы и на текст панели.
@@ -498,26 +532,21 @@ struct PinnedPanel<Content: View>: View {
             // Прибавка снята с верхнего отступа вкладок, поэтому на вид не
             // изменилось ничего.
             .padding(.horizontal, 20).padding(.top, 20).padding(.bottom, veilWidth)
-            // Смена состояния меняет ЦЕЛУЮ ВЕТКУ разметки (при связи — цифры, без
-            // связи — крупный круг), а SwiftUI играет такую подмену переходом по
-            // умолчанию: старая ветка растворяется, новая проявляется, и надпись
-            // статуса едет вбок из строки в центр и обратно. Гасим анимацию для
-            // всей панели — и ту, что задавали модификатором на месте вызова, и
-            // ту, что приходит транзакцией снаружи (в AppState добрая половина
-            // переключений состояния завёрнута в `withAnimation`).
+            // ЦВЕТ СОСТОЯНИЯ ПЕРЕТЕКАЕТ, а не переключается: кольцо панели, знак
+            // и подписи меняют цвет тем же ходом и за то же время, что и высота.
+            // Ключ — сам `tint`: это и есть состояние, покрашенное в цвет
+            // (выключено — dim, идёт процесс — amber, работает — accent, отказ —
+            // red). Пинг и часы обновляются раз в секунду, `tint` от этого не
+            // меняется — панель на них не шевелится.
             //
-            // Модификатор стоит ПОСЛЕДНИМ намеренно: раньше он накрывал только
-            // содержимое, и рамка в цвет состояния продолжала переливаться
-            // отдельно от текста. `.background` навешен выше по
-            // цепочке, так что накрыть его можно только снаружи.
-            //
-            // Гасится ВСЁ поддерево, без исключений: перебить это изнутри своим
-            // `.animation(_:value:)` не выходит — проверено на пульсе круга, он
-            // замирал. Поэтому всё, что внутри панели обязано продолжать
-            // двигаться, привязано не к анимации состояния, а к часам
-            // (`TimelineView` в HeroCircle). Вспышка «Скопировано» у плиток
-            // внутри панели теперь просто мгновенная — ровно то, что и просили.
-            .transaction { $0.animation = nil }
+            // Разметку это НЕ трогает: у обеих веток явный
+            // `.transition(.identity)` (см. VPNHero/HostTab/ServerTab) — они
+            // меняются мгновенно и на месте. Растворять ветку в ветку внутри
+            // стопки нельзя: на время перехода в ней лежали бы ОБЕ разметки,
+            // высота подскакивала бы до суммы, а надпись статуса ехала бы вбок
+            // из строки в центр — ровно та жалоба, из-за которой анимацию тут
+            // когда-то запретили целиком.
+            .animation(.easeInOut(duration: 0.18), value: tint)
     }
 }
 
@@ -680,18 +709,28 @@ func sectionLabel(_ t: String) -> some View {
 /// Вылет гашения от контура парящего блока наружу. Отступы прокрутки считаются
 /// ОТ НЕГО — покоящееся содержимое не должно попадать в зону гашения, иначе оно
 /// выглядит подтенённым на пустом месте.
-let veilWidth: CGFloat = 24
+/// БЫЛО 24, УКОРОЧЕНО НА ЧЕТВЕРТЬ по просьбе владельца.
+let veilWidth: CGFloat = 18
 
 /// Сплошная часть ореола: до неё гашение ПОЛНОЕ, дальше сходит на нет к
 /// `veilWidth`.
 ///
-/// ЧИСЛО НЕ ИЗ ВКУСА, А ИЗ ГЕОМЕТРИИ ВЫРЕЗА. Самая дальняя от контура точка
-/// выреза скруглённого угла — сам угол габаритной коробки, и он отстоит от дуги
-/// на R·(√2−1): 9.1 при радиусе панели 22 и 11.6 при радиусе бара 28. Гашение,
-/// которое начинает спадать прямо от контура, в этой точке даёт уже половину
-/// яркости — то есть вырез принципиально не вычистить, пока сплошная часть не
-/// перекрывает его целиком. 12 перекрывает оба с запасом.
-let haloSolid: CGFloat = 12
+/// ЧИСЛО НЕ ИЗ ВКУСА, А ИЗ ГЕОМЕТРИИ ВЫРЕЗА, И ТЕПЕРЬ ОНО ЕЙ И СЧИТАЕТСЯ. Самая
+/// дальняя от контура точка выреза скруглённого угла — сам угол габаритной
+/// коробки, и он отстоит от дуги ровно на R·(√2−1): 9.11 при радиусе панели 22 и
+/// 11.60 при радиусе бара 28. Гашение, которое начинает спадать прямо от
+/// контура, в этой точке даёт уже половину яркости — вырез принципиально не
+/// вычистить, пока сплошная часть не перекрывает его ЦЕЛИКОМ.
+///
+/// Раньше здесь стояло плоское 12 — потолок из двух блоков, взятый с запасом.
+/// Теперь считается по своему радиусу: панели хватает 9.61, бару нужно 12.10.
+/// Панель от этого гасит на 20% короче в полную силу — ровно та «менее
+/// интенсивная» часть, которую просили; бару уступить нечего, его 11.60 и есть
+/// физический предел.
+///
+/// Полпункта сверху — запас на округление до пикселя (у прежнего плоского 12
+/// запас у бара был 0.4, тот же порядок).
+func haloSolid(_ radius: CGFloat) -> CGFloat { radius * 0.4142136 + 0.5 }
 /// Насколько ореол уходит ЗА блок, к ближнему краю экрана. Блок прижат к краю,
 /// но не вплотную; в этот просвет содержимое пролезало и обрывалось о край
 /// экрана. Ореол закрывает просвет ТЕМ ЖЕ силуэтом — одна форма, без второго
@@ -751,8 +790,8 @@ func floatSurface(radius: CGFloat, stroke: Color, up: Bool = false) -> some View
 ///
 /// СОБРАН ИЗ ГРАДИЕНТОВ, А НЕ ИЗ РАЗМЫТИЯ. Размытие даёт гауссиану: у неё нет
 /// сплошной части, поэтому вырез угла ею не вычистить (см. `haloSolid`) — а
-/// вычистить его и есть задача. Градиенты дают ТОЧНЫЙ ход: сплошное до 12,
-/// линейно на нет к 24.
+/// вычистить его и есть задача. Градиенты дают ТОЧНЫЙ ход: сплошное до
+/// `haloSolid(radius)` (9.61 у панели, 12.10 у бара), линейно на нет к 18.
 ///
 /// Холст растянут за коробку блока отрицательными отступами: `Canvas` режет по
 /// своим границам, поэтому границы и должны включать весь вылет.
@@ -769,7 +808,7 @@ func floatHalo(radius: CGFloat, up: Bool) -> some View {
             ctx.scaleBy(x: 1, y: -1)
         }
         let clear = Theme.bg.opacity(0)   // прозрачный ФОН, а не прозрачный чёрный
-        let v = veilWidth, s = haloSolid, r = radius
+        let v = veilWidth, s = haloSolid(radius), r = radius
         // Коробка самого блока внутри холста.
         let x0 = v, y0 = haloBack
         let w = size.width - 2 * v, h = size.height - haloBack - v
@@ -817,10 +856,10 @@ func floatHalo(radius: CGFloat, up: Bool) -> some View {
 
 // Ниже плавает нав-бар; он приподнят над краем на 42pt (было 34), поэтому
 // отступ подрос на ту же величину — иначе последняя карточка пряталась бы.
-// 114 = 104 + 10: покоящееся содержимое кончалось в 15pt над баром, а завеса
-// над баром теперь 24pt — без прибавки последняя карточка гасла бы, стоя на
-// месте.
-extension View { func navPadding() -> some View { self.padding(.bottom, 114) } }
+// Правило: низ ПОКОЯЩЕГОСЯ содержимого = верх завесы нав-бара, иначе последняя
+// карточка гасла бы, стоя на месте. 108 = 104 + 4 при завесе `veilWidth` 18
+// (было 114 = 104 + 10 при завесе 24).
+extension View { func navPadding() -> some View { self.padding(.bottom, 108) } }
 /// Главная кнопка — ОДНА НА ВСЁ ПРИЛОЖЕНИЕ, спокойная: подкраска + рамка +
 /// цветной текст, тот же приём, что у ShareButtons и у действующей ячейки
 /// нав-бара.
@@ -957,37 +996,44 @@ struct ServerTab: View {
     /// на большой значок «всё хорошо» смысла нет.
     private var hero: some View {
         PinnedPanel(tint: tint) {
+            // Ветка — одна вьюха, меняется мгновенно; едет только высота панели
+            // (см. PinnedPanel).
             if app.serverOnline == true {
-                StatusLine(icon: icon, title: statusText, tint: tint)
-                Text(addr).foregroundColor(Theme.dim).font(.system(size: 13, design: .monospaced))
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                HStack(spacing: 8) {
-                    // Обычная плитка, а не кнопка: проверка идёт сама каждую секунду
-                    // секунды, и нажатие экономило бы в лучшем случае их же.
-                    StatTile(label: "ПИНГ", value: "\(app.ping) мс", tint: pingColor)
-                    StatTile(label: "ХОСТОВ", value: "\(app.hosts.count)")
-                }
-                CopyTile(label: "ВАШ IP", value: app.myIp.isEmpty ? "—" : app.myIp)
-                // Когда туннель поднят, замер до координатора идёт ИЗНУТРИ него:
-                // это сокет приложения, а приложение с устройства ходит через
-                // свой же VPN. То есть цифра — «туннель + координатор», а не путь
-                // до сервера, о котором человек думает, глядя на слово «ПИНГ».
-                // (Сигналинг при этом идёт сокетом расширения, мимо туннеля, —
-                // тем более незачем выдавать этот замер за путь до сервера.)
-                // Условие именно `TunnelManager.available`: на симуляторе
-                // туннеля нет, поднят только канал, и приписка была бы враньём.
-                // На Android такой подписи нет и не нужно: там приложение
-                // исключено из туннеля целиком, и цифра честная сама по себе.
-                if app.vpnState == 2 && TunnelManager.available {
-                    Text("Пинг измерен через туннель — в него входит и путь до хоста")
-                        .foregroundColor(Theme.dim.opacity(0.7)).font(.system(size: 11))
-                        .multilineTextAlignment(.center)
-                }
+                VStack(spacing: 8) {
+                    StatusLine(icon: icon, title: statusText, tint: tint)
+                    Text(addr).foregroundColor(Theme.dim).font(.system(size: 13, design: .monospaced))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    HStack(spacing: 8) {
+                        // Обычная плитка, а не кнопка: проверка идёт сама каждую секунду
+                        // секунды, и нажатие экономило бы в лучшем случае их же.
+                        StatTile(label: "ПИНГ", value: "\(app.ping) мс", tint: pingColor)
+                        StatTile(label: "ХОСТОВ", value: "\(app.hosts.count)")
+                    }
+                    CopyTile(label: "ВАШ IP", value: app.myIp.isEmpty ? "—" : app.myIp)
+                    // Когда туннель поднят, замер до координатора идёт ИЗНУТРИ него:
+                    // это сокет приложения, а приложение с устройства ходит через
+                    // свой же VPN. То есть цифра — «туннель + координатор», а не путь
+                    // до сервера, о котором человек думает, глядя на слово «ПИНГ».
+                    // (Сигналинг при этом идёт сокетом расширения, мимо туннеля, —
+                    // тем более незачем выдавать этот замер за путь до сервера.)
+                    // Условие именно `TunnelManager.available`: на симуляторе
+                    // туннеля нет, поднят только канал, и приписка была бы враньём.
+                    // На Android такой подписи нет и не нужно: там приложение
+                    // исключено из туннеля целиком, и цифра честная сама по себе.
+                    if app.vpnState == 2 && TunnelManager.available {
+                        Text("Пинг измерен через туннель — в него входит и путь до хоста")
+                            .foregroundColor(Theme.dim.opacity(0.7)).font(.system(size: 11))
+                            .multilineTextAlignment(.center)
+                            .transition(.opacity)
+                    }
+                }.transition(.identity)
             } else {
-                HeroCircle(icon: icon, tint: tint, pulsing: app.checking)
-                Text(statusText).foregroundColor(Theme.fg).font(.system(size: 21, weight: .heavy))
-                    .multilineTextAlignment(.center)
-                Text(addr).foregroundColor(Theme.dim).font(.system(size: 13, design: .monospaced))
+                VStack(spacing: 8) {
+                    HeroCircle(icon: icon, tint: tint, pulsing: app.checking)
+                    Text(statusText).foregroundColor(Theme.fg).font(.system(size: 21, weight: .heavy))
+                        .multilineTextAlignment(.center)
+                    Text(addr).foregroundColor(Theme.dim).font(.system(size: 13, design: .monospaced))
+                }.transition(.identity)
             }
         }
     }
@@ -1053,28 +1099,35 @@ struct VPNTab: View {
                             .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Theme.cardHi)
                                 .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(Theme.hairline, lineWidth: 1)))
                     }
-                    // Перейти — НА СТУПЕНЬ ВЫШЕ СОСЕДКИ. Мята отсюда снята: она
-                    // обещает «работает/включено», а это просто переход. Но
-                    // отделать главное действие строки ровно как вспомогательное
-                    // «вставить» нельзя — в спешке промахнёшься. Поэтому здесь s3
-                    // (перепад к полю L* 11.2 против 3.5 у «вставить»), а отделка
-                    // та же тихая: ступень плюс кромка hairline.
+                    // Перейти — ТА ЖЕ СТУПЕНЬ, ЧТО У «ВСТАВИТЬ» (s2). Мята отсюда
+                    // снята: она обещает «работает/включено», а это просто
+                    // переход. Ступень выше соседки тут тоже была лишней — на
+                    // одном экране выходило три ступени кнопок; владелец
+                    // посмотрел и выбрал одну. Старшинство несут ДРУГИЕ признаки,
+                    // и их два: кнопка шире (52 против 44) и глиф в ней светлый
+                    // (fg против dim у «вставить»).
                     Button { let c = code; code = ""; app.connectByCode(c) } label: {
                         Image(systemName: "arrow.right").font(.system(size: 21, weight: .bold))
                             .foregroundColor(Theme.fg).frame(width: 52, height: 44)
-                            .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Theme.tile)
+                            .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Theme.cardHi)
                                 .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(Theme.hairline, lineWidth: 1)))
                     }
                 }
                 .padding(5).background(Theme.card).cornerRadius(14)
 
+                // «Сканировать QR» — ТА ЖЕ СТУПЕНЬ, ЧТО У ДВУХ КНОПОК КОДА (s2).
+                // Стояла на s3 и была самым светлым пятном страницы, хотя это не
+                // главное действие экрана. Ступень s1 («на ступень выше своей
+                // подложки», а подложка здесь — страница) не годится: рядом лежит
+                // поле кода, оно ровно на s1, и кнопка слилась бы с ним в одно
+                // пятно. Один экран — одна ступень для кнопки.
                 Button { showScanner = true } label: {
                     HStack(spacing: 8) {
                         Image(systemName: "qrcode.viewfinder").font(.system(size: 16, weight: .bold)).foregroundColor(Theme.accent)
                         Text("Сканировать QR").font(.system(size: 15, weight: .bold)).foregroundColor(.white)
                     }
                     .frame(maxWidth: .infinity).padding(.vertical, 13)
-                    .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Theme.tile)
+                    .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Theme.cardHi)
                         .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(Theme.hairline, lineWidth: 1)))
                 }
 
@@ -1178,47 +1231,60 @@ struct VPNHero: View {
 
     var body: some View {
         PinnedPanel(tint: tint) {
+            // ВЕТКА — ОДНА ВЬЮХА, И МЕНЯЕТСЯ ОНА МГНОВЕННО. Своя стопка у каждой
+            // ветки нужна ровно для этого: `.transition` на голом `if` разошёлся
+            // бы по всем его детям поодиночке, и на время перехода в панели
+            // лежали бы обе разметки сразу. Плавность несёт высота панели
+            // (см. PinnedPanel), а текст никуда не едет — он просто другой.
             if app.vpnState == 2 {
                 // Подключено — круг уступает место пользе: сколько идёт, куда,
                 // адрес хоста, гости и чем позвать друзей.
-                TimelineView(.periodic(from: .now, by: 1)) { _ in
-                    StatusLine(icon: "checkmark.shield.fill", title: title,
-                               clock: uptimeText(app.connectedSince), tint: tint)
-                }
-                subtitle.foregroundColor(Theme.dim).font(.system(size: 13))
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                if let h = host {
-                    HStack(spacing: 8) {
-                        CopyTile(label: "IP ХОСТА", value: h.ip.isEmpty ? "—" : h.ip)
-                        StatTile(label: "ГОСТЕЙ", value: "\(h.guests) / \(h.max)", symbol: "person.2.fill")
+                VStack(spacing: 8) {
+                    TimelineView(.periodic(from: .now, by: 1)) { _ in
+                        StatusLine(icon: "checkmark.shield.fill", title: title,
+                                   clock: uptimeText(app.connectedSince), tint: tint)
                     }
-                }
-                if let id = app.connectedTo {
-                    ShareButtons(code: id, qrCode: $inviteCode).padding(.top, 2)
-                    Text("Позвать друзей в эту же сеть").foregroundColor(Theme.dim).font(.system(size: 11))
-                }
-                // Честная сноска — только там, где туннеля нет (симулятор).
-                if !TunnelManager.available {
-                    Text("Канал к хосту поднят. Полный туннель — на устройстве с VPN-профилем.")
-                        .foregroundColor(Theme.dim.opacity(0.7)).font(.system(size: 11))
-                        .multilineTextAlignment(.center)
-                }
+                    subtitle.foregroundColor(Theme.dim).font(.system(size: 13))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    // Плитки и кнопки внутри ветки появляются по-настоящему
+                    // (хост опознался, код пришёл) — им РАСТВОРЕНИЕ НА МЕСТЕ,
+                    // а не переход по умолчанию.
+                    if let h = host {
+                        HStack(spacing: 8) {
+                            CopyTile(label: "IP ХОСТА", value: h.ip.isEmpty ? "—" : h.ip)
+                            StatTile(label: "ГОСТЕЙ", value: "\(h.guests) / \(h.max)", symbol: "person.2.fill")
+                        }.transition(.opacity)
+                    }
+                    if let id = app.connectedTo {
+                        ShareButtons(code: id, qrCode: $inviteCode).padding(.top, 2)
+                        Text("Позвать друзей в эту же сеть").foregroundColor(Theme.dim).font(.system(size: 11))
+                    }
+                    // Честная сноска — только там, где туннеля нет (симулятор).
+                    if !TunnelManager.available {
+                        Text("Канал к хосту поднят. Полный туннель — на устройстве с VPN-профилем.")
+                            .foregroundColor(Theme.dim.opacity(0.7)).font(.system(size: 11))
+                            .multilineTextAlignment(.center)
+                    }
+                }.transition(.identity)
             } else {
                 // Показывать нечего, кроме статуса — круг честно занимает место.
-                HeroCircle(icon: icon, tint: tint, pulsing: app.vpnState == 1)
-                Text(title).foregroundColor(Theme.fg).font(.system(size: 21, weight: .heavy))
-                    .lineLimit(1).minimumScaleFactor(0.6)
-                subtitle.foregroundColor(Theme.dim).font(.system(size: 13))
-                    .multilineTextAlignment(.center)
-                // Разовое сообщение об отказе: отдельно от vpnState, иначе фоновый
-                // опрос статуса ядра его затирает (или оставляет навсегда).
-                // Красный — только для настоящего отказа. Штатно завершённая
-                // раздача идёт тем же приглушённым цветом, что и строка над ней:
-                // ошибки нет, объяснять нужно спокойно.
-                if let err = app.vpnError {
-                    Text(err).foregroundColor(app.vpnNoticeCalm ? Theme.dim : Theme.red).font(.system(size: 13))
+                VStack(spacing: 8) {
+                    HeroCircle(icon: icon, tint: tint, pulsing: app.vpnState == 1)
+                    Text(title).foregroundColor(Theme.fg).font(.system(size: 21, weight: .heavy))
+                        .lineLimit(1).minimumScaleFactor(0.6)
+                    subtitle.foregroundColor(Theme.dim).font(.system(size: 13))
                         .multilineTextAlignment(.center)
-                }
+                    // Разовое сообщение об отказе: отдельно от vpnState, иначе фоновый
+                    // опрос статуса ядра его затирает (или оставляет навсегда).
+                    // Красный — только для настоящего отказа. Штатно завершённая
+                    // раздача идёт тем же приглушённым цветом, что и строка над ней:
+                    // ошибки нет, объяснять нужно спокойно.
+                    if let err = app.vpnError {
+                        Text(err).foregroundColor(app.vpnNoticeCalm ? Theme.dim : Theme.red).font(.system(size: 13))
+                            .multilineTextAlignment(.center)
+                            .transition(.opacity)
+                    }
+                }.transition(.identity)
             }
         }
     }
@@ -1452,40 +1518,49 @@ struct HostTab: View {
     /// Код сети НЕ показывается, пока раздача выключена: давать его некому.
     private var hero: some View {
         PinnedPanel(tint: tint) {
+            // Ветка — одна вьюха, меняется мгновенно; едет только высота панели
+            // (см. PinnedPanel).
             if app.hosting {
-                TimelineView(.periodic(from: .now, by: 1)) { _ in
-                    StatusLine(icon: "wifi.router.fill", title: "Раздаю",
-                               clock: uptimeText(app.hostStartedAt), tint: tint)
-                }
-                Text(app.hostCode.isEmpty ? "…" : app.hostCode).foregroundColor(Theme.accent)
-                    .font(.system(size: 26, weight: .heavy, design: .monospaced)).kerning(2)
-                    .frame(maxWidth: .infinity).textSelection(.enabled)
-                // «Новый код» — действие редкое, ему хватает строчки.
-                QuietButton(icon: "arrow.triangle.2.circlepath", title: "Новый код") { app.newHostCode() }
-                HStack(spacing: 8) {
-                    StatTile(label: "ГОСТЕЙ",
-                             value: "\(app.myHostInfo?.guests ?? 0) / \(app.myHostInfo?.max ?? app.hostMax)",
-                             symbol: "person.2.fill")
-                    StatTile(label: "ВИДИМОСТЬ",
-                             value: (app.hostPublic && app.hostPassword.isEmpty) ? "публичный" : "по коду",
-                             symbol: (app.hostPublic && app.hostPassword.isEmpty) ? "globe" : "eye.slash.fill")
-                }
-                HStack(spacing: 8) {
-                    StatTile(label: "ПРОТОКОЛ", value: protoName(app.hostProtocol), symbol: protoIcon(app.hostProtocol))
-                    CopyTile(label: "ВАШ IP", value: app.myHostInfo?.ip.isEmpty == false ? app.myHostInfo!.ip : "—")
-                }
-                // Поделиться — в НИЗУ панели, прямо под самим кодом.
-                if !app.hostCode.isEmpty {
-                    ShareButtons(code: app.hostCode, qrCode: $qrCode).padding(.top, 2)
-                }
+                VStack(spacing: 8) {
+                    TimelineView(.periodic(from: .now, by: 1)) { _ in
+                        StatusLine(icon: "wifi.router.fill", title: "Раздаю",
+                                   clock: uptimeText(app.hostStartedAt), tint: tint)
+                    }
+                    Text(app.hostCode.isEmpty ? "…" : app.hostCode).foregroundColor(Theme.accent)
+                        .font(.system(size: 26, weight: .heavy, design: .monospaced)).kerning(2)
+                        .frame(maxWidth: .infinity).textSelection(.enabled)
+                    // «Новый код» — действие редкое, ему хватает строчки.
+                    QuietButton(icon: "arrow.triangle.2.circlepath", title: "Новый код") { app.newHostCode() }
+                    HStack(spacing: 8) {
+                        StatTile(label: "ГОСТЕЙ",
+                                 value: "\(app.myHostInfo?.guests ?? 0) / \(app.myHostInfo?.max ?? app.hostMax)",
+                                 symbol: "person.2.fill")
+                        StatTile(label: "ВИДИМОСТЬ",
+                                 value: (app.hostPublic && app.hostPassword.isEmpty) ? "публичный" : "по коду",
+                                 symbol: (app.hostPublic && app.hostPassword.isEmpty) ? "globe" : "eye.slash.fill")
+                    }
+                    HStack(spacing: 8) {
+                        StatTile(label: "ПРОТОКОЛ", value: protoName(app.hostProtocol), symbol: protoIcon(app.hostProtocol))
+                        CopyTile(label: "ВАШ IP", value: app.myHostInfo?.ip.isEmpty == false ? app.myHostInfo!.ip : "—")
+                    }
+                    // Поделиться — в НИЗУ панели, прямо под самим кодом. Код
+                    // приходит с задержкой, поэтому кнопки честно появляются —
+                    // растворением НА МЕСТЕ.
+                    if !app.hostCode.isEmpty {
+                        ShareButtons(code: app.hostCode, qrCode: $qrCode).padding(.top, 2)
+                            .transition(.opacity)
+                    }
+                }.transition(.identity)
             } else {
-                HeroCircle(icon: "wifi.router.fill", tint: tint, pulsing: app.starting)
-                Text(statusTitle).foregroundColor(Theme.fg).font(.system(size: 21, weight: .heavy))
-                    .multilineTextAlignment(.center).lineLimit(1).minimumScaleFactor(0.7)
-                Text(app.starting ? "Пробиваю канал наружу…"
-                     : (app.hostError ?? "Станьте выходной точкой для друзей"))
-                    .foregroundColor(app.hostError != nil && !app.starting ? Theme.red : Theme.dim)
-                    .font(.system(size: 13)).multilineTextAlignment(.center)
+                VStack(spacing: 8) {
+                    HeroCircle(icon: "wifi.router.fill", tint: tint, pulsing: app.starting)
+                    Text(statusTitle).foregroundColor(Theme.fg).font(.system(size: 21, weight: .heavy))
+                        .multilineTextAlignment(.center).lineLimit(1).minimumScaleFactor(0.7)
+                    Text(app.starting ? "Пробиваю канал наружу…"
+                         : (app.hostError ?? "Станьте выходной точкой для друзей"))
+                        .foregroundColor(app.hostError != nil && !app.starting ? Theme.red : Theme.dim)
+                        .font(.system(size: 13)).multilineTextAlignment(.center)
+                }.transition(.identity)
             }
         }
     }

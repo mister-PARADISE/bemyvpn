@@ -256,9 +256,9 @@ export component VpnPage inherits Rectangle {
             // Отступ РОВНО в высоту панели: содержимое начинается сразу под
             // ней и уходит под неё при прокрутке. Число здесь было бы враньём —
             // высота панели меняется вместе с состоянием.
-            padding-top: panel.height + 12px;   // 12 = 24 (завеса) − 12 (нижний отступ обёртки панели)
+            padding-top: panel.height + 6px;   // 6 = 18 (завеса) − 12 (нижний отступ обёртки панели)
             // Ниже плавают нав-бар и (при подключении) полка действий.
-            padding-bottom: 120px;  // низ покоящегося содержимого = верх завесы нав-бара
+            padding-bottom: 114px;  // низ покоящегося содержимого = верх завесы нав-бара (завеса 18, было 24)
             spacing: Theme.gap;
 
             // ── Свежий релиз ──
@@ -354,16 +354,17 @@ export component VpnPage inherits Rectangle {
                         VerticalLayout { alignment: center; HorizontalLayout { alignment: center; IconPaste { width: 18px; height: 18px; tint: Theme.dim; } } }
                         paste-ta := TouchArea { clicked => { root.paste(); } }
                     }
-                    // Перейти — НА СТУПЕНЬ ВЫШЕ СОСЕДКИ. Мята отсюда снята: она
-                    // обещает «работает/включено», а это просто переход. Но
-                    // отделать главное действие строки ровно как вспомогательное
-                    // «вставить» нельзя — в спешке промахнёшься. Поэтому здесь
-                    // s3 (перепад к полю 11.2 L* против 3.5 у «вставить»), а
-                    // отделка та же тихая: ступень плюс кромка hairline.
+                    // Перейти — ТА ЖЕ СТУПЕНЬ, ЧТО У «ВСТАВИТЬ» (s2). Мята отсюда
+                    // снята: она обещает «работает/включено», а это просто
+                    // переход. Ступень выше соседки тут тоже была лишней — на
+                    // одном экране выходило три ступени кнопок; владелец
+                    // посмотрел и выбрал одну. Старшинство несут ДРУГИЕ признаки,
+                    // и их два: кнопка шире (52 против 44) и глиф в ней светлый
+                    // (fg против dim у «вставить»).
                     Rectangle {
                         width: 52px; height: 44px;
                         border-radius: 10px;
-                        background: go-ta.has-hover ? Theme.tile.brighter(0.12) : Theme.tile;
+                        background: go-ta.has-hover ? Theme.card-hi.brighter(0.12) : Theme.card-hi;
                         border-width: 1px;
                         border-color: Theme.hairline;
                         VerticalLayout { alignment: center; HorizontalLayout { alignment: center; IconArrowRight { width: 22px; height: 22px; tint: Theme.fg; } } }
