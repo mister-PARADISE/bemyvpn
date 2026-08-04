@@ -151,16 +151,6 @@ fn load_code_secret() -> std::io::Result<Vec<u8>> {
     secret_from_files(&path, std::path::Path::new(SECRET_FILE))
 }
 
-/// Грейс для ОСИРОТЕВШЕЙ записи (см. `sweep_orphans`).
-///
-/// TTL по времени убран сознательно. Он был мёртвой страховкой: `ws_live` не
-/// снимался никогда, поэтому `alive()` всегда возвращал true и `retain` не
-/// удалял ничего. Оживить его нельзя — периодического хартбита у клиента нет,
-/// и любой таймер по `last_seen` выкинул бы из каталога честный хост, который
-/// просто молчит в живой сокет. Живость = сокет; страховка теперь не по
-/// времени, а по владению: запись без своего канала доставки — сирота.
-const ORPHAN_GRACE: Duration = Duration::from_secs(15);
-
 // ── лимиты (анти-DDoS / анти-флуд / анти-мусор) ──────────────────────────────
 // WS-заслон живёт на самом соединении (пер-IP лимит коннектов + размер сообщения).
 // Здесь — потолки каталога и полей анонса: заслон от Sybil/мусора/амплификации.
@@ -340,17 +330,6 @@ fn one() -> u32 {
     1
 }
 
-/// Каналы в сокет ХОСТА. Номер соединения обязателен: без него уборка старого
-/// сокета снимала бы запись, которую только что создало новое (см. `release_host`).
-struct HostChan {
-    conn: u64,
-    /// Кандидаты пришедшего гостя — для встречного пробития NAT.
-    cands: tokio::sync::mpsc::Sender<Vec<String>>,
-    /// Общий исходящий канал: по нему уходит подсказка «проверь соседа».
-    out: tokio::sync::mpsc::Sender<WsServerMsg>,
-}
-type HostChannels = HashMap<String, HostChan>;
-
 /// Кого предупредить, когда пара расходится: host_id → каналы в сокеты гостей,
 /// которые просили ЗНАКОМСТВА с этим хостом.
 ///
@@ -362,6 +341,12 @@ type HostChannels = HashMap<String, HostChan>;
 type PeerLinks = HashMap<String, HashMap<u64, tokio::sync::mpsc::Sender<WsServerMsg>>>;
 
 /// Запись в реестре координатора.
+///
+/// ЗАПИСЬ И ЕЁ КАНАЛ — ОДНО ЦЕЛОЕ. Раньше факт «этим хостом владеет вот это
+/// соединение» лежал в трёх местах (`ws_live`, `conn` в записи и вторая карта
+/// каналов) и попарно сверялся в четырёх функциях. Теперь канал ЛЕЖИТ ВНУТРИ
+/// записи и заводится вместе с ней, поэтому «жив» = «есть в карте»: сверять
+/// нечего, рассинхронизироваться нечему, второй замок не нужен.
 struct HostEntry {
     ann: HostAnnounce,
     /// Секрет владельца, зафиксированный при ПЕРВОМ анонсе (TOFU). Пустой →
@@ -369,7 +354,6 @@ struct HostEntry {
     /// токена — их может обновить кто угодно, как раньше). Непустой → менять и
     /// снимать запись может только владелец этим же токеном.
     owner: String,
-    last_seen: Instant,
     /// Публичный IP, каким координатор ВИДИТ хост на HTTP-соединении (не то, что
     /// хост о себе сообщил). Это авторитетный адрес для показа/страны в каталоге:
     /// хост за NAT/хотспотом показывает свой реальный внешний IP, а не 192.168.
@@ -379,28 +363,25 @@ struct HostEntry {
     /// хосты не прыгают, новые встают в конец. Без этого HashMap отдавал хаос
     /// (hash-порядок) — свежезапущенный хост «вставал поверх» чужого в списке.
     seq: u64,
-    /// Хост держит ОТКРЫТЫЙ WebSocket к координатору → жив «по факту сокета»:
-    /// смерть ловится МГНОВЕННО по событию закрытия (краш/выход), а «тихая смерть»
-    /// (завис/пропал сигнал) — WS-пингом. Закрылся сокет → запись сразу убирается.
-    /// Это ЕДИНСТВЕННЫЙ сигнал живости: живой в каталоге == держит сокет.
-    ws_live: bool,
     /// КАКОЕ соединение владеет записью сейчас. Клиент считает сокет мёртвым
     /// раньше сервера (6с против 8с) и успевает зарегистрироваться заново, пока
     /// старое соединение ещё живо. Уборка старого сокета без этой проверки стирала
-    /// запись, только что созданную новым, — и хост пропадал из каталога навсегда,
-    /// потому что периодического анонса у клиента нет.
+    /// бы запись, только что созданную новым, — и хост выпадал бы из каталога до
+    /// своего следующего анонса (у клиента он раз в 10 секунд, то есть дыра
+    /// маленькая, но видимая: гости в это время его не находят).
     conn: u64,
+    /// ИСХОДЯЩИЙ КАНАЛ соединения-владельца — по нему хосту летят кандидаты
+    /// гостя и подсказка «проверь соседа». Канал ОДИН НА СОЕДИНЕНИЕ (не на
+    /// анонс): анонс приходит каждые 10 секунд, и заводить новый канал на
+    /// каждый значило бы шесть раз в минуту терять то, что в нём лежало.
+    ///
+    /// Он же — единственный признак живости: закрылся приёмник (обработчик
+    /// сокета вышел ИЛИ упал) → `is_closed`, и запись подметает `reaper`.
+    out: tokio::sync::mpsc::Sender<WsServerMsg>,
     /// Когда этому хосту в последний раз разрешили МГНОВЕННУЮ рассылку каталога.
     /// `None` — ещё ни разу. См. `register_host`: без этой отметки хост, дёргающий
     /// видимое поле в цикле, рассылал бы дельту всем гостям на каждое сообщение.
     last_instant_bump: Option<Instant>,
-}
-
-impl HostEntry {
-    /// ЖИВ ли хост (показывать ли в каталоге) — держит ли WS-сокет. Сервер решает сам.
-    fn live(&self) -> bool {
-        self.ws_live
-    }
 }
 
 /// Общее состояние: реестр хостов + версия каталога для long-poll.
@@ -417,9 +398,6 @@ struct AppState {
     code_secret: Vec<u8>,
     /// Счётчик порядковых номеров для HostEntry.seq (порядок каталога).
     next_seq: std::sync::atomic::AtomicU64,
-    /// WS-хосты: host_id → (номер соединения-владельца, канал доставки кандидатов
-    /// гостя ПРЯМО в его сокет). Есть запись → хост онлайн по WS.
-    ws_hosts: Mutex<HostChannels>,
     /// Кто с кем знакомился (см. `PeerLinks`) — для подсказки «проверь соседа».
     peers: Mutex<PeerLinks>,
     /// Счётчик открытых WS-коннектов на КЛЮЧ адреса (см. `conn_key`) — заслон от
@@ -457,7 +435,6 @@ impl AppState {
             dir_dirty: std::sync::atomic::AtomicBool::new(false),
             code_secret,
             next_seq: std::sync::atomic::AtomicU64::new(1),
-            ws_hosts: Mutex::new(HashMap::new()),
             peers: Mutex::new(HashMap::new()),
             ws_conns: std::sync::Mutex::new(HashMap::new()),
             next_conn: std::sync::atomic::AtomicU64::new(1),
@@ -560,8 +537,12 @@ fn client_ip(headers: &HeaderMap, peer: SocketAddr) -> IpAddr {
 /// `observed_ip` — реальный IP WS-соединения, это авторитет над адресом хоста.
 ///
 /// Всё в ОДНОМ захвате лока: раньше обработчик брал глобальный лок трижды на один
-/// анонс (регистрация → пометка ws_live → решение о рассылке), и между захватами
+/// анонс (регистрация → пометка живости → решение о рассылке), и между захватами
 /// запись успевала уехать под другим соединением.
+///
+/// `out` — исходящий канал ЭТОГО соединения (один на сокет, сюда приходит его
+/// копия). Запись заводится ТОЛЬКО вместе с ним, поэтому «есть в каталоге» и
+/// «есть куда постучаться» — это одно и то же утверждение, а не два сверяемых.
 ///
 /// Возвращает (статус, ПРИЧИНА). Причина уходит хосту дословно: без неё все отказы
 /// выглядели одинаково («отклонён»), и клиент не мог понять, надо ли просить новый
@@ -571,6 +552,7 @@ async fn register_host(
     mut ann: HostAnnounce,
     observed_ip: String,
     conn: u64,
+    out: tokio::sync::mpsc::Sender<WsServerMsg>,
 ) -> (StatusCode, &'static str) {
     if ann.id.is_empty() || ann.id.len() > MAX_ID || ann.token.len() > MAX_TOKEN {
         return (StatusCode::BAD_REQUEST, "Сервер не принял код сети. Возьмите новый код и попробуйте ещё раз.");
@@ -659,24 +641,29 @@ async fn register_host(
                 true // новый хост — показать сразу
             }
         };
-        let owner = ann.token.clone();
-        let entry = db.entry(ann.id.clone()).or_insert_with(|| HostEntry {
-            ann: ann.clone(),
-            owner,
-            last_seen: now,
-            observed_ip: observed_ip.clone(),
-            seq: state.next_seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
-            ws_live: false,
-            conn,
-            last_instant_bump: None,
-        });
-        entry.ann = ann;
-        entry.observed_ip = observed_ip;
-        entry.last_seen = now;
+        // Запись и её канал появляются ОДНИМ действием: промежутка, в котором
+        // хост уже в каталоге, но постучаться к нему некуда, больше не существует.
         // Владение переходит к ТЕКУЩЕМУ соединению: переподключившийся хост забирает
         // свою запись, а уборка прежнего сокета её уже не тронет (conn не совпадёт).
-        entry.conn = conn;
-        entry.ws_live = true;
+        let entry = match db.entry(ann.id.clone()) {
+            std::collections::hash_map::Entry::Occupied(o) => {
+                let e = o.into_mut();
+                e.ann = ann;
+                e.observed_ip = observed_ip;
+                e.conn = conn;
+                e.out = out;
+                e
+            }
+            std::collections::hash_map::Entry::Vacant(v) => v.insert(HostEntry {
+                owner: ann.token.clone(),
+                ann,
+                observed_ip,
+                seq: state.next_seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+                conn,
+                out,
+                last_instant_bump: None,
+            }),
+        };
         instant = visible_changed
             && entry.last_instant_bump.is_none_or(|t| now.duration_since(t) >= INSTANT_BUMP_GAP);
         if instant {
@@ -707,11 +694,10 @@ fn code_hint(secret: &[u8], id: &str) -> String {
 /// ВАЖНО: в общий каталог попадают ТОЛЬКО публичные хосты. Скрытые (public=false)
 /// не отображаются нигде — к ним подключаются лишь по коду (id) через WS Resolve.
 fn collect_items(db: &HashMap<String, HostEntry>, q: &DirectoryQuery) -> Vec<DirectoryItem> {
+    // Фильтра «живой» тут больше нет и быть не может: запись заводится вместе со
+    // своим каналом и уходит вместе с ним, поэтому В КАРТЕ = ЖИВ.
     let mut alive: Vec<&HostEntry> = db
         .values()
-        // ТОЛЬКО ЖИВЫЕ: держит WS-сокет. Умер — сокет закрылся, запись убрана
-        // мгновенно; «пустышка» без сокета не появляется вовсе.
-        .filter(|e| e.live())
         .filter(|e| e.ann.public) // скрытые сети в каталоге не видны
         .filter(|e| match &q.country {
             Some(c) if !c.is_empty() => e.ann.country.eq_ignore_ascii_case(c),
@@ -736,7 +722,10 @@ fn item_of(e: &HostEntry) -> DirectoryItem {
         has_password: e.ann.has_password,
         guests: e.ann.guests,
         max_guests: e.ann.max_guests,
-        online: e.ws_live,
+        // На проводе поле остаётся — его читают все четыре оболочки. Но сервер
+        // больше не хранит для него отдельный флаг: мёртвой записи в карте нет,
+        // а значит любая, до которой мы дошли, живая.
+        online: true,
         protocol: e.ann.protocol.clone(),
     }
 }
@@ -804,25 +793,6 @@ fn announce_visible_fp(a: &HostAnnounce) -> u64 {
 
 // ── обслуживание: чистка протухших хостов ────────────────────────────────────
 
-/// Убрать ОСИРОТЕВШИЕ записи: те, чьё соединение больше не держит канал доставки.
-///
-/// Штатно запись снимает сам сокет при закрытии, и сюда ничего не доходит.
-/// Страховка нужна на случай, когда обработчик умер в обход своей уборки (паника
-/// в задаче): тогда запись висела бы в каталоге вечно — гости идут к хосту,
-/// которого нет. Проверяем ВЛАДЕНИЕ, а не время: часы врут про живой молчаливый
-/// сокет, а канал — нет. Грейс нужен затем, что запись появляется на мгновение
-/// раньше своего канала (регистрация и канал заводятся подряд, но не атомарно).
-fn sweep_orphans(
-    db: &mut HashMap<String, HostEntry>,
-    chans: &HostChannels,
-) -> usize {
-    let before = db.len();
-    db.retain(|id, e| {
-        chans.get(id).is_some_and(|h| h.conn == e.conn) || e.last_seen.elapsed() < ORPHAN_GRACE
-    });
-    before - db.len()
-}
-
 /// Как часто печатать сводку. Раньше было намертво «раз в 5 минут»; на живом
 /// сервере хочется чаще во время разбора и реже в спокойный день.
 fn summary_period() -> Duration {
@@ -837,13 +807,21 @@ async fn reaper(state: Db) {
     let mut last_bumps = 0u64;
     loop {
         tokio::time::sleep(Duration::from_secs(5)).await;
+        // Страховка в ОДНУ строку: канал лежит в самой записи, и он закрыт ровно
+        // тогда, когда обработчик сокета отпустил свой приёмник. Штатный выход
+        // снимает запись сам и сюда не доходит; сюда доходит только тот случай,
+        // ради которого страховка и нужна, — задача умерла в обход своей уборки
+        // (паника). ПРЕЖНИЙ уборщик как раз этот случай и НЕ ловил: у паникующей
+        // задачи оставались обе записи, и сверка «канал того же соединения»
+        // сходилась на призраке.
         let removed = {
-            let chans = state.ws_hosts.lock().await;
             let mut db = state.db.lock().await;
-            sweep_orphans(&mut db, &chans)
+            let before = db.len();
+            db.retain(|_, e| !e.out.is_closed());
+            before - db.len()
         };
         if removed > 0 {
-            tracing::warn!(removed, "reaper: убрал осиротевшие записи (соединения нет)");
+            tracing::warn!(removed, "reaper: убрал записи, чей обработчик умер молча");
             state.bump();
         }
         if Instant::now() < next_summary {
@@ -1116,12 +1094,6 @@ impl Drop for WatcherGuard {
     }
 }
 
-/// Снять запись хоста — но ТОЛЬКО если она всё ещё принадлежит соединению `conn`.
-///
-/// Проверка владения обязательна: клиент считает сокет мёртвым через 6с, сервер
-/// держит его до 8с, и в эту щель хост уже переподключился и перерегистрировался.
-/// Уборка старого сокета без проверки стирала СВЕЖУЮ запись, а вернуть её было
-/// некому — периодического анонса у клиента нет, хост исчезал до перезапуска.
 /// Максимум гостей, о которых помним «знакомился с этим хостом». Заслон памяти:
 /// список чистится сам при уходе соединений, но потолок нужен на случай, когда
 /// кто-то дёргает `connect` на один хост с тысяч сокетов. Больше `max_guests`
@@ -1154,34 +1126,29 @@ async fn unpair(state: &Db, host_id: &str, conn: u64) {
             pairs.remove(host_id);
         }
     }
-    let out = state.ws_hosts.lock().await.get(host_id).map(|h| h.out.clone());
-    if let Some(out) = out {
-        let _ = out.try_send(WsServerMsg::PeerCheck);
+    // Подсказка идёт ПРЯМО в исходящий канал хоста, лежащий в его же записи.
+    // Под этим локом только `try_send` — ни одного ожидания: любая пауза здесь
+    // застопорила бы весь каталог, то есть весь сервер.
+    if let Some(e) = state.db.lock().await.get(host_id) {
+        let _ = e.out.try_send(WsServerMsg::PeerCheck);
     }
 }
 
+/// Снять запись хоста — но ТОЛЬКО если ею всё ещё владеет соединение `conn`
+/// (см. `HostEntry::conn`). Одна карта, одна проверка: сверять вторую нечего.
 async fn release_host(state: &Db, id: &str, conn: u64) -> bool {
-    {
-        let mut chans = state.ws_hosts.lock().await;
-        match chans.get(id) {
-            Some(h) if h.conn == conn => {
-                chans.remove(id);
-            }
-            _ => return false, // каналом владеет другое соединение — не наше дело
-        }
-    }
-    // Хост ушёл (bye ИЛИ закрытие сокета — для нас это одно событие). Гости, что
-    // знакомились с ним, узнают об этом ДАЖЕ ЕСЛИ прямое прощание по UDP послать
-    // было некому: приложение убили, процесс упал, сеть исчезла.
-    hint_peers_of(state, id).await;
     let removed = {
         let mut db = state.db.lock().await;
         match db.get(id) {
             Some(e) if e.conn == conn => db.remove(id).is_some(),
-            _ => false,
+            _ => false, // записью владеет другое соединение — не наше дело
         }
     };
     if removed {
+        // Хост ушёл (bye ИЛИ закрытие сокета — для нас это одно событие). Гости, что
+        // знакомились с ним, узнают об этом ДАЖЕ ЕСЛИ прямое прощание по UDP послать
+        // было некому: приложение убили, процесс упал, сеть исчезла.
+        hint_peers_of(state, id).await;
         state.bump_now();
     }
     removed
@@ -1199,7 +1166,6 @@ async fn ws_conn(socket: WebSocket, state: Db, ip: IpAddr, _guard: WsConnGuard) 
     // С каким хостом это соединение знакомилось как ГОСТЬ (см. `PeerLinks`).
     let mut paired_host: Option<String> = None;
     let mut watch_task: Option<tokio::task::JoinHandle<()>> = None;
-    let mut guest_task: Option<tokio::task::JoinHandle<()>> = None;
     // Ping-часы + отметка последнего Pong. Один цикл: и читаем, и пишем в сокет,
     // и пингуем — единственный владелец sink (нет гонок за него).
     let mut ping_iv = tokio::time::interval(WS_PING_INTERVAL);
@@ -1244,35 +1210,24 @@ async fn ws_conn(socket: WebSocket, state: Db, ip: IpAddr, _guard: WsConnGuard) 
         match m {
             WsClientMsg::Host(ann) => {
                 let id = ann.id.clone();
-                let (code, reason) = register_host(&state, *ann, ip.to_string(), conn).await;
+                // Канал отдаём КОПИЕЙ: он один на соединение и живёт весь сеанс.
+                // Анонс приходит каждые 10 секунд — заводи мы канал на каждый,
+                // вспомогательная машинерия пересоздавалась бы шесть раз в минуту,
+                // а в щель между заменами терялся бы пришедший гость.
+                let (code, reason) =
+                    register_host(&state, *ann, ip.to_string(), conn, out_tx.clone()).await;
                 if code != StatusCode::OK {
                     let _ = out_tx.send(WsServerMsg::Error { id: 0, code: code.as_u16(), reason: reason.into() }).await;
                     continue;
                 }
                 // ОДИН СОКЕТ = ОДИН id. Клиент меняет код сети, не разрывая
-                // соединение (пункт «новый код» в меню), и раньше прежний id
-                // оставался в каталоге НАВСЕГДА: канал заводился только под
-                // первый, «жив» ставилось каждому, а уборка снимала только один.
-                // Так каталог забивался призраками до перезапуска сервера.
+                // соединение (пункт «новый код» в меню), и прежний id обязан
+                // уйти — иначе каталог набивается призраками до перезапуска.
                 if host_id.as_deref() != Some(id.as_str()) {
                     if let Some(prev) = host_id.take() {
                         release_host(&state, &prev, conn).await;
                     }
-                    if let Some(t) = guest_task.take() {
-                        t.abort();
-                    }
-                    let (cand_tx, mut cand_rx) = tokio::sync::mpsc::channel::<Vec<String>>(32);
-                    let chan = HostChan { conn, cands: cand_tx, out: out_tx.clone() };
-                    state.ws_hosts.lock().await.insert(id.clone(), chan);
-                    let out = out_tx.clone();
-                    guest_task = Some(tokio::spawn(async move {
-                        while let Some(c) = cand_rx.recv().await {
-                            if out.send(WsServerMsg::Guest { candidates: c }).await.is_err() {
-                                break;
-                            }
-                        }
-                    }));
-                    host_id = Some(id.clone());
+                    host_id = Some(id);
                 }
                 let _ = out_tx.send(WsServerMsg::HostOk).await;
             }
@@ -1339,20 +1294,36 @@ async fn ws_conn(socket: WebSocket, state: Db, ip: IpAddr, _guard: WsConnGuard) 
                     let _ = out_tx.send(WsServerMsg::Error { id, code: 400, reason: "Код сети написан неверно. Проверьте и введите ещё раз.".into() }).await;
                     continue;
                 }
-                // Достаём адреса хоста (гость к ним пробивает) и проверяем живость.
+                // Адреса ГОСТЯ проходят ровно тот же конвейер, что адреса хоста
+                // (см. ниже) — считаем их ДО лока, чтобы под локом не осталось
+                // ничего, кроме двух движений по карте.
+                let cands = endpoints_for(&candidates, ip, MAX_CANDIDATES);
+                // Достаём адреса хоста (гость к ним пробивает) и тем же движением
+                // кладём кандидатов гостя в его исходящий канал. Есть запись —
+                // значит хост жив и канал в ней рабочий; отдельная карта каналов
+                // и вспомогательная задача-переходник для этого больше не нужны.
+                //
+                // ТОЛЬКО `try_send`: ни одного ожидания под локом каталога —
+                // иначе один залипший хост останавливает весь сервер.
+                // Потолок этого решения: если исходящая очередь хоста забита (64
+                // сообщения), кандидаты гостя ПРОПАДУТ, а не подождут. Так уже
+                // сделано для подсказки «проверь соседа», и по той же причине:
+                // забитая на 64 очередь означает, что тому сокету и так не до нас.
                 let endpoints = {
                     let db = state.db.lock().await;
-                    match db.get(&hid) {
-                        Some(e) if e.live() => Some(e.ann.endpoints.clone()),
-                        _ => None,
-                    }
+                    db.get(&hid).map(|e| {
+                        if !cands.is_empty() {
+                            let _ = e.out.try_send(WsServerMsg::Guest { candidates: cands });
+                        }
+                        e.ann.endpoints.clone()
+                    })
                 };
                 let Some(endpoints) = endpoints else {
                     let _ = out_tx.send(WsServerMsg::Error { id, code: 404, reason: "Такой сети нет. Проверьте код — возможно, хост уже выключил раздачу.".into() }).await;
                     continue;
                 };
-                // Адреса ГОСТЯ проходят ровно тот же конвейер, что адреса хоста:
-                // сначала отсев внутренних/мусорных, потом СЕРВЕР СТАВИТ IP САМ.
+                // Про конвейер адресов гостя (`endpoints_for` выше): сначала отсев
+                // внутренних/мусорных, потом СЕРВЕР СТАВИТ IP САМ.
                 //
                 // Без второго шага здесь была отражённая атака. Гость называл
                 // кандидатами любые ЧУЖИЕ адреса, координатор передавал их хосту
@@ -1365,14 +1336,7 @@ async fn ws_conn(socket: WebSocket, state: Db, ip: IpAddr, _guard: WsConnGuard) 
                 // Порт по-прежнему на веру (его координатор не наблюдает), но
                 // адрес теперь только свой: направить пробитие на чужую машину
                 // больше нельзя.
-                let cands = endpoints_for(&candidates, ip, MAX_CANDIDATES);
-                if !cands.is_empty() {
-                    // Хост держит WS (иначе его не было бы в каталоге) → кандидаты
-                    // гостя летят прямо в его сокет для встречного пробития NAT.
-                    if let Some(tx) = state.ws_hosts.lock().await.get(&hid).map(|h| h.cands.clone()) {
-                        let _ = tx.try_send(cands);
-                    }
-                }
+                //
                 // Запоминаем ПАРУ (наблюдение сервера, не слова клиента): когда
                 // одна сторона отвалится от координатора, второй уйдёт подсказка
                 // «проверь соседа». Гость знакомится с одним хостом за сеанс;
@@ -1403,7 +1367,7 @@ async fn ws_conn(socket: WebSocket, state: Db, ip: IpAddr, _guard: WsConnGuard) 
                 }
                 let host = {
                     let db = state.db.lock().await;
-                    db.get(&code).filter(|e| e.live()).map(item_of)
+                    db.get(&code).map(item_of) // есть в карте = жив
                 };
                 let _ = out_tx.send(WsServerMsg::Resolved { id, host }).await;
             }
@@ -1426,9 +1390,6 @@ async fn ws_conn(socket: WebSocket, state: Db, ip: IpAddr, _guard: WsConnGuard) 
         unpair(&state, &hid, conn).await;
     }
     if let Some(t) = watch_task {
-        t.abort();
-    }
-    if let Some(t) = guest_task {
         t.abort();
     }
 }
@@ -1669,11 +1630,24 @@ mod tests {
         }
     }
 
+    /// Исходящий канал «соединения» для юнит-тестов. Один на весь тестовый
+    /// бинарь: приёмник живёт до конца процесса, иначе записи выглядели бы
+    /// осиротевшими (живость = открытый канал).
+    fn test_out() -> tokio::sync::mpsc::Sender<WsServerMsg> {
+        static TX: std::sync::OnceLock<tokio::sync::mpsc::Sender<WsServerMsg>> =
+            std::sync::OnceLock::new();
+        TX.get_or_init(|| {
+            let (tx, rx) = tokio::sync::mpsc::channel(1024);
+            std::mem::forget(rx); // читать нечего, нужен только живым
+            tx
+        })
+        .clone()
+    }
+
     /// Регистрация хоста РОВНО как это делает WS-обработчик Host: ядро register_host
-    /// с наблюдаемым IP = test_peer (45.11.22.33) от соединения №1. Живым по WS
-    /// запись помечает само ядро — так тесты видят хост в каталоге, как в бою.
+    /// с наблюдаемым IP = test_peer (45.11.22.33) от соединения №1 и его каналом.
     async fn reg(st: &Db, a: HostAnnounce) -> StatusCode {
-        register_host(st, a, test_peer().ip().to_string(), 1).await.0
+        register_host(st, a, test_peer().ip().to_string(), 1, test_out()).await.0
     }
 
     /// Взведён ли флаг «каталог изменился» (дебаунс-таск в юнит-тестах не крутится).
@@ -1778,13 +1752,13 @@ mod tests {
         // Но скрытый находится ПО КОДУ (как WS Resolve: db.get + item_of).
         let got = {
             let db = st.db.lock().await;
-            db.get("SECRET42").filter(|e| e.live()).map(item_of)
+            db.get("SECRET42").map(item_of)
         };
         assert_eq!(got.map(|i| i.name), Some("Тайная".to_string()));
         // Несуществующий код → ничего.
         let none = {
             let db = st.db.lock().await;
-            db.get("NOPE").filter(|e| e.live()).map(item_of)
+            db.get("NOPE").map(item_of)
         };
         assert!(none.is_none());
     }
@@ -2202,48 +2176,6 @@ mod tests {
 
     // ── КАТЕГОРИЯ Е: страховка, частота, журнал, секрет ───────────────────────
 
-    /// СТРАХОВКА ОТ «ПОВИСШЕЙ» ЗАПИСИ. Раньше её не было вовсе: `ws_live` никогда
-    /// не сбрасывался, `alive()` возвращал true всегда, и `retain` не удалял
-    /// НИЧЕГО — TTL был мёртвым кодом. Теперь живость меряется не часами, а
-    /// владением: есть свой канал доставки → жив, нет → сирота.
-    ///
-    /// Отдельно проверяем главное последствие выбора: молчащий хост с живым
-    /// сокетом остаётся в каталоге. Периодического анонса у клиента нет, и TTL
-    /// по last_seen выкинул бы честную раздачу через полминуты тишины.
-    #[tokio::test]
-    async fn orphan_sweep_keeps_only_owned_entries() {
-        let st = mk_state();
-        let mk = |conn: u64, age: Duration| HostEntry {
-            ann: ann("X", "t", "n"),
-            owner: "t".into(),
-            last_seen: Instant::now() - age,
-            observed_ip: "45.11.22.33".into(),
-            seq: 1,
-            ws_live: true,
-            conn,
-            last_instant_bump: None,
-        };
-        let mut db: HashMap<String, HostEntry> = HashMap::new();
-        let long_ago = ORPHAN_GRACE * 4;
-        db.insert("OWNED".into(), mk(1, long_ago)); // свой канал, молчит давно
-        db.insert("STOLEN".into(), mk(1, long_ago)); // канал у ДРУГОГО соединения
-        db.insert("ORPHAN".into(), mk(1, long_ago)); // канала нет вовсе
-        db.insert("FRESH".into(), mk(1, Duration::from_secs(0))); // канал ещё не завели
-        let (tx, _rx) = tokio::sync::mpsc::channel::<Vec<String>>(1);
-        let (out, _out_rx) = tokio::sync::mpsc::channel::<WsServerMsg>(1);
-        let chan = |conn: u64| HostChan { conn, cands: tx.clone(), out: out.clone() };
-        let mut chans = HashMap::new();
-        chans.insert("OWNED".to_string(), chan(1));
-        chans.insert("STOLEN".to_string(), chan(2));
-
-        assert_eq!(sweep_orphans(&mut db, &chans), 2);
-        assert!(db.contains_key("OWNED"), "хост с живым сокетом выкинут из-за тишины");
-        assert!(db.contains_key("FRESH"), "запись убрали в щель между регистрацией и каналом");
-        assert!(!db.contains_key("ORPHAN"), "запись без соединения осталась в каталоге");
-        assert!(!db.contains_key("STOLEN"), "запись прежнего владельца осталась в каталоге");
-        let _ = &st; // состояние здесь не нужно, но пусть тест собирается как остальные
-    }
-
     /// ЧАСТОТА. Ни одно сообщение не ограничивалось, а каждое берёт ГЛОБАЛЬНЫЙ
     /// лок каталога: один сокет, шлющий resolve в цикле, сериализовал весь сервер.
     #[test]
@@ -2425,14 +2357,14 @@ mod tests {
         let seen = |c: &std::sync::atomic::AtomicU64| c.load(std::sync::atomic::Ordering::Relaxed);
 
         // Виден только по IPv6 — наша сторона, и об этом надо сказать.
-        let (code, why) = register_host(&st, ann("V6HOST000001", "t", "n"), "2001:db8::1".into(), 1).await;
+        let (code, why) = register_host(&st, ann("V6HOST000001", "t", "n"), "2001:db8::1".into(), 1, test_out()).await;
         assert_eq!(code, StatusCode::UNPROCESSABLE_ENTITY);
         assert!(why.contains("IPv6"), "молчаливый отказ хосту по IPv6: {why:?}");
 
         // За NAT (только домашние адреса) — причина другая.
         let mut nat = ann("NATHOST00001", "t", "n");
         nat.endpoints = vec!["192.168.0.5:40000".into()];
-        let (code, why) = register_host(&st, nat, test_peer().ip().to_string(), 1).await;
+        let (code, why) = register_host(&st, nat, test_peer().ip().to_string(), 1, test_out()).await;
         assert_eq!(code, StatusCode::UNPROCESSABLE_ENTITY);
         // Текст читает ЧЕЛОВЕК, поэтому слова «NAT» в нём больше нет — но сама
         // причина названа и отличается от IPv6-случая.
@@ -2442,16 +2374,18 @@ mod tests {
         // Код без подписи — единственный случай, когда надо просить НОВЫЙ код.
         let mut forged = ann("FORGEDCODE01", "t", "n");
         forged.code_sig = String::new();
-        let (code, why) = register_host(&st, forged, test_peer().ip().to_string(), 1).await;
+        let (code, why) = register_host(&st, forged, test_peer().ip().to_string(), 1, test_out()).await;
         assert_eq!(code, StatusCode::FORBIDDEN);
         assert!(why.contains("новый код"), "клиент не поймёт, что нужен новый код: {why:?}");
         assert_eq!(seen(&st.rej_sig), 1);
 
         // Угон чужого кода — просить новый код бесполезно, код чужой.
         assert_eq!(reg(&st, ann("OWNEDCODE001", "мой", "n")).await, StatusCode::OK);
-        let (code, why) = register_host(&st, ann("OWNEDCODE001", "чужой", "n"), test_peer().ip().to_string(), 2).await;
+        let (code, why) = register_host(&st, ann("OWNEDCODE001", "чужой", "n"), test_peer().ip().to_string(), 2, test_out()).await;
         assert_eq!(code, StatusCode::FORBIDDEN);
-        assert!(why.contains("владельцем"), "причина угона не названа: {why:?}");
+        // Текст читает ЧЕЛОВЕК: слова «владелец» в нём нет, но названо и то, что
+        // код занят, и что нужно сделать. Проверяем смысл, а не прежнюю формулировку.
+        assert!(why.contains("занят") && why.contains("новый код"), "причина угона не названа: {why:?}");
         assert_eq!(seen(&st.rej_hijack), 1);
         assert_eq!(seen(&st.peak_hosts), 1, "пик хостов не считается");
     }
@@ -2561,10 +2495,37 @@ mod tests {
             assert!(!resolvable(addr, "GHOSTAAA0001").await, "прежний id остался в каталоге призраком");
         }
 
+        /// СМЕРТЬ СОЕДИНЕНИЯ = ИСЧЕЗНОВЕНИЕ ЗАПИСИ, БЕЗ ВСЯКОГО ТАЙМЕРА.
+        ///
+        /// Раньше запись жила отдельно от своего канала, и её подстраховывал
+        /// уборщик с пятнадцатисекундным грейсом — то есть между смертью хоста и
+        /// его исчезновением из каталога в принципе допускалось окно. Теперь
+        /// канал ЛЕЖИТ В ЗАПИСИ: закрылся сокет — снялась запись, ждать нечего.
+        ///
+        /// Тест нарочно НЕ спит: он спрашивает координатор сразу и повторяет,
+        /// пока хост не пропадёт, с жёстким сроком. Вернись сюда любой грейс или
+        /// периодический уборщик (тик — 5 секунд) — тест упадёт по сроку.
+        #[tokio::test]
+        async fn record_dies_with_its_socket_without_any_timer() {
+            let addr = spawn_coord().await;
+            let mut ws = client(addr, "45.11.22.33").await;
+            assert_eq!(announce(&mut ws, "INSTANT00001", "tok").await, "hostok");
+            assert!(resolvable(addr, "INSTANT00001").await, "хост не появился в каталоге");
+
+            let died = tokio::time::Instant::now();
+            drop(ws); // сокет умер — ровно так же, как при крахе приложения
+            while resolvable(addr, "INSTANT00001").await {
+                assert!(
+                    died.elapsed() < Duration::from_secs(2),
+                    "запись пережила своё соединение — значит её снимает таймер, а не событие"
+                );
+            }
+        }
+
         /// ГОНКА ПЕРЕПОДКЛЮЧЕНИЯ. Клиент считает сокет мёртвым через 6с, сервер
         /// держит старый до 8с. В эти две секунды хост уже зарегистрирован НОВЫМ
         /// соединением, а уборка СТАРОГО стирала запись без проверки владельца —
-        /// хост пропадал из каталога и не возвращался (периодического анонса нет).
+        /// и хост выпадал из каталога до своего следующего анонса.
         #[tokio::test]
         async fn stale_socket_cleanup_keeps_new_registration() {
             let addr = spawn_coord().await;
