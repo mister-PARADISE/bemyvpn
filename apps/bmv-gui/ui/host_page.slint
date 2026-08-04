@@ -54,11 +54,14 @@ export component HostPage inherits Rectangle {
 
     // С паролем сеть ВСЕГДА скрытая — правило ядра и координатора.
     property <bool> locked-hidden: root.host-password != "";
+    // ЦВЕТ СОСТОЯНИЯ, А НЕ ЦВЕТ ЭКРАНА. Выключено — dim: раньше здесь стоял
+    // акцент, и после слияния зелёного с мятой кольцо панели горело бы одной
+    // мятой и при «Раздача выключена», и при «Раздаю».
     property <color> tint:
         root.host-state == 1 ? Theme.amber
-        : root.host-state == 2 ? Theme.green
+        : root.host-state == 2 ? Theme.accent
         : root.host-state == 3 ? Theme.red
-        : Theme.accent;
+        : Theme.dim;
     property <string> proto-name:
         root.host-protocol == "noise" ? "Обычный"
         : root.host-protocol == "noise-obfs" ? "Маскировка"

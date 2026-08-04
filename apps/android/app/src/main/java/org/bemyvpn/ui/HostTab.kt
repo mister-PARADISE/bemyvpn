@@ -62,11 +62,14 @@ fun HostTab(app: AppState, bottomPad: Dp) {
 
     // Панель ВНЕ прокрутки — тот же язык, что у VPN и сервера. Код сети НЕ
     // показывается, пока раздача выключена: давать его некому.
+    // ЦВЕТ СОСТОЯНИЯ, А НЕ ЦВЕТ ЭКРАНА. Выключено — dim: раньше здесь стоял
+    // акцент, и после слияния зелёного с мятой кольцо панели горело бы одной
+    // мятой и при «Раздача выключена», и при «Раздаю».
     val tint = when {
         app.starting -> Theme.amber
-        app.hosting -> Theme.green
+        app.hosting -> Theme.accent
         app.hostError != null -> Theme.red
-        else -> Theme.accent
+        else -> Theme.dim
     }
     // Панель — НАЛОЖЕНИЕ поверх прокрутки: настройки идут во всю высоту и
     // уходят ПОД неё (см. FloatingPanelLayout).

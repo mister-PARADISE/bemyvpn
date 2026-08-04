@@ -239,16 +239,16 @@ fun CopyTile(label: String, value: String, modifier: Modifier = Modifier) {
     var copied by remember { mutableStateOf(false) }
     val empty = value.isEmpty() || value == "—"
     LaunchedEffect(copied) { if (copied) { delay(1300); copied = false } }
-    Box(modifier.tileBackground(if (copied) Theme.green.copy(alpha = 0.5f) else null).tappable {
+    Box(modifier.tileBackground(if (copied) Theme.accent.copy(alpha = 0.5f) else null).tappable {
         if (!empty) { clipboard.setText(AnnotatedString(value)); Haptics.tap(ctx); copied = true }
     }) {
         TileBody(
             label, if (copied) "Скопировано" else value,
-            valueColor = if (copied) Theme.green else Theme.fg, mono = !copied,
+            valueColor = if (copied) Theme.accent else Theme.fg, mono = !copied,
         ) {
             if (!empty) Icon(
                 if (copied) Icons.Filled.Check else Icons.Filled.ContentCopy, null,
-                Modifier.size(13.dp), tint = if (copied) Theme.green else Theme.accent,
+                Modifier.size(13.dp), tint = Theme.accent,
             )
         }
     }
@@ -269,7 +269,7 @@ fun CardButton(icon: ImageVector, title: String, modifier: Modifier = Modifier, 
     Row(
         modifier
             .background(Theme.tile, RoundedCornerShape(12.dp))
-            .border(1.dp, if (copied) Theme.green.copy(alpha = 0.5f) else Color.White.copy(alpha = 0.08f), RoundedCornerShape(12.dp))
+            .border(1.dp, if (copied) Theme.accent.copy(alpha = 0.5f) else Color.White.copy(alpha = 0.08f), RoundedCornerShape(12.dp))
             .pressable {
                 if (copy != null) {
                     if (copy.isNotEmpty()) { clipboard.setText(AnnotatedString(copy)); Haptics.success(ctx); copied = true }
@@ -279,9 +279,9 @@ fun CardButton(icon: ImageVector, title: String, modifier: Modifier = Modifier, 
         horizontalArrangement = Arrangement.spacedBy(7.dp, Alignment.CenterHorizontally),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Icon(if (copied) Icons.Filled.Check else icon, null, Modifier.size(15.dp), tint = if (copied) Theme.green else Theme.accent)
+        Icon(if (copied) Icons.Filled.Check else icon, null, Modifier.size(15.dp), tint = Theme.accent)
         Text(
-            if (copied) "Скопировано" else title, color = if (copied) Theme.green else Theme.fg,
+            if (copied) "Скопировано" else title, color = if (copied) Theme.accent else Theme.fg,
             fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis,
         )
     }
@@ -296,11 +296,11 @@ fun BigCopyButton(value: String, modifier: Modifier = Modifier) {
     val ctx = LocalContext.current
     var copied by remember { mutableStateOf(false) }
     LaunchedEffect(copied) { if (copied) { delay(1400); copied = false } }
-    val hue = if (copied) Theme.green else Theme.accent
+    val hue = Theme.accent
     Row(
         modifier
             .background(Theme.picked(hue), RoundedCornerShape(14.dp))
-            .border(1.dp, hue.copy(alpha = 0.4f), RoundedCornerShape(14.dp))
+            .border(1.dp, hue.copy(alpha = if (copied) 0.7f else 0.4f), RoundedCornerShape(14.dp))
             .pressable {
                 if (value.isNotEmpty()) { clipboard.setText(AnnotatedString(value)); Haptics.success(ctx); copied = true }
             }.padding(vertical = 15.dp),
@@ -411,22 +411,6 @@ fun BmvTextField(
 // ── Прижатая панель и её содержимое ─────────────────────────────────────────
 
 /**
- * ЗАЛИВКА ПАРЯЩЕГО СЛОЯ — одна на панель состояния и нав-бар. Разъехаться в
- * цвете им нельзя: над страницей висят два блока, и свой оттенок, подобранный на
- * глаз, разошёлся бы с соседом при первой же правке темы.
- *
- * НЕПРОЗРАЧНАЯ. Прежние 0.97 не покупали ничего: размытия под блоком нет и быть
- * не может (`Modifier.blur` размывает сам элемент, а не фон под ним, а
- * перерисовывать фон в отдельный слой каждый кадр прокрутки — расход батареи
- * ради эффекта, почти невидимого в тёмной теме), зато сквозь панель на снимке в
- * прокрутке читался текст списка под ней.
- *
- * Оттенок НАМЕРЕННО между s2 и s3: парящий блок выше карточек списка, но ниже
- * плиток, которые лежат внутри него самого.
- */
-val floatFill = Color(0xFF233354)   // L* 21.5 — та же лестница, что в Theme.kt
-
-/**
  * Вылет гашения от контура парящего блока наружу. Отступы прокрутки считаются ОТ
  * НЕГО — покоящееся содержимое не должно попадать в зону гашения, иначе оно
  * выглядит подтенённым на пустом месте.
@@ -532,21 +516,28 @@ private fun DrawScope.panelHalo(r: Float, v: Float, s: Float, back: Float) {
 /**
  * Отделка парящего слоя: заливка + тихая рамка. Одна на панель и нав-бар.
  *
+ * ЗАЛИВКА — Theme.float, ОДНА на панель и нав-бар; своей константой здесь она
+ * молча осталась бы синей, когда вся лестница ушла в уголь. Непрозрачная:
+ * прежние 0.97 не покупали ничего — размытия под блоком нет и быть не может
+ * (`Modifier.blur` размывает сам элемент, а не фон под ним, а перерисовывать фон
+ * в отдельный слой каждый кадр прокрутки — расход батареи ради эффекта, почти
+ * невидимого в тёмной теме), зато сквозь панель в прокрутке читался текст списка.
+ *
  * ТЕНИ ЗДЕСЬ НЕТ, И ЭТО ЗАМЕР, А НЕ ЛЕНЬ. `Modifier.shadow(22.dp)` на почти
- * чёрном фоне (#0B0E14) темнил подложку под панелью на ОДНУ единицу из 255 —
- * чёрной тени на почти чёрном фоне физически быть не может. Штатный механизм
- * Android вдобавок не умеет направить тень вверх (нав-бар прижат снизу, и тень
- * уезжала под него, в полосу, на которую никто не смотрит).
+ * чёрном фоне темнил подложку под панелью на ОДНУ единицу из 255 — чёрной тени
+ * на почти чёрном фоне физически быть не может. Штатный механизм Android вдобавок
+ * не умеет направить тень вверх (нав-бар прижат снизу, и тень уезжала под него,
+ * в полосу, на которую никто не смотрит).
  *
  * КРОМКИ СВЕТА 1px СВЕРХУ БОЛЬШЕ НЕТ. Она была подпоркой под тёмную палитру: на
  * прежних поверхностях блок отличался от фона на 6.4 по L*, край приходилось
  * обводить руками, и полоска бросалась в глаза. Теперь высоту держит ОДИН
- * носитель — непрозрачная заливка светлее страницы на 17.5 по L*.
+ * носитель — непрозрачная заливка светлее страницы на 13.5 по L*.
  */
 fun Modifier.floatSurface(radius: Dp, stroke: Color): Modifier {
     val shape = RoundedCornerShape(radius)
     return this
-        .background(floatFill, shape)
+        .background(Theme.float, shape)
         .border(1.dp, stroke, shape)
 }
 
@@ -599,7 +590,12 @@ fun PinnedPanel(tint: Color, content: @Composable ColumnScope.() -> Unit) {
                 // Ореол — РАНЬШЕ отделки: рисуется под карточкой, а не поверх.
                 .floatHalo(22.dp)
                 // Рамка берёт цвет состояния: на «нет связи» контур красный.
-                .floatSurface(22.dp, tint.copy(alpha = 0.45f))
+                // 0.30, КАК В ОКНЕ И НА iOS. Здесь стояло 0.45 — расхождение
+                // держалось незаметным, пока состояние красилось тёмным синим;
+                // на светлом dim «выключено» тот же 0.45 дал ободок #5D636C,
+                // вдвое ярче собственной заливки панели, и кольцо стало самым
+                // светлым пятном экрана.
+                .floatSurface(22.dp, tint.copy(alpha = 0.30f))
                 // Глушит тапы по пустым местам карточки: без этого палец
                 // проваливался бы на карточку хоста, лежащую ПОД панелью.
                 // Прокрутке не мешает — при протяжке жест выигрывает скролл, а
@@ -673,8 +669,8 @@ fun ShareButtons(code: String, showQr: (String) -> Unit) {
 }
 
 @Composable
-private fun ShareButton(icon: ImageVector, title: String, green: Boolean, modifier: Modifier, tap: () -> Unit) {
-    val hue = if (green) Theme.green else Theme.accent
+private fun ShareButton(icon: ImageVector, title: String, done: Boolean, modifier: Modifier, tap: () -> Unit) {
+    val hue = Theme.accent
     Row(
         modifier
             .height(48.dp)
@@ -682,7 +678,7 @@ private fun ShareButton(icon: ImageVector, title: String, green: Boolean, modifi
             // парящей панели, а панель светлее карточек списка (см. ShareButton
             // в components.slint).
             .background(Theme.tile, RoundedCornerShape(15.dp))
-            .border(1.dp, hue.copy(alpha = if (green) 0.5f else 0.24f), RoundedCornerShape(15.dp))
+            .border(1.dp, hue.copy(alpha = if (done) 0.5f else 0.24f), RoundedCornerShape(15.dp))
             .pressable(onTap = tap),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
@@ -697,12 +693,12 @@ private fun ShareButton(icon: ImageVector, title: String, green: Boolean, modifi
 fun QuietButton(icon: ImageVector, title: String, tap: () -> Unit) {
     var did by remember { mutableStateOf(false) }
     LaunchedEffect(did) { if (did) { delay(1300); did = false } }
-    val hue = if (did) Theme.green else Theme.dim
+    val hue = if (did) Theme.accent else Theme.dim
     Row(
         Modifier
             .fillMaxWidth()
             .height(34.dp)
-            .border(1.dp, if (did) Theme.green.copy(alpha = 0.5f) else Color.White.copy(alpha = 0.08f), RoundedCornerShape(10.dp))
+            .border(1.dp, if (did) Theme.accent.copy(alpha = 0.5f) else Color.White.copy(alpha = 0.08f), RoundedCornerShape(10.dp))
             .pressable(onTap = { tap(); did = true }),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally),

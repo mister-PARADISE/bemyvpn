@@ -1,6 +1,12 @@
 // Векторные иконки (аналоги SF Symbols с iOS) — Path-команды в viewbox 24×24.
+//
+// `hole` — прорезь В ЦВЕТ ТОЙ ПОВЕРХНОСТИ, НА КОТОРОЙ ЗНАЧОК ЛЕЖИТ. Значения по
+// умолчанию берутся из темы, а не вписаны числом: вписанные отстали от палитры
+// на две правки подряд и рисовали поперёк значка щель чужого оттенка.
 // femtovg не рисует эмодзи, поэтому ВСЕ значки — вектор. Стиль единый:
 // заливка для «телесных» форм, обводка 2px для линейных.
+
+import { Theme } from "theme.slint";
 
 // Базовый заливной значок.
 component FillIcon inherits Path {
@@ -30,7 +36,7 @@ export component IconShield inherits FillIcon {
 // Щит с галочкой (checkmark.shield.fill) — «подключено».
 export component IconShieldCheck inherits Rectangle {
     in property <color> tint: white;
-    in property <color> hole: #121722;
+    in property <color> hole: Theme.card;
     FillIcon { width: 100%; height: 100%; tint: root.tint; commands: "M12 2 L20 5 L20 11 C20 16.5 16.6 20.4 12 22 C7.4 20.4 4 16.5 4 11 L4 5 Z"; }
     Path {
         width: 100%; height: 100%;
@@ -43,7 +49,7 @@ export component IconShieldCheck inherits Rectangle {
 // Щит перечёркнут (shield.slash.fill) — «VPN выключен» / «без шифра».
 export component IconShieldSlash inherits Rectangle {
     in property <color> tint: white;
-    in property <color> hole: #121722;
+    in property <color> hole: Theme.card;
     FillIcon { width: 100%; height: 100%; tint: root.tint; commands: "M12 2 L20 5 L20 11 C20 16.5 16.6 20.4 12 22 C7.4 20.4 4 16.5 4 11 L4 5 Z"; }
     Path {
         width: 100%; height: 100%;
@@ -56,7 +62,7 @@ export component IconShieldSlash inherits Rectangle {
 // Щит с замочной скважиной (lock.shield.fill) — «Обычный» протокол.
 export component IconShieldLock inherits Rectangle {
     in property <color> tint: white;
-    in property <color> hole: #121722;
+    in property <color> hole: Theme.card;
     FillIcon { width: 100%; height: 100%; tint: root.tint; commands: "M12 2 L20 5 L20 11 C20 16.5 16.6 20.4 12 22 C7.4 20.4 4 16.5 4 11 L4 5 Z"; }
     FillIcon {
         width: 100%; height: 100%;
@@ -180,7 +186,7 @@ export component IconAntenna inherits Rectangle {
 // Антенна перечёркнута — «нет связи».
 export component IconAntennaOff inherits Rectangle {
     in property <color> tint: white;
-    in property <color> hole: #121722;
+    in property <color> hole: Theme.tile;
     IconAntenna { width: 100%; height: 100%; tint: root.tint; }
     Path { width: 100%; height: 100%; viewbox-width: 24; viewbox-height: 24; stroke: root.hole; stroke-width: 3.6px; fill: transparent; commands: "M4 3 L21 20"; }
     Path { width: 100%; height: 100%; viewbox-width: 24; viewbox-height: 24; stroke: root.tint; stroke-width: 2px; fill: transparent; commands: "M5 4 L20 19"; }
@@ -216,7 +222,7 @@ export component IconEyeOff inherits Rectangle {
 // Предупреждение (exclamationmark.triangle.fill).
 export component IconWarning inherits Rectangle {
     in property <color> tint: white;
-    in property <color> hole: #0B0E14;
+    in property <color> hole: Theme.bg;
     FillIcon { width: 100%; height: 100%; tint: root.tint; commands: "M12 3 L22 20 L2 20 Z"; }
     FillIcon { width: 100%; height: 100%; tint: root.hole; commands: "M11.1 9 L12.9 9 L12.6 14.6 L11.4 14.6 Z M11.1 16.2 L12.9 16.2 L12.9 18 L11.1 18 Z"; }
 }

@@ -255,7 +255,11 @@ private fun RecentChip(app: AppState, id: String, highlighted: Boolean) {
 @Composable
 private fun VpnHero(app: AppState, showInvite: (String) -> Unit) {
     val tint by animateColorAsState(
-        when (app.vpnState) { 1 -> Theme.amber; 2 -> Theme.green; else -> Theme.accent },
+        // ЦВЕТ СОСТОЯНИЯ, А НЕ ЦВЕТ ЭКРАНА. Выключено — dim: раньше здесь стоял
+        // акцент, и после слияния зелёного с мятой кольцо панели горело бы одной
+        // мятой и при «VPN выключен», и при «Подключено» — то есть отвечало бы
+        // одинаково на единственный вопрос, ради которого сюда смотрят.
+        when (app.vpnState) { 1 -> Theme.amber; 2 -> Theme.accent; else -> Theme.dim },
         tween(300), label = "vpnTint",
     )
     val icon: ImageVector = when (app.vpnState) {
@@ -346,12 +350,12 @@ private fun ConnectedExtras(app: AppState, showInvite: (String) -> Unit) {
 }
 
 @Composable
-private fun InviteButton(icon: ImageVector, title: String, green: Boolean, modifier: Modifier, tap: () -> Unit) {
-    val tint = if (green) Theme.green else Theme.accent
+private fun InviteButton(icon: ImageVector, title: String, done: Boolean, modifier: Modifier, tap: () -> Unit) {
+    val tint = Theme.accent
     Row(
         modifier
             .background(Theme.tile, RoundedCornerShape(12.dp))
-            .border(1.dp, if (green) Theme.green.copy(alpha = 0.5f) else Color.White.copy(alpha = 0.08f), RoundedCornerShape(12.dp))
+            .border(1.dp, if (done) Theme.accent.copy(alpha = 0.5f) else Color.White.copy(alpha = 0.08f), RoundedCornerShape(12.dp))
             .pressable(onTap = tap)
             .padding(vertical = 11.dp),
         horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally),
@@ -405,7 +409,7 @@ fun HostCard(app: AppState, host: Host) {
             // имени хоста, ради которого на строку и смотрят.
             //
             // СТУПЕНЬ СЧИТАЕТСЯ ОТ СВОЕЙ КАРТОЧКИ, А НЕ ВПИСАНА ЧИСЛОМ. Жёсткий
-            // s2 совпадал с фоном РАСКРЫТОЙ карточки (обе были #1E2E4E) — плашка
+            // s2 совпадал с фоном РАСКРЫТОЙ карточки — плашка
             // пропадала целиком, от неё оставалась одна рамка.
             Box(
                 Modifier.size(56.dp)
@@ -510,7 +514,7 @@ private fun CapacityBar(host: Host) {
                 Modifier
                     .fillMaxWidth(frac)
                     .height(3.dp)
-                    .background(if (frac < 0.8f) Theme.green else Theme.amber, CircleShape),
+                    .background(if (frac < 0.8f) Theme.accent else Theme.amber, CircleShape),
             )
         }
     }
@@ -527,10 +531,9 @@ private fun UpdateBanner(app: AppState) {
     val ver = app.updateVersion ?: return
     val err = app.updateState == 3
     val tint = if (err) Theme.red else Theme.accent
-    // Кнопка ЗЕЛЁНАЯ: обновиться — действие хорошее, а не тревожное. Синяя
-    // сливалась с акцентом интерфейса и не читалась как «нажми меня». При
+    // Кнопка МЯТНАЯ: обновиться — действие хорошее, а не тревожное. При
     // ошибке — в цвете ошибки, иначе выглядела бы чужой деталью.
-    val btn = if (err) Theme.red else Theme.green
+    val btn = if (err) Theme.red else Theme.accent
 
     Row(
         Modifier
@@ -630,7 +633,7 @@ private fun PingTile(value: String, modifier: Modifier = Modifier) {
 /// и меньшее число выходило тревожнее большего: 137 мс до хоста краснело, 162 мс
 /// до координатора числилось «хорошо».
 ///
-/// ЗЕЛЁНОГО В ПИНГЕ НЕТ ВОВСЕ: в этом приложении зелёный значит «работает», а не
+/// АКЦЕНТА В ПИНГЕ НЕТ ВОВСЕ: мята в этом приложении значит «работает», а не
 /// «быстро». Норма молчит — обычный цвет текста.
 private fun pingTint(value: String): Color {
     val ms = value.substringBefore(' ').toIntOrNull() ?: return Theme.fg

@@ -136,7 +136,7 @@ private fun Cell(
                     .align(Alignment.TopCenter)
                     .padding(start = 38.dp, top = 3.dp)
                     .size(11.dp)
-                    .background(floatFill, androidx.compose.foundation.shape.CircleShape)
+                    .background(Theme.float, androidx.compose.foundation.shape.CircleShape)
                     .padding(2.dp)
                     .background(live, androidx.compose.foundation.shape.CircleShape),
             )
@@ -149,15 +149,14 @@ private fun VpnCell(app: AppState, modifier: Modifier) {
     when {
         app.tab != Tab.VPN -> Cell(
             app, Tab.VPN, Icons.Filled.Shield, "VPN", modifier,
-            live = when (app.vpnState) { 0 -> null; 2 -> Theme.green; else -> Theme.amber },
+            live = when (app.vpnState) { 0 -> null; 2 -> Theme.accent; else -> Theme.amber },
         )
-        // ЗАПУСК — АКЦЕНТ, А НЕ ЗЕЛЁНЫЙ. Зелёный горел ровно тогда, когда
-        // человек НЕ защищён; для приложения, у которого главный вопрос «я
-        // сейчас под защитой?», это обман глазом. Кнопка — действие, а не
-        // состояние. Зелёный освободился под состояние: поднятый туннель,
-        // идущая раздача, живая связь с сервером. «Стоп» остаётся красным: на
-        // кнопке выхода красный понятен без обучения и читается как «прервать»,
-        // а не как «беда».
+        // КНОПКА И СОСТОЯНИЕ ОДНОГО ЦВЕТА — РАЗЛИЧАЕТ ФОРМА. Мята значит и
+        // «это можно нажать», и «это работает»; отдельного зелёного больше нет,
+        // потому что от мяты его было не отличить. Здесь мята одета КНОПКОЙ:
+        // подкраска плюс рамка. Состояние носит другую форму — залитую точку у
+        // соседней ячейки, значок в панели. «Стоп» остаётся красным: на кнопке
+        // выхода красный понятен без обучения и читается как «прервать».
         app.vpnState == 0 -> Action(modifier, Icons.Filled.Bolt, "Старт", Theme.accent) { app.quickConnect() }
         else -> Action(
             modifier, Icons.Filled.Close,
@@ -172,7 +171,7 @@ private fun HostCell(app: AppState, modifier: Modifier) {
     when {
         app.tab != Tab.HOST -> Cell(
             app, Tab.HOST, Icons.Filled.Router, "Хост", modifier,
-            live = if (!busy) null else if (app.hosting) Theme.green else Theme.amber,
+            live = if (!busy) null else if (app.hosting) Theme.accent else Theme.amber,
         )
         busy -> Action(
             modifier, Icons.Filled.Close,

@@ -43,9 +43,9 @@ component HostCard inherits Rectangle {
     border-radius: 16px;
     // РАСКРЫТАЯ КАРТОЧКА — ТА ЖЕ ПОДКРАСКА, ЧТО У ВЫБРАННОГО, НО СЛАБАЯ.
     // Полную сюда класть нельзя: карточка не пустая — внутри неё лежат плитки
-    // s3 (L* 23.8), и подкраска в полную силу подняла бы саму карточку до 23.9,
-    // то есть утопила бы собственное содержимое. Слабая даёт 18.9 — карточка
-    // выше свёрнутых соседей (15.5), а плитки по-прежнему выше её на 4.9.
+    // s3 (L* 19.3), и подкраска в полную силу подняла бы саму карточку до 19.5,
+    // то есть утопила бы собственное содержимое. Слабая даёт 13.1 — карточка
+    // выше свёрнутых соседей (8.1), а плитки по-прежнему выше её на 6.2.
     background: root.expanded ? Theme.touched(Theme.accent) : Theme.card;
     border-width: 1px;
     border-color: root.expanded ? Theme.accent.with-alpha(0.28) : #FFFFFF0D;
@@ -67,8 +67,8 @@ component HostCard inherits Rectangle {
                 // сидел он на самой светлой подложке темы: в списке глаз ловил
                 // его раньше имени хоста, ради которого на строку и смотрят.
                 // ПЛАШКА — ВСЕГДА НА СТУПЕНЬ ВЫШЕ СВОЕЙ КАРТОЧКИ. Жёстко
-                // вписанный s2 совпадал с фоном РАСКРЫТОЙ карточки (обе были
-                // #1E2E4E) — плашка пропадала целиком, от неё оставалась одна
+                // вписанный s2 совпадал с фоном РАСКРЫТОЙ карточки — плашка
+                // пропадала целиком, от неё оставалась одна
                 // рамка. Теперь она идёт следом за карточкой.
                 Rectangle {
                     width: 56px; height: 56px;
@@ -127,7 +127,7 @@ component HostCard inherits Rectangle {
                             width: parent.width * h.fill;
                             height: 3px;
                             border-radius: 1.5px;
-                            background: h.fill < 0.8 ? Theme.green : Theme.amber;
+                            background: h.fill < 0.8 ? Theme.accent : Theme.amber;
                         }
                     }
                 }
@@ -224,7 +224,11 @@ export component VpnPage inherits Rectangle {
     callback do-update();
     callback show-qr(string);
 
-    property <color> tint: vpn-state == 1 ? Theme.amber : vpn-state == 2 ? Theme.green : vpn-state == 3 ? Theme.red : Theme.accent;
+    // ЦВЕТ СОСТОЯНИЯ, А НЕ ЦВЕТ ЭКРАНА. Выключено — dim: раньше здесь стоял
+    // акцент, и после слияния зелёного с мятой кольцо панели горело бы одной
+    // мятой и при «VPN выключен», и при «Подключено» — то есть отвечало бы
+    // одинаково на единственный вопрос, ради которого сюда смотрят.
+    property <color> tint: vpn-state == 1 ? Theme.amber : vpn-state == 2 ? Theme.accent : vpn-state == 3 ? Theme.red : Theme.dim;
 
     // ── ПРОКРУЧИВАЕМОЕ (во всю высоту; панель ПАРИТ поверх) ─────────────
     ScrollView {
@@ -278,10 +282,10 @@ export component VpnPage inherits Rectangle {
                     if root.update-state != 1 && root.update-state != 2: VerticalLayout {
                         alignment: center;
                         Rectangle {
-                            // Зелёная: обновиться — действие хорошее, а не
+                            // Мятная: обновиться — действие хорошее, а не
                             // тревожное. При ошибке — в цвете ошибки, иначе
                             // читалась бы как чужая деталь.
-                            property <color> hue: root.update-state == 3 ? Theme.red : Theme.green;
+                            property <color> hue: root.update-state == 3 ? Theme.red : Theme.accent;
                             width: 116px; height: 38px;
                             border-radius: 11px;
                             background: Theme.picked(self.hue);

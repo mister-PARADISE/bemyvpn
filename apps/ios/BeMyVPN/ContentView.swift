@@ -185,9 +185,9 @@ struct NavBar: View {
         // ТО ЖЕ «ВЫБРАННОЕ», ЧТО И ВЕЗДЕ (Theme.picked), И ТЕПЕРЬ С РАМКОЙ.
         // Ячейка сидит на парящей панели, но красится ступенью s1 с подкраской,
         // как чипы на странице: подкраска в полную силу поверх самой панели
-        // уронила бы акцентную подпись до 3.88 при пороге 4.5. Общий цвет даёт
-        // 4.57, а над панелью ячейка поднята на 2.4 по L* — видно, что она
-        // приподнята, и она не спорит яркостью с панелью состояния наверху.
+        // сделала бы её светлее всего экрана. Общий цвет выбранного даёт L* 19.5
+        // при панели 15.9 — ячейка поднята над своей подложкой на 3.6, видно, что
+        // она приподнята, а подпись держит 7.84 при пороге 4.5.
         // Рамка появилась затем, чтобы «я на этой вкладке» отличалось не одним
         // лишь цветом: раньше у ячейки-перехода её не было вовсе.
         .background(active ? RoundedRectangle(cornerRadius: innerR, style: .continuous).fill(Theme.picked())
@@ -195,7 +195,7 @@ struct NavBar: View {
         .overlay(alignment: .top) {
             if let live {
                 Circle().fill(live).frame(width: 7, height: 7)
-                    .overlay(Circle().stroke(floatFill, lineWidth: 2))
+                    .overlay(Circle().stroke(Theme.float, lineWidth: 2))
                     .offset(x: 19, y: 3)
             }
         }
@@ -234,15 +234,15 @@ struct NavBar: View {
     @ViewBuilder private var vpnCell: some View {
         if app.tab != .vpn {
             cell(.vpn, icon: "shield.fill", label: "VPN",
-                 live: app.vpnState == 0 ? nil : (app.vpnState == 2 ? Theme.green : Theme.amber))
+                 live: app.vpnState == 0 ? nil : (app.vpnState == 2 ? Theme.accent : Theme.amber))
         } else if app.vpnState == 0 {
-            // ЗАПУСК — АКЦЕНТ, А НЕ ЗЕЛЁНЫЙ. Зелёный горел ровно тогда, когда
-            // человек НЕ защищён; для приложения, у которого главный вопрос «я
-            // сейчас под защитой?», это обман глазом. Кнопка — действие, а не
-            // состояние. Зелёный освободился под состояние: поднятый туннель,
-            // идущая раздача, живая связь с сервером. «Стоп» остаётся красным:
-            // на кнопке выхода красный понятен без обучения и читается как
-            // «прервать», а не как «беда».
+            // КНОПКА И СОСТОЯНИЕ ОДНОГО ЦВЕТА — РАЗЛИЧАЕТ ФОРМА. Мята значит и
+            // «это можно нажать», и «это работает»; отдельного зелёного больше
+            // нет, потому что от мяты его было не отличить. Здесь мята одета
+            // КНОПКОЙ: подкраска плюс рамка. Состояние носит другую форму —
+            // залитую точку у соседней ячейки, значок в панели. «Стоп» остаётся
+            // красным: на кнопке выхода красный понятен без обучения и читается
+            // как «прервать», а не как «беда».
             action("bolt.fill", "Старт", hue: Theme.accent) { app.quickConnect() }
         } else {
             action("xmark", app.vpnState == 1 ? "Отмена" : "Стоп", hue: Theme.red) { app.stop() }
@@ -252,7 +252,7 @@ struct NavBar: View {
     @ViewBuilder private var hostCell: some View {
         if app.tab != .host {
             cell(.host, icon: "wifi.router.fill", label: "Хост",
-                 live: (app.hosting || app.starting) ? (app.hosting ? Theme.green : Theme.amber) : nil)
+                 live: (app.hosting || app.starting) ? (app.hosting ? Theme.accent : Theme.amber) : nil)
         } else if app.hosting || app.starting {
             action("xmark", app.starting ? "Отмена" : "Стоп", hue: Theme.red) { app.stopHost() }
         } else {
@@ -372,29 +372,31 @@ struct ShareButtons: View {
     @State private var copied = false
     var body: some View {
         HStack(spacing: 8) {
-            button(copied ? "checkmark" : "doc.on.doc", copied ? "Скопировано" : "Скопировать", green: copied) {
+            button(copied ? "checkmark" : "doc.on.doc", copied ? "Скопировано" : "Скопировать", done: copied) {
                 UIPasteboard.general.string = code
                 UINotificationFeedbackGenerator().notificationOccurred(.success)
                 withAnimation(.easeOut(duration: 0.15)) { copied = true }
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1.3) { withAnimation { copied = false } }
             }
-            button("qrcode", "QR-код", green: false) { qrCode = code }
+            button("qrcode", "QR-код", done: false) { qrCode = code }
         }
     }
-    private func button(_ icon: String, _ title: String, green: Bool, _ tap: @escaping () -> Void) -> some View {
+    /// `done` — «скопировано». ЦВЕТОМ его больше не отличить: подпись кнопки и
+    /// так акцентная. Отличают галочка, слово и рамка вдвое ярче.
+    private func button(_ icon: String, _ title: String, done: Bool, _ tap: @escaping () -> Void) -> some View {
         Button(action: tap) {
             HStack(spacing: 8) {
                 Image(systemName: icon).font(.system(size: 15, weight: .bold))
                 Text(title).font(.system(size: 14, weight: .bold)).lineLimit(1).minimumScaleFactor(0.7)
             }
-            .foregroundColor(green ? Theme.green : Theme.accent)
+            .foregroundColor(Theme.accent)
             .frame(maxWidth: .infinity).frame(height: 48)
             // Ступень s3 — та же, что у плиток рядом: кнопка живёт только внутри
             // парящей панели, а панель светлее карточек списка (см. ShareButton
             // в components.slint).
             .background(RoundedRectangle(cornerRadius: 15, style: .continuous).fill(Theme.tile)
                 .overlay(RoundedRectangle(cornerRadius: 15, style: .continuous)
-                    .stroke(green ? Theme.green.opacity(0.5) : Theme.accent.opacity(0.24), lineWidth: 1)))
+                    .stroke(Theme.accent.opacity(done ? 0.5 : 0.24), lineWidth: 1)))
         }.buttonStyle(PressStyle())
     }
 }
@@ -415,10 +417,10 @@ struct QuietButton: View {
                 Image(systemName: did ? "checkmark" : icon).font(.system(size: 12, weight: .bold))
                 Text(did ? "Готово" : title).font(.system(size: 12.5, weight: .bold))
             }
-            .foregroundColor(did ? Theme.green : Theme.dim)
+            .foregroundColor(did ? Theme.accent : Theme.dim)
             .frame(maxWidth: .infinity).frame(height: 34)
             .background(RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .stroke(did ? Theme.green.opacity(0.5) : Color.white.opacity(0.08), lineWidth: 1))
+                .stroke(did ? Theme.accent.opacity(0.5) : Color.white.opacity(0.08), lineWidth: 1))
         }.buttonStyle(PressStyle())
     }
 }
@@ -474,8 +476,8 @@ struct PinnedPanel<Content: View>: View {
             // переключений состояния завёрнута в `withAnimation`).
             //
             // Модификатор стоит ПОСЛЕДНИМ намеренно: раньше он накрывал только
-            // содержимое, и рамка в цвет состояния продолжала переливаться из
-            // зелёной в синюю отдельно от текста. `.background` навешен выше по
+            // содержимое, и рамка в цвет состояния продолжала переливаться
+            // отдельно от текста. `.background` навешен выше по
             // цепочке, так что накрыть его можно только снаружи.
             //
             // Гасится ВСЁ поддерево, без исключений: перебить это изнутри своим
@@ -554,9 +556,9 @@ struct CardButton: View {
         } label: {
             HStack(spacing: 7) {
                 Image(systemName: copied ? "checkmark" : icon).font(.system(size: 13, weight: .bold))
-                    .foregroundColor(copied ? Theme.green : Theme.accent)
+                    .foregroundColor(Theme.accent)
                 Text(copied ? "Скопировано" : title).font(.system(size: 14, weight: .bold))
-                    .foregroundColor(copied ? Theme.green : Theme.fg)
+                    .foregroundColor(copied ? Theme.accent : Theme.fg)
                     .lineLimit(1).minimumScaleFactor(0.8)
             }
             .frame(maxWidth: .infinity).padding(.vertical, 12)
@@ -564,7 +566,7 @@ struct CardButton: View {
                 RoundedRectangle(cornerRadius: 12, style: .continuous)
                     .fill(Theme.tile)
                     .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .stroke(copied ? Theme.green.opacity(0.5) : Color.white.opacity(0.08), lineWidth: 1))
+                        .stroke(copied ? Theme.accent.opacity(0.5) : Color.white.opacity(0.08), lineWidth: 1))
             )
         }.buttonStyle(PressStyle())
     }
@@ -588,13 +590,13 @@ struct BigCopyButton: View {
                 Image(systemName: copied ? "checkmark" : "doc.on.doc").font(.system(size: 15, weight: .bold))
                 Text(copied ? "Скопировано" : "Скопировать код").fontWeight(.bold)
             }
-            .foregroundColor(copied ? Theme.green : Theme.accent)
+            .foregroundColor(Theme.accent)
             .frame(maxWidth: .infinity).padding(.vertical, 15)
             .background(
                 RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .fill(Theme.picked(copied ? Theme.green : Theme.accent))
+                    .fill(Theme.picked())
                     .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .stroke((copied ? Theme.green : Theme.accent).opacity(0.4), lineWidth: 1))
+                        .stroke(Theme.accent.opacity(copied ? 0.7 : 0.4), lineWidth: 1))
             )
         }.buttonStyle(PressStyle())
     }
@@ -610,8 +612,8 @@ struct PingTile: View {
     /// две, и меньшее число выходило тревожнее большего: 137 мс до хоста
     /// краснело, 162 мс до координатора числилось «хорошо».
     ///
-    /// ЗЕЛЁНОГО В ПИНГЕ НЕТ ВОВСЕ: в этом приложении зелёный значит «работает»,
-    /// а не «быстро». Норма молчит — обычный цвет текста.
+    /// АКЦЕНТА В ПИНГЕ НЕТ ВОВСЕ: мята в этом приложении значит «работает», а не
+    /// «быстро». Норма молчит — обычный цвет текста.
     private var tint: Color {
         guard let ms = Int(value.split(separator: " ").first.map(String.init) ?? "") else { return Theme.fg }
         if ms < 250 { return Theme.fg }
@@ -699,13 +701,13 @@ struct CopyTile: View {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.3) { withAnimation { copied = false } }
         } label: {
             TileBody(label: label, value: copied ? "Скопировано" : value,
-                     valueColor: copied ? Theme.green : Theme.fg, mono: !copied) {
+                     valueColor: copied ? Theme.accent : Theme.fg, mono: !copied) {
                 if !empty {
                     Image(systemName: copied ? "checkmark" : "doc.on.doc")
-                        .foregroundColor(copied ? Theme.green : Theme.accent).font(.system(size: 11, weight: .bold))
+                        .foregroundColor(Theme.accent).font(.system(size: 11, weight: .bold))
                 }
             }
-            .background(tileBackground(copied ? Theme.green.opacity(0.5) : nil))
+            .background(tileBackground(copied ? Theme.accent.opacity(0.5) : nil))
         }.buttonStyle(.plain)
     }
 }
@@ -729,19 +731,6 @@ func tabHeader(_ icon: String, _ title: String) -> some View {
         Text(title).font(.system(size: 26, weight: .heavy)).foregroundColor(Theme.fg)
     }
 }
-/// ЗАЛИВКА ПАРЯЩИХ СЛОЁВ — панели состояния и нав-бара. Одна на оба: над
-/// страницей висят два блока, и свой оттенок, подобранный на глаз, разошёлся бы
-/// с соседом при первой же правке темы.
-///
-/// НЕПРОЗРАЧНАЯ. Прежние 0.97 не покупали ничего: размытия под блоком нет ни на
-/// одной оболочке (родного `.ultraThinMaterial` здесь намеренно нет — с ним одна
-/// платформа выглядела бы иначе, чем две другие), зато сквозь панель на снимке в
-/// прокрутке читался текст списка под ней.
-///
-/// Оттенок НАМЕРЕННО между s2 и s3: парящий блок выше карточек списка, но ниже
-/// плиток, которые лежат внутри него самого.
-let floatFill = Color(hex: 0x233354)   // L* 21.5 — та же лестница, что в Theme.swift
-
 /// Вылет гашения от контура парящего блока наружу. Отступы прокрутки считаются
 /// ОТ НЕГО — покоящееся содержимое не должно попадать в зону гашения, иначе оно
 /// выглядит подтенённым на пустом месте.
@@ -768,26 +757,33 @@ let haloBack: CGFloat = 200
 /// ОТДЕЛКА ПАРЯЩЕГО БЛОКА: заливка, тихая рамка, короткая тень в сторону
 /// подъезда.
 ///
-/// Высоту держит ПЕРЕПАД К ФОНУ: заливка светлее страницы на 17.5 по L*.
-/// Прежняя дальняя тень (radius 22, y 12) на почти-чёрном фоне (#0B0E14)
-/// размывалась в грязь и не сообщала ничего.
+/// Высоту держит ПЕРЕПАД К ФОНУ: заливка (Theme.float — одна на панель и на
+/// нав-бар) светлее страницы на 13.5 по L*. НЕПРОЗРАЧНАЯ: прежние 0.97 не
+/// покупали ничего — размытия под блоком нет ни на одной оболочке (родного
+/// `.ultraThinMaterial` здесь намеренно нет: с ним одна платформа выглядела бы
+/// иначе, чем две другие), зато сквозь панель на снимке в прокрутке читался
+/// текст списка под ней. Прежняя дальняя тень (radius 22, y 12) на почти-чёрном
+/// фоне размывалась в грязь и не сообщала ничего.
 ///
 /// КРОМКИ СВЕТА 1pt СВЕРХУ БОЛЬШЕ НЕТ. Она была подпоркой под тёмную палитру:
 /// на прежних поверхностях блок отличался от фона на 6.4 по L*, и край
-/// приходилось обводить руками. Тень тут ни при чём — до чёрного фону 11 единиц
-/// из 255, тень углубляет его на 1–3 в ЛЮБОЙ палитре. Перепад теперь 17.5, край
+/// приходилось обводить руками. Тень тут ни при чём — до чёрного фону 8 единиц
+/// из 255, тень углубляет его на 1–3 в ЛЮБОЙ палитре. Перепад теперь 13.5, край
 /// виден сам, а полоска сверху просто бросалась в глаза.
 ///
 /// `up` — блок прижат снизу (нав-бар), тень уходит ВВЕРХ, к содержимому. Вниз
 /// она уезжала под сам бар, в полосу, на которую никто не смотрит.
 func floatSurface(radius: CGFloat, stroke: Color, up: Bool = false) -> some View {
     RoundedRectangle(cornerRadius: radius, style: .continuous)
-        .fill(floatFill)
+        .fill(Theme.float)
         .overlay(
             RoundedRectangle(cornerRadius: radius, style: .continuous)
                 .stroke(stroke, lineWidth: 1)
         )
-        .shadow(color: .black.opacity(0.9), radius: 5, x: 0, y: up ? -5 : 5)
+        // ТЕНЬ КОРОТКАЯ, НО С ПОЛОГИМ СПАДОМ. Прежняя (radius 5 при 90 %) у самой
+        // кромки роняла фон почти в чёрный — край ОБРЫВАЛСЯ, а не спадал.
+        // Размытие больше, непрозрачность меньше: вылет тот же, кривая пологая.
+        .shadow(color: .black.opacity(0.6), radius: 8, x: 0, y: up ? -5 : 5)
         // ОРЕОЛ — ПОД всем блоком, включая его чёрную тень: та должна ложиться
         // на уже погашенный фон, ровно как она лежит на пустой странице при
         // коротком списке. `.background` ставится последним именно поэтому.
@@ -937,7 +933,7 @@ struct ServerTab: View {
     // тревоги на то, что пройдёт само. Красный остаётся там, где само не
     // пройдёт: ошибка настроек и ошибка подключения.
     private var tint: Color {
-        app.serverOnline == true ? Theme.green : Theme.amber
+        app.serverOnline == true ? Theme.accent : Theme.amber
     }
     private var icon: String {
         app.serverOnline == false ? "antenna.radiowaves.left.and.right.slash" : "antenna.radiowaves.left.and.right"
@@ -1195,7 +1191,11 @@ struct VPNHero: View {
     @State private var copiedInvite = false
 
     private var tint: Color {
-        switch app.vpnState { case 1: return Theme.amber; case 2: return Theme.green; default: return Theme.accent }
+        // ЦВЕТ СОСТОЯНИЯ, А НЕ ЦВЕТ ЭКРАНА. Выключено — dim: раньше здесь стоял
+        // акцент, и после слияния зелёного с мятой кольцо панели горело бы одной
+        // мятой и при «VPN выключен», и при «Подключено» — то есть отвечало бы
+        // одинаково на единственный вопрос, ради которого сюда смотрят.
+        switch app.vpnState { case 1: return Theme.amber; case 2: return Theme.accent; default: return Theme.dim }
     }
     private var icon: String {
         switch app.vpnState { case 1: return "shield.lefthalf.filled"; case 2: return "checkmark.shield.fill"; default: return "shield.slash.fill" }
@@ -1393,7 +1393,7 @@ struct HostCard: View {
     /// которого на строку и смотрят.
     ///
     /// СТУПЕНЬ СЧИТАЕТСЯ ОТ СВОЕЙ КАРТОЧКИ, А НЕ ВПИСАНА ЧИСЛОМ. Жёсткий s2
-    /// совпадал с фоном РАСКРЫТОЙ карточки (обе были #1E2E4E) — плашка пропадала
+    /// совпадал с фоном РАСКРЫТОЙ карточки — плашка пропадала
     /// целиком, от неё оставалась одна рамка.
     private var flagAvatar: some View {
         ZStack {
@@ -1412,7 +1412,7 @@ struct HostCard: View {
                 ZStack(alignment: .leading) {
                     Capsule().fill(Color.white.opacity(0.09)).frame(height: 3)
                     if frac > 0 {
-                        Capsule().fill(frac < 0.8 ? Theme.green : Theme.amber)
+                        Capsule().fill(frac < 0.8 ? Theme.accent : Theme.amber)
                             .frame(width: max(3, geo.size.width * frac), height: 3)
                     }
                 }
@@ -1460,8 +1460,10 @@ struct HostTab: View {
 
     private var tint: Color {
         if app.starting { return Theme.amber }
-        if app.hosting { return Theme.green }
-        return app.hostError != nil ? Theme.red : Theme.accent
+        if app.hosting { return Theme.accent }
+        // Выключено — dim, а не акцент: иначе «Раздача выключена» и «Раздаю»
+        // носили бы одну мяту.
+        return app.hostError != nil ? Theme.red : Theme.dim
     }
     private var statusTitle: String {
         if app.starting { return "Запускаюсь…" }

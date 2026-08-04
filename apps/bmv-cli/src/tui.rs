@@ -1264,23 +1264,34 @@ fn spawn_refresh(engine: EngineSlot, app: Shared) {
 
 // ── отрисовка ────────────────────────────────────────────────────────────────
 
-// ЦВЕТА — ТЕ ЖЕ, ЧТО В ТРЁХ ГРАФИЧЕСКИХ ОБОЛОЧКАХ (палитра «Подъём»).
+// ЦВЕТА — ТЕ ЖЕ, ЧТО В ТРЁХ ГРАФИЧЕСКИХ ОБОЛОЧКАХ (палитра «Уголь»).
 //
 // Терминал жил своей палитрой и держал самый первый акцент `#5E93FF` — его не
 // трогали ни в одну из двух переделок цвета. Итог: одна и та же запись каталога
 // на четырёх экранах выглядела по-разному, а «синий» означал два разных синих.
 //
+// ЗЕЛЁНОГО ЗДЕСЬ БОЛЬШЕ НЕТ. Акцент — мята, а прежний зелёный «работает»
+// (#34E29E) от неё не отличим глазом: два разных смысла одним цветом. Мята
+// несёт обе роли; в терминале их и без цвета различает слово («Подключено»,
+// «Раздаю») и эмодзи-кружок слева, которому тема не указ.
+//
 // Здесь только те роли, что есть в терминале: поверхностей у него нет, кроме
 // подсветки строки. Значения — из `theme.slint` / `Theme.swift` / `Theme.kt`,
 // менять их надо ВО ВСЕХ ЧЕТЫРЁХ местах разом.
-const ACCENT: Color = Color::Rgb(0x08, 0xAB, 0xFF); // #08ABFF
-const GREEN: Color = Color::Rgb(0x34, 0xE2, 0x9E); // #34E29E — «работает»
+const ACCENT: Color = Color::Rgb(0x2F, 0xE0, 0xA8); // #2FE0A8 — «нажми» и «работает»
 const AMBER: Color = Color::Rgb(0xF5, 0xB1, 0x4C); // #F5B14C — «само пройдёт»
 const RED: Color = Color::Rgb(0xFF, 0x79, 0x74); // #FF7974 — «само не пройдёт»
-const DIM: Color = Color::Rgb(0xA9, 0xB0, 0xBF); // #A9B0BF
+const DIM: Color = Color::Rgb(0xA5, 0xAA, 0xB5); // #A5AAB5
+/// Основной текст. Стоявший здесь именованный `Color::White` брался из палитры
+/// ТЕРМИНАЛА, а не из нашей: на чужой теме он уезжал в свой оттенок мимо всех
+/// расчётов.
+const FG: Color = Color::Rgb(0xED, 0xF1, 0xF8); // #EDF1F8
+/// Фон страницы — под текстом на акцентной заливке (вкладки). Тот же довод, что
+/// и у FG: стоявший здесь `Color::Black` был не наш.
+const BG: Color = Color::Rgb(0x08, 0x09, 0x0B); // #08090B
 /// Фон выбранной строки — ненавязчивая подсветка вместо стрелки слева.
 /// Ступень «приподнятое» из общей палитры (s2).
-const SEL: Color = Color::Rgb(0x1E, 0x2E, 0x4E); // #1E2E4E
+const SEL: Color = Color::Rgb(0x1D, 0x21, 0x28); // #1D2128
 
 /// Единый вид карточки: скруглённая рамка, тусклый контур, акцентный жирный
 /// заголовок и горизонтальный паддинг, чтобы текст не липнул к рамке.
@@ -1326,7 +1337,7 @@ fn ui(f: &mut Frame, a: &App) {
                     dot,
                 ])),
         )
-        .highlight_style(Style::default().fg(Color::Black).bg(ACCENT).add_modifier(Modifier::BOLD))
+        .highlight_style(Style::default().fg(BG).bg(ACCENT).add_modifier(Modifier::BOLD))
         .divider("");
     f.render_widget(tabs, chunks[0]);
 
@@ -1376,7 +1387,7 @@ fn render_input(f: &mut Frame, area: Rect, inp: &Input) {
         Line::from(""),
         Line::from(vec![
             Span::styled("› ", Style::default().fg(ACCENT)),
-            Span::styled(shown, Style::default().fg(Color::White)),
+            Span::styled(shown, Style::default().fg(FG)),
             Span::styled("▏", Style::default().fg(ACCENT)),
         ]),
         Line::from(Span::styled("Enter — ок · Esc — отмена", Style::default().fg(DIM))),
@@ -1412,7 +1423,7 @@ fn vpn_tab(f: &mut Frame, area: Rect, a: &App) {
             let proto = h.map(|h| proto_short(&h.protocol)).unwrap_or_default();
             vec![
                 Line::from(vec![
-                    Span::styled(format!("{} Подключено", dot_on()), Style::default().fg(GREEN).add_modifier(Modifier::BOLD)),
+                    Span::styled(format!("{} Подключено", dot_on()), Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
                     Span::styled(format!("   {name}   ⏳ {}", uptime(*since)), Style::default().fg(DIM)),
                 ]),
                 Line::from(Span::styled(format!("🌍 {ip}    👥 {guests}    {proto}"), Style::default().fg(DIM))),
@@ -1444,7 +1455,7 @@ fn vpn_tab(f: &mut Frame, area: Rect, a: &App) {
                 let usable = view::host_usable(h.online, h.guests, h.max_guests);
                 let mut spans = vec![
                     Span::raw(format!("{dot} ")),
-                    Span::styled(format!("{name}{lock}"), Style::default().fg(if usable { Color::White } else { DIM })),
+                    Span::styled(format!("{name}{lock}"), Style::default().fg(if usable { FG } else { DIM })),
                     Span::styled(
                         format!("   👥 {}/{}{cc}   {}", h.guests, h.max_guests, proto_short(&h.protocol)),
                         Style::default().fg(DIM),
@@ -1475,7 +1486,7 @@ fn vpn_tab(f: &mut Frame, area: Rect, a: &App) {
     };
     let list = List::new(items)
         .block(card(title))
-        .highlight_style(Style::default().bg(SEL).fg(Color::White).add_modifier(Modifier::BOLD))
+        .highlight_style(Style::default().bg(SEL).fg(FG).add_modifier(Modifier::BOLD))
         .highlight_symbol("");
     f.render_stateful_widget(list, rows[1], &mut st);
 }
@@ -1507,12 +1518,12 @@ fn host_tab(f: &mut Frame, area: Rect, a: &App) {
     // ВКЛ = либо демон 24/7 (Linux-сервер), либо раздача в окне — одно понятие.
     let on247 = a.auto_host == Some(true);
     let status = if on247 {
-        Span::styled(format!("{} Раздаю — 24/7 (живёт и после выхода)", dot_on()), Style::default().fg(GREEN).add_modifier(Modifier::BOLD))
+        Span::styled(format!("{} Раздаю — 24/7 (живёт и после выхода)", dot_on()), Style::default().fg(ACCENT).add_modifier(Modifier::BOLD))
     } else {
         match &a.host {
             HostMode::Off => Span::styled(format!("{} Раздача выключена", dot_off()), Style::default().fg(DIM)),
             HostMode::Starting => Span::styled(format!("{} Запускаюсь…", dot_wait()), Style::default().fg(AMBER)),
-            HostMode::On { .. } => Span::styled(format!("{} Раздаю", dot_on()), Style::default().fg(GREEN).add_modifier(Modifier::BOLD)),
+            HostMode::On { .. } => Span::styled(format!("{} Раздаю", dot_on()), Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
             HostMode::Failed(e) => Span::styled(format!("{} {e}", dot_err()), Style::default().fg(RED)),
         }
     };
@@ -1525,7 +1536,7 @@ fn host_tab(f: &mut Frame, area: Rect, a: &App) {
         let guests = a.hosts.iter().find(|h| h.id == code).map(|h| h.guests).unwrap_or(0);
         let up = a.host_started.map(uptime).unwrap_or_default();
         let tail = if up.is_empty() { String::new() } else { format!("    ⏳ {up}") };
-        head.push(Line::from(Span::styled(format!("👥 {guests}/{}{tail}", a.hset.max_guests), Style::default().fg(GREEN))));
+        head.push(Line::from(Span::styled(format!("👥 {guests}/{}{tail}", a.hset.max_guests), Style::default().fg(ACCENT))));
     }
     f.render_widget(Paragraph::new(head).wrap(Wrap { trim: true }).block(card(" Раздача ")), rows[0]);
 
@@ -1546,7 +1557,7 @@ fn host_tab(f: &mut Frame, area: Rect, a: &App) {
     let frow = |label: &str, val: String| {
         ListItem::new(Line::from(vec![
             Span::styled(format!("{label:<14}"), Style::default().fg(DIM)),
-            Span::styled(val, Style::default().fg(Color::White)),
+            Span::styled(val, Style::default().fg(FG)),
         ]))
     };
     let hosting = a.auto_host == Some(true) || matches!(a.host, HostMode::On { .. } | HostMode::Starting);
@@ -1557,7 +1568,7 @@ fn host_tab(f: &mut Frame, area: Rect, a: &App) {
         frow("Пароль", pw),
         frow("Протокол", proto_short(&a.hset.protocol).to_string()),
         frow("Видимость", vis.to_string()),
-        ListItem::new(Line::from(Span::styled(action, Style::default().fg(GREEN).add_modifier(Modifier::BOLD)))),
+        ListItem::new(Line::from(Span::styled(action, Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)))),
     ];
     let mut st = ListState::default();
     st.select(Some(a.host_field.min(HOST_FIELDS - 1)));
@@ -1576,14 +1587,14 @@ fn server_tab(f: &mut Frame, area: Rect, a: &App) {
         .split(area);
 
     // ── Статус-карточка: связь с координатором + состояние своего сервера.
-    // Пинг координатора — по той же линейке, что и до хоста. Зелёным осталось
-    // «на связи»: зелёный тут значит «работает», а не «быстро», и на цифре он
-    // хвалил бы любой отклик, включая красный.
+    // Пинг координатора — по той же линейке, что и до хоста. Мятой осталось
+    // «на связи»: мята тут значит «работает», а не «быстро», и на цифре она
+    // хвалила бы любой отклик, включая красный.
     let link: Vec<Span> = match a.coord_ok {
         Some(true) => {
             let (text, alarm) = view::ping(Some(a.coord_ping));
             vec![
-                Span::styled(format!("{} на связи · ", dot_on()), Style::default().fg(GREEN)),
+                Span::styled(format!("{} на связи · ", dot_on()), Style::default().fg(ACCENT)),
                 Span::styled(text, Style::default().fg(alarm_color(alarm))),
             ]
         }
@@ -1595,11 +1606,11 @@ fn server_tab(f: &mut Frame, area: Rect, a: &App) {
     };
     let ip = if a.my_ip.is_empty() { "—".to_string() } else { a.my_ip.clone() };
     let srv_line = if a.auto_srv == Some(true) {
-        Span::styled(format!("{} свой сервер работает — 24/7 (живёт и после выхода)", dot_on()), Style::default().fg(GREEN).add_modifier(Modifier::BOLD))
+        Span::styled(format!("{} свой сервер работает — 24/7 (живёт и после выхода)", dot_on()), Style::default().fg(ACCENT).add_modifier(Modifier::BOLD))
     } else {
         match &a.srv {
             SrvState::Off => Span::styled(format!("{} свой сервер выключен", dot_off()), Style::default().fg(DIM)),
-            SrvState::On => Span::styled(format!("{} свой сервер работает", dot_on()), Style::default().fg(GREEN).add_modifier(Modifier::BOLD)),
+            SrvState::On => Span::styled(format!("{} свой сервер работает", dot_on()), Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
             SrvState::Failed(e) => Span::styled(format!("{} {e}", dot_err()), Style::default().fg(RED)),
         }
     };
@@ -1617,14 +1628,14 @@ fn server_tab(f: &mut Frame, area: Rect, a: &App) {
     let frow = |label: &str, val: String| {
         ListItem::new(Line::from(vec![
             Span::styled(format!("{label:<16}"), Style::default().fg(DIM)),
-            Span::styled(val, Style::default().fg(Color::White)),
+            Span::styled(val, Style::default().fg(FG)),
         ]))
     };
     let items = vec![
         frow("Координатор", a.coord.clone()),
         frow("Свой домен", domain),
         frow("Свой порт", a.srv_cfg.bind.clone()),
-        ListItem::new(Line::from(Span::styled(action, Style::default().fg(GREEN).add_modifier(Modifier::BOLD)))),
+        ListItem::new(Line::from(Span::styled(action, Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)))),
     ];
     let mut st = ListState::default();
     st.select(Some(sel.min(SRV_FIELDS - 1)));

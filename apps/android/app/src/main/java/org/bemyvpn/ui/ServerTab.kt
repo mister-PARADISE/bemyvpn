@@ -126,7 +126,7 @@ private fun ServerHero(app: AppState) {
     // тревоги на то, что пройдёт само. Красный остаётся там, где само не
     // пройдёт: ошибка настроек и ошибка подключения.
     val tint by animateColorAsState(
-        if (app.serverOnline == true) Theme.green else Theme.amber,
+        if (app.serverOnline == true) Theme.accent else Theme.amber,
         tween(300), label = "srvTint",
     )
     val icon = if (app.serverOnline == false) Icons.Filled.PortableWifiOff else Icons.Filled.SettingsInputAntenna
