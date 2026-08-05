@@ -14,8 +14,6 @@ bmv-tunnel.workspace = true
 async-trait.workspace = true
 tokio.workspace = true
 parking_lot.workspace = true
-tracing.workspace = true
-log.workspace = true
 
 [dev-dependencies]
 # `test-util` — виртуальные часы: без них тест подсказки «проверь соседа» ждал бы

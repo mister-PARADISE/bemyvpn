@@ -149,7 +149,6 @@ where
             }
             if !from_host_allowed(&buf) {
                 // Хост шлёт не нам — в стек это не отдаём (см. from_host_allowed).
-                tracing::debug!("от хоста пакет не нашему адресу ({} Б) — отброшен", buf.len());
                 continue;
             }
             writer.write_all(&buf).await?;

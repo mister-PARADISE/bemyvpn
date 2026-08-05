@@ -294,7 +294,6 @@ impl BmvEngine {
         let port = ep.local_addr()?.port();
         let reflexive = ep.reflexive(&self.stun, Duration::from_secs(3)).await.ok();
         let candidates = my_endpoints(port, reflexive);
-        log::info!("ГОСТЬ: мои кандидаты для хоста: {:?}", candidates);
 
         let resp = coord
             .connect(&bmv_signal::GuestConnect {
@@ -303,7 +302,6 @@ impl BmvEngine {
             })
             .await?;
         let peers = parse_addrs(&resp.host_endpoints);
-        log::info!("ГОСТЬ: адреса хоста от координатора: {:?}", resp.host_endpoints);
         if peers.is_empty() {
             return Err(bmv_common::Error::Net("У этого хоста нет рабочего адреса — выберите другой.".into()));
         }
@@ -444,12 +442,6 @@ impl BmvEngine {
     fn protocol_by_name(&self, name: &str) -> Arc<dyn Protocol> {
         if let Some(p) = self.protocols.get(name) {
             return p;
-        }
-        if !name.is_empty() {
-            log::warn!(
-                "протокол «{name}» этой сборке неизвестен — беру дефолт «{}»",
-                bmv_config::DEFAULT_PROTOCOL
-            );
         }
         self.protocols
             .get(bmv_config::DEFAULT_PROTOCOL)
@@ -716,8 +708,6 @@ impl BmvEngine {
         // хуже отсутствующей.
         let proto = self.default_proto();
 
-        tracing::info!(protocol = proto.name(), "демо loopback");
-
         let (a, b) = memory_pair(16);
 
         // Рукопожатия хоста и гостя идут ОДНОВРЕМЕННО (для Noise это обязательно:
@@ -798,9 +788,10 @@ fn my_endpoints(port: u16, reflexive: Option<SocketAddr>) -> Vec<String> {
     if let Some(ip) = bmv_net::local_ip() {
         out.push(format!("{ip}:{port}"));
     }
-    match reflexive {
-        Some(ext) => out.push(ext.to_string()),
-        None => tracing::warn!("STUN не удался — называю себя без внешнего адреса, из интернета меня не достать"),
+    // STUN не ответил — молча: сказать об этом некому и незачем, а сам факт
+    // «из интернета меня не достать» человек увидит по несостоявшемуся подключению.
+    if let Some(ext) = reflexive {
+        out.push(ext.to_string());
     }
     out.sort();
     out.dedup();
@@ -828,7 +819,6 @@ fn parse_addrs(list: &[String]) -> Vec<SocketAddr> {
     for s in list {
         let Ok(addr) = s.parse::<SocketAddr>() else { continue };
         if !bmv_tunnel::punch_target_allowed(&addr) {
-            log::warn!("ПАНЧ: адрес {addr} отклонён фильтром (внутренний/служебный)");
             continue;
         }
         if !out.contains(&addr) {

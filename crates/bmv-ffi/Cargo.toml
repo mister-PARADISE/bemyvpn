@@ -22,7 +22,6 @@ bmv-net.workspace = true
 bmv-signal.workspace = true
 bmv-tunnel.workspace = true
 tokio.workspace = true
-log.workspace = true
 serde_json.workspace = true
 # Мьютексы БЕЗ отравления: паника под локом иначе отравляла его навсегда, а
 # `.lock().unwrap()` следом — это паника через границу `extern "C"`, то есть

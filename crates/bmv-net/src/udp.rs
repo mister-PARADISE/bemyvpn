@@ -236,9 +236,6 @@ impl UdpEndpoint {
         // открыт. Не возвращаемся сразу: продолжаем слать PUNCH, чтобы и НАШ
         // PUNCH дошёл до пира (за NAT это обязательно — иначе он нас не заведёт).
         let mut punched_peer: Option<SocketAddr> = None;
-        log::info!("ПАНЧ: пробиваю к {} кандидатам: {:?}", peers.len(), peers);
-        let mut rounds = 0u32;
-        let mut stray = 0u32; // пакеты от НЕОЖИДАННЫХ адресов (признак симм. NAT)
         // ОБРАТНОЕ ПРОБИТИЕ: реальные порты строгого (симметричного) хоста,
         // выученные из его контр-панча (STUN назвал ему другой порт). Кап — заслон
         // от флуда подставными адресами; дальше всё равно аутентифицирует Noise.
@@ -246,7 +243,6 @@ impl UdpEndpoint {
         const MAX_LEARNED: usize = 4;
 
         while Instant::now() < deadline {
-            rounds += 1;
             // Панчим кандидатов + выученные реальные порты строгого хоста.
             for p in peers.iter().chain(learned.iter()) {
                 let _ = self.sock.send_to(punch, p).await;
@@ -280,16 +276,9 @@ impl UdpEndpoint {
                                 && peers.iter().any(|c| c.ip() == from.ip())
                             {
                                 learned.push(from);
-                                log::info!("ПАНЧ: выучил реальный порт строгого хоста {from} — обратное пробитие ↩");
                                 // падаем в общий разбор ниже как валидный from
                             } else {
-                                // Пакет с чужого IP (или не-PUNCH с чужого порта):
-                                // диагностика + отброс, как раньше.
-                                stray += 1;
-                                let kind = if &buf[..n] == punch { "PUNCH" } else if &buf[..n] == pack { "PACK" } else { "данные" };
-                                if stray <= 4 {
-                                    log::warn!("ПАНЧ: пакет {kind} от НЕОЖИДАННОГО {from} (нет в кандидатах) — похоже на СИММЕТРИЧНЫЙ NAT");
-                                }
+                                // Пакет с чужого IP (или не-PUNCH с чужого порта): отброс.
                                 continue;
                             }
                         }
@@ -299,14 +288,11 @@ impl UdpEndpoint {
                             // выходим — продолжаем слать свой PUNCH.
                             let _ = self.sock.send_to(pack, from).await;
                             punched_peer = Some(from);
-                            log::info!("ПАНЧ: получил PUNCH от {from} — путь открывается");
                         } else if data == pack {
                             // Пир подтвердил — путь точно двусторонний.
-                            log::info!("ПАНЧ: PACK от {from} за {rounds} раундов — УСПЕХ ✅");
                             return Ok((from, None));
                         } else {
                             // Пир уже перешёл к протоколу — путь есть, пакет не теряем.
-                            log::info!("ПАНЧ: данные от {from} — путь есть ✅");
                             return Ok((from, Some(data.to_vec())));
                         }
                     }
@@ -316,14 +302,8 @@ impl UdpEndpoint {
             }
             // Видели PUNCH и продержали ещё раунд — считаем путь открытым.
             if let Some(peer) = punched_peer {
-                log::info!("ПАНЧ: путь с {peer} держится — УСПЕХ ✅");
                 return Ok((peer, None));
             }
-        }
-        if stray > 0 {
-            log::warn!("ПАНЧ: НЕ пробит за {rounds} раундов; было {stray} пакетов с чужих портов → СИММЕТРИЧНЫЙ NAT (нужен релей)");
-        } else {
-            log::warn!("ПАНЧ: НЕ пробит за {rounds} раундов; ни одного пакета от пира (порт закрыт / пир недостижим / UDP режется)");
         }
         Err(Error::Net("Не получилось соединиться с хостом напрямую. Попробуйте ещё раз или выберите другой.".into()))
     }

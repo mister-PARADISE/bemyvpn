@@ -11,7 +11,6 @@ bmv-common.workspace = true
 bmv-net.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
-tracing.workspace = true
 ipstack.workspace = true
 
 [dev-dependencies]

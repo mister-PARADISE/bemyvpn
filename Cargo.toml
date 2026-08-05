@@ -46,9 +46,14 @@ serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 thiserror = "2"
 anyhow = "1"
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-log = "0.4"
+# ЗДЕСЬ НЕТ И НЕ БУДЕТ `tracing`/`log`/`tracing-subscriber`. Клиент BeMyVPN не
+# ведёт журнала нигде: ни файла, ни системного, ни выключенного по умолчанию.
+# Общая строка версии в этом списке — первый шаг к тому, чтобы запись завелась
+# заново «на минутку для отладки», поэтому её нет. Сторож —
+# crates/bmv-common/tests/no_journal_in_the_client.rs.
+#
+# У координатора (server/coordinator) свой Cargo.toml и своё право писать: это
+# сервер на чужой машине, и её владелец вправе видеть счётчики и ошибки.
 async-trait = "0.1"
 clap = { version = "4", features = ["derive"] }
 rand = "0.8"

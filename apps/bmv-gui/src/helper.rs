@@ -77,20 +77,17 @@ fn token_ok(expected: &str, got: &str) -> bool {
 /// админом (манифест UAC), туннель крутится в нём (см. `inproc_serve`).
 #[cfg(not(windows))]
 pub fn run_helper(port_file: &str, token_file: &str, up_file: &str) -> ! {
-    // Вывод НИКУДА НЕ ПИШЕТСЯ И НЕ ЧИТАЕТСЯ. Окно не породило этот процесс
-    // напрямую и ни кода возврата, ни потока ошибок от него не получит — а
-    // заводить ради этого файл нельзя: VPN не оставляет следов в системе.
-    // Человеку и так довольно знать, что включить не вышло; различать «отменил
-    // пароль» и «помощник не поднялся» надо было мне при отладке, не ему.
-    let raw = std::fs::read_to_string(token_file);
-    if let Err(e) = &raw {
-        eprintln!("хелпер: токен {token_file} не прочитался: {e}");
-    }
-    let token = raw.unwrap_or_default().trim().to_string();
+    // ЭТОТ ПРОЦЕСС НЕ ГОВОРИТ НИЧЕГО И НИКУДА. Ни файла журнала, ни строчки в
+    // stdout/stderr: VPN не оставляет следов в системе, а stderr процесса,
+    // поднятого из-под ярлыка рабочего стола, ОС забирает себе в системный
+    // журнал — то есть «в никуда» его превращает только перенаправление, на
+    // которое полагаться нельзя. Человеку и так довольно знать, что включить не
+    // вышло; различать «отменил пароль» и «помощник не поднялся» надо было мне
+    // при отладке, не ему.
+    let token = std::fs::read_to_string(token_file).unwrap_or_default().trim().to_string();
     // Нет токена — нет и работы. Продолжить значило бы поднять root-хелпера,
     // который принимает команды от кого угодно.
     if token.is_empty() {
-        eprintln!("хелпер: токен пуст — выходим, туннеля не будет");
         std::process::exit(1);
     }
     // Путь к настройкам — ПЯТЫЙ аргумент, и читаем мы его ЗДЕСЬ, а не в main.rs:
@@ -98,12 +95,6 @@ pub fn run_helper(port_file: &str, token_file: &str, up_file: &str) -> ! {
     // оба конца договорённости должны лежать рядом. Пусто/нет — файла настроек у
     // человека нет вовсе, тогда правда в умолчаниях (см. `guest_config`).
     let cfg_file = std::env::args().nth(5).filter(|s| !s.is_empty()).map(std::path::PathBuf::from);
-    // В журнал — иначе «настройки не доехали» выглядит как «настройки не работают»,
-    // а отличить одно от другого в root-процессе больше нечем.
-    match &cfg_file {
-        Some(p) => eprintln!("хелпер: настройки беру из {}", p.display()),
-        None => eprintln!("хелпер: файла настроек нет — беру стандартные"),
-    }
     let up_file = up_file.to_string();
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().expect("rt");
     rt.block_on(async move {
@@ -111,11 +102,10 @@ pub fn run_helper(port_file: &str, token_file: &str, up_file: &str) -> ! {
         let port = listener.local_addr().map(|a| a.port()).unwrap_or(0);
         // 0644, а НЕ 0600: этот файл пишет root, а читает окно под ОБЫЧНЫМ
         // пользователем. См. `write_readable`.
-        match write_readable(std::path::Path::new(port_file), &port.to_string()) {
-            Ok(()) => eprintln!("хелпер: слушаю 127.0.0.1:{port}, порт записан в {port_file}"),
-            // Окно теперь ждёт впустую все 120 секунд — пусть хотя бы знает, почему.
-            Err(e) => eprintln!("хелпер: порт {port} не записался в {port_file}: {e}"),
-        }
+        //
+        // Не записался — окно прождёт впустую все 120 секунд и скажет человеку,
+        // что включить не вышло. Больше сказать нечего: писать причину некуда.
+        let _ = write_readable(std::path::Path::new(port_file), &port.to_string());
         accept_until(listener, &token, up_file.clone(), cfg_file, tokio::time::Instant::now() + CLAIM_WINDOW).await;
         let _ = std::fs::remove_file(&up_file);
     });
@@ -205,7 +195,9 @@ fn write_readable(path: &std::path::Path, data: &str) -> std::io::Result<()> {
 /// подложит, поэтому подмена цели записи невозможна ещё до всяких O_NOFOLLOW.
 /// Имя случайное, а не по pid: pid переиспользуются, и остаток от прошлого
 /// запуска (в т.ч. чужого) мешал бы создать каталог заново.
-pub fn private_dir() -> std::path::PathBuf {
+///
+/// КАТАЛОГ СНОСИТ СЕБЯ САМ — см. `PrivateDir`.
+pub fn private_dir() -> PrivateDir {
     let stamp: u128 = {
         use rand::Rng;
         rand::thread_rng().gen()
@@ -220,7 +212,42 @@ pub fn private_dir() -> std::path::PathBuf {
     // create (не create_all) и без recursive: имя случайное, столкновение = чужой
     // каталог, и тогда лучше упасть на записи, чем писать в него.
     let _ = b.create(&dir);
-    dir
+    PrivateDir(dir)
+}
+
+/// Каталог обмена, живущий ровно столько, сколько владеющая им переменная.
+///
+/// Раньше уборка стояла отдельными строками в КОНЦЕ удачного пути. Но путей
+/// выхода из подъёма помощника три, и два из них до конца не доходят: человек
+/// закрыл запрос пароля (`elevate_launch` вернул ошибку через `?`) или не
+/// записался токен. Каждая такая попытка оставляла каталог во временной папке
+/// навсегда — у владельца за один вечер накопилось три штуки.
+///
+/// `Drop` отрабатывает на ЛЮБОМ выходе из области видимости: удачном, раннем
+/// через `?` и при панике. Единственное, чего он не переживёт, — `SIGKILL`
+/// самому окну; там уборку не сделает никакой код.
+pub struct PrivateDir(std::path::PathBuf);
+
+impl std::ops::Deref for PrivateDir {
+    type Target = std::path::Path;
+    fn deref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl AsRef<std::path::Path> for PrivateDir {
+    fn as_ref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl Drop for PrivateDir {
+    fn drop(&mut self) {
+        // remove_dir_all, а не remove_dir: пустым каталог бывает не всегда — при
+        // обрыве в середине в нём остаются токен, порт или маркер. Оставить
+        // токен на диске хуже, чем оставить пустой каталог.
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
 }
 
 /// Принимать соединения, пока не отработает НАСТОЯЩАЯ сессия — либо пока не
@@ -247,14 +274,9 @@ async fn accept_until(
 ) {
     loop {
         match tokio::time::timeout_at(deadline, listener.accept()).await {
-            Err(_) => {
-                eprintln!("хелпер: окно не подключилось в срок — выхожу, чтобы не висеть root-процессом");
-                return;
-            }
-            Ok(Err(e)) => {
-                eprintln!("хелпер: accept не работает ({e}) — выхожу");
-                return;
-            }
+            // Срок вышел (окно не подключилось) или сокет сломался — уходим,
+            // чтобы не висеть root-процессом.
+            Err(_) | Ok(Err(_)) => return,
             Ok(Ok((conn, _))) => {
                 if serve(conn, token, up_file.clone(), cfg_file.clone()).await {
                     return;
@@ -357,11 +379,7 @@ async fn serve(conn: tokio::net::TcpStream, token: &str, up_file: String, cfg_fi
 /// такую ошибку значило бы чужими руками читать чужие root-овые файлы.
 fn guest_config(cfg_path: Option<&std::path::Path>, coord: String) -> bmv_config::Config {
     let mut cfg = cfg_path
-        .and_then(|p| {
-            bmv_config::Config::from_file(p)
-                .map_err(|_| eprintln!("хелпер: настройки {} не прочитались — беру стандартные", p.display()))
-                .ok()
-        })
+        .and_then(|p| bmv_config::Config::from_file(p).ok())
         .unwrap_or_default();
     cfg.coordinators = vec![coord];
     cfg
@@ -645,9 +663,8 @@ fn spawn_and_connect(on_state: Arc<dyn Fn(i32, String, String) + Send + Sync>, u
         }
         std::thread::sleep(Duration::from_millis(100));
     }
-    let _ = std::fs::remove_file(&token_file);
-    let _ = std::fs::remove_file(&port_file);
-    let _ = std::fs::remove_dir(&dir);
+    // Токен и порт с диска уберёт `Drop` каталога — на этом пути и на всех
+    // ранних тоже (см. `PrivateDir`).
     if port == 0 {
         // ОДНА ФРАЗА, И НИКАКИХ УЛИК. Случая ровно два — пароль не ввели либо
         // помощник не поднялся, — и следующий шаг у человека в обоих один.
@@ -746,19 +763,18 @@ fn elevate_launch(exe: &std::path::Path, port_file: &std::path::Path, token_file
 #[cfg(target_os = "linux")]
 fn elevate_launch(exe: &std::path::Path, port_file: &std::path::Path, token_file: &std::path::Path, up_file: &std::path::Path, cfg_file: &std::path::Path) -> Result<(), String> {
     // pkexec показывает графический запрос пароля (нужен polkit-агент рабочего стола).
-    // Вывод — в тот же журнал, что и на macOS: из-под ярлыка рабочего стола stderr
-    // родителя не видит никто, и молчаливая смерть root-процесса необъяснима.
     //
     // Путь к настройкам — АРГУМЕНТОМ, а не через окружение: pkexec окружение
     // вычищает нарочно, и `BEMYVPN_CONFIG` до помощника бы не доехал.
     let mut cmd = std::process::Command::new("pkexec");
     cmd.arg(exe).arg("--tunnel-helper").arg(port_file).arg(token_file).arg(up_file).arg(cfg_file);
-    // Вывод помощника — в никуда, как и на macOS: файла журнала у нас нет.
+    // Вывод помощника — в /dev/null, как и на macOS. Сам он молчит (см.
+    // `run_helper`), но паника рантайма печатается в stderr мимо нашей воли, а
+    // stderr процесса под ярлыком рабочего стола ОС кладёт в системный журнал.
     cmd.stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
-    cmd.spawn().map(|_| ()).map_err(|e| {
-        eprintln!("pkexec не запустился: {e}");
-        "Нужен пароль администратора — без него VPN не включить.".to_string()
-    })
+    cmd.spawn()
+        .map(|_| ())
+        .map_err(|_| "Нужен пароль администратора — без него VPN не включить.".to_string())
 }
 
 // На Windows отдельного root-процесса нет: приложение уже под админом (манифест
@@ -876,9 +892,33 @@ mod tests {
         assert_eq!(mode, 0o700, "в каталог 0777 сосед подложит симлинк ещё до записи");
         // Два вызова подряд не должны дать один и тот же каталог.
         let other = private_dir();
-        assert_ne!(dir, other);
-        let _ = std::fs::remove_dir_all(&dir);
-        let _ = std::fs::remove_dir_all(&other);
+        assert_ne!(*dir, *other);
+    }
+
+    /// КАТАЛОГ ОБМЕНА УБИРАЕТСЯ ЗА СОБОЙ — на любом выходе, а не только удачном.
+    ///
+    /// У владельца за вечер скопились три таких каталога во временной папке: он
+    /// трижды закрыл запрос пароля, `elevate_launch` вернул ошибку через `?`, и
+    /// уборка в конце удачного пути просто не выполнялась.
+    #[test]
+    fn the_exchange_directory_takes_itself_away() {
+        // Непустой: при обрыве в середине внутри остаются токен и порт, и
+        // `remove_dir` (только пустые) их бы не тронул.
+        let path = {
+            let dir = private_dir();
+            std::fs::write(dir.join("token"), "секрет").unwrap();
+            dir.to_path_buf()
+        };
+        assert!(!path.exists(), "каталог обмена пережил владеющую им переменную: {}", path.display());
+
+        // Ранний выход через `?` — тот самый путь, на котором каталоги и текли.
+        fn failed_attempt() -> Result<(), String> {
+            let dir = private_dir();
+            std::fs::write(dir.join("token"), "секрет").unwrap();
+            Err(dir.display().to_string())
+        }
+        let leaked = std::path::PathBuf::from(failed_attempt().unwrap_err());
+        assert!(!leaked.exists(), "каталог обмена пережил выход через `?`: {}", leaked.display());
     }
 
     /// ROOT-ПОМОЩНИК, К КОТОРОМУ НИКТО НЕ ПРИШЁЛ, ОБЯЗАН УЙТИ САМ.

@@ -22,7 +22,6 @@ bmv-desktop = { path = "../../crates/bmv-desktop" }
 bmv-coordinator = { path = "../../server/coordinator" }
 clap.workspace = true
 tokio.workspace = true
-tracing-subscriber.workspace = true
 # TUI-меню (запуск без аргументов): вкладки VPN/Хост/Сервер, стрелки, живой статус.
 ratatui = "0.29"
 crossterm = { version = "0.28", features = ["event-stream"] }

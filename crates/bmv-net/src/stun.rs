@@ -90,7 +90,6 @@ pub async fn reflexive_addr_on(
         // Ищем отправителя среди опрошенных и проверяем его txid.
         if let Some((_, txid)) = pending.iter().find(|(dst, _)| *dst == from) {
             if let Some(addr) = parse_response(&buf[..n], txid) {
-                log::info!("STUN: мой внешний адрес {addr} (по ответу {from})");
                 return Ok(addr);
             }
         }

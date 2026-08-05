@@ -49,10 +49,7 @@ macro_rules! ffi {
     ($fallback:expr, $body:block) => {
         match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| $body)) {
             Ok(v) => v,
-            Err(_) => {
-                log::error!("паника в FFI-вызове подавлена (иначе abort процесса)");
-                $fallback
-            }
+            Err(_) => $fallback,
         }
     };
 }
@@ -170,9 +167,10 @@ fn sig_engine(coordinator: &str) -> bmv_core::BmvEngine {
     e
 }
 
-// Логгер НЕ ставится сознательно: без `log::set_logger` все `log::` вызовы —
-// no-op, ничего не пишется и не копится. Хост физически не имеет записей о
-// трафике гостей и не может их выдать. Не возвращать буфер логов.
+// В крейте НЕТ НИ ОДНОГО вызова логирования — не «логгер не подключен», а
+// «журналировать нечем и некуда» на уровне исходного кода. Хост физически не
+// имеет записей о трафике гостей и не может их выдать: ни по запросу, ни по
+// повестке, ни по ошибке конфигурации, которая случайно включила бы вывод.
 
 // ── C-строки: helpers ────────────────────────────────────────────────────────
 
@@ -371,10 +369,7 @@ pub extern "C" fn bmv_list_watch(coordinator: *const c_char, since: u64) -> *mut
         let r = RUNTIME.block_on(async { engine.guest_watch(None, since).await });
         let json = match r {
             Ok(u) => format!("{{\"version\":{},\"hosts\":{}}}", u.version, hosts_to_json(&u.hosts)),
-            Err(e) => {
-                log::error!("bmv_list_watch: {e}");
-                "{\"version\":0,\"hosts\":[]}".to_string()
-            }
+            Err(_) => "{\"version\":0,\"hosts\":[]}".to_string(),
         };
         to_c(json)
     })
@@ -514,11 +509,10 @@ pub extern "C" fn bmv_connect(
         let result: std::result::Result<_, String> = RUNTIME.block_on(async move {
             let establish = async {
                 let mut last = String::new();
-                for attempt in 1..=2 {
+                for _attempt in 1..=2 {
                     match engine.guest_establish(&host_id, pw.as_deref(), proto.as_deref()).await {
                         Ok(v) => return Ok(v),
                         Err(e) => {
-                            log::warn!("bmv_connect попытка {attempt}: {e}");
                             last = e.to_string();
                         }
                     }
@@ -533,8 +527,7 @@ pub extern "C" fn bmv_connect(
 
         let cancelled = CONNECT_GEN.load(Ordering::SeqCst) != gen0;
         match result {
-            Ok((peer, link)) if !cancelled => {
-                log::info!("bmv_connect: канал поднят к {peer}");
+            Ok((_peer, link)) if !cancelled => {
                 // Запоминаем параметры — по ним pump_tunnel сам переустановит канал
                 // при обрыве пути (мобильный роуминг), не роняя utun.
                 *RECONNECT.lock() = Some(reconnect_params);
@@ -552,7 +545,6 @@ pub extern "C" fn bmv_connect(
                     // Лок снимаем ДО await (иначе гард живёт через точку ожидания).
                     let stale = PENDING_LINK.lock().take();
                     if let Some(l) = stale {
-                        log::warn!("фаза 2 не наступила за {PHASE2_DEADLINE:?} — гашу канал");
                         let _ = l.close().await;
                         let _ = VPN_STATUS.compare_exchange(1, 0, Ordering::SeqCst, Ordering::SeqCst);
                     }
@@ -580,7 +572,6 @@ pub extern "C" fn bmv_start_tunnel(fd: i32, utun: bool) -> bool {
         let link = match PENDING_LINK.lock().take() {
             Some(l) => l,
             None => {
-                log::error!("bmv_start_tunnel: нет готового канала");
                 set_status(3);
                 return false;
             }
@@ -591,7 +582,6 @@ pub extern "C" fn bmv_start_tunnel(fd: i32, utun: bool) -> bool {
         let hints = params.as_ref().and_then(|p| sig_engine(&p.coordinator).peer_check());
         let gen = CONNECT_GEN.load(Ordering::SeqCst);
         TUNNEL_FD.store(fd, Ordering::SeqCst); // владелец fd — pump_tunnel, здесь только публикуем номер
-        log::info!("bmv_start_tunnel: fd={fd}, utun={utun}, качаю туннель (с авто-реконнектом)");
         // Как переустанавливать канал — ОТДЕЛЬНЫМ параметром, а не «движок внутри
         // качалки»: только так петлю реконнекта можно прогнать в тесте без сети.
         let reestablish = params.map(|p| {
@@ -600,14 +590,8 @@ pub extern "C" fn bmv_start_tunnel(fd: i32, utun: bool) -> bool {
                 async move {
                     let engine = sig_engine(&p.coordinator);
                     match engine.guest_establish(&p.host_id, p.password.as_deref(), p.proto.as_deref()).await {
-                        Ok((peer, l)) => {
-                            log::info!("авто-реконнект: канал восстановлен к {peer}");
-                            Some(l)
-                        }
-                        Err(e) => {
-                            log::warn!("авто-реконнект: {e}");
-                            None
-                        }
+                        Ok((_peer, l)) => Some(l),
+                        Err(_) => None,
                     }
                 }
             }
@@ -615,7 +599,6 @@ pub extern "C" fn bmv_start_tunnel(fd: i32, utun: bool) -> bool {
         let handle = RUNTIME.spawn(async move {
             set_status(2);
             pump_tunnel(fd, utun, link, reestablish, hints, gen).await;
-            log::info!("туннель завершён");
         });
         *SESSION.lock() = Some(handle);
         true
@@ -683,7 +666,6 @@ fn stop_guest_session() {
     signal_stop();
     let finished = RUNTIME.block_on(async { tokio::time::timeout(STOP_WAIT, &mut h).await.is_ok() });
     if !finished {
-        log::error!("качалка не вышла за {STOP_WAIT:?} — добиваю (fd закрою сам)");
         h.abort();
     }
     // Штатно fd уже закрыт владельцем — здесь no-op (close-once). Не no-op только
@@ -773,7 +755,6 @@ pub extern "C" fn bmv_host_start(
         // реентрантный — держать гард через вызов нельзя.
         let already_hosting = HOST_SESSION.lock().is_some();
         if already_hosting {
-            log::warn!("bmv_host_start поверх работающей раздачи — гашу прежнюю");
             bmv_host_stop();
         }
         let mut cfg = bmv_config::Config { coordinators: vec![unsafe { cstr(coordinator) }], ..Default::default() };
@@ -809,7 +790,6 @@ pub extern "C" fn bmv_host_start(
         // свежий код молча и повторяет анонс — делаем то же здесь, и правило
         // становится общим для Android и iOS сразу.
         if announce.as_ref().err().is_some_and(stale_code_signature) {
-            log::warn!("хост-режим: подпись кода не принята — беру свежий код");
             let fresh = RUNTIME.block_on(async {
                 bmv_core::BmvEngine::from_config(bmv_config::Config {
                     coordinators: cfg.coordinators.clone(),
@@ -833,12 +813,8 @@ pub extern "C" fn bmv_host_start(
         }
 
         let hub = match announce {
-            Ok((hub, _, eps)) => {
-                log::info!("хост-режим: анонсирован #{host_id} ({eps:?})");
-                hub
-            }
+            Ok((hub, _, _)) => hub,
             Err(e) => {
-                log::error!("хост-режим не поднялся: {e}");
                 return to_c(host_start_sentinel(&e).to_string());
             }
         };
@@ -872,13 +848,9 @@ pub extern "C" fn bmv_host_start(
                 tokio::select! {
                     guest = hub.accept() => match guest {
                         Some((peer, raw)) => {
-                            log::info!("хост-режим: гость {peer}");
                             let e = engine.clone();
                             tasks.spawn(async move {
-                                match e.host_run_session(peer, raw, true).await {
-                                    Ok(()) => log::info!("гость {peer} отключился"),
-                                    Err(err) => log::warn!("гость {peer}: {err}"),
-                                }
+                                let _ = e.host_run_session(peer, raw, true).await;
                             });
                         }
                         None => break, // hub закрылся
@@ -887,7 +859,6 @@ pub extern "C" fn bmv_host_start(
                     // всё время раздачи (по одному на каждого ушедшего гостя).
                     Some(_) = tasks.join_next() => {}
                     _ = stop.changed() => {
-                        log::info!("хост-режим: стоп");
                         break;
                     }
                 }
@@ -1063,7 +1034,6 @@ async fn pump_tunnel<F, Fut>(
                     }
                     None => {
                         fails += 1;
-                        log::warn!("авто-реконнект: неудача {fails}/{MAX_FAILS}");
                         if fails >= MAX_FAILS {
                             gave_up = true;
                             break;
@@ -1077,8 +1047,7 @@ async fn pump_tunnel<F, Fut>(
         // Свежий device на ТОМ ЖЕ fd (TunFd НЕ закрывает fd на drop).
         let device = match TunFd::new(fd, utun) {
             Ok(d) => d,
-            Err(e) => {
-                log::error!("utun недоступен: {e}");
+            Err(_) => {
                 let _ = l.close().await;
                 gave_up = true;
                 break;
@@ -1096,7 +1065,6 @@ async fn pump_tunnel<F, Fut>(
                 // бэкоффом) держали бы на экране «подключаюсь» две с половиной
                 // минуты вместо честного «отключено» через секунду.
                 if l_arc.peer_said_bye() {
-                    log::info!("хост попрощался (BYE) — сеанс окончен");
                     *ACTIVE_LINK.lock() = None;
                     // Причина — наверх, оболочке: это НЕ ошибка, а штатный конец
                     // раздачи (см. STOP_REASON и bmv_stop_reason).
@@ -1106,14 +1074,12 @@ async fn pump_tunnel<F, Fut>(
                 }
                 // Канал умер (обрыв пути / хост пропал / нас отвергли) → следующая
                 // итерация переустановит его (link уже None). utun не трогаем.
-                log::info!("канал оборвался — пробую восстановить…");
                 true
             }
             _ = NUDGE.notified() => {
                 // Платформа сообщила о смене сети (новая вышка/интерфейс). Старый
                 // NAT-мэппинг мёртв — не ждём keepalive-таймаут, реконнектим сразу.
                 // Это НЕ неудача: сессию оборвали мы сами.
-                log::info!("сеть сменилась — форсирую реконнект");
                 false
             }
             _ = stop.changed() => {
@@ -1131,7 +1097,6 @@ async fn pump_tunnel<F, Fut>(
                 fails = 0; // сессия пожила по-настоящему — прошлые неудачи не в счёт
             } else {
                 fails += 1;
-                log::warn!("сессия умерла за {:?} — неудача {fails}/{MAX_FAILS}", started.elapsed());
                 if fails >= MAX_FAILS {
                     gave_up = true;
                     break;
@@ -1151,7 +1116,6 @@ async fn pump_tunnel<F, Fut>(
         // уже на месте, иначе прочитает ноль и покажет отказ вместо «раздача
         // завершена».
         STOP_REASON.store(if host_left { 1 } else { 2 }, Ordering::SeqCst);
-        log::error!("гостевой туннель завершён извне (неудач подряд: {fails})");
         set_status(3);
     } else {
         let _ = VPN_STATUS.compare_exchange(2, 0, Ordering::SeqCst, Ordering::SeqCst);

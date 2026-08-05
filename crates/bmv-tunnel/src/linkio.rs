@@ -212,7 +212,6 @@ impl AsyncRead for LinkIo {
                     // случится — обрезать IP-пакет нельзя (порча, не пройдёт checksum
                     // → тихо теряется). Роняем пакет ЦЕЛИКОМ (как сетевую потерю,
                     // TCP ретрансмитит) и будим себя за следующим — но НЕ EOF.
-                    tracing::warn!("linkio: пакет {} Б > буфера {} Б — дропнут целиком", pkt.len(), buf.remaining());
                     cx.waker().wake_by_ref();
                     return Poll::Pending;
                 }

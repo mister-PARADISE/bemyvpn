@@ -3,6 +3,7 @@ package org.bemyvpn.ui
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
@@ -445,6 +446,13 @@ private fun ConnectedExtras(host: Host?, live: Boolean, code: String, showInvite
 fun HostCard(app: AppState, host: Host, reveal: suspend (LayoutCoordinates) -> Unit) {
     var password by remember(host.id) { mutableStateOf("") }
     val expanded = app.expandedId == host.id
+    // МЫ СЕЙЧАС В ЭТОЙ СЕТИ. Не «раскрыта» и не «выбрана» — это разные вещи:
+    // раскрыта может быть одна карточка, а работает соединение с другой.
+    //
+    // `vpnState == 2` ОБЯЗАТЕЛЬНО, а не один `connectedTo`: последний ставится
+    // оптимистично, ещё на «Подключаюсь» (`AppState.connect`), и метить им
+    // карточку значило бы обещать работающую сеть до того, как она встала.
+    val live = app.vpnState == 2 && app.connectedTo == host.id
     // РАСКРЫЛИ — ПОКАЗАТЬ КАРТОЧКУ ЦЕЛИКОМ (правило — в `rememberReveal`).
     // Прокрутка сама за выросшей карточкой не идёт: у последней в списке всё,
     // что ниже заголовка, уезжало под нав-бар, и «Подключить» человек не видел
@@ -468,7 +476,7 @@ fun HostCard(app: AppState, host: Host, reveal: suspend (LayoutCoordinates) -> U
     // Пробовали и так, и эдак: сперва мятой красили карточку целиком (цвет
     // доставался оболочке, а не содержимому), потом — плитки внутри (семь
     // подкрашенных ячеек читались как «всё это включено»). Осталась чистая
-    // лестница: свёрнутая карточка s1 (L* 8.1), раскрытая s2 (11.6), плитки
+    // лестница: свёрнутая карточка s1 (L* 6.64), раскрытая s2 (9.06), плитки
     // внутри неё s3 (19.31). Все три различимы, и ни одна ничего не обещает.
     // «Раскрыта» читается ступенью и мятной рамкой (edgeSoft), признак не один.
     val bg by animateColorAsState(if (expanded) Theme.cardHi else Theme.card, tween(200), label = "cardBg")
@@ -476,14 +484,23 @@ fun HostCard(app: AppState, host: Host, reveal: suspend (LayoutCoordinates) -> U
     //
     // Мята с плиток снята: в раскрытой карточке их семь, и семь подкрашенных
     // ячеек читались как «всё это включено», хотя это просто цифры о хосте.
-    // Ступень s3 для того и заведена — она отличима от своей подложки (L* 7.71
+    // Ступень s3 для того и заведена — она отличима от своей подложки (L* 10.25
     // над s2 раскрытой карточки), но остаётся нейтральной. Та же ступень лежит
     // под плитками панели состояния, так что по оттенку они одно и то же.
     val tileFill = Theme.tile
+    // ── «ПОДКЛЮЧЕНО» ГОВОРИТ ТОЛЬКО КОНТУР, ЗАЛИВКА ОСТАЁТСЯ ЛЕСТНИЦЕЙ ──
+    //
+    // Заливка уже занята плотно: ступень отвечает на «раскрыта ли», подкраска
+    // (picked) — на «выбрано ли». Подключён при этом может быть ОДИН хост, а
+    // раскрыт совсем ДРУГОЙ, и увидеть надо оба сразу. Поэтому «подключено»
+    // ушло на контур: мята в полную силу (edge) и ВДВОЕ ТОЛЩЕ (2dp против 1dp),
+    // плюс чип «Подключено» в строке имени. Признак не один цвет: толщина и
+    // слово переживают любое нарушение цветовосприятия.
     val stroke by animateColorAsState(
-        if (expanded) Theme.edgeSoft() else Theme.hairline,
+        if (live) Theme.edge() else if (expanded) Theme.edgeSoft() else Theme.hairline,
         tween(200), label = "cardStroke",
     )
+    val strokeW by animateDpAsState(if (live) 2.dp else 1.dp, tween(200), label = "cardStrokeW")
 
     Column(
         Modifier
@@ -494,7 +511,7 @@ fun HostCard(app: AppState, host: Host, reveal: suspend (LayoutCoordinates) -> U
             .onGloballyPositioned { coords = it }
             .onSizeChanged { cardSize = it }
             .background(bg, RoundedCornerShape(16.dp))
-            .border(1.dp, stroke, RoundedCornerShape(16.dp))
+            .border(strokeW, stroke, RoundedCornerShape(16.dp))
             .padding(14.dp)
             .animateContentSize(tween(200)),
         verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -549,6 +566,11 @@ fun HostCard(app: AppState, host: Host, reveal: suspend (LayoutCoordinates) -> U
                         modifier = Modifier.weight(1f, fill = false),
                         fontSize = 16.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis,
                     )
+                    // Чип «Подключено» — В СТРОКЕ ИМЕНИ, а не отдельной полосой:
+                    // он говорит про сам хост, и читать его надо там же, где
+                    // читают имя. Ширина у чипа фиксированная, у имени сжимаемая
+                    // (weight(1f, fill = false)) — место уступает имя.
+                    if (live) StateChip("Подключено", Theme.accent)
                 }
                 // Подпись: страна · гостей N/M. Значка здесь больше нет.
                 //

@@ -137,21 +137,31 @@ fn the_helper_is_told_where_the_users_settings_live() {
     let mut sock = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
     writeln!(sock, "0123456789abcdef0123456789abcdef").unwrap();
     drop(sock);
+    // ЧТО ЭТОТ ТЕСТ ДОКАЗЫВАЕТ ТЕПЕРЬ — и чего он больше НЕ доказывает.
+    //
+    // Доказывает: пятый аргумент (путь к настройкам) не сбивает разбор командной
+    // строки. Это и была настоящая поломка — помощник просто не поднимался.
+    //
+    // НЕ доказывает: что путь и вправду ПРОЧИТАН. Раньше это проверялось по
+    // строке в журнале — журнала больше нет и не будет: запись о работе VPN, у
+    // того, кто её ведёт, можно потребовать. Наблюдаемого следа у чтения
+    // настроек снаружи нет, и выдумывать его ради теста мы не станем.
     let out = child.wait_with_output().unwrap();
-    let log = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        log.contains(&*cfg_file.to_string_lossy()),
-        "помощник не взял путь к настройкам — туннель поедет на умолчаниях: {log}"
-    );
+    assert!(out.stderr.is_empty(), "помощник не смеет ничего писать наружу");
 
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// Токен не прочитался → хелпер обязан выйти с ошибкой, а не встать root-ом,
-/// принимающим команды от кого угодно. И обязан СКАЗАТЬ об этом в журнал:
-/// иначе окно две минуты ждёт порт и объявляет «привилегии не получены».
+/// Токен не прочитался → хелпер обязан ВЫЙТИ, а не встать root-ом, принимающим
+/// команды от кого угодно.
+///
+/// Прежде тест требовал ещё и объяснения в журнале — «молчаливая смерть
+/// неотличима от отмены пароля». Журнал убран совсем, и требование снято
+/// осознанно: различать эти два случая нужно было при отладке, а человеку в
+/// обоих один и тот же следующий шаг. Доказательство осталось прежней силы —
+/// код возврата и отсутствие опубликованного порта.
 #[test]
-fn a_helper_without_a_token_dies_loudly_instead_of_serving_anyone() {
+fn a_helper_without_a_token_refuses_to_serve_anyone() {
     let dir = temp_dir();
     let (port_file, token_file, up_file) = (dir.join("port"), dir.join("token"), dir.join("up"));
     std::fs::write(&token_file, "   \n").unwrap(); // пусто по существу
@@ -166,8 +176,7 @@ fn a_helper_without_a_token_dies_loudly_instead_of_serving_anyone() {
 
     assert_eq!(out.status.code(), Some(1));
     assert!(!port_file.exists(), "порт без токена публиковать нечему");
-    let log = String::from_utf8_lossy(&out.stderr);
-    assert!(log.contains("токен"), "молчаливая смерть root-процесса неотличима от отмены пароля: {log}");
+    assert!(out.stderr.is_empty(), "помощник не смеет ничего писать наружу");
 
     let _ = std::fs::remove_dir_all(&dir);
 }

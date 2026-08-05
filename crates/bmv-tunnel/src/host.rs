@@ -148,10 +148,8 @@ pub async fn run_host(link: Arc<dyn Link>) -> Result<()> {
     // ретрансмиты и делают только хуже (проверено).
     tcp.max_retransmit_count = 10;
     config.with_tcp_config(tcp);
-    tracing::info!(window, "TCP-окно");
 
     let stack = IpStack::new(config, device);
-    tracing::info!("userspace-стек хоста поднят (без root)");
 
     // Крутим приём потоков, но прерываемся, как только канал умер (keepalive).
     // Стек остановится сам при выходе из функции (Drop → abort фонового таска).
@@ -159,7 +157,7 @@ pub async fn run_host(link: Arc<dyn Link>) -> Result<()> {
     let conns = Arc::new(AtomicUsize::new(0));
     tokio::select! {
         _ = accept_loop(&mut stack, conns) => {}
-        _ = dead_rx => tracing::debug!("keepalive: пир мёртв — закрываю сессию"),
+        _ = dead_rx => {}
     }
     let _ = link.close().await; // прощаемся — гость увидит EOF сразу
     Ok(())
@@ -181,7 +179,6 @@ fn admit_conn(conns: &Arc<AtomicUsize>) -> Option<ConnGuard> {
     let (cap, total_cap) = (max_conns(), max_conns_total());
     if total_cap > 0 && TOTAL_CONNS.fetch_add(1, Ordering::Relaxed) >= total_cap {
         TOTAL_CONNS.fetch_sub(1, Ordering::Relaxed);
-        tracing::warn!(total_cap, "общий лимит соединений хоста достигнут — поток отклонён");
         return None;
     }
     if cap > 0 && conns.fetch_add(1, Ordering::Relaxed) >= cap {
@@ -197,21 +194,16 @@ async fn accept_loop(stack: &mut IpStack, conns: Arc<AtomicUsize>) {
     loop {
         let stream = match stack.accept().await {
             Ok(s) => s,
-            Err(e) => {
-                tracing::debug!("стек завершился: {e}");
-                break;
-            }
+            Err(_) => break,
         };
         match stream {
             IpStackStream::Tcp(tcp) => {
                 let dst = tcp.peer_addr(); // адрес, к которому подключился гость
                 if !dst_allowed(&dst) {
-                    tracing::debug!(%dst, "SSRF-фильтр: адрес запрещён (внутренний), поток отклонён");
                     drop(tcp); // не открываем сокет во внутреннюю сеть
                     continue;
                 }
                 let Some(guard) = admit_conn(&conns) else {
-                    tracing::debug!("лимит соединений гостя достигнут, TCP-поток отклонён");
                     drop(tcp);
                     continue;
                 };
@@ -220,12 +212,10 @@ async fn accept_loop(stack: &mut IpStack, conns: Arc<AtomicUsize>) {
             IpStackStream::Udp(udp) => {
                 let dst = udp.peer_addr();
                 if !dst_allowed(&dst) {
-                    tracing::debug!(%dst, "SSRF-фильтр: адрес запрещён (внутренний), UDP-поток отклонён");
                     drop(udp);
                     continue;
                 }
                 let Some(guard) = admit_conn(&conns) else {
-                    tracing::debug!("лимит соединений гостя достигнут, UDP-поток отклонён");
                     drop(udp);
                     continue;
                 };
@@ -247,23 +237,7 @@ const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 async fn bridge_tcp(mut guest: ipstack::IpStackTcpStream, dst: SocketAddr) {
     let mut server = match tokio::time::timeout(CONNECT_TIMEOUT, TcpStream::connect(dst)).await {
         Ok(Ok(s)) => s,
-        Ok(Err(e)) => {
-            // Кончились дескрипторы — это не «сайт не отвечает», а отказ ВСЕГО
-            // хоста: следом рвётся и сокет к координатору. Такое обязано быть
-            // видно в журнале, а не тонуть среди обычных отказов соединения.
-            // EMFILE=24 (лимит процесса), ENFILE=23 (лимит системы) — на Linux и
-            // macOS номера совпадают.
-            if matches!(e.raw_os_error(), Some(23) | Some(24)) {
-                tracing::warn!(%dst, "КОНЧИЛИСЬ ДЕСКРИПТОРЫ ({e}) — поднимите ulimit -n или BMV_MAX_CONNS_TOTAL");
-            } else {
-                tracing::debug!(%dst, "TCP connect не удался: {e}");
-            }
-            return;
-        }
-        Err(_) => {
-            tracing::debug!(%dst, "TCP connect: таймаут");
-            return;
-        }
+        Ok(Err(_)) | Err(_) => return,
     };
     let _ = tokio::io::copy_bidirectional_with_sizes(&mut guest, &mut server, TCP_COPY_BUF, TCP_COPY_BUF).await;
 }
@@ -273,10 +247,7 @@ async fn bridge_udp(mut guest: ipstack::IpStackUdpStream, dst: SocketAddr) {
     let bind = if dst.is_ipv4() { "0.0.0.0:0" } else { "[::]:0" };
     let server = match UdpSocket::bind(bind).await {
         Ok(s) => s,
-        Err(e) => {
-            tracing::debug!(%dst, "UDP bind не удался: {e}");
-            return;
-        }
+        Err(_) => return,
     };
     if server.connect(dst).await.is_err() {
         return;

@@ -11,4 +11,3 @@ tokio.workspace = true
 parking_lot.workspace = true
 rand.workspace = true
 socket2.workspace = true
-log.workspace = true

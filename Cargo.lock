@@ -900,7 +900,6 @@ dependencies = [
  "qrcode",
  "ratatui",
  "tokio",
- "tracing-subscriber",
 ]
 
 [[package]]
@@ -960,10 +959,8 @@ dependencies = [
  "bmv-protocol",
  "bmv-signal",
  "bmv-tunnel",
- "log",
  "parking_lot",
  "tokio",
- "tracing",
 ]
 
 [[package]]
@@ -977,7 +974,6 @@ dependencies = [
  "bmv-signal",
  "bmv-tunnel",
  "tokio",
- "tracing",
  "tun",
 ]
 
@@ -993,7 +989,6 @@ dependencies = [
  "bmv-signal",
  "bmv-tunnel",
  "libc",
- "log",
  "once_cell",
  "parking_lot",
  "serde_json",
@@ -1031,7 +1026,6 @@ version = "1.0.0"
 dependencies = [
  "async-trait",
  "bmv-common",
- "log",
  "parking_lot",
  "rand 0.8.6",
  "socket2",
@@ -1045,7 +1039,6 @@ dependencies = [
  "async-trait",
  "bmv-common",
  "curve25519-elligator2",
- "log",
  "rand 0.8.6",
  "sha2",
  "snow",
@@ -1076,7 +1069,6 @@ dependencies = [
  "ipstack",
  "tokio",
  "tokio-util",
- "tracing",
 ]
 
 [[package]]

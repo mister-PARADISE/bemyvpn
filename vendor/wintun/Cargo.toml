@@ -52,8 +52,13 @@ version = "0.18"
 [dependencies.libloading]
 version = "0.8"
 
+# ЖУРНАЛ ВЫРЕЗАН НА СБОРКЕ — как и в форке ipstack. Здесь мост из C-логгера
+# самого WinTun (см. src/log.rs) и ругань драйвера про адаптер; всё это следы
+# работы человека. `max_level_off` ставит STATIC_MAX_LEVEL в Off, и макросы
+# `log::` не разворачиваются вовсе.
 [dependencies.log]
 version = "0.4"
+features = ["max_level_off"]
 
 [dependencies.thiserror]
 version = "1.0"

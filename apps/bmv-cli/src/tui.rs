@@ -1326,7 +1326,7 @@ const RED: Color = Color::Rgb(0xFF, 0x79, 0x74);    // #FF7974 — беда, к�
 const DIM: Color = Color::Rgb(0xA5, 0xAA, 0xB5);    // #A5AAB5 — второстепенный текст и «выключено»
 const FG: Color = Color::Rgb(0xED, 0xF1, 0xF8);     // #EDF1F8 — основной текст
 const BG: Color = Color::Rgb(0x08, 0x09, 0x0B);     // #08090B — s0 — страница
-const SEL: Color = Color::Rgb(0x1B, 0x1F, 0x25);    // #1B1F25 — s2 — раскрытая карточка, чип
+const SEL: Color = Color::Rgb(0x16, 0x1A, 0x1F);    // #161A1F — s2 — раскрытая карточка, чип
 // ── КОНЕЦ: значения из design/palette.toml ──
 
 /// НАБОР ДЕТАЛЕЙ терминала (`src/skin.rs`) — всё оформление там.
@@ -1482,7 +1482,14 @@ fn vpn_tab(f: &mut Frame, area: Rect, a: &App) {
                 // трёх других оболочек: подключиться к нему всё равно нельзя.
                 let usable = view::host_usable(h.online, h.guests, h.max_guests);
                 let title = format!("{name}{lock}");
+                // МЫ СЕЙЧАС В ЭТОЙ СЕТИ. Не «выбран курсором» — это разные вещи:
+                // курсор стоит на одной строке, а работает соединение с другой.
+                // Берём id ИЗ ТУННЕЛЯ (`Vpn::On`), а не из «подключаюсь»: там
+                // лежит имя для показа, и метить им строку значило бы обещать
+                // работающую сеть до того, как она встала.
+                let live = matches!(&a.vpn, Vpn::On { id, .. } if id == &h.id);
                 let mut spans = vec![
+                    skin::live_mark(live),
                     Span::raw(format!("{dot} ")),
                     if usable { skin::value(title) } else { skin::hint(title) },
                     skin::hint(format!("   👥 {}/{}{cc}   {}", h.guests, h.max_guests, proto_short(&h.protocol))),

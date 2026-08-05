@@ -509,8 +509,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     wire_coord(&ui, engine, coord_full.clone());
 
     ui.run()?;
-    let _ = std::fs::remove_file(&up_file); // убрать маркер (хелпер тоже уберёт при выходе)
-    let _ = std::fs::remove_dir(&up_dir);
+    // Маркер и его каталог уберёт `Drop` у `up_dir` — в том числе если `ui.run()`
+    // вернул ошибку и мы ушли отсюда через `?` (см. `helper::PrivateDir`).
 
     // Окно закрыто. На Windows туннель живёт в этом процессе, поэтому явно просим
     // откатить маршруты/DNS и даём мгновение отработать (иначе резкий выход

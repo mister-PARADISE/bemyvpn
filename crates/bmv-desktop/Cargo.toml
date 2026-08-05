@@ -25,9 +25,6 @@ bmv-net = { path = "../bmv-net" }
 # Для TunDevice-адаптера (AsyncRead/AsyncWrite поверх tun::AsyncDevice: снятие
 # 4-байтового utun-заголовка на macOS).
 tokio = { workspace = true }
-# Провал блокировки IPv6 и осознанный отказ от неё обязаны быть видны в журнале:
-# это единственный след того, защищён человек или утекает.
-tracing = { workspace = true }
 
 [target.'cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))'.dependencies]
 tun = { workspace = true }
