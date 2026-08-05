@@ -51,10 +51,15 @@ try {
     Start-Sleep -Seconds 2
 
     # Host names are Cyrillic on purpose: rendering them is part of what we check.
+    # No spaces inside a name - Start-Process glues ArgumentList entries together
+    # without quoting, so "Host-1 (CI)" arrived as two arguments and the CLI
+    # refused it. Same names as the Linux job, or the two shots do not compare.
+    $host1 = "$([char]0x0425)$([char]0x043E)$([char]0x0441)$([char]0x0442)-1(CI)"
+    $host2 = "$([char]0x0425)$([char]0x043E)$([char]0x0441)$([char]0x0442)-2(CI)"
     Start-Bg $cli @('--config', "$tmp\host.toml", '--coordinator', 'http://127.0.0.1:3331',
-        'host', '--name', "$([char]0x0425)$([char]0x043E)$([char]0x0441)$([char]0x0442)-1 (CI)") 'host1' | Out-Null
+        'host', '--name', $host1) 'host1' | Out-Null
     Start-Bg $cli @('--config', "$tmp\host.toml", '--coordinator', 'http://127.0.0.1:3332',
-        'host', '--name', "$([char]0x0425)$([char]0x043E)$([char]0x0441)$([char]0x0442)-2 (CI)") 'host2' | Out-Null
+        'host', '--name', $host2) 'host2' | Out-Null
 
     # 2. The catalog must not be empty before we bother with the window.
     $seen = 0

@@ -50,11 +50,15 @@ python3 tools/ci-xff-relay.py 3330 3331:8.8.8.8 3332:77.88.55.88 >"$TMP/relay.lo
 PIDS+=($!)
 sleep 2
 
+# Имена кириллицей — намеренно: их отрисовка и есть часть проверки. Пробелов в
+# имени НЕТ: на Windows тот же запуск идёт через Start-Process, который склеивает
+# аргументы без кавычек, и «Хост-1 (CI)» приезжало двумя аргументами. Имена на
+# обеих ОС обязаны совпадать, иначе снимки не сравнить.
 "$BIN_CLI" --config "$TMP/host.toml" --coordinator http://127.0.0.1:3331 \
-    host --name "Хост-один (CI)" >"$TMP/host1.log" 2>&1 &
+    host --name "Хост-1(CI)" >"$TMP/host1.log" 2>&1 &
 PIDS+=($!)
 "$BIN_CLI" --config "$TMP/host.toml" --coordinator http://127.0.0.1:3332 \
-    host --name "Хост-два (CI)" >"$TMP/host2.log" 2>&1 &
+    host --name "Хост-2(CI)" >"$TMP/host2.log" 2>&1 &
 PIDS+=($!)
 
 # ── 3. Каталог обязан быть непустым ──────────────────────────────────────────
@@ -94,7 +98,10 @@ import -window "$WID" "$OUT/linux-okno.png"
 import -window root "$OUT/linux-ekran.png"
 
 # ── 5. Кадр обязан быть осмысленным ──────────────────────────────────────────
-read -r W H COLORS < <(identify -format '%w %h %k' "$OUT/linux-okno.png")
+# Перевод строки в формате обязателен: без него `identify` не ставит его сам,
+# `read` упирается в конец файла и возвращает 1 — при `set -e` это роняло шаг
+# ПОСЛЕ удачного снимка, ровно на строке отчёта о нём.
+read -r W H COLORS < <(identify -format '%w %h %k\n' "$OUT/linux-okno.png")
 echo "снимок окна: ${W}x${H}, уникальных цветов: $COLORS"
 if [ "$COLORS" -lt 200 ]; then
     echo "ОШИБКА: в кадре $COLORS цветов — окно не отрисовалось." >&2
