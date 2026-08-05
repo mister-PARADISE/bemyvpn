@@ -1420,6 +1420,119 @@ fn qr_image(text: &str) -> Option<slint::Image> {
 mod tests {
     use super::*;
 
+    /// ПЕРЕКЛЮЧЕНИЕ ВКЛАДОК ТУДА И ОБРАТНО НЕ УБИВАЕТ ОКНО.
+    ///
+    /// Регрессия на вылет v1.31: «Хост»/«Сервер» → «VPN» и приложение падало
+    /// насмерть — `Recursion detected` в property-графе Slint. Виноват был
+    /// `changed height` на карточке хоста: Slint вычисляет отслеживаемое
+    /// выражение прямо при рождении карточки, а рождаются карточки внутри
+    /// раскладки списка — та самая раскладка, из которой высота и берётся.
+    ///
+    /// ПУСТОЙ КАТАЛОГ ЭТОГО НЕ ЛОВИТ: нет строк — нет карточек — нет слежения.
+    /// Поэтому хосты кладём обязательно, и обязательно ДО первой раскладки —
+    /// иначе падения не будет, как его не было при пустом списке у владельца.
+    ///
+    /// «Раскладку» гоняем событием мыши: оно проходит по дереву и требует
+    /// геометрию каждого элемента — ровно то, что делает отрисовка окна. Без
+    /// такого пинка свойства раскладки ленивы и не вычисляются вовсе.
+    #[test]
+    fn switching_tabs_back_and_forth_keeps_the_window_alive() {
+        use slint::LogicalPosition;
+        use slint::platform::WindowEvent;
+
+        i_slint_backend_testing::init_no_event_loop();
+        let ui = AppWindow::new().unwrap();
+        ui.window().set_size(slint::LogicalSize::new(400.0, 820.0));
+        ui.set_hosts(str_hosts(&["ALPHA", "BRAVO", "CHARLIE"]));
+        ui.show().unwrap();
+
+        // ВПН → Хост → ВПН → Сервер → ВПН, и ещё круг: владелец жаловался
+        // ровно на этот порядок.
+        for tab in [0, 1, 0, 2, 0, 1, 0, 2, 0] {
+            ui.set_tab(tab);
+            // Пинок раскладке: курсор посреди списка.
+            ui.window()
+                .dispatch_event(WindowEvent::PointerMoved { position: LogicalPosition::new(200.0, 400.0) });
+            i_slint_backend_testing::mock_elapsed_time(Duration::from_millis(50));
+        }
+        ui.hide().unwrap();
+    }
+
+    /// УМНАЯ ПРОКРУТКА ЖИВА: раскрытая карточка не остаётся под нав-баром.
+    ///
+    /// Часовой над починкой вылета: `changed height` заменён на часы, которые
+    /// догоняют рост карточки. Если часы не пойдут (не тот признак в `running`,
+    /// не тот вход в `reveal`), падение не случится — просто список замрёт, и
+    /// «Подключить» у последней карточки уедет под бар, как было до умной
+    /// прокрутки вовсе. Такое молчаливое возвращение и ловим.
+    #[test]
+    fn expanding_the_last_card_pulls_it_out_from_under_the_navbar() {
+        use i_slint_backend_testing::ElementHandle;
+        use slint::LogicalPosition;
+        use slint::platform::WindowEvent;
+
+        const WIN_H: f32 = 820.0;
+        /// Сколько снизу закрыто нав-баром: 66 бар + 30 подъём + 18 завеса.
+        const BAR_COVER: f32 = 114.0;
+
+        i_slint_backend_testing::init_no_event_loop();
+        let ui = AppWindow::new().unwrap();
+        ui.window().set_size(slint::LogicalSize::new(400.0, WIN_H));
+        // Список ЗАВЕДОМО ДЛИННЕЕ ОКНА: на коротком прокручивать нечего, и тест
+        // прошёл бы при любой поломке.
+        ui.set_hosts(str_hosts(&["A", "B", "C", "D", "E", "F", "G", "H", "I", "J"]));
+        ui.show().unwrap();
+        ui.window().dispatch_event(WindowEvent::PointerMoved { position: LogicalPosition::new(200.0, 400.0) });
+
+        // Мишень — ПОСЛЕДНЯЯ карточка, чья шапка ещё в видимой полосе: раскрыв
+        // именно её, «Подключить» без умной прокрутки уедет под нав-бар.
+        let cards: Vec<ElementHandle> = ElementHandle::find_by_element_id(&ui, "VpnPage::card").collect();
+        let last = cards
+            .iter()
+            .rfind(|c| c.absolute_position().y + 20.0 < WIN_H - BAR_COVER)
+            .expect("в видимой полосе нет ни одной карточки — тест меряет пустоту");
+
+        // Тап по шапке.
+        let head = LogicalPosition::new(200.0, last.absolute_position().y + 20.0);
+        ui.window().dispatch_event(WindowEvent::PointerMoved { position: head });
+        ui.window().dispatch_event(WindowEvent::PointerPressed { position: head, button: slint::platform::PointerEventButton::Left });
+        i_slint_backend_testing::mock_elapsed_time(Duration::from_millis(50));
+        ui.window().dispatch_event(WindowEvent::PointerReleased { position: head, button: slint::platform::PointerEventButton::Left });
+
+        // Карточка растёт 220мс, часы догоняют 8 тиков по 30мс. Даём с запасом.
+        for _ in 0..20 {
+            i_slint_backend_testing::mock_elapsed_time(Duration::from_millis(30));
+            ui.window().dispatch_event(WindowEvent::PointerMoved { position: LogicalPosition::new(200.0, 400.0) });
+        }
+
+        let top = last.absolute_position().y;
+        let bottom = top + last.size().height;
+        assert!(last.size().height > 200.0, "карточка не раскрылась: высота {}", last.size().height);
+        assert!(
+            bottom <= WIN_H - BAR_COVER + 1.0,
+            "низ раскрытой карточки на {bottom} — под нав-баром (полоса кончается на {})",
+            WIN_H - BAR_COVER,
+        );
+        assert!(top >= 0.0, "верх карточки уехал за край окна: {top}");
+        ui.hide().unwrap();
+    }
+
+    /// Каталог из голых имён — только чтобы карточки были.
+    #[cfg(test)]
+    fn str_hosts(ids: &[&str]) -> ModelRc<HostRow> {
+        ModelRc::new(VecModel::from(
+            ids.iter()
+                .map(|id| HostRow {
+                    id: (*id).into(),
+                    name: (*id).into(),
+                    usable: true,
+                    ping_alarm: -1,
+                    ..Default::default()
+                })
+                .collect::<Vec<_>>(),
+        ))
+    }
+
     /// Строка каталога собирается, когда замер отклика УЖЕ ЕСТЬ.
     ///
     /// Ловит самодедлок: раньше `host_row` брала `pings.lock()` дважды в одном

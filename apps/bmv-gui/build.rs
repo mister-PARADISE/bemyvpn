@@ -1,7 +1,18 @@
 // Компилирует ui/app.slint в Rust-код на этапе сборки (slint-build), а под Windows
 // ещё встраивает манифест (UAC requireAdministrator + HiDPI) через embed-resource.
 fn main() {
-    slint_build::compile("ui/app.slint").expect("не удалось скомпилировать Slint UI");
+    // Имена элементов разметки в отладочной сборке. Без них тесты оболочки не
+    // могут найти в окне ни одной карточки (`ElementHandle`), а именно они
+    // сторожат вылет при переключении вкладок и умную прокрутку. В релизе
+    // отключено: там это только лишний вес.
+    // Отдельная ручка на случай `cargo test --release`: там профиль уже не debug,
+    // и без неё тесты окна упали бы с жалобой Slint на отсутствие имён.
+    println!("cargo:rerun-if-env-changed=SLINT_EMIT_DEBUG_INFO");
+    let cfg = slint_build::CompilerConfiguration::new().with_debug_info(
+        std::env::var("PROFILE").as_deref() == Ok("debug")
+            || std::env::var("SLINT_EMIT_DEBUG_INFO").is_ok(),
+    );
+    slint_build::compile_with_config("ui/app.slint", cfg).expect("не удалось скомпилировать Slint UI");
 
     // Только когда ЦЕЛЬ сборки — Windows (не хост): встроить манифест приложения.
     // Без него не было бы автозапроса UAC, и VPN не смог бы создать TUN/маршруты.

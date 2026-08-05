@@ -54,3 +54,9 @@ slint-build = "1.8"
 # Встраивает Windows-манифест (UAC requireAdministrator + HiDPI) в exe. На не-Windows
 # целях no-op, поэтому держим в общих build-deps, а вызываем по target в build.rs.
 embed-resource = "3"
+
+[dev-dependencies]
+# Безголовая оболочка Slint для тестов окна: даёт настоящее дерево элементов и
+# раскладку без экрана. Без неё вылет при переключении вкладок ловился бы только
+# руками на живом окне — а он и жил там четыре версии подряд.
+i-slint-backend-testing = "1.14.1"
