@@ -523,6 +523,95 @@ export component CalmButton inherits Rectangle {
     ta := TouchArea { enabled: root.enabled; clicked => { root.clicked(); } }
 }
 
+/// ПОЛЗУНОК ЗНАЧЕНИЯ. СВОЙ, А НЕ ИЗ `std-widgets` — И ЭТО НЕ ВКУСОВЩИНА.
+///
+/// Готовый `Slider` красится приватным `FluentPalette.accent-background`, то
+/// есть системным синим `#005FB8`. Подменить его снаружи НЕЛЬЗЯ: и в приватном
+/// `FluentPalette`, и в общедоступном `Palette` это `out property` — наружу
+/// отдаётся, извне не задаётся (настраивается ровно одно — `color-scheme`).
+/// Поэтому на снимках Windows и Linux дорожка «Лимита гостей» была единственным
+/// пятном мимо палитры: замер дал `#005FB8` на ходе, `#FFFFFF` на кольце бегунка
+/// и `#040406` на неактивной части — ни одного из трёх нет в `design/palette.toml`.
+///
+/// ВТОРАЯ ПРИЧИНА ВАЖНЕЕ ЦВЕТА: у готового виджета вид РАЗНЫЙ на разных
+/// системах. Slint подставляет стиль по хозяину сборки — `fluent` на Windows и
+/// Linux, `cupertino` на маке, — и это разные геометрия, разный бегунок и разный
+/// системный акцент. Расхождение оболочек у нас поломка, а тут оно приезжало
+/// само, без единой строчки в репозитории.
+///
+/// ОТДЕЛКА — ТА ЖЕ, ЧТО У КНОПОК ЛИМИТА ПРЯМО ПОД НИМ, чтобы ползунок и ряд
+/// кнопок читались одним блоком, а не двумя разными:
+///   • дорожка       — `Theme.card` (s1), ровно как невыбранная кнопка лимита;
+///   • пройденный ход — мята, ровно как полоса заполненности карточки хоста;
+///   • бегунок       — общее правило приложения «нажимаемое = подкраска плюс
+///     кромка» (`picked` + `edge`), ровно как выбранная кнопка лимита и чип.
+/// Своей внешности здесь нет ни одной: все четыре цвета — вызовы `Theme`.
+///
+/// ГЕОМЕТРИЯ ПОВТОРЯЕТ ПРЕЖНЮЮ ТОЧКА В ТОЧКУ (замер по снимкам: высота 20,
+/// бегунок 20, дорожка 4). Иначе правка сдвинула бы вниз всё, что стоит на
+/// странице ниже, а страницу обещано сверять с выпуском попиксельно.
+///
+/// ЗНАЧЕНИЕ ХРАНИТ ВЫЗЫВАЮЩИЙ, А НЕ ПОЛЗУНОК (`in`, а не `in-out`): второго
+/// места, где живёт лимит гостей, не заводим — ползунок только сообщает, куда
+/// поставили палец, а куда встать, ему говорят снаружи.
+export component ValueSlider inherits Rectangle {
+    in property <float> minimum: 0;
+    in property <float> maximum: 100;
+    in property <float> value;
+    callback changed(float);
+    callback released(float);
+
+    property <length> thumb-d: 20px;
+    /// Ход ЦЕНТРА бегунка: от полурадиуса слева до полурадиуса справа, иначе
+    /// бегунок на краях вылезал бы за дорожку.
+    property <length> travel: root.width - root.thumb-d;
+    property <float> span: Math.max(root.maximum - root.minimum, 0.000001);
+    property <float> t: Math.clamp((root.value - root.minimum) / root.span, 0.0, 1.0);
+
+    /// Значение под курсором. Отсчёт от полурадиуса и по `travel`, а не по всей
+    /// ширине, — тогда цифра под пальцем совпадает с положением бегунка.
+    pure function value-at(mx: length) -> float {
+        return root.minimum + Math.clamp((mx - root.thumb-d / 2) / root.travel, 0.0, 1.0) * root.span;
+    }
+
+    height: root.thumb-d;
+
+    Rectangle {
+        x: root.thumb-d / 2;
+        y: (root.height - 4px) / 2;
+        width: root.travel;
+        height: 4px;
+        border-radius: 2px;
+        background: Theme.card;
+        Rectangle {
+            x: 0;
+            width: parent.width * root.t;
+            height: 100%;
+            border-radius: parent.border-radius;
+            background: Theme.accent;
+        }
+    }
+    Rectangle {
+        x: root.travel * root.t;
+        y: (root.height - root.thumb-d) / 2;
+        width: root.thumb-d;
+        height: root.thumb-d;
+        border-radius: root.thumb-d / 2;
+        background: Theme.picked(Theme.accent);
+        border-width: 1px;
+        border-color: Theme.edge(Theme.accent, ta.has-hover);
+        animate border-color { duration: 160ms; easing: ease-out; }
+    }
+    ta := TouchArea {
+        moved => { if (self.pressed) { root.changed(root.value-at(self.mouse-x)); } }
+        pointer-event(e) => {
+            if (e.button != PointerEventButton.left) { return; }
+            if (e.kind == PointerEventKind.down) { root.changed(root.value-at(self.mouse-x)); }
+            if (e.kind == PointerEventKind.up) { root.released(root.value); }
+        }
+    }
+}
+
 // ── Карточка и подписи ───────────────────────────────────────────────────────
 
 /// Заголовок раздела. ГОДИТСЯ И В КОЛОНКЕ, И В СТРОКЕ.

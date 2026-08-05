@@ -198,9 +198,14 @@ fun HostTab(app: AppState, bottomPad: Dp) {
             onValueChange = { app.hostMax = it.toInt().coerceIn(1, 256) },
             onValueChangeFinished = { app.applyHostNow() },
             valueRange = 1f..256f,
+            // ДОРОЖКА — `Theme.card` (s1), а не своё «белое с альфой»: ровно та
+            // же ступень, на которой стоит невыбранная кнопка лимита строкой
+            // ниже, и ровно та же, что в окне. Здесь стояло `White 0.12` —
+            // третье по счёту «белое с альфой» в приложении (0.05, 0.08, 0.12),
+            // придуманное на месте и ни с чем не сверенное.
             colors = SliderDefaults.colors(
                 thumbColor = Theme.accent, activeTrackColor = Theme.accent,
-                inactiveTrackColor = Color.White.copy(alpha = 0.12f),
+                inactiveTrackColor = Theme.card,
             ),
         )
         // То же правило, что у чипов: выбранное — своя ступень плюс подкраска,

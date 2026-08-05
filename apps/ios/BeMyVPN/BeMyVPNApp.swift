@@ -7,11 +7,38 @@ import BmvFFI
 struct BeMyVPNApp: App {
     @StateObject private var app = AppState()
     @Environment(\.scenePhase) private var scenePhase
+
+    /// ПОЛЗУНОК — ЕДИНСТВЕННЫЙ КОНТРОЛ, КОТОРЫЙ `.tint` КРАСИТ ЛИШЬ НАПОЛОВИНУ.
+    ///
+    /// У `Slider` из SwiftUI `.tint` берёт только ПРОЙДЕННУЮ часть дорожки.
+    /// Бегунок остаётся системно-белым, а оставшаяся часть дорожки — системным
+    /// серым, и через SwiftUI их не задать вовсе. Под капотом это `UISlider`,
+    /// поэтому берём его прокси оформления: две строки против своего контрола
+    /// на полсотни. Ползунок в приложении один, глобальность здесь не риск.
+    ///
+    /// Цвета те же, что в окне и на Android: бегунок — мята, дорожка — s1
+    /// (`Theme.card`), ровно та ступень, на которой стоит невыбранная кнопка
+    /// лимита прямо под ним.
+    init() {
+        UISlider.appearance().thumbTintColor = UIColor(Theme.accent)
+        UISlider.appearance().maximumTrackTintColor = UIColor(Theme.card)
+    }
+
     var body: some Scene {
         WindowGroup {
             ContentView()
                 .environmentObject(app)
                 .preferredColorScheme(.dark)
+                // АКЦЕНТ ЗАДАЁТСЯ ОДИН РАЗ НА ВСЁ ПРИЛОЖЕНИЕ, А НЕ ПО МЕСТУ.
+                //
+                // Без этой строки `tint` пуст, и система подставляет свой синий
+                // `#0A84FF` везде, где цвет не назван руками: кнопки «Отмена» и
+                // «Закрыть» в тулбарах листов, кнопка алерта, каретка и обе
+                // «капли»-хэндла во всех пяти полях ввода, подсветка выделения
+                // у кода сети (`.textSelection(.enabled)`). Каждое из этих мест
+                // лечится и по отдельности, но тогда лечить придётся каждое
+                // новое, а забытое будет синим и молчать об этом.
+                .tint(Theme.accent)
                 .onAppear { app.start(); fixCatalystWindow() }
                 .onOpenURL { app.openDeepLink($0) }
                 // Вернулись из фона — переспросить связь (см. resumedFromBackground).
