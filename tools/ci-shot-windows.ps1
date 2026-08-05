@@ -126,8 +126,13 @@ try {
     # display driver has. The app must cope on its own, and it does: the GPU
     # path fails at window creation, and the app restarts ITSELF with the
     # software rasteriser (restart_on_software_renderer in main.rs). Setting
-    # SLINT_BACKEND here would test our hint instead of that mechanism - and
-    # would also disarm it, since the variable is its loop guard.
+    # SLINT_BACKEND here would test our hint instead of that mechanism.
+    #
+    # The loop guard is NOT this variable - it is the --software-renderer flag
+    # the app passes to its own child. It was moved out of the environment on
+    # purpose: an environment variable is inherited by the restart the UPDATER
+    # makes, so a machine that once fell back would stay on the slow rasteriser
+    # for good, even after its display driver was installed.
     #
     # Consequence for the code below: the window belongs to a DIFFERENT process
     # than the one we started. The first process exits with code 0 as soon as it
