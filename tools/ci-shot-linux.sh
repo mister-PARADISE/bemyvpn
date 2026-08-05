@@ -64,10 +64,12 @@ export LIBGL_ALWAYS_SOFTWARE=1
 for _ in $(seq 1 50); do xdpyinfo >/dev/null 2>&1 && break; sleep 0.2; done
 xdpyinfo | head -3
 
-xsetroot -solid '#243040'
 fluxbox >"$TMP/fluxbox.log" 2>&1 &
 PIDS+=($!)
 sleep 3
+# Фон красим ПОСЛЕ менеджера, а не до: fluxbox при старте сам заливает корневое
+# окно по своей теме и стёр наш цвет — стол на снимке снова вышел чёрным.
+xsetroot -solid '#243040'
 
 # ── 2. Локальный координатор + подстава внешнего адреса + два хоста ──────────
 printf '[host]\npublic = true\nmax_guests = 8\n' >"$TMP/host.toml"

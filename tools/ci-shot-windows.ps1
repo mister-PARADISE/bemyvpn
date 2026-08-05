@@ -68,6 +68,20 @@ function Invoke-Check([string[]]$argv) {
 }
 
 try {
+    # 0. A bigger desktop. The runner boots at 1024x768, and the app takes its
+    #    height from the screen (window_size in main.rs): 0.8*768-40 = 574 points,
+    #    so the host list and the sharing form ran under the nav bar. 1080 gives
+    #    824 points - the same window a person with an ordinary monitor sees.
+    #    MUST happen BEFORE the GUI starts: the size is read once, at startup.
+    #    Wrapped in try/catch on purpose - a runner image without the cmdlet
+    #    should still produce shots, just smaller ones.
+    try {
+        Set-DisplayResolution -Width 1920 -Height 1080 -Force -ErrorAction Stop
+        Write-Host 'desktop resolution set to 1920x1080'
+    } catch {
+        Write-Host "could not change resolution, keeping the default: $($_.Exception.Message)"
+    }
+
     # 1. Local coordinator, address spoofing relay, two hosts.
     "[host]`npublic = true`nmax_guests = 8" | Set-Content -Path "$tmp\host.toml" -Encoding utf8
     'coordinators = ["http://127.0.0.1:3330"]' | Set-Content -Path "$tmp\gui.toml" -Encoding utf8
@@ -140,6 +154,13 @@ public class Win32 {
     [DllImport("user32.dll")] public static extern void mouse_event(uint f, int dx, int dy, uint d, IntPtr e);
 }
 '@
+
+    # Clear the desktop BEFORE the app opens. The runner keeps its own console
+    # full of JSON on screen; it covered half of what was asked for - the desktop
+    # around the window. Minimising first (rather than after) means our window
+    # never gets minimised along with the rest.
+    (New-Object -ComObject Shell.Application).MinimizeAll()
+    Start-Sleep -Seconds 1
 
     $env:BEMYVPN_CONFIG = "$tmp\gui.toml"
     $started = Start-Bg $gui @() 'gui' $false
