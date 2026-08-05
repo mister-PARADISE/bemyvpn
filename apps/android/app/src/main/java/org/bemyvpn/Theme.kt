@@ -1,6 +1,7 @@
 package org.bemyvpn
 
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.dp
 
 /**
  * Палитра приложения (тёмная тема).
@@ -112,6 +113,9 @@ object Theme {
 
     fun picked(tint: Color = accent): Color = mix(tint, 0.14f)
     fun touched(tint: Color = accent): Color = mix(tint, 0.06f)
+
+    val floatRadius = 22.dp                       // скругление панели и нав-бара
+    val veil = 18.dp                              // вылет гашения от контура наружу; отступы прокрутки считаются от него
 
     const val COPIED_MS = 1300L
     // ── КОНЕЦ: значения из design/palette.toml ──

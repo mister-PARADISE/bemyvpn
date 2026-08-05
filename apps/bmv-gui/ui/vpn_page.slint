@@ -215,6 +215,9 @@ export component VpnPage inherits Rectangle {
     in property <string> vpn-country;
     in property <string> vpn-elapsed;
     in property <int> host-count;
+    /// Сколько СНИЗУ закрыто нав-баром (бар + подъём + гашение). Приходит из
+    /// app.slint, посчитанное от самого бара: см. `bar-cover` там.
+    in property <length> bar-cover;
     /// Версия свежего релиза («1.6») или "" — плашки нет. Приходит от
     /// координатора уже с проверенной подписью, здесь только показ.
     in property <string> update-version;
@@ -243,8 +246,37 @@ export component VpnPage inherits Rectangle {
     // одинаково на единственный вопрос, ради которого сюда смотрят.
     property <color> tint: vpn-state == 1 ? Theme.amber : vpn-state == 2 ? Theme.accent : vpn-state == 3 ? Theme.red : Theme.dim;
 
+    // ── ВИДИМАЯ ПОЛОСА: ЭКРАН МИНУС ОБА ПАРЯЩИХ СЛОЯ ────────────────────
+    //
+    // Ни верх, ни низ окна видимой полосой не являются: сверху лежит панель
+    // состояния со своим гашением, снизу — нав-бар со своим. Карточка, упёршаяся
+    // низом в край окна, «видима» только на бумаге — на деле она под баром.
+    /// Верх полосы — ровно верхний отступ прокрутки (панель + остаток завесы).
+    property <length> band-top: panel.height + 6px;
+    /// Низ полосы: окно минус то, что закрывает нав-бар (`bar-cover`).
+    property <length> band-bottom: scroll.visible-height - root.bar-cover;
+
+    /// ПОКАЗАТЬ РАСКРЫТУЮ КАРТОЧКУ ЦЕЛИКОМ. Одно правило на всю оболочку — и то
+    /// же самое, что на iPhone и на Android.
+    ///
+    /// Помещается в полосу — ЦЕНТРИРУЕМ по вертикали: так спокойнее всего, глазу
+    /// не надо искать, куда уехала карточка. Не помещается — центрировать
+    /// НЕЛЬЗЯ: спрячется её начало вместе с именем хоста. Тогда прижимаем ВЕРХ
+    /// карточки к верху полосы и показываем, сколько влезло.
+    ///
+    /// Сдвиг зажат обоими концами: выше начала списка и ниже его конца прокрутка
+    /// не уедет, поэтому первую карточку короткого списка центрировать нечем —
+    /// она честно остаётся на месте.
+    function reveal(card-y: length, card-h: length) {
+        scroll.viewport-y = max(
+            min(0px, scroll.visible-height - scroll.viewport-height),
+            min(0px, (card-h <= root.band-bottom - root.band-top
+                      ? root.band-top + (root.band-bottom - root.band-top - card-h) / 2
+                      : root.band-top) - card-y));
+    }
+
     // ── ПРОКРУЧИВАЕМОЕ (во всю высоту; панель ПАРИТ поверх) ─────────────
-    // Имя нужно ради умной прокрутки к раскрытой карточке (`scroll.reveal`).
+    // Имя нужно ради умной прокрутки к раскрытой карточке (`reveal` выше).
     scroll := PageScroll {
         panel-h: panel.height;
 
@@ -421,10 +453,7 @@ export component VpnPage inherits Rectangle {
                 // его нечем было бы остановить.
                 root.expanded-host(root.expanded);
             }
-            // РАСКРЫЛИ — ПОДТЯНУТЬ КАРТОЧКУ В ВИДИМОЕ. Прокрутка сама за
-            // выросшей карточкой не идёт: у последней в списке всё, что ниже
-            // заголовка, уезжало под нав-бар, и «Подключить» человек не видел
-            // вовсе.
+            // РАСКРЫЛИ — ПОКАЗАТЬ КАРТОЧКУ ЦЕЛИКОМ (правило — в `reveal`).
             //
             // ЕДЕМ ЗА САМОЙ ВЫСОТОЙ, А НЕ ПО ЧАСАМ И НЕ ПО ОДНОМУ РЫВКУ В
             // МОМЕНТ НАЖАТИЯ. Сразу после нажатия прокручивать НЕЧЕГО: страница
@@ -434,7 +463,7 @@ export component VpnPage inherits Rectangle {
             // 220мс, и список едет вместе с ней, доезжая ровно к концу роста.
             // Отмерять миллисекунды не приходится.
             changed height => {
-                if (root.expanded == h.id) { scroll.reveal(card.y, card.height); }
+                if (root.expanded == h.id) { root.reveal(card.y, card.height); }
             }
             connect(id) => { root.connect(id); }
             copy-text(t) => { root.copy-text(t); }

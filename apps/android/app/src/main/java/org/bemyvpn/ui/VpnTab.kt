@@ -73,10 +73,11 @@ import org.bemyvpn.Theme
 import org.bemyvpn.countryLabel
 import org.bemyvpn.hostFlag
 import org.bemyvpn.uptimeText
-import androidx.compose.foundation.ExperimentalFoundationApi
-import androidx.compose.foundation.relocation.BringIntoViewRequester
-import androidx.compose.foundation.relocation.bringIntoViewRequester
-import androidx.compose.ui.geometry.Rect
+import androidx.compose.foundation.ScrollState
+import androidx.compose.foundation.gestures.animateScrollBy
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.layout.LayoutCoordinates
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.IntSize
@@ -100,10 +101,16 @@ fun VpnTab(app: AppState, bottomPad: Dp, openScanner: () -> Unit) {
     // Панель — НАЛОЖЕНИЕ поверх прокрутки: список хостов идёт во всю высоту и
     // уходит ПОД неё (см. FloatingPanelLayout).
     FloatingPanelLayout(panel = { VpnHero(app) { inviteCode = it } }) { panelH ->
+    val scroll = rememberScrollState()
+    // Окно прокрутки МЕРЯЕМ, а не выводим из экрана: сверху его режет системная
+    // строка состояния, и «высота экрана» ошиблась бы ровно на неё.
+    var viewport by remember { mutableStateOf<LayoutCoordinates?>(null) }
+    val reveal = rememberReveal(scroll, viewport, topInset = panelH + 6.dp, bottomInset = bottomPad)
+    Box(Modifier.fillMaxSize().onGloballyPositioned { viewport = it }) {
     Column(
         Modifier
             .fillMaxSize()
-            .verticalScroll(rememberScrollState())
+            .verticalScroll(scroll)
             .padding(horizontal = 20.dp)
             // Отступ = высота панели плюс ОСТАТОК ЗАВЕСЫ: панель меряется вместе
             // со своей нижней рамкой в 12dp, а гашение уходит от контура на 18 —
@@ -185,12 +192,53 @@ fun VpnTab(app: AppState, bottomPad: Dp, openScanner: () -> Unit) {
             Column(
                 Modifier.alpha(dim),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
-            ) { shown.forEach { h -> HostCard(app, h, bottomPad) } }
+            ) { shown.forEach { h -> HostCard(app, h, reveal) } }
         }
+    }
     }
     }
 
     inviteCode?.let { QrSheet(code = it) { inviteCode = null } }
+}
+
+/**
+ * ПОКАЗАТЬ РАСКРЫТУЮ КАРТОЧКУ ЦЕЛИКОМ. Одно правило на всю оболочку — и то же
+ * самое, что на iPhone и в окне.
+ *
+ * ВИДИМАЯ ПОЛОСА — ЭТО НЕ ЭКРАН. Сверху её режет парящая панель состояния
+ * (`topInset` — её замеренная высота плюс остаток завесы, тот же отступ, что у
+ * содержимого), снизу — нав-бар со своим гашением (`bottomInset` = `bottomPad`,
+ * тоже замеренный). Карточка, упёршаяся низом в край экрана, «видима» только на
+ * бумаге: на деле она лежит под баром — на этом уже обжигались.
+ *
+ * Помещается в полосу — ЦЕНТРИРУЕМ: глазу не надо искать, куда уехала карточка.
+ * Не помещается — центрировать НЕЛЬЗЯ, спрячется её начало вместе с именем
+ * хоста; тогда прижимаем ВЕРХ карточки к верху полосы и показываем, сколько
+ * влезло. Сдвиг зажимает сама прокрутка, поэтому первую карточку короткого
+ * списка центрировать нечем — она честно остаётся на месте.
+ */
+@Composable
+private fun rememberReveal(
+    scroll: ScrollState,
+    viewport: LayoutCoordinates?,
+    topInset: Dp,
+    bottomInset: Dp,
+): suspend (LayoutCoordinates) -> Unit {
+    val density = LocalDensity.current
+    return { card ->
+        val vp = viewport
+        if (vp != null && vp.isAttached && card.isAttached) {
+            val top = with(density) { topInset.toPx() }
+            val bottom = vp.size.height - with(density) { bottomInset.toPx() }
+            val cardH = card.size.height.toFloat()
+            val band = bottom - top
+            val want = if (cardH <= band) top + (band - cardH) / 2 else top
+            // Где карточка СЕЙЧАС относительно окна прокрутки (сдвиг прокрутки
+            // уже учтён самой раскладкой).
+            val now = vp.localPositionOf(card, Offset.Zero).y
+            scroll.animateScrollBy(now - want, tween(250))
+        }
+    }
 }
 
 /** Поле «КОД СЕТИ» + вставить из буфера + перейти. */
@@ -393,23 +441,16 @@ private fun ConnectedExtras(host: Host?, live: Boolean, code: String, showInvite
 
 // ── Карточка хоста ───────────────────────────────────────────────────────────
 
-@OptIn(ExperimentalFoundationApi::class)
 @Composable
-fun HostCard(app: AppState, host: Host, clearance: Dp) {
+fun HostCard(app: AppState, host: Host, reveal: suspend (LayoutCoordinates) -> Unit) {
     var password by remember(host.id) { mutableStateOf("") }
     val expanded = app.expandedId == host.id
-    // РАСКРЫЛИ — ПОДТЯНУТЬ КАРТОЧКУ В ВИДИМОЕ. Прокрутка сама за выросшей
-    // карточкой не идёт: у последней в списке всё, что ниже заголовка, уезжало
-    // под нав-бар, и «Подключить» человек не видел вовсе — на снимке владельца
-    // кнопку срезало ровно посередине.
-    //
-    // Просим показать карточку ВМЕСТЕ С НИЖНИМ ОТСТУПОМ прокрутки: сама по себе
-    // она «видима» и упираясь низом в край экрана, то есть под баром. С отступом
-    // низ встаёт ровно там же, где встаёт при прокрутке до конца, — на верхней
-    // кромке гашения.
-    val requester = remember { BringIntoViewRequester() }
+    // РАСКРЫЛИ — ПОКАЗАТЬ КАРТОЧКУ ЦЕЛИКОМ (правило — в `rememberReveal`).
+    // Прокрутка сама за выросшей карточкой не идёт: у последней в списке всё,
+    // что ниже заголовка, уезжало под нав-бар, и «Подключить» человек не видел
+    // вовсе — на снимке владельца кнопку срезало ровно посередине.
+    var coords by remember { mutableStateOf<LayoutCoordinates?>(null) }
     var cardSize by remember { mutableStateOf(IntSize.Zero) }
-    val clearancePx = with(LocalDensity.current) { clearance.toPx() }
     // ЖДЁМ, ПОКА ВЫСОТА ВСТАНЕТ, ПО САМОЙ ВЫСОТЕ, А НЕ ПО ЧАСАМ. Раскрытие — это
     // ДВЕ анимации подряд: начинка разъезжается (AnimatedVisibility, 200мс), а
     // коробка догоняет её размер (animateContentSize, ещё 200мс со сдвигом).
@@ -420,9 +461,7 @@ fun HostCard(app: AppState, host: Host, clearance: Dp) {
     LaunchedEffect(expanded, cardSize) {
         if (!expanded) return@LaunchedEffect
         delay(80)
-        requester.bringIntoView(
-            Rect(0f, 0f, cardSize.width.toFloat(), cardSize.height + clearancePx),
-        )
+        coords?.let { reveal(it) }
     }
     // ВНУТРИ КАРТОЧКИ МЯТЫ НЕТ — ОДНИ СТУПЕНИ.
     //
@@ -449,7 +488,10 @@ fun HostCard(app: AppState, host: Host, clearance: Dp) {
     Column(
         Modifier
             .fillMaxWidth()
-            .bringIntoViewRequester(requester)
+            // Замер и место — САМОЙ ВНЕШНЕЙ коробкой карточки: ниже по цепочке
+            // идут заливка, рамка и отступы, и мерить надо то, что человек видит
+            // целиком, а не начинку.
+            .onGloballyPositioned { coords = it }
             .onSizeChanged { cardSize = it }
             .background(bg, RoundedCornerShape(16.dp))
             .border(1.dp, stroke, RoundedCornerShape(16.dp))

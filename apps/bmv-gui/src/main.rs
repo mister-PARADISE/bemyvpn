@@ -264,9 +264,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let (w, h) = window_size();
         ui.set_win_w(w);
         ui.set_win_h(h);
-        // Тянуть окно мышью разрешено только на Windows — см. `resizable` в
-        // app.slint.
-        ui.set_resizable(cfg!(windows));
+        // Тянуть окно мышью нельзя НИГДЕ: min = max = этот размер (см. app.slint).
+        // Исключение для Windows было и ОТМЕНЕНО владельцем 04.08 — вид один на
+        // всех ОС.
     }
     ui.set_coord_url(view::without_scheme(&coord).into());
     ui.set_coord_field(view::without_scheme(&coord).into());
