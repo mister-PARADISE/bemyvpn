@@ -113,6 +113,7 @@ public class Win32 {
     [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
     [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int cmd);
     [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
+    [DllImport("dwmapi.dll")] public static extern int DwmGetWindowAttribute(IntPtr h, int attr, out RECT r, int size);
 }
 '@
     [void][Win32]::ShowWindow($h, 5)   # SW_SHOW
@@ -124,8 +125,15 @@ public class Win32 {
     Add-Type -AssemblyName System.Drawing
     Add-Type -AssemblyName System.Windows.Forms
 
+    # DWMWA_EXTENDED_FRAME_BOUNDS (9), not GetWindowRect. GetWindowRect returns
+    # the rect INCLUDING the invisible DWM resize border, so the capture picked
+    # up strips of whatever sat behind the window - and those foreign pixels fed
+    # the "is the frame painted" check with colours the app never drew.
     $r = New-Object Win32+RECT
-    [void][Win32]::GetWindowRect($h, [ref]$r)
+    if ([Win32]::DwmGetWindowAttribute($h, 9, [ref]$r, 16) -ne 0) {
+        [void][Win32]::GetWindowRect($h, [ref]$r)
+        Write-Host 'dwm frame bounds unavailable, falling back to GetWindowRect'
+    }
     Write-Host "window rect: $($r.Left),$($r.Top) $($r.Right - $r.Left)x$($r.Bottom - $r.Top)"
 
     function Grab([int]$x, [int]$y, [int]$w, [int]$ht, [string]$path) {

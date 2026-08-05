@@ -9,7 +9,9 @@ name = "bemyvpn"
 path = "src/main.rs"
 
 [dependencies]
-bmv-common.workspace = true
+# geoip — страна хоста по IP (вшитая база ip2cc.dat): та же колонка «NL»/«US»,
+# что и в окне. Фича, потому что мосту в телефоны эти 490 КБ не нужны.
+bmv-common = { workspace = true, features = ["geoip"] }
 bmv-config.workspace = true
 bmv-core.workspace = true
 # bmv-tunnel здесь больше не нужен: гостевой туннель поднимает bmv-desktop —

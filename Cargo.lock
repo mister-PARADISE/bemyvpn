@@ -907,6 +907,8 @@ name = "bmv-common"
 version = "1.0.0"
 dependencies = [
  "async-trait",
+ "bmv-common",
+ "flate2",
  "http-body-util",
  "hyper",
  "hyper-rustls",
@@ -1008,7 +1010,6 @@ dependencies = [
  "directories",
  "display-info",
  "embed-resource",
- "flate2",
  "i-slint-backend-testing",
  "image",
  "include_dir",

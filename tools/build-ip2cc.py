@@ -28,7 +28,8 @@ from datetime import date
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 # gz — там, где файл читается сжатым; raw — где распакованным (iOS).
 TARGETS = [
-    (ROOT / "apps/bmv-gui/data/ip2cc.dat", True),
+    # Общий крейт: одна база на окно И терминал (фича `geoip`).
+    (ROOT / "crates/bmv-common/data/ip2cc.dat", True),
     (ROOT / "apps/android/app/src/main/assets/ip2cc.dat", True),
     (ROOT / "apps/ios/BeMyVPN/Resources/ip2cc.bin", False),
 ]

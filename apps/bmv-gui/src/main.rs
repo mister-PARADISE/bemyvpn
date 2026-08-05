@@ -13,14 +13,16 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use bmv_common::view;
+// Страна по IP переехала в общий крейт (`bmv_common::geo`, фича `geoip`): в
+// двоичном крейте окна её нельзя было позвать из терминала, и тот показывал
+// пустую колонку там, где окно показывало «NL».
+use bmv_common::{geo, view};
 use bmv_config::Config;
 use bmv_core::BmvEngine;
 use bmv_signal::HostInfo;
 use slint::{Model, ModelRc, SharedString, VecModel, Weak};
 
 mod flags;
-mod geo;
 mod helper;
 mod store;
 
@@ -46,23 +48,21 @@ type Ts = Arc<Mutex<Option<std::time::Instant>>>;
 /// зависел бы от того, как мы подписали значение.
 type Pings = Arc<Mutex<std::collections::HashMap<String, Option<u32>>>>;
 
-// Часы сеанса, подпись протокола, подпись пинга, годность хоста, имя хоста и
-// приведение адреса координатора живут в ОБЩЕМ справочнике `bmv_common::view` —
-// одном на все оболочки. Своих копий здесь больше нет: именно копии и разошлись
-// (пустой протокол окно звало «Обычный», телефон — «Без шифра»). Часовой против
-// второй копии — `crates/bmv-common/tests/one_place_per_rule.rs`.
+// Часы сеанса, подпись протокола, подпись пинга, годность хоста, имя хоста,
+// страна хоста и приведение адреса координатора живут в ОБЩЕМ справочнике
+// `bmv_common::view` — одном на все оболочки. Своих копий здесь больше нет:
+// именно копии и расходились (пустой протокол окно звало «Обычный», телефон —
+// «Без шифра»). Часовой против второй копии —
+// `crates/bmv-common/tests/one_place_per_rule.rs`.
 
 /// Как подписать хост: имя, а без имени — код.
 fn display_name(h: &HostInfo) -> String {
     view::host_display_name(&h.name, &h.id).to_string()
 }
 
-/// Код страны хоста: сперва локально по IP (как iOS), фолбэк — announce-поле.
+/// Код страны хоста — правилом справочника (по адресу, поле анонса запасным).
 fn host_cc(h: &HostInfo) -> Option<String> {
-    geo::country_of(&h.ip).or_else(|| {
-        let c = h.country.trim();
-        (c.len() == 2 && c.chars().all(|ch| ch.is_ascii_alphabetic())).then(|| c.to_ascii_uppercase())
-    })
+    view::host_country(&h.ip, &h.country)
 }
 
 /// Скачать релиз и запустить установку.
