@@ -3,7 +3,6 @@ package org.bemyvpn.ui
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.animateContentSize
-import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
@@ -76,7 +75,12 @@ import org.bemyvpn.hostFlag
 import org.bemyvpn.uptimeText
 import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.gestures.animateScrollBy
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onSizeChanged
@@ -442,6 +446,65 @@ private fun ConnectedExtras(host: Host?, live: Boolean, code: String, showInvite
 
 // ── Карточка хоста ───────────────────────────────────────────────────────────
 
+/**
+ * СВЕЧЕНИЕ ПОДКЛЮЧЁННОЙ КАРТОЧКИ: МЯГКОЕ СИЯНИЕ НАРУЖУ, А НЕ ВТОРАЯ ОБВОДКА.
+ *
+ * НЕ ПАЧКАЕТ КАРТОЧКУ: каждая ступень — не заливка, а КОЛЬЦО шириной в одну
+ * полосу спада, то есть узкий поясок вокруг контура. Внутри контура не кладётся
+ * ни точки. Compose обводит по СЕРЕДИНЕ линии, поэтому прямоугольник раздут на
+ * середину полосы, а ширина линии равна полосе: концы приходятся ровно на её
+ * края.
+ *
+ * МЕХАНИЗМ — ЛЕСЕНКА РАЗДУТЫХ КОНТУРОВ, ТЕМ ЖЕ ПРИЁМОМ, ЧТО И `floatHalo`.
+ * Смещение контура наружу на d превращает скругление R в R + d, то есть раздутый
+ * прямоугольник — ТОЧНАЯ линия равного расстояния до контура: одинаковая сверху,
+ * снизу, сбоку и в вырезах углов.
+ *
+ * РОДНАЯ ТЕНЬ ЗДЕСЬ НЕ ГОДИТСЯ, И ЭТО ЗАМЕР, А НЕ ВКУС. `elevation` у Compose,
+ * `radius` у SwiftUI и `drop-shadow-blur` у Slint — РАЗНЫЕ величины: на тени три
+ * одинаковых числа дали вылет 13.3 pt против 8.5 px. Плюс `Modifier.blur` тут
+ * бесполезен вдвойне — он появился в API 31, а minSdk 24, и на старых
+ * устройствах молча не делает ничего. Лесенка от единиц оболочки не зависит
+ * вовсе.
+ *
+ * ПОЛОСЫ НЕ НАКЛАДЫВАЮТСЯ, И ЭТО ГЛАВНОЕ. Каждая точка красится РОВНО ОДИН РАЗ,
+ * сразу нужной непрозрачностью `peak·(1 − d/reach)`. Первый заход складывал
+ * двадцать четыре полупрозрачных кольца друг на друга — математически то же
+ * самое, а на экране НЕТ: у каждого кольца выходила альфа 0.009, это 2.3 из 255,
+ * и Skia округляла её вверх там, где Slint и SwiftUI округляли вниз. Замер: у
+ * контура 63 по зелёному ЗДЕСЬ против 57 в окне и на iPhone — расхождение 12%,
+ * ровно цена одной единицы округления, помноженной на двадцать четыре
+ * наложения. Одно наложение вместо двадцати четырёх убирает её целиком:
+ * одиночное смешивание все три оболочки считают одинаково (проверено на кромке
+ * `hairline` — везде до единицы одно и то же).
+ *
+ * СТЫКОВ МЕЖДУ ПОЛОСАМИ НЕ ВИДНО, И ЭТО НЕ ВЕЗЕНИЕ: сглаживание делит
+ * пограничную точку между соседними полосами по покрытию, а покрытия дают в
+ * сумме единицу — выходит ровно та же альфа, что и посередине между ними.
+ *
+ * ПОЧЕМУ СВЕТ МОЖНО ТАМ, ГДЕ ТЕНЬ БЫЛА НЕЛЬЗЯ. Страница `#08090B` — 8/255, до
+ * чистого чёрного восемь единиц: тёмному пятну падать некуда. У света ход в
+ * двадцать семь раз больше — мята по зелёному каналу 224 против 9 у фона.
+ */
+private fun DrawScope.cardGlow(radius: Float) {
+    // Полос в спаде. 24 на вылет 12 — по полточки на полосу, меньше пикселя на
+    // любом экране, поэтому лесенки не видно: перепад альфы на полосу (0.22/24)
+    // даёт по зелёному каналу две единицы из 255.
+    val n = 24
+    val band = Theme.glowReach.toPx() / n
+    for (i in 0 until n) {
+        // Середина полосы: по ней считается и её место, и её непрозрачность.
+        val mid = band * (i + 0.5f)
+        drawRoundRect(
+            color = Theme.accent.copy(alpha = Theme.glowPeak * (1f - (i + 0.5f) / n)),
+            topLeft = Offset(-mid, -mid),
+            size = Size(size.width + 2 * mid, size.height + 2 * mid),
+            cornerRadius = CornerRadius(radius + mid),
+            style = Stroke(width = band),
+        )
+    }
+}
+
 @Composable
 fun HostCard(app: AppState, host: Host, reveal: suspend (LayoutCoordinates) -> Unit) {
     var password by remember(host.id) { mutableStateOf("") }
@@ -488,19 +551,21 @@ fun HostCard(app: AppState, host: Host, reveal: suspend (LayoutCoordinates) -> U
     // над s2 раскрытой карточки), но остаётся нейтральной. Та же ступень лежит
     // под плитками панели состояния, так что по оттенку они одно и то же.
     val tileFill = Theme.tile
-    // ── «ПОДКЛЮЧЕНО» ГОВОРИТ ТОЛЬКО КОНТУР, ЗАЛИВКА ОСТАЁТСЯ ЛЕСТНИЦЕЙ ──
+    // ── «ПОДКЛЮЧЕНО» ГОВОРИТ СВЕЧЕНИЕ ВОКРУГ, А НЕ КРОМКА И НЕ ЗАЛИВКА ──
     //
     // Заливка уже занята плотно: ступень отвечает на «раскрыта ли», подкраска
-    // (picked) — на «выбрано ли». Подключён при этом может быть ОДИН хост, а
-    // раскрыт совсем ДРУГОЙ, и увидеть надо оба сразу. Поэтому «подключено»
-    // ушло на контур: мята в полную силу (edge) и ВДВОЕ ТОЛЩЕ (2dp против 1dp),
-    // плюс чип «Подключено» в строке имени. Признак не один цвет: толщина и
-    // слово переживают любое нарушение цветовосприятия.
+    // (picked) — на «выбрано ли». Кромка занята тоже: мятая edgeSoft означает
+    // «раскрыта». Подключён при этом может быть ОДИН хост, а раскрыт совсем
+    // ДРУГОЙ, и увидеть надо оба сразу.
+    //
+    // ЗДЕСЬ БЫЛА ОБВОДКА — мята в полную силу и вдвое толще (2dp против 1dp).
+    // Владелец посмотрел и сказал: «всмысле обводка а не свечение?» — и он прав:
+    // обводка спорила с кромкой «раскрыта» тем же языком, только громче.
+    // Свечение живёт СНАРУЖИ карточки, где не занято ничего (см. cardGlow).
     val stroke by animateColorAsState(
-        if (live) Theme.edge() else if (expanded) Theme.edgeSoft() else Theme.hairline,
+        if (expanded) Theme.edgeSoft() else Theme.hairline,
         tween(200), label = "cardStroke",
     )
-    val strokeW by animateDpAsState(if (live) 2.dp else 1.dp, tween(200), label = "cardStrokeW")
 
     Column(
         Modifier
@@ -510,8 +575,14 @@ fun HostCard(app: AppState, host: Host, reveal: suspend (LayoutCoordinates) -> U
             // целиком, а не начинку.
             .onGloballyPositioned { coords = it }
             .onSizeChanged { cardSize = it }
+            // СВЕЧЕНИЕ. `drawBehind` читает размер в ФАЗЕ РИСОВАНИЯ, а не заводит
+            // слежение за раскладкой: за размерами карточки здесь следит ровно
+            // один `onSizeChanged` выше, и второго наблюдателя свечение не
+            // добавляет. Появляется и пропадает разом с чипом «Подключено» —
+            // это одна и та же весть.
+            .drawBehind { if (live) cardGlow(16.dp.toPx()) }
             .background(bg, RoundedCornerShape(16.dp))
-            .border(strokeW, stroke, RoundedCornerShape(16.dp))
+            .border(1.dp, stroke, RoundedCornerShape(16.dp))
             .padding(14.dp)
             .animateContentSize(tween(200)),
         verticalArrangement = Arrangement.spacedBy(12.dp),

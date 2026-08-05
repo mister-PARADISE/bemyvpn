@@ -104,7 +104,7 @@ def pad(names):
 #
 # Терминалу этот раздел не достаётся: у него нет ни поверхностей, ни длин.
 def render_slint(d, roles):
-    c, e, m, t, f = d["colors"], d["edges"], d["mix"], d["timing"], d["float"]
+    c, e, m, t, f, g = d["colors"], d["edges"], d["mix"], d["timing"], d["float"], d["glow"]
     names = [NAMES["slint"].get(k, k) for k in ORDER]
     w = pad(names)
     out = [
@@ -137,13 +137,18 @@ def render_slint(d, roles):
         f"out property <length> veil: {num(f['veil'])}px;".ljust(46)
         + f"// {roles['float.veil']}",
         "",
+        f"out property <length> glow-reach: {num(g['reach'])}px;".ljust(46)
+        + f"// {roles['glow.reach']}",
+        f"out property <float> glow-peak: {num(g['peak'])};".ljust(46)
+        + f"// {roles['glow.peak']}",
+        "",
         f"out property <duration> copied-ms: {num(t['copied_ms'])}ms;",
     ]
     return out
 
 
 def render_swift(d, roles):
-    c, e, m, t, f = d["colors"], d["edges"], d["mix"], d["timing"], d["float"]
+    c, e, m, t, f, g = d["colors"], d["edges"], d["mix"], d["timing"], d["float"], d["glow"]
     names = [NAMES["swift"].get(k, k) for k in ORDER]
     w = pad(names)
     out = [
@@ -169,13 +174,18 @@ def render_swift(d, roles):
         f"static let veil: CGFloat = {num(f['veil'])}".ljust(46)
         + f"// {roles['float.veil']}",
         "",
+        f"static let glowReach: CGFloat = {num(g['reach'])}".ljust(46)
+        + f"// {roles['glow.reach']}",
+        f"static let glowPeak: Double = {num(g['peak'])}".ljust(46)
+        + f"// {roles['glow.peak']}",
+        "",
         f"static let copiedMs: TimeInterval = {num(t['copied_ms'] / 1000)}",
     ]
     return out
 
 
 def render_kotlin(d, roles):
-    c, e, m, t, f = d["colors"], d["edges"], d["mix"], d["timing"], d["float"]
+    c, e, m, t, f, g = d["colors"], d["edges"], d["mix"], d["timing"], d["float"], d["glow"]
     names = [NAMES["kotlin"].get(k, k) for k in ORDER]
     w = pad(names)
     out = [
@@ -199,6 +209,9 @@ def render_kotlin(d, roles):
         f"val floatRadius = {num(f['radius'])}.dp".ljust(46)
         + f"// {roles['float.radius']}",
         f"val veil = {num(f['veil'])}.dp".ljust(46) + f"// {roles['float.veil']}",
+        "",
+        f"val glowReach = {num(g['reach'])}.dp".ljust(46) + f"// {roles['glow.reach']}",
+        f"val glowPeak = {num(g['peak'])}f".ljust(46) + f"// {roles['glow.peak']}",
         "",
         f"const val COPIED_MS = {num(t['copied_ms'])}L",
     ]

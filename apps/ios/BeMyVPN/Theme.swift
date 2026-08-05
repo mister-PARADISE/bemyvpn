@@ -129,6 +129,9 @@ enum Theme {
     static let floatRadius: CGFloat = 22          // скругление панели и нав-бара
     static let veil: CGFloat = 18                 // вылет гашения от контура наружу; отступы прокрутки считаются от него
 
+    static let glowReach: CGFloat = 12            // вылет свечения от контура карточки наружу
+    static let glowPeak: Double = 0.22            // непрозрачность мяты у самого контура; дальше линейно на нет
+
     static let copiedMs: TimeInterval = 1.3
     // ── КОНЕЦ: значения из design/palette.toml ──
 
