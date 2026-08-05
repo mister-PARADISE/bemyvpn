@@ -203,7 +203,14 @@ pub fn private_dir() -> PrivateDir {
         rand::thread_rng().gen()
     };
     let dir = std::env::temp_dir().join(format!("bemyvpn-{stamp:032x}"));
+    // `mut` — только под Unix: там ниже задаются права 0700. На Windows блок
+    // выключен, переменная не меняется, и `mut` становится замечанием, из-за
+    // которого падает проверка -D warnings. Оба объявления рядом, чтобы разница
+    // между платформами была видна, а не пряталась в атрибуте над одной строкой.
+    #[cfg(unix)]
     let mut b = std::fs::DirBuilder::new();
+    #[cfg(not(unix))]
+    let b = std::fs::DirBuilder::new();
     #[cfg(unix)]
     {
         use std::os::unix::fs::DirBuilderExt;
