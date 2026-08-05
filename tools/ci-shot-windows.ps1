@@ -92,6 +92,18 @@ try {
     # Consequence for the code below: the window belongs to a DIFFERENT process
     # than the one we started. The first process exits with code 0 as soon as it
     # has spawned the second, so we look up the window by executable name.
+    Add-Type @'
+using System;
+using System.Runtime.InteropServices;
+public class Win32 {
+    [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left, Top, Right, Bottom; }
+    [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
+    [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int cmd);
+    [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
+    [DllImport("dwmapi.dll")] public static extern int DwmGetWindowAttribute(IntPtr h, int attr, out RECT r, int size);
+}
+'@
+
     $env:BEMYVPN_CONFIG = "$tmp\gui.toml"
     $started = Start-Bg $gui @() 'gui' $false
     $h = [IntPtr]::Zero
@@ -100,7 +112,17 @@ try {
         $live = @(Get-Process -Name 'bemyvpn-gui' -ErrorAction SilentlyContinue)
         foreach ($p in $live) {
             $p.Refresh()
-            if ($p.MainWindowHandle -ne [IntPtr]::Zero) { $h = $p.MainWindowHandle; $owner = $p.Id; break }
+            $cand = $p.MainWindowHandle
+            if ($cand -eq [IntPtr]::Zero) { continue }
+            # A HANDLE IS NOT A WINDOW YET. femtovg creates the winit window FIRST
+            # and only then discovers that OpenGL is missing, so the dying process
+            # owns a real handle for a moment - with a 0x0 rect, because the window
+            # was never mapped. Grabbing that one produced a zero-sized bitmap and
+            # failed the job. Size is the honest test of "a window a human sees".
+            $probe = New-Object Win32+RECT
+            [void][Win32]::GetWindowRect($cand, [ref]$probe)
+            if (($probe.Right - $probe.Left) -lt 100 -or ($probe.Bottom - $probe.Top) -lt 100) { continue }
+            $h = $cand; $owner = $p.Id; break
         }
         if ($h -ne [IntPtr]::Zero) { break }
         # No process left and no window: nobody is going to draw anything.
@@ -115,17 +137,6 @@ try {
     $how = if ($owner -eq $started.Id) { 'GPU path (OpenGL found)' } else { 'software rasteriser after self-restart' }
     Write-Host "window handle: $h, pid $owner (started $($started.Id)) - $how"
 
-    Add-Type @'
-using System;
-using System.Runtime.InteropServices;
-public class Win32 {
-    [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left, Top, Right, Bottom; }
-    [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
-    [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int cmd);
-    [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
-    [DllImport("dwmapi.dll")] public static extern int DwmGetWindowAttribute(IntPtr h, int attr, out RECT r, int size);
-}
-'@
     [void][Win32]::ShowWindow($h, 5)   # SW_SHOW
     [void][Win32]::SetForegroundWindow($h)
     # The catalog reaches the window with the first snapshot (6 s budget in
