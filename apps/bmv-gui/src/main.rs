@@ -257,21 +257,36 @@ const SW_BACKEND: &str = "winit-software";
 /// `SLINT_BACKEND` служит ещё и предохранителем от петли: перезапущенный процесс
 /// видит переменную в своём окружении и второй раз не перезапускается.
 ///
-/// ЧЕГО ЗАПАСНОЙ ПУТЬ НЕ УМЕЕТ — знать заранее, а не выяснять на человеке:
-///   * Значки. Программный растеризатор не рисует элемент `Path` вовсе, поэтому
-///     значки переведены на SVG-картинки — см. ui/icons.slint. Само по себе это
-///     уже починено, но чинить обратно на `Path` нельзя.
-///   * Вкладка «Сервер» роняет процесс, когда обновляется список недавних
-///     серверов (`set_server_history`). Это ЧУЖАЯ поломка и она СТАРШЕ этой
-///     правки: `PartialRenderer::do_rendering` держит `borrow_mut` кеша, пока
-///     рисует элемент, а обновление повторителя внутри этого же прохода сносит
-///     старые строки и лезет в тот же кеш вторым `borrow_mut`
-///     (i-slint-core-1.14.1/partial_renderer.rs:818, «RefCell already borrowed»).
-///     Воспроизводится и на коммите ДО этой правки, на видеокарте не
-///     воспроизводится (femtovg не заворачивается в PartialRenderer), в Slint
-///     1.14.1 — последней — не починено. Своей правкой не лечится: борьба идёт
-///     внутри чужого крейта. Остальные вкладки под растеризатором живут (90 с с
-///     обновлениями каталога — проверено).
+/// ЗНАЧКИ. Они у нас — вектор (`Path`, ui/icons.slint), и до Slint 1.15
+/// программный растеризатор не рисовал `Path` ВОВСЕ: на месте значка оставалась
+/// пустота. Владелец эту цену принял дословно — «если нету видеокарты, то пускай
+/// их у него не будет, ничего страшного», — а перевод значков в картинки уже
+/// делали и ОТКАТИЛИ (4dacbef). ЧИНИТЬ КАРТИНКАМИ ЗАПРЕЩЕНО И СЕЙЧАС.
+///
+/// С 1.15 платить не приходится: программный растеризатор научился `Path`
+/// (i-slint-renderer-software, фича `path`, включена вместе со `std`). Проверено
+/// на живом окне: `SLINT_BACKEND=winit-software` + `SLINT_DEBUG_PERFORMANCE`
+/// говорит «Backend: software», и все три вкладки со значками. Пустота вернётся,
+/// если кто-то соберёт крейт без `std`, — не повод возвращать картинки.
+///
+/// И ЧТО УЖЕ НЕ ТАК — чтобы не искали заново. Здесь стояло: «вкладка „Сервер“
+/// роняет процесс, своей правкой не лечится». Первое было правдой, второе —
+/// нет, и вина была не на списке серверов.
+///
+/// Падало ЛЮБОЕ исчезновение элемента из кадра, а «Сохранить и проверить» на
+/// вкладке «Сервер» просто гасило разом четыре блока парящей панели
+/// (`if coord-state == 1:`). Ронял не повторитель, а `Conditional`: в Slint
+/// 1.14.1 `compute_dirty_regions` брал `borrow_mut` кеша геометрии и не
+/// отпускал, пока считал габариты элемента (partial_renderer.rs:417 и 423), а
+/// расчёт габаритов — это раскладка, и она лениво доводит `if`-блоки и
+/// повторители до ума: сносит прежние поддеревья, а снос идёт за вторым
+/// `borrow_mut` того же кеша (:818, «RefCell already borrowed»). На видеокарте
+/// этого нет вовсе — femtovg не заворачивается в `PartialRenderer`.
+///
+/// Лечится ОБНОВЛЕНИЕМ: Slint 1.15 поднял расчёт габаритов выше взятия кеша
+/// (upstream #9882 / #9883). Нижняя граница закреплена в Cargo.toml, сторож —
+/// тест `the_software_renderer_survives_elements_vanishing_between_frames`.
+/// «1.14.1 — последняя» было просто неверно: 1.15 вышла раньше разбора.
 fn restart_on_software_renderer(err: &slint::PlatformError) -> bool {
     // Отказы femtovg при СОЗДАНИИ окна все до одного называют OpenGL по имени
     // (i-slint-backend-winit/renderer/femtovg/glcontext.rs: «Error creating
@@ -1820,6 +1835,205 @@ mod tests {
         let ids: Vec<String> =
             visible_hosts(&list, "", "", false).iter().map(|x| x.id.clone()).collect();
         assert_eq!(ids, ["ЖИВОЙ", "МОЙ"]);
+    }
+
+    // ── НАСТОЯЩИЙ ПРОГРАММНЫЙ РАСТЕРИЗАТОР В ТЕСТЕ ──────────────────────────
+    //
+    // Тестовая оболочка Slint (`init_no_event_loop`) НЕ РИСУЕТ вовсе, а падение
+    // без видеокарты живёт именно в рисовальщике. Поэтому здесь поднимается тот
+    // же `SoftwareRenderer`, что и у `SLINT_BACKEND=winit-software`.
+    //
+    // Оболочка ПОВТОРЯЕТ winit в одной мелочи: `update_window_properties`
+    // читает ограничения раскладки корня (winitwindowadapter.rs:1207). Slint
+    // зовёт это при показе окна и потом по нулевому таймеру, когда свойства
+    // окна меняются (window.rs:375), — так дерево «усаживается» ДО кадра. Без
+    // этой мелочи оболочка краснела бы даже там, где живое окно живёт. А вот
+    // таймеры МЕЖДУ правкой и кадром здесь не крутятся нарочно — почему,
+    // сказано у `sw_frame`.
+    const SW_W: u32 = 400;
+    const SW_H: u32 = 820;
+
+    struct SwWindow {
+        window: slint::Window,
+        renderer: slint::platform::software_renderer::SoftwareRenderer,
+        size: std::cell::Cell<slint::PhysicalSize>,
+    }
+
+    impl slint::platform::WindowAdapter for SwWindow {
+        fn window(&self) -> &slint::Window {
+            &self.window
+        }
+        fn size(&self) -> slint::PhysicalSize {
+            self.size.get()
+        }
+        fn set_size(&self, size: slint::WindowSize) {
+            self.size.set(size.to_physical(1.));
+            self.window
+                .dispatch_event(slint::platform::WindowEvent::Resized { size: size.to_logical(1.) });
+        }
+        fn renderer(&self) -> &dyn slint::platform::Renderer {
+            &self.renderer
+        }
+        fn update_window_properties(&self, properties: slint::platform::WindowProperties<'_>) {
+            // ТО САМОЕ, ЧТО ДЕЛАЕТ WINIT. Читает `layout_info` корня, а вместе с
+            // ним — всё, до чего раскладка корня дотягивается.
+            let _ = properties.layout_constraints();
+        }
+    }
+
+    thread_local! {
+        static SW: RefCell<Option<Rc<SwWindow>>> = const { RefCell::new(None) };
+    }
+
+    struct SwPlatform;
+    impl slint::platform::Platform for SwPlatform {
+        fn create_window_adapter(
+            &self,
+        ) -> Result<Rc<dyn slint::platform::WindowAdapter>, slint::PlatformError> {
+            use slint::platform::software_renderer::{RepaintBufferType, SoftwareRenderer};
+            let w = Rc::new_cyclic(|weak: &std::rc::Weak<SwWindow>| SwWindow {
+                window: slint::Window::new(weak.clone()),
+                // Тот же тип буфера, что softbuffer отдаёт на живой машине.
+                renderer: SoftwareRenderer::new_with_repaint_buffer_type(
+                    RepaintBufferType::ReusedBuffer,
+                ),
+                size: std::cell::Cell::new(slint::PhysicalSize::new(SW_W, SW_H)),
+            });
+            SW.with(|s| *s.borrow_mut() = Some(w.clone()));
+            Ok(w)
+        }
+    }
+
+    /// Окно на программном растеризаторе. Только ОДИН раз на поток теста:
+    /// оболочка Slint ставится на поток и не сбрасывается.
+    fn sw_window() -> AppWindow {
+        slint::platform::set_platform(Box::new(SwPlatform)).unwrap();
+        let ui = AppWindow::new().unwrap();
+        ui.window().set_size(slint::LogicalSize::new(SW_W as f32, SW_H as f32));
+        ui
+    }
+
+    /// Один кадр СРАЗУ ПОСЛЕ ПРАВКИ СВОЙСТВ — без прогона таймеров между ними.
+    ///
+    /// Это НЕ упрощение, а ХУДШИЙ ИЗ ЖИВЫХ ПОРЯДКОВ, и именно он убивал окно.
+    /// Slint «усаживает» раскладку заранее в нулевом таймере (window.rs:375), а
+    /// winit крутит таймеры в начале оборота цикла (event_loop.rs:470). Когда
+    /// свойства меняются В ХОДЕ оборота (нажали кнопку, пришло обновление из
+    /// ядра), перерисовка успевает раньше таймера — усадки не было, и дерево
+    /// перестраивается уже под рисовальщиком. Прогони мы здесь таймеры, проверка
+    /// зеленела бы на сломанном Slint.
+    fn sw_frame() {
+        let w = SW.with(|s| s.borrow().clone()).expect("окно не поднято");
+        let mut buf = vec![
+            slint::platform::software_renderer::Rgb565Pixel(0);
+            (SW_W * SW_H) as usize
+        ];
+        w.renderer.render(&mut buf, SW_W as usize);
+    }
+
+    /// БЕЗ ВИДЕОКАРТЫ ОКНО НЕ УМИРАЕТ ОТ ТОГО, ЧТО С ЭКРАНА ЧТО-ТО ПРОПАЛО.
+    ///
+    /// Ловим то, из-за чего запасной путь был бесполезен: под
+    /// `SLINT_BACKEND=winit-software` вкладка «Сервер» убивала ПРОЦЕСС при
+    /// нажатии «Сохранить и проверить» — «RefCell already borrowed»,
+    /// i-slint-core/partial_renderer.rs:818. Поломка чужая и она НАСТОЯЩАЯ, а не
+    /// наша неаккуратность с моделями:
+    ///
+    ///   `compute_dirty_regions` (1.14.1, partial_renderer.rs:417) брал
+    ///   `borrow_mut` кеша геометрии и НЕ ОТПУСКАЛ его, пока на строке 423 считал
+    ///   габариты элемента. Расчёт габаритов — это раскладка, а раскладка лениво
+    ///   достраивает `if`-блоки и повторители (`Conditional::ensure_updated`,
+    ///   `Repeater::ensure_updated`). Достраивая, они СНОСЯТ прежние поддеревья,
+    ///   а снос идёт в `free_graphics_resources` — за вторым `borrow_mut` того же
+    ///   кеша. На видеокарте этого нет: femtovg не заворачивается в
+    ///   `PartialRenderer` вовсе.
+    ///
+    /// Починено переходом на Slint 1.15 (upstream issue #9882, PR #9883:
+    /// расчёт габаритов поднят ВЫШЕ взятия кеша). Нижняя граница закреплена в
+    /// Cargo.toml — эта проверка сторожит её. Вернётся 1.14.x — покраснеет.
+    ///
+    /// ГОНЯЕМ ВСЕ ТРИ ВКЛАДКИ, а не только «Сервер»: гибли не списки, а любой
+    /// элемент, исчезающий из кадра, — а таких `if`-ов на экранах десятки.
+    #[test]
+    fn the_software_renderer_survives_elements_vanishing_between_frames() {
+        let ui = sw_window();
+        ui.show().unwrap();
+        sw_frame();
+
+        // ── «Сервер»: то самое падение ──────────────────────────────────
+        ui.set_tab(2);
+        ui.set_server_history(str_model(&["a.example".to_string()]));
+        sw_frame();
+        // Условия ПАРЯЩЕЙ ПАНЕЛИ: `if coord-state == 1:` гасит разом четыре
+        // блока (строка состояния, адрес, плитки, «ВАШ IP»). Ровно это и делает
+        // «Сохранить и проверить»: связь сбрасывается в «проверяю».
+        for s in [1, 2, 1, 0, 1, 2, 0] {
+            ui.set_coord_state(s);
+            sw_frame();
+        }
+        // Условие ВНУТРИ ПРОКРУТКИ + подпись про туннель.
+        for (e, v) in [("беда", 2), ("", 0), ("беда", 2), ("", 0)] {
+            ui.set_config_error(e.into());
+            ui.set_coord_state(1);
+            ui.set_vpn_state(v);
+            sw_frame();
+        }
+        // Список недавних серверов: и рост, и УСЫХАНИЕ до пустого (тогда
+        // пропадает и заголовок «Недавние серверы» — ещё два `if`).
+        for h in [vec!["b.example"], vec!["c.example", "d.example"], vec![], vec!["e.example"]] {
+            ui.set_server_history(str_model(&h.iter().map(|s| s.to_string()).collect::<Vec<_>>()));
+            sw_frame();
+        }
+
+        // ── «VPN»: каталог, недавние, состояние туннеля ─────────────────
+        ui.set_tab(0);
+        sw_frame();
+        for hosts in [vec!["ALPHA"], vec!["ALPHA", "BRAVO", "CHARLIE"], vec![], vec!["DELTA"]] {
+            ui.set_hosts(str_hosts(&hosts));
+            ui.set_recent_names(str_model(&hosts.iter().map(|s| s.to_string()).collect::<Vec<_>>()));
+            ui.set_recent_ids(str_model(&hosts.iter().map(|s| s.to_string()).collect::<Vec<_>>()));
+            sw_frame();
+        }
+        for s in [0, 1, 2, 3, 0] {
+            ui.set_vpn_state(s);
+            ui.set_vpn_host_id(if s == 2 { "DELTA".into() } else { "".into() });
+            sw_frame();
+        }
+        // Блок обновления — целая карточка, появляющаяся и пропадающая.
+        for v in ["1.99", "", "1.99", ""] {
+            ui.set_update_version(v.into());
+            sw_frame();
+        }
+
+        // ── «Хост»: раздача включается и выключается ────────────────────
+        ui.set_tab(1);
+        sw_frame();
+        for s in [0, 1, 2, 3, 2, 0] {
+            ui.set_host_state(s);
+            ui.set_host_code(if s == 2 { "КОД123".into() } else { "".into() });
+            ui.set_host_error(if s == 3 { "не вышло".into() } else { "".into() });
+            sw_frame();
+        }
+
+        // Поля ввода: у них своя ветка рисования (`draw_text_input`), и на живом
+        // экране набор с клавиатуры проверить не вышло — значит проверяем здесь.
+        for t in ["", "к", "коротко", "очень длинное имя хоста для проверки", ""] {
+            ui.set_host_name(t.into());
+            ui.set_host_password(t.into());
+            sw_frame();
+            ui.set_tab(2);
+            ui.set_coord_field(t.into());
+            sw_frame();
+            ui.set_tab(1);
+        }
+
+        // ── И ещё круг по вкладкам с живым каталогом ────────────────────
+        for tab in [0, 2, 1, 0, 2, 1, 0] {
+            ui.set_tab(tab);
+            ui.set_hosts(str_hosts(if tab == 0 { &["ECHO", "FOXTROT"] } else { &[] }));
+            sw_frame();
+        }
+        ui.hide().unwrap();
     }
 
     /// Путь уходит в `do shell script … with administrator privileges`, то есть
