@@ -15,6 +15,9 @@ name: CI
 # ниже есть дешёвый `cargo check` на windows-latest: он ловит то, чего Linux не
 # видит (пути, зависимости под cfg(windows), wintun), и не тратит время на
 # линковку релиза.
+#
+# По той же причине здесь собирается и Android (job `android`): Kotlin не
+# компилировал ни `cargo test`, ни линтер, а APK делался только по тегу.
 on:
   push:
     branches: [main]
@@ -98,6 +101,68 @@ jobs:
       # its tests can live in this job and nowhere else.
       - name: Test wintun fork (Windows)
         run: cargo test --manifest-path vendor/wintun/Cargo.toml
+
+  # ── ANDROID ─────────────────────────────────────────────────────────────────
+  #
+  # Kotlin-код приложения не собирал НИКТО. `cargo test --workspace` его не
+  # видит дважды: мост apps/android/rust вынесен из workspace (свой Cargo.lock и
+  # patch на форк ipstack), а экраны написаны на Kotlin — это вообще не Rust.
+  # APK же собирался ТОЛЬКО по тегу, в release.yml. То есть о поломке в UI
+  # узнавали в момент выпуска, когда чинить поздно, — ровно та беда, от которой
+  # выше уже закрылись задачей windows-check.
+  #
+  # Шаги и версии — ОДИН В ОДИН с job'ом android в release.yml: temurin 17,
+  # cargo-ndk, цель aarch64-linux-android, тот же подбор ANDROID_NDK_HOME, тот
+  # же assembleRelease. Расхождение означало бы зелёную проверку при падающем
+  # выпуске, а это хуже отсутствия проверки: на неё полагаются.
+  #
+  # Почему release, а не debug (тот дешевле минуты на три): debug идёт мимо R8
+  # (minifyEnabled + shrinkResources), а срезанный класс или ресурс — поломка,
+  # которая существует ТОЛЬКО в релизной сборке. Проверять надо то, что уезжает.
+  #
+  # Подписи здесь намеренно нет: секреты недоступны в pull_request с форка, а
+  # gradle без ключа берёт отладочный (см. app/build.gradle). Для проверки и для
+  # запуска на эмуляторе этого хватает, в магазин такой APK не едет.
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      # Мост — ОТДЕЛЬНЫЙ workspace, поэтому кэшу нужно указать его явно: ключ по
+      # корневому Cargo.lock не совпал бы ни разу, и каждый прогон собирал бы
+      # ядро под новую цель с нуля.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/android/rust
+      - name: cargo-ndk
+        run: cargo install cargo-ndk --locked
+      - name: Нативная библиотека (arm64)
+        working-directory: apps/android/rust
+        run: |
+          # На раннере NDK предустановлен, но переменная называется по-разному —
+          # подставляем запасные, только если основная пуста.
+          export ANDROID_NDK_HOME="${ANDROID_NDK_HOME:-${ANDROID_NDK_LATEST_HOME:-$ANDROID_HOME/ndk-bundle}}"
+          echo "NDK: $ANDROID_NDK_HOME"
+          cargo ndk -t arm64-v8a -o ../app/src/main/jniLibs build --release
+      # BMV_VERSION не передаём: вне тега версии нет, и build.gradle сам ставит
+      # «0.0» — по ней видно, что сборка не из релиза и релизом не притворяется.
+      - name: Сборка APK
+        working-directory: apps/android
+        run: ./gradlew assembleRelease
+      # APK артефактом — ради того же, ради чего ниже снимки окна: посмотреть на
+      # приложение чужой ОС, не поднимая у себя JDK, SDK и NDK. Ставится на
+      # эмулятор как есть.
+      - name: Выложить APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-apk
+          path: apps/android/app/build/outputs/apk/release/app-release.apk
 
   # ── КАК ВЫГЛЯДИТ ОКНО НА ЧУЖИХ ОС ───────────────────────────────────────────
   #
