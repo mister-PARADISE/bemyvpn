@@ -125,8 +125,23 @@ echo "окно найдено: $WID"
 # Ставим окно в середину стола. Смещать ОБЯЗАТЕЛЬНО, а не полагаться на
 # менеджер: fluxbox кладёт первое окно в левый верхний угол, и кадр выходит
 # «программа в углу», а не «программа на столе».
-eval "$(xdotool getwindowgeometry --shell "$WID")"
-xdotool windowmove "$WID" $(( (SCREEN_W - WIDTH) / 2 )) $(( (SCREEN_H - HEIGHT) / 2 ))
+#
+# ПЕРЕНОС ПРОВЕРЯЕМ И ПОВТОРЯЕМ, а не делаем вслепую. Окно находится по имени
+# раньше, чем fluxbox берёт его себе, и тогда наш перенос затирается его
+# собственной расстановкой — окно возвращается в угол. Один прогон так и вышел:
+# в предыдущем повезло с порядком, в следующем нет. Пауза уменьшает гонку,
+# сверка с повтором её закрывает.
+sleep 3
+for attempt in 1 2 3; do
+    eval "$(xdotool getwindowgeometry --shell "$WID")"
+    TX=$(( (SCREEN_W - WIDTH) / 2 ))
+    TY=$(( (SCREEN_H - HEIGHT) / 2 ))
+    xdotool windowmove "$WID" "$TX" "$TY" || true
+    sleep 1
+    eval "$(xdotool getwindowgeometry --shell "$WID")"
+    echo "перенос $attempt: просили ${TX},${TY} — вышло ${X},${Y}"
+    if [ "$X" -ge $((TX - 40)) ] && [ "$X" -le $((TX + 40)) ]; then break; fi
+done
 xdotool windowactivate "$WID" || true
 sleep 2
 # Читаем положение ЗАНОВО: заголовок, который дорисовал менеджер, сдвигает
