@@ -2,6 +2,7 @@ package org.bemyvpn.ui
 
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.EaseOut
+import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.VectorConverter
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -28,10 +29,12 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.HelpOutline
+import androidx.compose.material.icons.filled.Autorenew
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.RemoveModerator
 import androidx.compose.material.icons.filled.Security
+import androidx.compose.material.icons.filled.SignalWifiOff
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -48,6 +51,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.composed
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.BlendMode
@@ -71,6 +75,7 @@ import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
 import org.bemyvpn.Haptics
 import org.bemyvpn.Host
+import org.bemyvpn.Ping
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.fillMaxSize
@@ -89,19 +94,21 @@ import org.bemyvpn.Theme
 
 // ── Значки протоколов (аналоги SF Symbols из iOS) ─────────────────────────────
 // Семейство ЩИТА — уровень защиты трафика: есть / замаскирована / нет.
-fun protoIcon(p: String): ImageVector = when (p) {
-    // Пустая строка — «Обычный», см. `protoName`: хост без объявленного
-    // протокола шифрует. Перечёркнутый щит здесь означал бы то же враньё, что и
-    // подпись «Без шифра», только картинкой — а её замечают раньше слов.
-    "", "noise", "noise-aes" -> Icons.Filled.Security       // защищено (щит с замком)
-    "noise-obfs" -> MaskIcon                               // «Маскировка» — маска (как iOS theatermasks)
-    "plain" -> Icons.Filled.RemoveModerator                // защиты нет (щит перечёркнут)
+//
+// ВЫБОР ПО УРОВНЮ ЗАЩИТЫ (номера view::Protection, их считает мост), А НЕ ПО
+// ИМЕНИ ПРОТОКОЛА. Список имён здесь был второй копией справочника: пустое имя
+// приходилось помнить отдельно и в подписи, и в значке, а «какие имена значат
+// шифрование» решалось в двух местах сразу.
+fun protoIcon(protection: Int): ImageVector = when (protection) {
+    0 -> Icons.Filled.Security              // защищено (щит с замком)
+    1 -> MaskIcon                           // прячет сам факт VPN (маска, как iOS theatermasks)
+    2 -> Icons.Filled.RemoveModerator       // защиты нет (щит перечёркнут)
     else -> Icons.AutoMirrored.Filled.HelpOutline
 }
 
-/** Маскарадная маска — «Маскировка» протокол (обфускация/маскировка). Аккуратный
- *  вектор с прорезями-глазами (evenodd), чистый на любом размере. Аналог iOS
- *  theatermasks.fill, но без «мусора» на мелких размерах. */
+/** Маскарадная маска — значок уровня «прячет факт VPN» (view::Protection = 1).
+ *  Аккуратный вектор с прорезями-глазами (evenodd), чистый на любом размере.
+ *  Аналог iOS theatermasks.fill, но без «мусора» на мелких размерах. */
 val MaskIcon: ImageVector by lazy {
     ImageVector.Builder(name = "Mask", defaultWidth = 24.dp, defaultHeight = 24.dp, viewportWidth = 24f, viewportHeight = 24f).apply {
         path(fill = SolidColor(androidx.compose.ui.graphics.Color.White), pathFillType = PathFillType.EvenOdd) {
@@ -313,6 +320,82 @@ fun CopyTile(label: String, value: String, modifier: Modifier = Modifier, fill: 
             )
         }
     }
+}
+
+/**
+ * Плитка отклика — ОДНА НА ОБА ПИНГА: до хоста и до координатора.
+ *
+ * Их было две, со своими линейками, и меньшее число выходило тревожнее большего:
+ * 137 мс до хоста краснело, 162 мс до координатора числилось «хорошо». Теперь
+ * подпись и уровень тревоги приходят ГОТОВОЙ ПАРОЙ (`Ping` от моста) — экран
+ * больше не разбирает подпись обратно в число, чтобы выбрать цвет.
+ *
+ *   • идёт первый замер — КРУГОВАЯ СТРЕЛКА ВРАЩАЕТСЯ: движение честно говорит
+ *     «сейчас меряю», в отличие от многоточия, которое просто стоит и молчит;
+ *   • ответа нет — перечёркнутая антенна: у «нет отклика» отдельный знак, а не
+ *     прочерк, который легко принять за «данных нет»;
+ *   • число есть — просто цифра, без анимации: крутить что-то поверх готового
+ *     значения значит намекать, что оно ещё не готово.
+ */
+@Composable
+fun PingTile(ping: Ping, modifier: Modifier = Modifier, fill: Color = Theme.tile) {
+    when {
+        // Ожидание первого замера — состояние ЭКРАНА, а не справочника: у моста
+        // на него ответа нет (см. `Ping.measuring`), зато есть эта анимация.
+        ping == Ping.measuring -> {
+            val t = rememberInfiniteTransition(label = "ping")
+            val angle by t.animateFloat(
+                0f, 360f,
+                infiniteRepeatable(tween(900, easing = LinearEasing), RepeatMode.Restart),
+                label = "pingSpin",
+            )
+            // Через trailing у TileBody, чтобы не менять общий StatTile ради
+            // одного случая: вращение нужно только здесь.
+            Box(modifier.tileBackground(fill = fill)) {
+                TileBody("ПИНГ", "") {
+                    Icon(
+                        Icons.Filled.Autorenew, null,
+                        Modifier.size(14.dp).rotate(angle),
+                        tint = Theme.accent,
+                    )
+                }
+            }
+        }
+        // Только знак, без слова: перечёркнутая антенна говорит сама, а подпись
+        // рядом с ней — это то же самое ещё раз.
+        ping.alarm == ALARM_MUTED ->
+            StatTile("ПИНГ", "", modifier, symbol = Icons.Filled.SignalWifiOff, tint = Theme.dim, fill = fill)
+        else -> StatTile("ПИНГ", ping.text, modifier, tint = alarmTint(ping.alarm), fill = fill)
+    }
+}
+
+/** «Ответа нет» — вариант view::Alarm, его номер приходит через мост. */
+private const val ALARM_MUTED = 3
+
+/**
+ * Уровень тревоги (view::Alarm) → цвет. ПОРОГИ СЧИТАЕТ СПРАВОЧНИК, экран только
+ * подбирает краску: наборов цветов у оболочек столько же, сколько оболочек.
+ *
+ * АКЦЕНТА ЗДЕСЬ НЕТ ВОВСЕ: мята в этом приложении значит «работает», а не
+ * «быстро». Норма молчит — обычный цвет текста.
+ */
+private fun alarmTint(alarm: Int): Color = when (alarm) {
+    1 -> Theme.amber
+    2 -> Theme.red
+    ALARM_MUTED -> Theme.dim
+    else -> Theme.fg
+}
+
+/**
+ * Связь с координатором для моста: 1 — да, 0 — нет, −1 — ещё не знаем.
+ *
+ * Третье состояние отдельно от «нет связи» не для красоты: приложение только
+ * открылось, ответа ещё не было, и обвинять сеть не в чем.
+ */
+fun triOnline(online: Boolean?): Int = when (online) {
+    true -> 1
+    false -> 0
+    null -> -1
 }
 
 // ── Кнопки ───────────────────────────────────────────────────────────────────

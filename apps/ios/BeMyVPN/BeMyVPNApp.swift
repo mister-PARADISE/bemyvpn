@@ -178,11 +178,6 @@ final class AppState: ObservableObject {
     /// Отклик до раскрытого хоста — подпись и уровень тревоги вместе (см. `Ping`).
     /// Держим ТОЛЬКО для раскрытой карточки — закрыли, значит больше не интересно.
     @Published private(set) var pingOf: [String: Ping] = [:]
-
-    /// СОВМЕСТИМОСТЬ: экран пока читает только подпись. Убрать, когда
-    /// ContentView перейдёт на `pingOf` и перестанет разбирать подпись обратно
-    /// в число ради цвета.
-    var pings: [String: String] { pingOf.mapValues(\.text) }
     private var pingTask: Task<Void, Never>?
 
     /// Мерить отклик до хоста ПОКА ОТКРЫТА его карточка — раз в секунду.

@@ -18,7 +18,6 @@
 
 use std::path::{Path, PathBuf};
 
-use bmv_common::view::{PING_AMBER_MS, PING_RED_MS};
 
 /// Где живёт боевой код. `vendor/` — чужой, `target/` — сборка.
 const ROOTS: [&str; 3] = ["crates", "apps", "server"];
@@ -103,35 +102,13 @@ const MIGRATING: &[(&str, &str)] = &[
     // копия и есть то расхождение, ради поимки которого всё это стоит.
     ("apps/android/app/src/main/java/org/bemyvpn/BmvVpnService.kt", "подключаюсь"),
     ("apps/android/app/src/main/java/org/bemyvpn/Model.kt", "маскировка"),
-    ("apps/android/app/src/main/java/org/bemyvpn/ui/Common.kt", "маскировка"),
-    ("apps/android/app/src/main/java/org/bemyvpn/ui/ServerTab.kt", "\"http://\""),
-    ("apps/android/app/src/main/java/org/bemyvpn/ui/ServerTab.kt", "восстанавлива"),
-    ("apps/android/app/src/main/java/org/bemyvpn/ui/ServerTab.kt", "мс\""),
-    ("apps/android/app/src/main/java/org/bemyvpn/ui/ServerTab.kt", "на связи"),
-    ("apps/android/app/src/main/java/org/bemyvpn/ui/ServerTab.kt", "проверяю связ"),
-    ("apps/android/app/src/main/java/org/bemyvpn/ui/VpnTab.kt", "vpn выключен"),
-    ("apps/android/app/src/main/java/org/bemyvpn/ui/VpnTab.kt", "восстанавлива"),
-    ("apps/android/app/src/main/java/org/bemyvpn/ui/VpnTab.kt", "переподключение"),
-    ("apps/android/app/src/main/java/org/bemyvpn/ui/VpnTab.kt", "подключаюсь"),
-    ("apps/android/app/src/main/java/org/bemyvpn/ui/VpnTab.kt", "хостов пока нет"),
     ("apps/bmv-gui/ui/app.slint", "vpn выключен"),
     ("apps/bmv-gui/ui/host_page.slint", "маскировка"),
     ("apps/bmv-gui/ui/server_page.slint", "восстанавлива"),
-    ("apps/bmv-gui/ui/server_page.slint", "мс\""),
     ("apps/bmv-gui/ui/server_page.slint", "на связи"),
     ("apps/bmv-gui/ui/server_page.slint", "проверяю связ"),
     ("apps/bmv-gui/ui/vpn_page.slint", "восстанавлива"),
     ("apps/bmv-gui/ui/vpn_page.slint", "хостов пока нет"),
-    ("apps/ios/BeMyVPN/ContentView.swift", "\"http://\""),
-    ("apps/ios/BeMyVPN/ContentView.swift", "vpn выключен"),
-    ("apps/ios/BeMyVPN/ContentView.swift", "восстанавлива"),
-    ("apps/ios/BeMyVPN/ContentView.swift", "маскировка"),
-    ("apps/ios/BeMyVPN/ContentView.swift", "мс\""),
-    ("apps/ios/BeMyVPN/ContentView.swift", "на связи"),
-    ("apps/ios/BeMyVPN/ContentView.swift", "переподключение"),
-    ("apps/ios/BeMyVPN/ContentView.swift", "подключаюсь"),
-    ("apps/ios/BeMyVPN/ContentView.swift", "проверяю связ"),
-    ("apps/ios/BeMyVPN/ContentView.swift", "хостов пока нет"),
     ("apps/ios/BeMyVPNTunnel/PacketTunnelProvider.swift", "завершил раздачу"),
     ("apps/ios/BeMyVPNTunnel/PacketTunnelProvider.swift", "связь с хостом пропала"),
 ];
@@ -242,25 +219,4 @@ fn a_display_rule_exists_in_exactly_one_place() {
          Вычеркни их: пока они здесь, на этом месте можно молча завести копию заново.",
         stale.iter().map(|(p, n)| format!("{p} — «{n}»")).collect::<Vec<_>>().join("\n  ")
     );
-}
-
-/// Пороги пинга в разметке окна — те же числа, что в справочнике.
-///
-/// Slint не умеет звать Rust-функции из выражения цвета, поэтому линейка там
-/// записана числами. Значит либо сверять, либо однажды обнаружить, что окно
-/// краснеет с 400 мс, а всё остальное — с 500.
-#[test]
-fn ping_thresholds_match_the_window_skin() {
-    let root = repo_root();
-    // Оба места, где окно раскрашивает пинг: плитка хоста и строка координатора.
-    for rel in ["apps/bmv-gui/ui/components.slint", "apps/bmv-gui/ui/server_page.slint"] {
-        let src = std::fs::read_to_string(root.join(rel)).unwrap_or_else(|e| panic!("{rel}: {e}"));
-        for needle in [format!("< {PING_AMBER_MS}"), format!("<= {PING_RED_MS}")] {
-            assert!(
-                src.contains(&needle),
-                "{rel}: линейка пинга разошлась со справочником — там нет «{needle}»\n\
-                 (bmv_common::view: янтарь с {PING_AMBER_MS} мс, красный после {PING_RED_MS} мс)"
-            );
-        }
-    }
 }

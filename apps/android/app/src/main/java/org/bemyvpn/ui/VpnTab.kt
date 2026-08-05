@@ -1,16 +1,9 @@
 package org.bemyvpn.ui
 
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.material.icons.filled.Autorenew
-import androidx.compose.material.icons.filled.SignalWifiOff
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.animateContentSize
-import androidx.compose.animation.core.LinearEasing
-import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
@@ -58,7 +51,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
-import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalClipboardManager
@@ -80,8 +72,24 @@ import org.bemyvpn.Host
 import org.bemyvpn.Theme
 import org.bemyvpn.countryLabel
 import org.bemyvpn.hostFlag
-import org.bemyvpn.protoName
 import org.bemyvpn.uptimeText
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.relocation.BringIntoViewRequester
+import androidx.compose.foundation.relocation.bringIntoViewRequester
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.IntSize
+import org.bemyvpn.Native
+import org.bemyvpn.Ping
+
+// ── Состояния VPN для показа ─────────────────────────────────────────────────
+// НОМЕРА ВАРИАНТОВ view::Vpn — часть договора с мостом (bmv_vpn_kind), здесь им
+// даны только имена, чтобы `when` читался. ЧТО каждое значит и какими словами это
+// сказать, решает справочник: подпись экран берёт готовой (AppState.vpnText).
+private const val VPN_CONNECTING = 1
+private const val VPN_RECONNECTING = 2
+private const val VPN_ON = 3
 
 /** Вкладка «VPN» — герой-статус, код сети, недавние, список хостов. */
 @Composable
@@ -162,9 +170,11 @@ fun VpnTab(app: AppState, bottomPad: Dp, openScanner: () -> Unit) {
             if (stale) StateChip("последние известные")
         }
         if (shown.isEmpty()) {
+            // Пусто по двум разным причинам, и человеку нужно разное: ждать
+            // связи или действовать. Что именно сказать, решает справочник —
+            // здесь эта развилка была второй его копией.
             Text(
-                if (app.serverOnline == false) "Нет связи с сервером — восстанавливаю.\nЕсли надолго, проверьте адрес во вкладке «Сервер»."
-                else "Хостов пока нет.\nВведите код сети или поднимите свой во вкладке «Хост».",
+                Native.nativeEmptyDirectoryHint(triOnline(app.serverOnline)),
                 color = Theme.dim, fontSize = 14.sp, textAlign = TextAlign.Center,
                 modifier = Modifier.fillMaxWidth().padding(vertical = 40.dp),
             )
@@ -175,7 +185,7 @@ fun VpnTab(app: AppState, bottomPad: Dp, openScanner: () -> Unit) {
             Column(
                 Modifier.alpha(dim),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
-            ) { shown.forEach { h -> HostCard(app, h) } }
+            ) { shown.forEach { h -> HostCard(app, h, bottomPad) } }
         }
     }
     }
@@ -258,12 +268,21 @@ private fun RecentChip(app: AppState, id: String, highlighted: Boolean) {
 
 @Composable
 private fun VpnHero(app: AppState, showInvite: (String) -> Unit) {
+    // СОСТОЯНИЕ ДЛЯ ПОКАЗА СКЛЕИЛ СПРАВОЧНИК (см. AppState.vpnKind). Экран его
+    // только одевает: краску, значок и разметку выбирает по номеру, а подпись
+    // берёт готовой. Раньше он толковал сырой статус ядра сам — и «Подключаюсь»
+    // против «Переподключение» решалось здесь, отдельно от трёх других оболочек.
+    val kind = app.vpnKind
     val tint by animateColorAsState(
         // ЦВЕТ СОСТОЯНИЯ, А НЕ ЦВЕТ ЭКРАНА. Выключено — dim: раньше здесь стоял
         // акцент, и после слияния зелёного с мятой кольцо панели горело бы одной
         // мятой и при «VPN выключен», и при «Подключено» — то есть отвечало бы
         // одинаково на единственный вопрос, ради которого сюда смотрят.
-        when (app.vpnState) { 1 -> Theme.amber; 2 -> Theme.accent; else -> Theme.dim },
+        when (kind) {
+            VPN_ON -> Theme.accent
+            VPN_CONNECTING, VPN_RECONNECTING -> Theme.amber
+            else -> Theme.dim
+        },
         tween(300), label = "vpnTint",
     )
     // ПОСЛЕДНИЙ ИЗВЕСТНЫЙ хост, а не только живой: плитки с его цифрами уходят
@@ -275,20 +294,16 @@ private fun VpnHero(app: AppState, showInvite: (String) -> Unit) {
     val host = known.value
 
     PinnedPanel(tint) {
-        val st = app.vpnState
-        val icon: ImageVector = when (st) {
-            1 -> Icons.Filled.Shield
-            2 -> Icons.Filled.VerifiedUser
+        val icon: ImageVector = when (kind) {
+            VPN_ON -> Icons.Filled.VerifiedUser
+            VPN_CONNECTING, VPN_RECONNECTING -> Icons.Filled.Shield
             else -> Icons.Filled.RemoveModerator
         }
-        val title = when (st) {
-            // Уже были подключены и снова состояние 1 → это авто-реконнект (сменилась
-            // сеть), а не первый коннект. Показываем это честно.
-            1 -> if (app.connectedSince != null) "Переподключение…" else "Подключаюсь…"
-            2 -> host?.name ?: app.connectedTo ?: "Подключено"
-            else -> "VPN выключен"
-        }
-        if (st == 2) {
+        // Подпись — ГОТОВАЯ, из справочника. Имя хоста ей предпочитается только в
+        // работе: оно полезнее слова, которое и так видно по цвету кольца (то же
+        // правило в трёх других оболочках).
+        val title = if (kind == VPN_ON) host?.name ?: app.connectedTo ?: app.vpnText else app.vpnText
+        if (kind == VPN_ON) {
             // Подключено — круг уступает место пользе: сколько идёт, куда,
             // адрес хоста, гости и чем позвать друзей.
             StatusLine(Icons.Filled.VerifiedUser, title, tint, uptimeText(app.connectedSince))
@@ -300,8 +315,8 @@ private fun VpnHero(app: AppState, showInvite: (String) -> Unit) {
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
                         Text(countryLabel(h), color = Theme.dim, fontSize = 13.sp)
                         Text("·", color = Theme.dim, fontSize = 13.sp)
-                        Icon(protoIcon(h.proto), null, Modifier.size(13.dp), tint = Theme.dim)
-                        Text(protoName(h.proto), color = Theme.dim, fontSize = 13.sp)
+                        Icon(protoIcon(h.protection), null, Modifier.size(13.dp), tint = Theme.dim)
+                        Text(h.protoName, color = Theme.dim, fontSize = 13.sp)
                     }
                 }
             }
@@ -313,12 +328,13 @@ private fun VpnHero(app: AppState, showInvite: (String) -> Unit) {
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                HeroCircle(tint = tint, icon = icon, pulsing = st == 1)
+                val busy = kind == VPN_CONNECTING || kind == VPN_RECONNECTING
+                HeroCircle(tint = tint, icon = icon, pulsing = busy)
                 Text(
                     title, color = Theme.fg, fontSize = 21.sp, fontWeight = FontWeight.ExtraBold,
                     maxLines = 1, overflow = TextOverflow.Ellipsis,
                 )
-                if (st == 1) {
+                if (busy) {
                     Text(host?.name ?: "Пробиваю канал к хосту", color = Theme.dim, fontSize = 13.sp, textAlign = TextAlign.Center)
                 } else {
                     val n = app.displayedHosts().size
@@ -377,10 +393,37 @@ private fun ConnectedExtras(host: Host?, live: Boolean, code: String, showInvite
 
 // ── Карточка хоста ───────────────────────────────────────────────────────────
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-fun HostCard(app: AppState, host: Host) {
+fun HostCard(app: AppState, host: Host, clearance: Dp) {
     var password by remember(host.id) { mutableStateOf("") }
     val expanded = app.expandedId == host.id
+    // РАСКРЫЛИ — ПОДТЯНУТЬ КАРТОЧКУ В ВИДИМОЕ. Прокрутка сама за выросшей
+    // карточкой не идёт: у последней в списке всё, что ниже заголовка, уезжало
+    // под нав-бар, и «Подключить» человек не видел вовсе — на снимке владельца
+    // кнопку срезало ровно посередине.
+    //
+    // Просим показать карточку ВМЕСТЕ С НИЖНИМ ОТСТУПОМ прокрутки: сама по себе
+    // она «видима» и упираясь низом в край экрана, то есть под баром. С отступом
+    // низ встаёт ровно там же, где встаёт при прокрутке до конца, — на верхней
+    // кромке гашения.
+    val requester = remember { BringIntoViewRequester() }
+    var cardSize by remember { mutableStateOf(IntSize.Zero) }
+    val clearancePx = with(LocalDensity.current) { clearance.toPx() }
+    // ЖДЁМ, ПОКА ВЫСОТА ВСТАНЕТ, ПО САМОЙ ВЫСОТЕ, А НЕ ПО ЧАСАМ. Раскрытие — это
+    // ДВЕ анимации подряд: начинка разъезжается (AnimatedVisibility, 200мс), а
+    // коробка догоняет её размер (animateContentSize, ещё 200мс со сдвигом).
+    // Отмеренные «220мс» ловили карточку на середине пути — прокрутка
+    // подтягивалась к промежуточному размеру и не доводила. Ключ по cardSize
+    // перезапускает ожидание на каждое изменение: тронется дальше — ждём снова,
+    // замерла на 80мс — двигаем один раз и уже по готовой высоте.
+    LaunchedEffect(expanded, cardSize) {
+        if (!expanded) return@LaunchedEffect
+        delay(80)
+        requester.bringIntoView(
+            Rect(0f, 0f, cardSize.width.toFloat(), cardSize.height + clearancePx),
+        )
+    }
     // ВНУТРИ КАРТОЧКИ МЯТЫ НЕТ — ОДНИ СТУПЕНИ.
     //
     // Пробовали и так, и эдак: сперва мятой красили карточку целиком (цвет
@@ -406,6 +449,8 @@ fun HostCard(app: AppState, host: Host) {
     Column(
         Modifier
             .fillMaxWidth()
+            .bringIntoViewRequester(requester)
+            .onSizeChanged { cardSize = it }
             .background(bg, RoundedCornerShape(16.dp))
             .border(1.dp, stroke, RoundedCornerShape(16.dp))
             .padding(14.dp)
@@ -456,7 +501,7 @@ fun HostCard(app: AppState, host: Host) {
                 // имени — как ему и положено. weight(1f, fill = false) на имени
                 // и есть та самая уступка ширины.
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
-                    Icon(protoIcon(host.proto), null, Modifier.size(14.dp), tint = Theme.dim)
+                    Icon(protoIcon(host.protection), null, Modifier.size(14.dp), tint = Theme.dim)
                     Text(
                         host.name.ifEmpty { host.id }, color = Theme.fg,
                         modifier = Modifier.weight(1f, fill = false),
@@ -502,7 +547,7 @@ fun HostCard(app: AppState, host: Host) {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     StatTile("СТРАНА", countryLabel(host), Modifier.weight(1f), fill = tileFill)
                     StatTile("ГОСТЕЙ", "${host.guests} / ${host.max}", Modifier.weight(1f), fill = tileFill)
-                    PingTile(app.pings[host.id] ?: "…", Modifier.weight(1f), fill = tileFill)
+                    PingTile(app.pingOf[host.id] ?: Ping.measuring, Modifier.weight(1f), fill = tileFill)
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     StatTile(
@@ -511,8 +556,8 @@ fun HostCard(app: AppState, host: Host) {
                         fill = tileFill,
                     )
                     StatTile(
-                        "ПРОТОКОЛ", protoName(host.proto), Modifier.weight(1f),
-                        symbol = protoIcon(host.proto), fill = tileFill,
+                        "ПРОТОКОЛ", host.protoName, Modifier.weight(1f),
+                        symbol = protoIcon(host.protection), fill = tileFill,
                     )
                 }
 
@@ -607,63 +652,5 @@ private fun UpdateBanner(app: AppState) {
         }
         // Крестика нет намеренно: это единственный канал про новую версию, и
         // спрятав его, человек больше о ней не узнает.
-    }
-}
-
-/// Полоса «связь потеряна, восстанавливаю». Мягко ДЫШИТ — это и есть весь
-/// индикатор процесса: отдельной «крутилки» не нужно, движение само говорит,
-/// что работа идёт и руками ничего делать не надо.
-
-/**
- * Плитка отклика.
- *
- *   • идёт первый замер — КРУГОВАЯ СТРЕЛКА ВРАЩАЕТСЯ: движение честно говорит
- *     «сейчас меряю», в отличие от многоточия, которое просто стоит и молчит;
- *   • ответа нет — перечёркнутая антенна: у «нет отклика» отдельный знак, а не
- *     прочерк, который легко принять за «данных нет»;
- *   • число есть — просто цифра, без анимации: крутить что-то поверх готового
- *     значения значит намекать, что оно ещё не готово.
- */
-@Composable
-private fun PingTile(value: String, modifier: Modifier = Modifier, fill: Color = Theme.tile) {
-    when (value) {
-        "…" -> {
-            val t = rememberInfiniteTransition(label = "ping")
-            val angle by t.animateFloat(
-                0f, 360f,
-                infiniteRepeatable(tween(900, easing = LinearEasing), RepeatMode.Restart),
-                label = "pingSpin",
-            )
-            // Через trailing у TileBody, чтобы не менять общий StatTile ради
-            // одного случая: вращение нужно только здесь.
-            Box(modifier.tileBackground(fill = fill)) {
-                TileBody("ПИНГ", "") {
-                    Icon(
-                        Icons.Filled.Autorenew, null,
-                        Modifier.size(14.dp).rotate(angle),
-                        tint = Theme.accent,
-                    )
-                }
-            }
-        }
-        // Только знак, без слова: перечёркнутая антенна говорит сама, а «нет»
-        // рядом с ней — это то же самое ещё раз.
-        "—" -> StatTile("ПИНГ", "", modifier, symbol = Icons.Filled.SignalWifiOff, tint = Theme.dim, fill = fill)
-        else -> StatTile("ПИНГ", value, modifier, tint = pingTint(value), fill = fill)
-    }
-}
-
-/// ОДНА ЛИНЕЙКА НА ОБА ПИНГА (здесь и на вкладке «Сервер»). Раньше их было две,
-/// и меньшее число выходило тревожнее большего: 137 мс до хоста краснело, 162 мс
-/// до координатора числилось «хорошо».
-///
-/// АКЦЕНТА В ПИНГЕ НЕТ ВОВСЕ: мята в этом приложении значит «работает», а не
-/// «быстро». Норма молчит — обычный цвет текста.
-private fun pingTint(value: String): Color {
-    val ms = value.substringBefore(' ').toIntOrNull() ?: return Theme.fg
-    return when {
-        ms < 250 -> Theme.fg
-        ms <= 500 -> Theme.amber
-        else -> Theme.red
     }
 }

@@ -4,7 +4,7 @@
 // колбэки; заполняет их Rust (main.rs).
 import { Theme } from "theme.slint";
 import { HostRow, CalmButton, FloatCard, FloatHalo } from "components.slint";
-import { IconServer, IconRouter, IconShield, IconBolt, IconX, IconQr, IconRenew, IconPower } from "icons.slint";
+import { IconServer, IconRouter, IconShield, IconBolt, IconX, IconRenew, IconPower } from "icons.slint";
 import { VpnPage } from "vpn_page.slint";
 import { HostPage } from "host_page.slint";
 import { ServerPage } from "server_page.slint";
@@ -125,7 +125,6 @@ export component AppWindow inherits Window {
     in property <string> vpn-proto;
     in property <string> vpn-proto-id;
     in property <string> vpn-elapsed;
-    in property <image> vpn-qr-img;
     // ── хост ──
     in property <int> host-state;
     in property <string> host-status;
@@ -139,7 +138,9 @@ export component AppWindow inherits Window {
     in-out property <int> host-max: 8;
     in-out property <string> host-password;
     in-out property <string> host-protocol: "noise";
-    in property <image> host-qr-img;
+    // Картинки QR (`vpn-qr-img`, `host-qr-img`) отсюда убраны: их никто не
+    // заполнял и никто не читал. Единственный живой QR — полноэкранный оверлей
+    // ниже, его картинку рисует Rust в `qr-overlay-img`.
     // ── сервер ──
     in property <string> coord-url;
     in property <int> coord-state;
@@ -147,7 +148,10 @@ export component AppWindow inherits Window {
     in property <string> update-tag;
     in property <int> update-state;
     in property <string> update-error;
-    in property <int> coord-ping;
+    // Отклик до координатора: готовая подпись и уровень тревоги к ней — оба из
+    // общего справочника (`bmv_common::view::ping`), парой.
+    in property <string> coord-ping;
+    in property <int> coord-ping-alarm;
     in property <int> coord-hosts;
     in property <string> coord-ip;
     in property <bool> coord-is-default: true;
@@ -248,6 +252,7 @@ export component AppWindow inherits Window {
                 coord-state: root.coord-state;
                 vpn-state: root.vpn-state;
                 coord-ping: root.coord-ping;
+                coord-ping-alarm: root.coord-ping-alarm;
                 coord-hosts: root.coord-hosts;
                 coord-ip: root.coord-ip;
                 coord-is-default: root.coord-is-default;

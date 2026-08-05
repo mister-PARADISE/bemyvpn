@@ -95,6 +95,34 @@ async fn fetch_update(tag: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// ПОКАЗАТЬ СОСТОЯНИЕ VPN — ОДНИМ МЕСТОМ.
+///
+/// Состояние VPN живёт пятью источниками (файл-маркер хелпера, `vpn_since`,
+/// свойство разметки, живая задача хелпера, id хоста в окне), и трогать их
+/// ПОРЯДОК нельзя: на нём держатся прощание с хостом и честное «отключено».
+/// Здесь порядок не при чём — это ПРОЕКЦИЯ, один кадр интерфейса, и собирается
+/// он целиком. Стояла она тринадцатью местами по три-четыре setter'а, и одно
+/// расхождение уже накопилось: подключение через колбэк хелпера оставляло под
+/// заголовком подпись «к ИМЯ» от попытки, а догоняющий тик-цикл её стирал.
+///
+/// `host_id`: `Some("")` — забыть хост, `None` — оставить как есть. Второе
+/// нужно после неудачи: пока запись жива, строка хоста остаётся в списке, даже
+/// если координатор пометил его офлайном, — есть куда нажать «ещё раз».
+fn show_vpn(ui: &AppWindow, state: i32, status: &str, sub: &str, host_id: Option<&str>) {
+    ui.set_vpn_state(state);
+    ui.set_vpn_status(status.into());
+    ui.set_vpn_sub(sub.into());
+    if let Some(id) = host_id {
+        ui.set_vpn_host_id(id.into());
+    }
+}
+
+/// Выключено — «VPN выключен» и никакого хоста. Подпись объясняет, ПОЧЕМУ
+/// выключено (хост ушёл), либо пуста.
+fn show_vpn_off(ui: &AppWindow, sub: &str) {
+    show_vpn(ui, 0, view::vpn_text(view::Vpn::Off), sub, Some(""));
+}
+
 /// Заполнить карточку активного подключения по записи хоста. Зовётся В МОМЕНТ
 /// подключения (данные уже на руках — гость выбрал этот хост) и потом на каждом
 /// обновлении каталога, чтобы живые цифры (гости) не отставали.
@@ -244,9 +272,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ui.set_coord_field(view::without_scheme(&coord).into());
     ui.set_coord_is_default(coord == DEFAULT_COORD);
     ui.set_config_error(config_error.into());
-    // Подписи состояния VPN — ТОЛЬКО из справочника (`view::vpn_text`). Здесь
-    // они раздавались строками из одиннадцати мест сразу.
-    ui.set_vpn_status(view::vpn_text(view::Vpn::Off).into());
+    // Подписи состояния VPN — ТОЛЬКО из справочника (`view::vpn_text`), и
+    // проекция в разметку — тоже одним местом (`show_vpn*`). Здесь эти строки
+    // раздавались из одиннадцати мест сразу.
+    show_vpn_off(&ui, "");
     ui.set_host_status("Раздача выключена".into());
     // Сохранённые настройки раздачи — на экран.
     ui.set_host_name(saved_host.name.into());
@@ -411,9 +440,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let found = hosts.lock().unwrap().iter().find(|h| h.id == id).cloned();
                 let name = found.as_ref().map(display_name).unwrap_or_else(|| id.clone());
                 match n {
-                    1 => { ui.set_vpn_state(1); ui.set_vpn_host_id(id.clone().into()); ui.set_vpn_status(view::vpn_text(view::Vpn::Connecting).into()); ui.set_vpn_sub(format!("к {name}").into()); }
+                    1 => show_vpn(&ui, 1, view::vpn_text(view::Vpn::Connecting), &format!("к {name}"), Some(&id)),
                     2 => {
-                        ui.set_vpn_state(2); ui.set_vpn_host_id(id.clone().into()); ui.set_vpn_status(name.into());
+                        show_vpn(&ui, 2, &name, "", Some(&id));
                         // Кто именно подключился, знает хелпер: при «Старте» он сам
                         // выбирает хост из списка кандидатов, и до этого момента id
                         // нам неизвестен. Заполняем карточку здесь — иначе ячейки
@@ -429,11 +458,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     // то же читалось дважды, а длинное сообщение (например, отказ
                     // из-за IPv6) разворачивалось на семь строк жирным 21px. На
                     // телефонах так уже сделано — теперь одинаково везде.
-                    3 => {
-                        ui.set_vpn_state(3);
-                        ui.set_vpn_status(VPN_FAILED.into());
-                        ui.set_vpn_sub(if err.is_empty() { "Попробуйте ещё раз или выберите другой хост.".into() } else { err.into() });
-                    }
+                    // Запись хоста НЕ гасим — см. `show_vpn`.
+                    3 => show_vpn(
+                        &ui,
+                        3,
+                        VPN_FAILED,
+                        if err.is_empty() { "Попробуйте ещё раз или выберите другой хост." } else { &err },
+                        None,
+                    ),
                     // ХОСТ ЗАВЕРШИЛ РАЗДАЧУ. Состояние — обычное «выключено» (0), то
                     // есть спокойный синий круг, а не красная карточка отказа:
                     // ошибки здесь нет, всё сработало правильно. Меняются только
@@ -446,18 +478,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     // другой хост или нажмите «Старт»») здесь больше нет.
                     //
                     // ПОЧЕМУ ОБЪЯСНЕНИЕ ВНИЗУ, А НЕ В ЗАГОЛОВКЕ: заголовок —
-                    // 21px жирным без переноса и с `elide`, и на настоящем окне
-                    // (400 точек ширины) фраза правила обрезалась на «Хост
-                    // завершил раздачу — в…». Подпись же переносится по словам.
-                    // Тот же порядок здесь уже принят для отказа: короткий
-                    // заголовок, объяснение строкой ниже.
-                    4 => {
-                        ui.set_vpn_state(0);
-                        ui.set_vpn_host_id("".into());
-                        ui.set_vpn_status(view::vpn_text(view::Vpn::Off).into());
-                        ui.set_vpn_sub(view::vpn_text(view::Vpn::Ended).into());
-                    }
-                    _ => { ui.set_vpn_state(0); ui.set_vpn_host_id("".into()); ui.set_vpn_status(view::vpn_text(view::Vpn::Off).into()); ui.set_vpn_sub("".into()); }
+                    // 21px жирным, и на настоящем окне (400 точек ширины) фраза
+                    // правила в него не влезала. Подпись же переносится по
+                    // словам. Тот же порядок здесь уже принят для отказа:
+                    // короткий заголовок, объяснение строкой ниже.
+                    4 => show_vpn_off(&ui, view::vpn_text(view::Vpn::Ended)),
+                    _ => show_vpn_off(&ui, ""),
                 }
             });
         })
@@ -652,8 +678,9 @@ fn set_row_ping(ui: &AppWindow, id: &str, ms: Option<u32>) {
     for i in 0..rows.row_count() {
         if let Some(mut r) = rows.row_data(i) {
             if r.id == id {
-                r.ping = view::ping(ms).0.into();
-                r.ping_ms = ms.map(|v| v.min(i32::MAX as u32) as i32).unwrap_or(-1);
+                let (text, alarm) = view::ping(ms);
+                r.ping = text.into();
+                r.ping_alarm = alarm as i32;
                 rows.set_row_data(i, r);
                 break;
             }
@@ -696,16 +723,19 @@ fn host_row(h: &HostInfo, pings: &Pings) -> HostRow {
     //
     // Не воспроизводилось при ПУСТОМ каталоге: нет строк — нет вызова. Именно
     // поэтому сборка и запуск «у себя» ничего не показали.
-    let (ping_text, ping_ms) = {
+    let (ping_text, ping_alarm) = {
         let map = pings.lock().unwrap();
         match map.get(&h.id) {
-            // Подпись — общая (`view::ping`), число уезжает в разметку отдельно:
-            // цвет там считается по нему же, одной линейкой на оба пинга.
-            Some(measured) => (
-                SharedString::from(view::ping(*measured).0),
-                measured.map_or(-1, |ms| ms.min(i32::MAX as u32) as i32),
-            ),
-            // Ключа нет — ещё не мерили: пусто, у плитки на это своя анимация.
+            // Подпись И уровень тревоги — ОДНИМ вызовом справочника: порознь они
+            // и разъезжались (текст брали в одном месте, цвет считали в другом).
+            // Разметке уезжает уровень, а не миллисекунды: линейка живёт в
+            // справочнике, окну достаточно знать, насколько цифра тревожна.
+            Some(measured) => {
+                let (text, alarm) = view::ping(*measured);
+                (SharedString::from(text), alarm as i32)
+            }
+            // Ключа нет — ещё не мерили: пусто и −1, у плитки на это своя
+            // подпись ожидания. Справочник такого состояния не знает.
             None => (SharedString::new(), -1),
         }
     };
@@ -757,7 +787,7 @@ fn host_row(h: &HostInfo, pings: &Pings) -> HostRow {
         // Пусто до раскрытия карточки: мерить отклик для строк, на которые никто
         // не смотрит, — зря дёргать чужие машины.
         ping: ping_text,
-        ping_ms,
+        ping_alarm,
     }
 }
 
@@ -806,8 +836,6 @@ fn spawn_refresh(
                     // Туннель поднят, а UI застрял на «Подключаюсь…» → догоняем.
                     if let Some(id) = &helper_up {
                         if ui.get_vpn_state() == 1 {
-                            ui.set_vpn_state(2);
-                            ui.set_vpn_host_id(id.clone().into());
                             let name = {
                                 let hs = names.lock().unwrap();
                                 if let Some(h) = hs.iter().find(|h| &h.id == id) {
@@ -817,8 +845,7 @@ fn spawn_refresh(
                                     id.clone()
                                 }
                             };
-                            ui.set_vpn_status(name.into());
-                            ui.set_vpn_sub("".into());
+                            show_vpn(&ui, 2, &name, "", Some(id));
                         }
                     }
                     // …и НАОБОРОТ: маркера нет — значит туннеля нет. Маркер вводили
@@ -829,10 +856,7 @@ fn spawn_refresh(
                     // Маркер пишется ДО отправки STATE 2, так что «подключились, но
                     // файла ещё нет» не бывает — ложного сброса не будет.
                     if helper_up.is_none() && ui.get_vpn_state() == 2 {
-                        ui.set_vpn_state(0);
-                        ui.set_vpn_host_id("".into());
-                        ui.set_vpn_status(view::vpn_text(view::Vpn::Off).into());
-                        ui.set_vpn_sub("".into());
+                        show_vpn_off(&ui, "");
                     }
                     if ui.get_vpn_state() == 2 { ui.set_vpn_elapsed(vpn_el.unwrap_or_default().into()); }
                     if ui.get_host_state() == 2 { ui.set_host_elapsed(host_el.unwrap_or_default().into()); }
@@ -872,7 +896,7 @@ fn spawn_refresh(
             // Настоящий круг до координатора. Раньше здесь замеряли, СКОЛЬКО
             // длился сам вызов health(), — а он читает флаг «сокет жив» и
             // возвращается мгновенно, поэтому на экране вечно стоял ноль.
-            let ping = eng.coordinator_rtt().unwrap_or(0) as i32;
+            let ping = eng.coordinator_rtt().unwrap_or(0);
             if alive && my_ip.is_empty() {
                 if let Ok(ip) = eng.my_ip().await {
                     my_ip = ip.clone();
@@ -896,7 +920,13 @@ fn spawn_refresh(
                 let Some(ui) = weak.upgrade() else { return };
                 ui.set_coord_state(if alive { 1 } else { 2 });
 
-                ui.set_coord_ping(if alive { ping } else { 0 });
+                // Подпись и уровень тревоги — ОДНИМ вызовом справочника, той же
+                // линейкой, что у пинга до хоста. Разметка раньше сама клеила
+                // «мс» и сама сравнивала число с порогами — две копии правила
+                // на одном экране.
+                let (ping_text, ping_alarm) = view::ping(alive.then_some(ping));
+                ui.set_coord_ping(ping_text.into());
+                ui.set_coord_ping_alarm(ping_alarm as i32);
                 ui.set_coord_ip(ip.into());
                 if let Some(h) = hist {
                     ui.set_server_history(str_model(&h.iter().map(|u| view::without_scheme(u)).collect::<Vec<_>>()));
@@ -965,10 +995,7 @@ fn wire_vpn(
 ) {
     // Оптимистичный статус до ответа хелпера (как iOS connect()).
     fn begin(ui: &AppWindow, id: &str, name: &str) {
-        ui.set_vpn_state(1);
-        ui.set_vpn_status(view::vpn_text(view::Vpn::Connecting).into());
-        ui.set_vpn_sub(format!("к {name}").into());
-        ui.set_vpn_host_id(id.into());
+        show_vpn(ui, 1, view::vpn_text(view::Vpn::Connecting), &format!("к {name}"), Some(id));
         // Чистим карточку: иначе от прошлого подключения остаются чужие IP и
         // счётчик гостей, пока не придёт каталог. Дальше заполнит fill_vpn_card.
         ui.set_vpn_ip("—".into());
@@ -997,9 +1024,7 @@ fn wire_vpn(
             if busy(&u) { return; }
             let Some(host) = hosts.lock().unwrap().iter().find(|h| h.id == id.as_str()).cloned() else { return };
             if u.get_host_state() == 2 && u.get_host_code() == host.id.as_str() {
-                u.set_vpn_state(3);
-                u.set_vpn_status(VPN_FAILED.into());
-                u.set_vpn_sub("Это ваш собственный хост — выберите другой.".into());
+                show_vpn(&u, 3, VPN_FAILED, "Это ваш собственный хост — выберите другой.", None);
                 return;
             }
             let pw = if host.has_password { u.get_guest_password().to_string() } else { String::new() };
@@ -1021,9 +1046,7 @@ fn wire_vpn(
             let code = u.get_code().to_string().trim().to_uppercase();
             if code.is_empty() { return; }
             if u.get_host_state() == 2 && u.get_host_code() == code.as_str() {
-                u.set_vpn_state(3);
-                u.set_vpn_status(VPN_FAILED.into());
-                u.set_vpn_sub("Это код вашего же хоста — введите чужой.".into());
+                show_vpn(&u, 3, VPN_FAILED, "Это код вашего же хоста — введите чужой.", None);
                 u.set_code("".into());
                 return;
             }
@@ -1069,9 +1092,7 @@ fn wire_vpn(
                 bmv_desktop::tunnel::rank_candidates(&hs, mine.as_deref(), &own, &host_cc)
             };
             let Some(first) = cands.first() else {
-                u.set_vpn_state(3);
-                u.set_vpn_status(VPN_FAILED.into());
-                u.set_vpn_sub("Сейчас нет свободного хоста без пароля. Выберите хост в списке ниже.".into());
+                show_vpn(&u, 3, VPN_FAILED, "Сейчас нет свободного хоста без пароля. Выберите хост в списке ниже.", None);
                 return;
             };
             begin(&u, &first.id, &display_name(first));
@@ -1087,10 +1108,7 @@ fn wire_vpn(
         ui.on_disconnect(move || {
             hlp.stop();
             if let Some(u) = weak.upgrade() {
-                u.set_vpn_state(0);
-                u.set_vpn_host_id("".into());
-                u.set_vpn_status(view::vpn_text(view::Vpn::Off).into());
-                u.set_vpn_sub("".into());
+                show_vpn_off(&u, "");
             }
         });
     }
@@ -1513,7 +1531,7 @@ mod tests {
                 .map(|id| {
                     let h = HostInfo { id: (*id).into(), ..HostInfo::default() };
                     let r = host_row(&h, &p);
-                    (r.ping.to_string(), r.ping_ms)
+                    (r.ping.to_string(), r.ping_alarm)
                 })
                 .collect();
             let _ = tx.send(seen);
@@ -1523,8 +1541,10 @@ mod tests {
             .recv_timeout(Duration::from_secs(5))
             .expect("host_row зависла — снова двойной lock в одном выражении");
 
-        assert_eq!(seen[0], ("42 мс".to_string(), 42));
-        assert_eq!(seen[1], ("—".to_string(), -1));
+        // В разметку уезжает УРОВЕНЬ ТРЕВОГИ, а не миллисекунды: пороги живут в
+        // справочнике, окно их не повторяет. −1 — замера ещё не было.
+        assert_eq!(seen[0], ("42 мс".to_string(), view::Alarm::Calm as i32));
+        assert_eq!(seen[1], (view::PING_NO_ANSWER.to_string(), view::Alarm::Muted as i32));
         assert_eq!(seen[2], (String::new(), -1));
     }
 

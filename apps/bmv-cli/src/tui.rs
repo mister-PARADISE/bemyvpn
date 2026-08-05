@@ -17,7 +17,7 @@ use bmv_signal::HostInfo;
 use crossterm::event::{Event, EventStream, KeyCode, KeyEventKind};
 use futures::StreamExt;
 use ratatui::prelude::*;
-use ratatui::widgets::{Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph, Tabs, Wrap};
+use ratatui::widgets::{Clear, List, ListItem, ListState, Paragraph, Tabs, Wrap};
 
 /// Предустановка меню из аргументов CLI (`bemyvpn host --max 16` и т.п.). Меню
 /// открывается уже с этими значениями (и, при auto_start, сразу запущенное).
@@ -171,13 +171,20 @@ struct App {
     auto_srv: Option<bool>,  // автозапуск координатора (systemd); None — не Linux
     auto_host: Option<bool>, // автозапуск хоста
     input: Option<Input>,
-    toast: Option<(String, Instant)>,
+    /// Сообщение внизу экрана: что сказать, насколько тревожно и когда погаснет.
+    toast: Option<(String, Alarm, Instant)>,
     quit: bool,
 }
 
 impl App {
-    fn toast(&mut self, msg: impl Into<String>) {
-        self.toast = Some((msg.into(), Instant::now()));
+    /// Сказать человеку одну строку внизу экрана.
+    ///
+    /// УРОВЕНЬ ТРЕВОГИ ОБЯЗАТЕЛЕН, и берётся он из общего справочника
+    /// (`view::Alarm`): `Calm` — сработало, `Amber` — поправимо (переспросить,
+    /// набрать заново, выбрать другой хост), `Red` — само не пройдёт. Раньше
+    /// параметра не было вовсе, и отказ красился тем же цветом, что успех.
+    fn toast(&mut self, msg: impl Into<String>, alarm: Alarm) {
+        self.toast = Some((msg.into(), alarm, Instant::now()));
     }
 }
 
@@ -411,7 +418,7 @@ fn handle_input_key(
                 InputKind::HostName => {
                     app.lock().unwrap().hset.name = buf.clone();
                     apply_host(host_engine, move |e| async move { let _ = e.host_set_name(&buf).await; });
-                    app.lock().unwrap().toast("Имя обновлено");
+                    app.lock().unwrap().toast("Имя обновлено", Alarm::Calm);
                     persist(engine, app);
                 }
                 InputKind::HostMaxGuests => match buf.trim().parse::<u32>() {
@@ -419,15 +426,15 @@ fn handle_input_key(
                         let val = n.clamp(1, 100_000);
                         app.lock().unwrap().hset.max_guests = val;
                         apply_host(host_engine, move |e| async move { let _ = e.host_set_max_guests(val).await; });
-                        app.lock().unwrap().toast("Лимит обновлён");
+                        app.lock().unwrap().toast("Лимит обновлён", Alarm::Calm);
                         persist(engine, app);
                     }
-                    Err(_) => app.lock().unwrap().toast("Нужно число, например 8"),
+                    Err(_) => app.lock().unwrap().toast("Нужно число, например 8", Alarm::Amber),
                 },
                 InputKind::HostPassword => {
                     app.lock().unwrap().hset.password = buf.clone();
                     apply_host(host_engine, move |e| async move { let _ = e.host_set_password(&buf).await; });
-                    app.lock().unwrap().toast("Пароль обновлён");
+                    app.lock().unwrap().toast("Пароль обновлён", Alarm::Calm);
                     persist(engine, app);
                 }
                 InputKind::Coordinator => match view::coordinator_url(&buf) {
@@ -437,7 +444,7 @@ fn handle_input_key(
                     }
                     // Раньше здесь требовалось набрать «https://» руками, и на
                     // «bemyvpn.net» человек получал отказ вместо адреса.
-                    None => app.lock().unwrap().toast("Адрес пустой — введите адрес сервера"),
+                    None => app.lock().unwrap().toast("Адрес пустой — введите адрес сервера", Alarm::Amber),
                 },
                 InputKind::SrvDomain => {
                     // Схему срезаем тем же правилом, что и на экране адреса.
@@ -447,7 +454,10 @@ fn handle_input_key(
                         a.srv_cfg.domain = d.clone();
                         // Домен задан → HTTPS:443, сертификат получится/продлится сам.
                         a.srv_cfg.bind = if d.is_empty() { "0.0.0.0:3330".into() } else { "0.0.0.0:443".into() };
-                        a.toast(if d.is_empty() { "Домен убран — HTTP на :3330" } else { "HTTPS: сертификат получится сам (нужен DNS на этот сервер и открытый 443)" });
+                        a.toast(
+                            if d.is_empty() { "Домен убран — HTTP на :3330" } else { "HTTPS: сертификат получится сам (нужен DNS на этот сервер и открытый 443)" },
+                            Alarm::Calm,
+                        );
                     }
                     persist(engine, app);
                 }
@@ -456,10 +466,10 @@ fn handle_input_key(
                     let full = if b.chars().all(|c| c.is_ascii_digit()) && !b.is_empty() { format!("0.0.0.0:{b}") } else { b };
                     if full.parse::<std::net::SocketAddr>().is_ok() {
                         app.lock().unwrap().srv_cfg.bind = full;
-                        app.lock().unwrap().toast("Адрес прослушивания сохранён");
+                        app.lock().unwrap().toast("Адрес прослушивания сохранён", Alarm::Calm);
                         persist(engine, app);
                     } else {
-                        app.lock().unwrap().toast("Нужен порт (443) или адрес с портом (0.0.0.0:443)");
+                        app.lock().unwrap().toast("Нужен порт (443) или адрес с портом (0.0.0.0:443)", Alarm::Amber);
                     }
                 }
             }
@@ -522,7 +532,7 @@ fn vpn_key(code: KeyCode, engine: &EngineSlot, app: &Shared, vpn_task: &mut VpnT
                 })
             };
             if cands.is_empty() {
-                app.lock().unwrap().toast("Сейчас нет свободного хоста без пароля — выберите в списке");
+                app.lock().unwrap().toast("Сейчас нет свободного хоста без пароля — выберите в списке", Alarm::Amber);
             } else {
                 connect_queue(engine, app, vpn_task, cands, None);
             }
@@ -583,7 +593,7 @@ fn host_key(
                     // флаг, который ничего не изменит, значит врать: человек жмёт
                     // Enter, надпись прыгает, а в каталоге по-прежнему пусто.
                     if !app.lock().unwrap().hset.password.is_empty() {
-                        app.lock().unwrap().toast("С паролем сеть всегда скрыта");
+                        app.lock().unwrap().toast("С паролем сеть всегда скрыта", Alarm::Amber);
                     } else {
                         let val = !app.lock().unwrap().hset.public;
                         app.lock().unwrap().hset.public = val;
@@ -604,7 +614,7 @@ fn host_key(
                     } else if app.lock().unwrap().auto_host == Some(true) {
                         // Демон включён, а прав на systemctl нет — не плодим второй
                         // процесс с тем же кодом (драка за анонс у координатора).
-                        app.lock().unwrap().toast("Хост работает 24/7 демоном — управлять через sudo");
+                        app.lock().unwrap().toast("Хост работает 24/7 демоном — управлять через sudo", Alarm::Amber);
                     } else {
                         toggle_host(engine, app, host_engine, host_task);
                     }
@@ -663,14 +673,14 @@ fn server_key(code: KeyCode, engine: &EngineSlot, app: &Shared, srv_task: &mut O
                         }
                         spawn_autostart_toggle(false, engine, app);
                     } else if app.lock().unwrap().auto_srv == Some(true) {
-                        app.lock().unwrap().toast("Сервер работает 24/7 демоном — управлять через sudo");
+                        app.lock().unwrap().toast("Сервер работает 24/7 демоном — управлять через sudo", Alarm::Amber);
                     } else {
                         let on = matches!(app.lock().unwrap().srv, SrvState::On);
                         if on {
                             if let Some(h) = srv_task.take() { h.abort(); }
                             let mut a = app.lock().unwrap();
                             a.srv = SrvState::Off;
-                            a.toast("Свой сервер остановлен");
+                            a.toast("Свой сервер остановлен", Alarm::Calm);
                         } else {
                             start_server(app, srv_task);
                         }
@@ -826,7 +836,7 @@ fn daemon_mode() -> bool {
 
 fn spawn_autostart_toggle(host: bool, engine: &EngineSlot, app: &Shared) {
     persist(engine, app); // юнит должен видеть свежий конфиг
-    app.lock().unwrap().toast("Переключаю…");
+    app.lock().unwrap().toast("Переключаю…", Alarm::Calm);
     let app2 = app.clone();
     std::thread::spawn(move || {
         let res = toggle_autostart(host);
@@ -839,9 +849,10 @@ fn spawn_autostart_toggle(host: bool, engine: &EngineSlot, app: &Shared) {
                     (true, false) => "Хост ВЫКЛ",
                     (false, true) => "Сервер ВКЛ — работает 24/7, даже после выхода",
                     (false, false) => "Сервер ВЫКЛ",
-                });
+                }, Alarm::Calm);
             }
-            Err(e) => a.toast(e),
+            // Служба не поднялась — само это не пройдёт, нужен человек.
+            Err(e) => a.toast(e, Alarm::Red),
         }
     });
 }
@@ -854,7 +865,7 @@ fn switch_coordinator(engine: &EngineSlot, app: &Shared, url: String) {
     let mut a = app.lock().unwrap();
     a.coord = url;
     a.coord_ok = None;
-    a.toast("Координатор изменён");
+    a.toast("Координатор изменён", Alarm::Calm);
 }
 
 fn ensure_host_code(engine: &EngineSlot, app: &Shared) {
@@ -885,7 +896,7 @@ fn start_vpn(engine: &EngineSlot, app: &Shared, vpn_task: &mut VpnTask) {
         a.hosts.get(a.sel).cloned()
     };
     let Some(host) = host else {
-        app.lock().unwrap().toast("Сначала выберите хост в списке");
+        app.lock().unwrap().toast("Сначала выберите хост в списке", Alarm::Amber);
         return;
     };
     // Забитый (и мёртвый) хост не годится — то же правило, по которому в трёх
@@ -899,7 +910,7 @@ fn start_vpn(engine: &EngineSlot, app: &Shared, vpn_task: &mut VpnTask) {
             // КООРДИНАТОРОМ (`view::link_state`), и часовому против второй
             // копии правила эта фраза здесь неотличима от неё.
             "Этот хост не в сети — выберите другой"
-        });
+        }, Alarm::Amber);
         return;
     }
     if host.has_password {
@@ -917,7 +928,7 @@ fn start_vpn(engine: &EngineSlot, app: &Shared, vpn_task: &mut VpnTask) {
 /// хост держал ушедшего гостя лишние 8 секунд, до keepalive-таймаута.
 fn connect_queue(engine: &EngineSlot, app: &Shared, vpn_task: &mut VpnTask, cands: Vec<HostInfo>, password: Option<String>) {
     let Some(first) = cands.first() else {
-        app.lock().unwrap().toast("Подходящего хоста нет — выберите в списке");
+        app.lock().unwrap().toast("Подходящего хоста нет — выберите в списке", Alarm::Amber);
         return;
     };
     app.lock().unwrap().vpn = Vpn::Connecting(host_name(first));
@@ -958,7 +969,7 @@ fn connect_queue(engine: &EngineSlot, app: &Shared, vpn_task: &mut VpnTask, cand
                     // Хост выключил раздачу — говорим об этом словами и без
                     // красного: подключение сработало, просто хоста больше нет.
                     bmv_desktop::tunnel::State::HostLeft => {
-                        a.toast(view::vpn_text(view::Vpn::Ended));
+                        a.toast(view::vpn_text(view::Vpn::Ended), Alarm::Calm);
                         a.vpn = Vpn::Ended;
                     }
                     bmv_desktop::tunnel::State::Failed(e) => {
@@ -999,7 +1010,7 @@ fn disconnect_vpn(app: &Shared, vpn_task: &mut VpnTask) {
     }
     let mut a = app.lock().unwrap();
     a.vpn = Vpn::Off;
-    a.toast("Отключено");
+    a.toast("Отключено", Alarm::Calm);
 }
 
 // ── Хост (раздача) ───────────────────────────────────────────────────────────
@@ -1125,7 +1136,7 @@ fn stop_host(app: &Shared, host_engine: &HostEngine, host_task: &mut Option<toki
     let mut a = app.lock().unwrap();
     a.host = HostMode::Off;
     a.host_started = None;
-    a.toast("Раздача остановлена");
+    a.toast("Раздача остановлена", Alarm::Calm);
 }
 
 /// Новый код: сброс + (если раздавали) авто-рестарт под свежим кодом (как iOS).
@@ -1175,7 +1186,7 @@ fn new_host_code(engine: &EngineSlot, app: &Shared, host_engine: &HostEngine, ho
     if was {
         start_host(engine, app, host_engine, host_task);
     }
-    app.lock().unwrap().toast("Новый код запрошен");
+    app.lock().unwrap().toast("Новый код запрошен", Alarm::Calm);
 }
 
 // ── Сервер (свой координатор) ────────────────────────────────────────────────
@@ -1198,7 +1209,7 @@ fn start_server(app: &Shared, srv_task: &mut Option<tokio::task::JoinHandle<()>>
         }
     });
     *srv_task = Some(handle);
-    app.lock().unwrap().toast("Свой сервер запущен");
+    app.lock().unwrap().toast("Свой сервер запущен", Alarm::Calm);
 }
 
 // ── фон: каталог + связь + свой IP ───────────────────────────────────────────
@@ -1318,26 +1329,26 @@ const BG: Color = Color::Rgb(0x08, 0x09, 0x0B);     // #08090B — s0 — стр
 const SEL: Color = Color::Rgb(0x1B, 0x1F, 0x25);    // #1B1F25 — s2 — раскрытая карточка, чип
 // ── КОНЕЦ: значения из design/palette.toml ──
 
-/// Единый вид карточки: скруглённая рамка, тусклый контур, акцентный жирный
-/// заголовок и горизонтальный паддинг, чтобы текст не липнул к рамке.
-fn card(title: &str) -> Block<'_> {
-    Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(DIM))
-        .title(Span::styled(title, Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)))
-        .padding(ratatui::widgets::Padding::horizontal(1))
-}
-
-/// Эмодзи-индикатор состояния — одинаковый на всех вкладках.
+/// НАБОР ДЕТАЛЕЙ терминала (`src/skin.rs`) — всё оформление там.
 ///
-/// ВСЕ ЧЕТЫРЕ — ЭМОДЗИ-ПРЕЗЕНТАЦИИ (ширина 2). У «выключено» здесь стоял голый
-/// U+26AA без селектора: терминал считает его шириной 1, и строка с ним ехала на
-/// знак левее соседних — ровно та ловушка, что описана у `proto_short`.
-fn dot_on() -> &'static str { "🟢" }
-fn dot_off() -> &'static str { "⚪️" }
-fn dot_wait() -> &'static str { "🟡" }
-fn dot_err() -> &'static str { "🔴" }
+/// Модуль объявлен ЗДЕСЬ, а не в `main.rs`, нарочно. Цвета обязаны остаться в
+/// этом файле: их пишет `design/sync-palette.py` (цель —
+/// `apps/bmv-cli/src/tui.rs`), а сторож
+/// `crates/bmv-common/tests/palette_is_one_source.rs` ищет их в нём же и сверяет
+/// участок побайтно — даже `pub(crate)` перед `const` его сломает. Дочерний
+/// модуль видит приватное родителя, поэтому `skin.rs` берёт палитру напрямую,
+/// а файл при этом лежит там, где ему положено, — `apps/bmv-cli/src/skin.rs`.
+#[path = "skin.rs"]
+pub(crate) mod skin;
+
+use skin::State;
+
+/// Клавиши модального ввода. Одной строкой, потому что видны они В ДВУХ местах
+/// сразу — в самом окне и внизу экрана: разойдись эти две копии, человек прочтёт
+/// в одном месте одно, а в другом другое.
+const INPUT_KEYS: &str = "Enter — ок · Esc — отмена";
+/// Сколько живёт тост.
+const TOAST_LIFE: Duration = Duration::from_secs(4);
 
 fn ui(f: &mut Frame, a: &App) {
     let chunks = Layout::default()
@@ -1348,25 +1359,15 @@ fn ui(f: &mut Frame, a: &App) {
         .spacing(1)
         .split(f.area());
 
-    let dot = match a.coord_ok {
-        Some(true) => Span::raw(format!(" {} ", dot_on())),
-        Some(false) => Span::raw(format!(" {} ", dot_err())),
-        None => Span::raw(format!(" {} ", dot_off())),
-    };
+    // Значок связи в шапке — та же тройка, что и в карточке «Связь»: смысл берём
+    // у справочника, а не решаем заново. Раньше здесь стоял свой разбор
+    // `coord_ok`, и обрыв связи в шапке краснел, а в карточке желтел.
+    let dot = Span::raw(format!(" {} ", skin::state_dot(State::from(view::link_state(a.coord_ok).1))));
     let titles: Vec<Line> = Tab::ALL.iter().map(|t| Line::from(t.title())).collect();
     let tabs = Tabs::new(titles)
         .select(a.tab.idx())
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
-                .border_style(Style::default().fg(DIM))
-                .title(Line::from(vec![
-                    Span::styled(" BeMyVPN ", Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
-                    dot,
-                ])),
-        )
-        .highlight_style(Style::default().fg(BG).bg(ACCENT).add_modifier(Modifier::BOLD))
+        .block(skin::head(Line::from(vec![skin::code(" BeMyVPN "), dot])))
+        .highlight_style(skin::tab_active())
         .divider("");
     f.render_widget(tabs, chunks[0]);
 
@@ -1380,8 +1381,8 @@ fn ui(f: &mut Frame, a: &App) {
         render_input(f, chunks[1], inp);
     }
 
-    let hint = if a.input.is_some() {
-        "Enter — ок · Esc — отмена"
+    let keys = if a.input.is_some() {
+        INPUT_KEYS
     } else {
         match a.tab {
             Tab::Vpn => "↑↓ выбор · Enter подкл/откл · C старт · K по коду · Tab вкладки · q выход",
@@ -1389,16 +1390,11 @@ fn ui(f: &mut Frame, a: &App) {
             Tab::Server => "↑↓ поле · Enter изменить/переключить · ←→ вкладки · q выход",
         }
     };
-    let toast = a
-        .toast
-        .as_ref()
-        .filter(|(_, t)| t.elapsed() < Duration::from_secs(4))
-        .map(|(m, _)| m.as_str());
-    let bottom = Line::from(vec![
-        Span::styled(format!(" {hint} "), Style::default().fg(DIM)),
-        Span::styled(toast.unwrap_or("").to_string(), Style::default().fg(ACCENT)),
-    ]);
-    f.render_widget(Paragraph::new(bottom), chunks[2]);
+    let mut bottom = vec![skin::hint(format!(" {keys} "))];
+    if let Some((msg, alarm, _)) = a.toast.as_ref().filter(|(_, _, t)| t.elapsed() < TOAST_LIFE) {
+        bottom.push(skin::toast(msg, *alarm));
+    }
+    f.render_widget(Paragraph::new(Line::from(bottom)), chunks[2]);
 }
 
 fn render_input(f: &mut Frame, area: Rect, inp: &Input) {
@@ -1414,24 +1410,10 @@ fn render_input(f: &mut Frame, area: Rect, inp: &Input) {
     let shown = if inp.masked { "•".repeat(inp.buffer.chars().count()) } else { inp.buffer.clone() };
     let body = vec![
         Line::from(""),
-        Line::from(vec![
-            Span::styled("› ", Style::default().fg(ACCENT)),
-            Span::styled(shown, Style::default().fg(FG)),
-            Span::styled("▏", Style::default().fg(ACCENT)),
-        ]),
-        Line::from(Span::styled("Enter — ок · Esc — отмена", Style::default().fg(DIM))),
+        skin::prompt(&shown),
+        Line::from(skin::hint(INPUT_KEYS)),
     ];
-    f.render_widget(
-        Paragraph::new(body).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
-                .border_style(Style::default().fg(ACCENT))
-                .title(inp.title())
-                .padding(ratatui::widgets::Padding::horizontal(1)),
-        ),
-        rect,
-    );
+    f.render_widget(Paragraph::new(body).block(skin::modal(inp.title())), rect);
 }
 
 fn vpn_tab(f: &mut Frame, area: Rect, a: &App) {
@@ -1446,15 +1428,12 @@ fn vpn_tab(f: &mut Frame, area: Rect, a: &App) {
     // эмодзи-кружок и цвет. Раньше меню писало слова само, и они разошлись с
     // тремя другими оболочками.
     let status: Vec<Line> = match &a.vpn {
-        Vpn::Off => vec![Line::from(Span::styled(
-            format!("{} {}", dot_off(), view::vpn_text(view::Vpn::Off)),
-            Style::default().fg(DIM),
-        ))],
+        Vpn::Off => vec![Line::from(skin::state_line(State::Off, view::vpn_text(view::Vpn::Off)))],
         // Имя хоста — отдельным приглушённым куском, как подпись под заголовком
         // в окне: сама подпись состояния общая и имени не знает.
         Vpn::Connecting(h) => vec![Line::from(vec![
-            Span::styled(format!("{} {}", dot_wait(), view::vpn_text(view::Vpn::Connecting)), Style::default().fg(AMBER)),
-            Span::styled(format!("   к {h}"), Style::default().fg(DIM)),
+            skin::state_line(State::Wait, view::vpn_text(view::Vpn::Connecting)),
+            skin::hint(format!("   к {h}")),
         ])],
         Vpn::On { id, name, since } => {
             let h = a.hosts.iter().find(|h| &h.id == id);
@@ -1463,62 +1442,57 @@ fn vpn_tab(f: &mut Frame, area: Rect, a: &App) {
             let proto = h.map(|h| proto_short(&h.protocol)).unwrap_or_default();
             vec![
                 Line::from(vec![
-                    Span::styled(format!("{} {}", dot_on(), view::vpn_text(view::Vpn::On)), Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
-                    Span::styled(format!("   {name}   ⏳ {}", uptime(*since)), Style::default().fg(DIM)),
+                    skin::state_line(State::On, view::vpn_text(view::Vpn::On)),
+                    skin::hint(format!("   {name}   ⏳ {}", uptime(*since))),
                 ]),
-                Line::from(Span::styled(format!("🌍 {ip}    👥 {guests}    {proto}"), Style::default().fg(DIM))),
+                Line::from(skin::hint(format!("🌍 {ip}    👥 {guests}    {proto}"))),
             ]
         }
         // Тот же тихий серый, что и у «Отключено»: конец раздачи — не отказ.
         // Про «Старт» дописываем клавишу — это уже про терминал, а не про
         // состояние: в трёх других оболочках на её месте кнопка.
-        Vpn::Ended => vec![Line::from(Span::styled(
-            format!("{} {} (c — «Старт»)", dot_off(), view::vpn_text(view::Vpn::Ended)),
-            Style::default().fg(DIM),
+        Vpn::Ended => vec![Line::from(skin::state_line(
+            State::Off,
+            format!("{} (c — «Старт»)", view::vpn_text(view::Vpn::Ended)),
         ))],
-        // Обрыв — красным: сам он не пройдёт, десктопный путь заново не встаёт.
-        Vpn::Lost => vec![Line::from(Span::styled(
-            format!("{} {}", dot_err(), view::vpn_text(view::Vpn::Lost)),
-            Style::default().fg(RED),
-        ))],
-        Vpn::Failed(e) => vec![Line::from(Span::styled(format!("{} {e}", dot_err()), Style::default().fg(RED)))],
+        // Обрыв — как поломка: сам он не пройдёт, десктопный путь заново не встаёт.
+        Vpn::Lost => vec![Line::from(skin::state_line(State::Err, view::vpn_text(view::Vpn::Lost)))],
+        Vpn::Failed(e) => vec![Line::from(skin::state_line(State::Err, e))],
     };
-    f.render_widget(Paragraph::new(status).wrap(Wrap { trim: true }).block(card(" Статус ")), rows[0]);
+    f.render_widget(Paragraph::new(status).wrap(Wrap { trim: true }).block(skin::card(" Статус ")), rows[0]);
 
     let items: Vec<ListItem> = if a.hosts.is_empty() {
         // ПУСТО ПО ДВУМ РАЗНЫМ ПРИЧИНАМ, и человеку нужно разное: ждать связи
         // или действовать (`view::empty_directory_hint`). Здесь на оба случая
         // стояла одна фраза «Живых хостов сейчас нет…» — она отправляла искать
         // чужой хост того, у кого просто отвалился интернет.
-        let hint = view::empty_directory_hint(a.coord_ok);
+        let empty = view::empty_directory_hint(a.coord_ok);
         vec![ListItem::new(Text::from(
-            hint.lines().map(|l| Line::from(Span::styled(l, Style::default().fg(DIM)))).collect::<Vec<_>>(),
+            empty.lines().map(|l| Line::from(skin::hint(l))).collect::<Vec<_>>(),
         ))]
     } else {
         a.hosts
             .iter()
             .map(|h| {
                 let name = view::host_display_name(&h.name, &h.id);
-                let dot = if h.online { dot_on() } else { dot_off() };
+                let dot = skin::state_dot(if h.online { State::On } else { State::Off });
                 let lock = if h.has_password { " 🔒" } else { "" };
                 let cc = if h.country.is_empty() { String::new() } else { format!("  {}", h.country) };
                 // Забитый хост ГАСНЕТ — здесь это замена погашенной кнопке из
                 // трёх других оболочек: подключиться к нему всё равно нельзя.
                 let usable = view::host_usable(h.online, h.guests, h.max_guests);
+                let title = format!("{name}{lock}");
                 let mut spans = vec![
                     Span::raw(format!("{dot} ")),
-                    Span::styled(format!("{name}{lock}"), Style::default().fg(if usable { FG } else { DIM })),
-                    Span::styled(
-                        format!("   👥 {}/{}{cc}   {}", h.guests, h.max_guests, proto_short(&h.protocol)),
-                        Style::default().fg(DIM),
-                    ),
+                    if usable { skin::value(title) } else { skin::hint(title) },
+                    skin::hint(format!("   👥 {}/{}{cc}   {}", h.guests, h.max_guests, proto_short(&h.protocol))),
                 ];
                 // Отклик есть только у выбранного хоста (меряем один — см.
                 // spawn_refresh), и цифра красится по общей линейке тревоги.
                 if let Some((pid, ms)) = &a.host_ping {
                     if pid == &h.id {
                         let (text, alarm) = view::ping(*ms);
-                        spans.push(Span::styled(format!("   ⏱ {text}"), Style::default().fg(alarm_color(alarm))));
+                        spans.push(skin::alarm_text(format!("   ⏱ {text}"), alarm));
                     }
                 }
                 ListItem::new(Line::from(spans))
@@ -1537,8 +1511,8 @@ fn vpn_tab(f: &mut Frame, area: Rect, a: &App) {
         " Доступные хосты "
     };
     let list = List::new(items)
-        .block(card(title))
-        .highlight_style(Style::default().bg(SEL).fg(FG).add_modifier(Modifier::BOLD))
+        .block(skin::card(title))
+        .highlight_style(skin::selected())
         .highlight_symbol("");
     f.render_stateful_widget(list, rows[1], &mut st);
 }
@@ -1552,11 +1526,11 @@ fn host_tab(f: &mut Frame, area: Rect, a: &App) {
     // QR по коду, если включён показ — на весь экран.
     if a.show_qr && !code.is_empty() {
         let lines = qr_lines(&format!("bemyvpn://{code}"));
-        let text: Vec<Line> = std::iter::once(Line::from(Span::styled(format!("🔑 {code}"), Style::default().fg(ACCENT).add_modifier(Modifier::BOLD))))
+        let text: Vec<Line> = std::iter::once(Line::from(skin::code(format!("🔑 {code}"))))
             .chain(lines.into_iter().map(Line::from))
-            .chain(std::iter::once(Line::from(Span::styled("Shift+Q — скрыть", Style::default().fg(DIM)))))
+            .chain(std::iter::once(Line::from(skin::hint("Shift+Q — скрыть"))))
             .collect();
-        f.render_widget(Paragraph::new(text).alignment(Alignment::Center).block(card(" QR приглашения ")), area);
+        f.render_widget(Paragraph::new(text).alignment(Alignment::Center).block(skin::card(" QR приглашения ")), area);
         return;
     }
 
@@ -1570,27 +1544,27 @@ fn host_tab(f: &mut Frame, area: Rect, a: &App) {
     // ВКЛ = либо демон 24/7 (Linux-сервер), либо раздача в окне — одно понятие.
     let on247 = a.auto_host == Some(true);
     let status = if on247 {
-        Span::styled(format!("{} Раздаю — 24/7 (живёт и после выхода)", dot_on()), Style::default().fg(ACCENT).add_modifier(Modifier::BOLD))
+        skin::state_line(State::On, "Раздаю — 24/7 (живёт и после выхода)")
     } else {
         match &a.host {
-            HostMode::Off => Span::styled(format!("{} Раздача выключена", dot_off()), Style::default().fg(DIM)),
-            HostMode::Starting => Span::styled(format!("{} Запускаюсь…", dot_wait()), Style::default().fg(AMBER)),
-            HostMode::On { .. } => Span::styled(format!("{} Раздаю", dot_on()), Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
-            HostMode::Failed(e) => Span::styled(format!("{} {e}", dot_err()), Style::default().fg(RED)),
+            HostMode::Off => skin::state_line(State::Off, "Раздача выключена"),
+            HostMode::Starting => skin::state_line(State::Wait, "Запускаюсь…"),
+            HostMode::On { .. } => skin::state_line(State::On, "Раздаю"),
+            HostMode::Failed(e) => skin::state_line(State::Err, e),
         }
     };
     let mut head = vec![Line::from(vec![
         status,
-        Span::styled(if code.is_empty() { String::new() } else { format!("    🔑 {code}") }, Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
+        skin::code(if code.is_empty() { String::new() } else { format!("    🔑 {code}") }),
     ])];
     if on247 || matches!(a.host, HostMode::On { .. }) {
         // Гости — из живого каталога (работает и для демона, если хост публичный).
         let guests = a.hosts.iter().find(|h| h.id == code).map(|h| h.guests).unwrap_or(0);
         let up = a.host_started.map(uptime).unwrap_or_default();
         let tail = if up.is_empty() { String::new() } else { format!("    ⏳ {up}") };
-        head.push(Line::from(Span::styled(format!("👥 {guests}/{}{tail}", a.hset.max_guests), Style::default().fg(ACCENT))));
+        head.push(Line::from(skin::live(format!("👥 {guests}/{}{tail}", a.hset.max_guests))));
     }
-    f.render_widget(Paragraph::new(head).wrap(Wrap { trim: true }).block(card(" Раздача ")), rows[0]);
+    f.render_widget(Paragraph::new(head).wrap(Wrap { trim: true }).block(skin::card(" Раздача ")), rows[0]);
 
     // ── Список настроек с фоновой подсветкой выбранной строки (курсор ↑↓).
     // ПАРОЛЬ ⇒ СЕТЬ ВСЕГДА СКРЫТАЯ. Правило соблюдает ядро (build_announce), но
@@ -1606,27 +1580,20 @@ fn host_tab(f: &mut Frame, area: Rect, a: &App) {
     };
     let pw = if a.hset.password.is_empty() { "🔓 без пароля".to_string() } else { format!("🔒 {}", "•".repeat(a.hset.password.chars().count())) };
     let name = if a.hset.name.is_empty() { "(не задано)".to_string() } else { a.hset.name.clone() };
-    let frow = |label: &str, val: String| {
-        ListItem::new(Line::from(vec![
-            Span::styled(format!("{label:<14}"), Style::default().fg(DIM)),
-            Span::styled(val, Style::default().fg(FG)),
-        ]))
-    };
     let hosting = a.auto_host == Some(true) || matches!(a.host, HostMode::On { .. } | HostMode::Starting);
-    let action = if hosting { "■  Выключить хост" } else { "▶  Стать хостом" };
     let items = vec![
-        frow("Имя", name),
-        frow("Лимит гостей", a.hset.max_guests.to_string()),
-        frow("Пароль", pw),
-        frow("Протокол", proto_short(&a.hset.protocol).to_string()),
-        frow("Видимость", vis.to_string()),
-        ListItem::new(Line::from(Span::styled(action, Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)))),
+        skin::frow("Имя", name),
+        skin::frow("Лимит гостей", a.hset.max_guests),
+        skin::frow("Пароль", pw),
+        skin::frow("Протокол", proto_short(&a.hset.protocol)),
+        skin::frow("Видимость", vis),
+        skin::action(if hosting { "■  Выключить хост" } else { "▶  Стать хостом" }),
     ];
     let mut st = ListState::default();
     st.select(Some(a.host_field.min(HOST_FIELDS - 1)));
     let list = List::new(items)
-        .block(card(" Настройки — Enter меняет "))
-        .highlight_style(Style::default().bg(SEL).add_modifier(Modifier::BOLD))
+        .block(skin::card(" Настройки — Enter меняет "))
+        .highlight_style(skin::selected())
         .highlight_symbol("");
     f.render_stateful_widget(list, rows[1], &mut st);
 }
@@ -1645,61 +1612,50 @@ fn server_tab(f: &mut Frame, area: Rect, a: &App) {
     // оболочками: строчное «на связи», «восстанавливаю» без многоточия и
     // «проверяю…» без слова «связь».
     //
-    // Оболочке остаются значок и цвет. Мята на «На связи» — своё решение
-    // терминала: мята тут значит «работает», а на цифре отклика она хвалила бы
-    // любой пинг, включая красный. Обрыв — янтарь (так велит справочник):
-    // сокет чинит супервизор за секунды, красный бережём для непроходящего.
+    // Оболочке остаётся значок. Состояние берём ИЗ УРОВНЯ ТРЕВОГИ справочника, а
+    // не решаем заново: обрыв — янтарь (сокет чинит супервизор за секунды,
+    // красный бережём для непроходящего), «ещё не знаем» — тихий белый.
     let (link_text, link_alarm) = view::link_state(a.coord_ok);
     let online = a.coord_ok == Some(true);
-    let mut link = vec![Span::styled(
-        format!("{} {link_text}", if online { dot_on() } else { dot_wait() }),
-        Style::default().fg(if online { ACCENT } else { alarm_color(link_alarm) }),
-    )];
+    let mut link = vec![skin::state_line(State::from(link_alarm), link_text)];
     if online {
         let (ping, alarm) = view::ping(Some(a.coord_ping));
-        link.push(Span::styled(format!(" · {ping}"), Style::default().fg(alarm_color(alarm))));
+        link.push(skin::alarm_text(format!(" · {ping}"), alarm));
     }
     let ip = if a.my_ip.is_empty() { "—".to_string() } else { a.my_ip.clone() };
     let srv_line = if a.auto_srv == Some(true) {
-        Span::styled(format!("{} свой сервер работает — 24/7 (живёт и после выхода)", dot_on()), Style::default().fg(ACCENT).add_modifier(Modifier::BOLD))
+        skin::state_line(State::On, "свой сервер работает — 24/7 (живёт и после выхода)")
     } else {
         match &a.srv {
-            SrvState::Off => Span::styled(format!("{} свой сервер выключен", dot_off()), Style::default().fg(DIM)),
-            SrvState::On => Span::styled(format!("{} свой сервер работает", dot_on()), Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
-            SrvState::Failed(e) => Span::styled(format!("{} {e}", dot_err()), Style::default().fg(RED)),
+            SrvState::Off => skin::state_line(State::Off, "свой сервер выключен"),
+            SrvState::On => skin::state_line(State::On, "свой сервер работает"),
+            SrvState::Failed(e) => skin::state_line(State::Err, e),
         }
     };
     let head = vec![
-        Line::from([link, vec![Span::styled(format!("    🌍 ваш IP: {ip}"), Style::default().fg(DIM))]].concat()),
+        Line::from([link, vec![skin::hint(format!("    🌍 ваш IP: {ip}"))]].concat()),
         Line::from(srv_line),
     ];
-    f.render_widget(Paragraph::new(head).wrap(Wrap { trim: true }).block(card(" Связь ")), rows[0]);
+    f.render_widget(Paragraph::new(head).wrap(Wrap { trim: true }).block(skin::card(" Связь ")), rows[0]);
 
     // ── Навигируемые поля (курсор ↑↓, Enter — изменить/переключить).
     let sel = a.srv_field;
     let domain = if a.srv_cfg.domain.is_empty() { "— (без HTTPS, работает по HTTP)".to_string() } else { format!("🔒 {}", a.srv_cfg.domain) };
     let srv_on = a.auto_srv == Some(true) || matches!(a.srv, SrvState::On);
-    let action = if srv_on { "■  Остановить свой сервер" } else { "▶  Запустить свой сервер" };
-    let frow = |label: &str, val: String| {
-        ListItem::new(Line::from(vec![
-            Span::styled(format!("{label:<16}"), Style::default().fg(DIM)),
-            Span::styled(val, Style::default().fg(FG)),
-        ]))
-    };
     let items = vec![
         // Схему на экране не показываем (`view::without_scheme`) — она у нас
         // всегда https и не сообщает ничего. Хранится и запрашивается адрес
         // по-прежнему целиком.
-        frow("Координатор", view::without_scheme(&a.coord)),
-        frow("Свой домен", domain),
-        frow("Свой порт", a.srv_cfg.bind.clone()),
-        ListItem::new(Line::from(Span::styled(action, Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)))),
+        skin::frow("Координатор", view::without_scheme(&a.coord)),
+        skin::frow("Свой домен", domain),
+        skin::frow("Свой порт", &a.srv_cfg.bind),
+        skin::action(if srv_on { "■  Остановить свой сервер" } else { "▶  Запустить свой сервер" }),
     ];
     let mut st = ListState::default();
     st.select(Some(sel.min(SRV_FIELDS - 1)));
     let list = List::new(items)
-        .block(card(" Настройки — Enter меняет "))
-        .highlight_style(Style::default().bg(SEL).add_modifier(Modifier::BOLD))
+        .block(skin::card(" Настройки — Enter меняет "))
+        .highlight_style(skin::selected())
         .highlight_symbol("");
     f.render_stateful_widget(list, rows[1], &mut st);
 }
@@ -1754,16 +1710,6 @@ pub(crate) fn proto_short(p: &str) -> String {
     }
 }
 
-/// Чем красить цифру отклика. Порог задаёт справочник, цвет выбирает оболочка.
-/// «Норма молчит» и «нет ответа» в терминале одинаково тихие — тревога цветная.
-fn alarm_color(a: Alarm) -> Color {
-    match a {
-        Alarm::Amber => AMBER,
-        Alarm::Red => RED,
-        Alarm::Calm | Alarm::Muted => DIM,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1793,7 +1739,7 @@ mod tests {
             auto_srv: Some(true),
             auto_host: Some(false),
             input: None,
-            toast: Some(("тост".into(), Instant::now())),
+            toast: Some(("тост".into(), Alarm::Calm, Instant::now())),
             quit: false,
         }
     }
@@ -1877,7 +1823,10 @@ mod tests {
         let a = app.lock().unwrap();
         assert!(task.is_none(), "к забитому хосту не должно уходить ни одной попытки");
         assert!(matches!(a.vpn, Vpn::Off), "состояние VPN трогать не за что");
-        assert!(a.toast.as_ref().is_some_and(|(t, _)| t.contains("нет свободных мест")), "молчаливый отказ — это «ничего не произошло»: {:?}", a.toast);
+        assert!(a.toast.as_ref().is_some_and(|(t, _, _)| t.contains("нет свободных мест")), "молчаливый отказ — это «ничего не произошло»: {:?}", a.toast);
+        // И отказ обязан быть ВИДЕН как отказ: спокойным цветом «сработало» он
+        // выглядел ровно как «Пароль обновлён».
+        assert!(a.toast.as_ref().is_some_and(|(_, al, _)| *al == Alarm::Amber), "отказ покрашен как успех: {:?}", a.toast);
     }
 
     /// ЧАСОВОЙ НА САМОДЕДЛОК: `apply_host` не должна держать лок, пока крутится

@@ -34,6 +34,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.text.style.TextAlign
 import org.bemyvpn.AppState
+import org.bemyvpn.Native
+import org.bemyvpn.Ping
 import org.bemyvpn.Theme
 
 /** Вкладка «Сервер» — статус координатора + смена адреса. */
@@ -87,7 +89,9 @@ fun ServerTab(app: AppState, bottomPad: androidx.compose.ui.unit.Dp) {
             Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 hist.forEach { url ->
                     Text(
-                        url.removePrefix("https://").removePrefix("http://"),
+                        // Схему срезает справочник (через мост), а не своя пара
+                        // removePrefix: правило показа адреса одно на все экраны.
+                        Native.nativeDisplayCoordinator(url),
                         color = Theme.fg, fontSize = 13.sp, fontWeight = FontWeight.Bold,
                         modifier = Modifier
                             // Тот же чип, что и «Недавние» на вкладке VPN: на s1.
@@ -112,25 +116,30 @@ private fun ServerHero(app: AppState) {
     // точка на нав-баре — четырьмя способами разом) значит расходовать цвет
     // тревоги на то, что пройдёт само. Красный остаётся там, где само не
     // пройдёт: ошибка настроек и ошибка подключения.
+    // Состояние связи — ГОТОВОЕ, из справочника: подпись и уровень тревоги вместе
+    // (три состояния лежали здесь своей копией, четвёртой в приложении).
+    val online = triOnline(app.serverOnline)
+    val calm = Native.nativeLinkAlarm(online) == 0
     val tint by animateColorAsState(
-        if (app.serverOnline == true) Theme.accent else Theme.amber,
+        if (calm) Theme.accent else Theme.amber,
         tween(300), label = "srvTint",
     )
-    // Та же линейка, что у пинга до хоста (см. pingTint в VpnTab).
-    val pingColor = if (app.ping < 250) Theme.fg else if (app.ping <= 500) Theme.amber else Theme.red
-    val addr = app.coordinator.removePrefix("https://").removePrefix("http://")
+    val addr = Native.nativeDisplayCoordinator(app.coordinator)
 
     // Когда связь есть, круг уступает место цифрам: смотреть на большой значок
     // «всё хорошо» смысла нет, а панель висит на экране постоянно.
     PinnedPanel(tint) {
-        val online = app.serverOnline
-        if (online == true) {
-            StatusLine(Icons.Filled.SettingsInputAntenna, "На связи", tint)
+        if (app.serverOnline == true) {
+            StatusLine(Icons.Filled.SettingsInputAntenna, Native.nativeLinkText(online), tint)
             Text(addr, color = Theme.dim, fontSize = 13.sp, fontFamily = FontFamily.Monospace)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 // Обычная плитка, а не кнопка: проверка идёт сама каждую секунду
                 // секунды, и нажатие экономило бы в лучшем случае их же.
-                StatTile("ПИНГ", "${app.ping} мс", Modifier.weight(1f), tint = pingColor)
+                //
+                // ТА ЖЕ ПЛИТКА, ЧТО У ПИНГА ДО ХОСТА, и линейка та же: своя пара
+                // порогов здесь давала 162 мс «хорошо» там, где 137 мс до хоста
+                // краснело.
+                PingTile(Ping.of(app.ping), Modifier.weight(1f))
                 StatTile("ХОСТОВ", "${app.hosts.size}", Modifier.weight(1f))
             }
             CopyTile("ВАШ IP", app.myIp.ifEmpty { "—" }, Modifier.fillMaxWidth())
@@ -142,11 +151,11 @@ private fun ServerHero(app: AppState) {
             ) {
                 HeroCircle(
                     tint = tint,
-                    icon = if (online == false) Icons.Filled.PortableWifiOff else Icons.Filled.SettingsInputAntenna,
+                    icon = if (app.serverOnline == false) Icons.Filled.PortableWifiOff else Icons.Filled.SettingsInputAntenna,
                     pulsing = app.checking,
                 )
                 Text(
-                    if (online == false) "Нет связи — восстанавливаю…" else "Проверяю связь…",
+                    Native.nativeLinkText(online),
                     color = Theme.fg, fontSize = 21.sp, fontWeight = FontWeight.ExtraBold, textAlign = TextAlign.Center,
                 )
                 Text(addr, color = Theme.dim, fontSize = 13.sp, fontFamily = FontFamily.Monospace)

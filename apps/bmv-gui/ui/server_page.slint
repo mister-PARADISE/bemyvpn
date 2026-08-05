@@ -8,16 +8,21 @@
 // Адрес показывается доменом, без «https://»: схема у нас всегда одна, и шесть
 // символов перед каждым адресом ничего не сообщают.
 import { Theme } from "theme.slint";
-import { StatTile, CopyTile, SectionLabel, CalmButton, Field, StateDisc, StatusLine, FloatCard, FloatHalo } from "components.slint";
+import { StatTile, CopyTile, SectionLabel, CalmButton, Field, StatusLine, FloatPanel, PageScroll, Hero } from "components.slint";
 import { IconAntenna, IconAntennaOff } from "icons.slint";
-import { ScrollView } from "std-widgets.slint";
 
 export component ServerPage inherits Rectangle {
     in property <string> coord-url;     // уже без схемы (Rust её срезает)
     in property <int> coord-state;      // 0 проверяю · 1 на связи · 2 нет связи
     // Нужен ровно для одного: подписать, что пинг снят ИЗНУТРИ туннеля.
     in property <int> vpn-state;        // 2 = туннель поднят
-    in property <int> coord-ping;       // мс
+    // Готовая подпись отклика («192 мс») и уровень тревоги к ней — оба из
+    // общего справочника, парой. Раньше сюда ехало ЧИСЛО, а разметка сама
+    // клеила «мс» и сама сравнивала его с 250 и 500: вторая копия и подписи, и
+    // линейки — ровно то, что уже разъезжалось между оболочками.
+    in property <string> coord-ping;
+    /// 0 спокойно · 1 янтарь · 2 красный · 3 нет ответа (`view::Alarm`).
+    in property <int> coord-ping-alarm;
     in property <int> coord-hosts;
     in property <string> coord-ip;
     in property <bool> coord-is-default: true;
@@ -40,178 +45,113 @@ export component ServerPage inherits Rectangle {
     // При обрыве важно сказать, что связь восстанавливается САМА: клиент
     // переподключается по дедлайну тишины, вручную ничего делать не нужно.
     property <string> status-text: coord-state == 1 ? "На связи" : coord-state == 2 ? "Нет связи — восстанавливаю…" : "Проверяю связь…";
-    // ТА ЖЕ ЛИНЕЙКА, ЧТО У ПИНГА ДО ХОСТА (components.slint, PingTile). Раньше
-    // линеек было две, и меньшее число выходило тревожнее большего.
-    property <color> ping-color: coord-ping < 250 ? Theme.fg : coord-ping <= 500 ? Theme.amber : Theme.red;
+    // ТА ЖЕ ЛИНЕЙКА, ЧТО У ПИНГА ДО ХОСТА, — потому что линейка одна и живёт в
+    // справочнике: сюда приезжает уже готовый уровень.
+    property <color> ping-color:
+        root.coord-ping-alarm == 1 ? Theme.amber
+        : root.coord-ping-alarm == 2 ? Theme.red
+        : root.coord-ping-alarm == 3 ? Theme.dim
+        : Theme.fg;
 
     // ── ПРОКРУЧИВАЕМОЕ (во всю высоту; панель ПАРИТ поверх) ─────────────
-    ScrollView {
-        width: 100%;
-        height: 100%;
-        vertical-scrollbar-policy: ScrollBarPolicy.always-off;
-        horizontal-scrollbar-policy: ScrollBarPolicy.always-off;
-        VerticalLayout {
-            alignment: start;
-            padding: Theme.pad;
-            // Отступ РОВНО в высоту панели: содержимое начинается сразу под ней
-            // и уходит под неё при прокрутке. Число здесь было бы враньём —
-            // высота панели меняется вместе с состоянием.
-            padding-top: panel.height + 6px;   // 6 = 18 (завеса) − 12 (нижний отступ обёртки панели)
-            padding-bottom: 114px;  // низ покоящегося содержимого = верх завесы нав-бара (завеса 18, было 24)
-            spacing: Theme.gap;
+    PageScroll {
+        panel-h: panel.height;
 
-            Text {
-                text: "Сервер только помогает найти хостов и связаться с ними. Ваш трафик идёт напрямую к хосту, мимо сервера.";
-                color: Theme.dim; font-size: 12px; wrap: word-wrap;
-            }
+        Text {
+            text: "Сервер только помогает найти хостов и связаться с ними. Ваш трафик идёт напрямую к хосту, мимо сервера.";
+            color: Theme.dim; font-size: 12px; wrap: word-wrap;
+        }
 
-            if root.config-error != "": Text {
-                text: root.config-error;
-                color: Theme.red; font-size: 13px; wrap: word-wrap;
-            }
+        if root.config-error != "": Text {
+            text: root.config-error;
+            color: Theme.red; font-size: 13px; wrap: word-wrap;
+        }
 
-            SectionLabel { text: "Другой адрес сервера"; }
-            Field { placeholder: "адрес сервера"; text <=> root.coord-field; accepted => { root.set-coord(root.coord-field); } }
-            CalmButton { title: "Сохранить и проверить"; clicked => { root.set-coord(root.coord-field); } }
-            if !root.coord-is-default: Text {
-                text: "Вернуть стандартный сервер";
-                color: Theme.dim; font-size: 13px; horizontal-alignment: center;
-                TouchArea { clicked => { root.reset-coord(); } }
-            }
+        SectionLabel { text: "Другой адрес сервера"; }
+        Field { placeholder: "адрес сервера"; text <=> root.coord-field; accepted => { root.set-coord(root.coord-field); } }
+        CalmButton { title: "Сохранить и проверить"; clicked => { root.set-coord(root.coord-field); } }
+        if !root.coord-is-default: Text {
+            text: "Вернуть стандартный сервер";
+            color: Theme.dim; font-size: 13px; horizontal-alignment: center;
+            TouchArea { clicked => { root.reset-coord(); } }
+        }
 
-            if root.history.length > 0: SectionLabel { text: "Недавние серверы"; }
-            if root.history.length > 0: HorizontalLayout {
-                spacing: 8px;
-                // Тот же чип, что и «Недавние» на вкладке VPN: невыбранный на s1.
-                // Выбранного состояния здесь нет вовсе — текущий сервер из списка
-                // отфильтрован, подсвечивать нечего.
-                for url in root.history: Rectangle {
-                    height: 36px;
-                    border-radius: 16px;
-                    background: hist-ta.has-hover ? Theme.touched(Theme.accent) : Theme.card;
-                    HorizontalLayout {
-                        padding-left: 14px; padding-right: 14px;
-                        Text { text: url; color: Theme.fg; font-size: 13px; font-weight: 700; vertical-alignment: center; }
-                    }
-                    hist-ta := TouchArea { clicked => { root.coord-field = url; root.set-coord(url); } }
+        if root.history.length > 0: SectionLabel { text: "Недавние серверы"; }
+        if root.history.length > 0: HorizontalLayout {
+            spacing: 8px;
+            // Тот же чип, что и «Недавние» на вкладке VPN: невыбранный на s1.
+            // Выбранного состояния здесь нет вовсе — текущий сервер из списка
+            // отфильтрован, подсвечивать нечего.
+            for url in root.history: Rectangle {
+                height: 36px;
+                border-radius: 16px;
+                background: hist-ta.has-hover ? Theme.touched(Theme.accent) : Theme.card;
+                HorizontalLayout {
+                    padding-left: 14px; padding-right: 14px;
+                    Text { text: url; color: Theme.fg; font-size: 13px; font-weight: 700; vertical-alignment: center; }
                 }
-                Rectangle { horizontal-stretch: 1; }
+                hist-ta := TouchArea { clicked => { root.coord-field = url; root.set-coord(url); } }
             }
+            Rectangle { horizontal-stretch: 1; }
         }
     }
 
-    // ── ПАРЯЩАЯ ПАНЕЛЬ (накладка поверх прокрутки) ───────────────────────
+    // ── ПАРЯЩАЯ ПАНЕЛЬ (накладка поверх прокрутки; каркас — в components) ──
     //
-    // Панель — НЕ сосед прокрутки сверху, а НАКЛАДКА. Список идёт во всю
-    // высоту ПОД ней и виден в боковых зазорах (по Theme.pad слева и справа от
-    // карточки): содержимое уходит под панель, а не обрывается о её край.
-    //
-    // Соседом по VerticalLayout панель занимала собственную полосу во всю
-    // ширину: список упирался в её низ, а по бокам от скруглённой карточки
-    // стояла пустая полоса цвета страницы — тот самый «квадрат с таким же
-    // фоном, как основа», на который жаловались.
-    //
-    // Объявлена ПОСЛЕ ScrollView намеренно: `z` в Slint нет, поверх рисуется
+    // Объявлена ПОСЛЕ прокрутки намеренно: `z` в Slint нет, поверх рисуется
     // тот, кто объявлен последним.
-    panel := Rectangle {
-        x: 0;
-        y: 0;
-        width: 100%;
-        // Ровно по содержимому: иначе накладка растянулась бы во весь экран и
-        // накрыла список целиком.
-        height: panel-box.preferred-height;
-        // У ОБЁРТКИ НЕТ НИ ФОНА, НИ ТЕНИ — ровно затем, чтобы сквозь боковые
-        // зазоры было видно, как список проходит насквозь. Фон и тень — только
-        // у самой карточки (FloatCard), по её скруглённому контуру.
-        // Ореол панели — ОТДЕЛЬНЫМ СОСЕДОМ ПЕРЕД ней: в Slint дети рисуются над
-        // фоном родителя, а `z` нет вовсе, поэтому гашение может лежать под
-        // карточкой только раньше её в объявлении. Геометрия — ровно коробка
-        // карточки: отступ страницы сверху и с боков, 12 снизу.
-        FloatHalo {
-            x: Theme.pad; y: Theme.pad;
-            width: parent.width - 2 * Theme.pad;
-            height: parent.height - Theme.pad - 12px;
+    panel := FloatPanel {
+        tint: root.tint;
+
+        // ── связь есть: значок компактный, место отдано цифрам ──
+        if root.coord-state == 1: StatusLine {
+            name: root.status-text;
+            tint: root.tint;
+            IconAntenna { width: 19px; height: 19px; tint: root.tint; }
         }
-        panel-box := VerticalLayout {
-            padding: Theme.pad;
-            padding-bottom: 12px;
-            // Общий парящий блок: фон и тень — те же, что у нав-бара.
-            FloatCard {
-                // Кольцо состояния — ТИШЕ СОДЕРЖИМОГО: на 0.45 обводка была
-                // ярче самой панели, и вся «высота» держалась на ней. Покажут
-                // состояние иначе — панель не станет от этого плоской.
-                stroke: root.tint.with-alpha(0.30);
-                // Глушит клики по пустым местам карточки: без неё тап
-                // проваливался бы на карточку хоста, лежащую ПОД панелью.
-                // Стоит ПЕРВОЙ — содержимое объявлено ниже и в попадании
-                // выигрывает у неё.
-                TouchArea {}
-                VerticalLayout {
-                    alignment: start;   // иначе строки разъезжаются по высоте
-                    padding-top: 16px; padding-bottom: 18px;
-                    padding-left: 18px; padding-right: 18px;
-                    spacing: 8px;
-
-                    // ── связь есть: значок компактный, место отдано цифрам ──
-                    if root.coord-state == 1: StatusLine {
-                        name: root.status-text;
-                        tint: root.tint;
-                        IconAntenna { width: 19px; height: 19px; tint: root.tint; }
-                    }
-                    if root.coord-state == 1: Text {
-                        text: root.coord-url; color: Theme.dim; font-size: 13px;
-                        font-family: "monospace"; overflow: elide;
-                    }
-                    if root.coord-state == 1: HorizontalLayout {
-                        spacing: 8px;
-                        StatTile {
-                            // Обычная плитка, а не кнопка: проверка идёт сама
-                            // каждую секунду, и нажатие экономило бы в лучшем
-                            // случае их же.
-                            label: "ПИНГ"; value: root.coord-ping + " мс";
-                            tint: root.ping-color; horizontal-stretch: 1;
-                        }
-                        StatTile { label: "ХОСТОВ"; value: root.coord-hosts; horizontal-stretch: 1; }
-                    }
-                    if root.coord-state == 1: CopyTile {
-                        label: "ВАШ IP"; value: root.coord-ip == "" ? "—" : root.coord-ip;
-                        copy(t) => { root.copy-text(t); }
-                    }
-                    // Когда туннель поднят, замер до координатора идёт ИЗНУТРИ
-                    // него: окно ходит в сеть через свой же VPN. То есть цифра
-                    // — «туннель + координатор», а не путь до сервера, о
-                    // котором человек думает, глядя на слово «ПИНГ».
-                    // На Android такой подписи нет и не нужно: там приложение
-                    // исключено из туннеля целиком, и цифра честная сама по себе.
-                    if root.coord-state == 1 && root.vpn-state == 2: Text {
-                        text: "Пинг измерен через туннель — в него входит и путь до хоста";
-                        color: Theme.dim; font-size: 11px;
-                        horizontal-alignment: center; wrap: word-wrap;
-                    }
-
-                    // ── связи нет или проверяем: крупный круг ──
-                    if root.coord-state != 1: Rectangle {
-                        height: 74px;
-                        StateDisc {
-                            x: (parent.width - self.width) / 2;
-                            y: 1px;
-                            d: 72px;
-                            tint: root.tint;
-                            pulsing: root.coord-state == 0;
-                            if root.coord-state == 0: IconAntenna { width: 32px; height: 32px; tint: root.tint; }
-                            if root.coord-state == 2: IconAntennaOff { width: 32px; height: 32px; tint: root.tint; hole: Theme.bg; }
-                        }
-                    }
-                    if root.coord-state != 1: Text {
-                        text: root.status-text; color: Theme.fg; font-size: 21px; font-weight: 800;
-                        horizontal-alignment: center; wrap: word-wrap;
-                    }
-                    if root.coord-state != 1: Text {
-                        text: root.coord-url; color: Theme.dim; font-size: 13px;
-                        font-family: "monospace"; horizontal-alignment: center; overflow: elide;
-                    }
-                }
+        if root.coord-state == 1: Text {
+            text: root.coord-url; color: Theme.dim; font-size: 13px;
+            font-family: "monospace"; overflow: elide;
+        }
+        if root.coord-state == 1: HorizontalLayout {
+            spacing: 8px;
+            StatTile {
+                // Обычная плитка, а не кнопка: проверка идёт сама каждую
+                // секунду, и нажатие экономило бы в лучшем случае их же.
+                label: "ПИНГ"; value: root.coord-ping;
+                tint: root.ping-color; horizontal-stretch: 1;
             }
+            StatTile { label: "ХОСТОВ"; value: root.coord-hosts; horizontal-stretch: 1; }
+        }
+        if root.coord-state == 1: CopyTile {
+            label: "ВАШ IP"; value: root.coord-ip == "" ? "—" : root.coord-ip;
+            copy(t) => { root.copy-text(t); }
+        }
+        // Когда туннель поднят, замер до координатора идёт ИЗНУТРИ него: окно
+        // ходит в сеть через свой же VPN. То есть цифра — «туннель +
+        // координатор», а не путь до сервера, о котором человек думает, глядя
+        // на слово «ПИНГ». На Android такой подписи нет и не нужно: там
+        // приложение исключено из туннеля целиком, и цифра честная сама по себе.
+        if root.coord-state == 1 && root.vpn-state == 2: Text {
+            text: "Пинг измерен через туннель — в него входит и путь до хоста";
+            color: Theme.dim; font-size: 11px;
+            horizontal-alignment: center; wrap: word-wrap;
+        }
+
+        // ── связи нет или проверяем: крупный круг ──
+        // Подпись «героя» пуста: под заголовком стоит адрес координатора, а он
+        // моноширинный — своей строкой ниже.
+        if root.coord-state != 1: Hero {
+            tint: root.tint;
+            pulsing: root.coord-state == 0;
+            title: root.status-text;
+            sub: "";
+            if root.coord-state == 0: IconAntenna { width: 32px; height: 32px; tint: root.tint; }
+            if root.coord-state == 2: IconAntennaOff { width: 32px; height: 32px; tint: root.tint; hole: Theme.bg; }
+        }
+        if root.coord-state != 1: Text {
+            text: root.coord-url; color: Theme.dim; font-size: 13px;
+            font-family: "monospace"; horizontal-alignment: center; overflow: elide;
         }
     }
 }

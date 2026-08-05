@@ -46,20 +46,11 @@ struct Host: Identifiable, Decodable, Equatable {
         online = try c.decode(Bool.self, forKey: .online)
         proto = try c.decode(String.self, forKey: .proto)
         endpoints = try c.decodeIfPresent(String.self, forKey: .endpoints)
-        protoName = displayProtoName(proto)
+        protoName = Core.protoName(proto)
         protection = Core.protection(proto)
         usable = bmv_host_usable(online, UInt32(Swift.max(0, guests)), UInt32(Swift.max(0, max)))
     }
 }
-
-/// Переходник к `protoName` из ContentView.swift.
-///
-/// Вызвать его из `Host.init` напрямую нельзя: там уже есть поле с этим именем.
-/// А ПЕРЕНЕСТИ саму функцию сюда сегодня нечем — слова протокола отдаёт
-/// `bmv_common::view::proto_name`, а двери `bmv_proto_name` в мосте нет
-/// (см. bmv_ffi.h): вторая копия слов в этом файле была бы ровно тем
-/// расхождением, которое ловит `one_place_per_rule`.
-private func displayProtoName(_ p: String) -> String { protoName(p) }
 
 /// Отклик до хоста: подпись и уровень тревоги ВМЕСТЕ.
 ///
@@ -91,6 +82,27 @@ enum Core {
 
     /// Уровень защиты по имени протокола — варианты view::Protection.
     static func protection(_ proto: String) -> Int { Int(bmv_protection(proto)) }
+
+    /// Имя протокола по-человечески («Обычный» / «Маскировка» / …).
+    static func protoName(_ proto: String) -> String { take(bmv_proto_name(proto)) }
+
+    /// «Знаем ли, и что» одним числом — договор моста: 1 да · 0 нет · -1 не знаем.
+    private static func tri(_ known: Bool?) -> Int32 { known.map { $0 ? 1 : 0 } ?? -1 }
+
+    /// Связь с координатором: подпись и уровень тревоги ВМЕСТЕ (см. `Ping` —
+    /// причина та же). `nil` — ещё не знаем, а не «нет связи».
+    static func link(_ online: Bool?) -> (text: String, alarm: Int) {
+        let v = tri(online)
+        return (take(bmv_link_text(v)), Int(bmv_link_alarm(v)))
+    }
+
+    /// Что написать на месте ПУСТОГО списка хостов: ждать связи или действовать.
+    static func emptyDirectoryHint(_ online: Bool?) -> String {
+        take(bmv_empty_directory_hint(tri(online)))
+    }
+
+    /// Адрес координатора ДЛЯ ПОКАЗА — без схемы и без хвостового слэша.
+    static func displayCoordinator(_ url: String) -> String { take(bmv_display_coordinator(url)) }
 
     /// Часы сеанса от отметки начала (nil — сеанса не было).
     static func sessionClock(since: Date?) -> String {

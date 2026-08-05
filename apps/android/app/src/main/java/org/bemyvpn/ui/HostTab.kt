@@ -47,6 +47,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import org.bemyvpn.AppState
 import org.bemyvpn.Haptics
+import org.bemyvpn.Native
 import org.bemyvpn.Theme
 import org.bemyvpn.protoDesc
 import org.bemyvpn.protoName
@@ -102,7 +103,10 @@ fun HostTab(app: AppState, bottomPad: Dp) {
                 )
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                StatTile("ПРОТОКОЛ", protoName(app.hostProtocol), Modifier.weight(1f), symbol = protoIcon(app.hostProtocol))
+                StatTile(
+                    "ПРОТОКОЛ", protoName(app.hostProtocol), Modifier.weight(1f),
+                    symbol = protoIcon(Native.nativeProtection(app.hostProtocol)),
+                )
                 CopyTile("ВАШ IP", app.myHostInfo?.ip?.ifEmpty { "—" } ?: "—", Modifier.weight(1f))
             }
             // Поделиться кодом — В НИЗУ панели, прямо под самим кодом.
@@ -226,7 +230,13 @@ fun HostTab(app: AppState, bottomPad: Dp) {
         SectionLabel("Протокол")
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             protos.forEach { pid ->
-                BigChip(protoIcon(pid), protoName(pid), on = app.hostProtocol == pid, Modifier.weight(1f)) {
+                // Значок — по УРОВНЮ ЗАЩИТЫ от моста, а не по имени протокола:
+                // список имён в двух местах (подпись и картинка) и есть та щель,
+                // где хост однажды показался незашифрованным при живом шифре.
+                BigChip(
+                    protoIcon(Native.nativeProtection(pid)), protoName(pid),
+                    on = app.hostProtocol == pid, Modifier.weight(1f),
+                ) {
                     app.hostProtocol = pid; app.applyHostNow()
                 }
             }

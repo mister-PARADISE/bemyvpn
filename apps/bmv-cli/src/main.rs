@@ -426,7 +426,14 @@ async fn run_guest(
                     for h in hosts {
                         let lock = if h.has_password { "🔒приват" } else { "🔓откр" };
                         let vis = if h.public { "публичный" } else { "скрытый" };
-                        let status = if h.online { "🟢" } else { "⚪️" };
+                        // Значок — из общего набора деталей (`tui::skin`), а не
+                        // свой: здесь лежала пятая пара кружков, и «выключено»
+                        // было голым U+26AA шириной 1 — на знак уже колонки.
+                        let status = tui::skin::state_dot(if h.online {
+                            tui::skin::State::On
+                        } else {
+                            tui::skin::State::Off
+                        });
                         let name = bmv_common::view::host_display_name(&h.name, &h.id);
                         let ip = h.endpoints.first().map(|e| e.as_str()).unwrap_or("—");
                         // Годен ли хост — по общему правилу (`view::host_usable`),
