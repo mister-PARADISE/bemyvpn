@@ -4,6 +4,13 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+# Страна по IP из вшитой базы (см. `src/geo.rs`). НЕОБЯЗАТЕЛЬНА: база весит
+# ~490 КБ, а `bmv-common` тянут все, включая мост в телефоны — там она была бы
+# мёртвым грузом, потому что у Android и iOS своя копия базы в ресурсах.
+# Включают её ровно две оболочки: окно и терминал.
+geoip = ["dep:flate2"]
+
 [dependencies]
 thiserror.workspace = true
 async-trait.workspace = true
@@ -21,8 +28,16 @@ hyper = { version = "1", features = ["client", "http1"] }
 hyper-util = { version = "0.1", features = ["client-legacy", "tokio"] }
 hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "webpki-tokio", "ring", "tls12"] }
 http-body-util = "0.1"
+# Распаковка вшитой базы IP→страна. Только с фичей `geoip` — см. выше.
+flate2 = { version = "1", optional = true }
 
 [dev-dependencies]
+# САМ НА СЕБЯ — ЧТОБЫ ТЕСТЫ ВИДЕЛИ `geoip`. Без этой строки `cargo test -p
+# bmv-common` собирается без фичи, и тесты гео-базы просто НЕ ЗАПУСКАЮТСЯ: они
+# зелены только когда крейт тянут окно или терминал (`--workspace`). Тихо
+# пропущенный тест хуже отсутствующего. На зависимых крейтах не сказывается —
+# dev-зависимости наружу не уходят, мост в телефоны фичу по-прежнему не видит.
+bmv-common = { path = ".", features = ["geoip"] }
 # Виртуальные часы: сроки тишины здесь измеряются секундами, и без
 # `start_paused` их тесты шли бы восемь секунд каждый.
 tokio = { workspace = true, features = ["test-util"] }

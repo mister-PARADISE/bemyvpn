@@ -16,7 +16,10 @@ path = "src/main.rs"
 [dependencies]
 bmv-core = { path = "../../crates/bmv-core" }
 bmv-config = { path = "../../crates/bmv-config" }
-bmv-common = { path = "../../crates/bmv-common" }
+# geoip — страна хоста по IP (вшитая база ip2cc.dat). Фича, а не общая часть
+# крейта: базу в 490 КБ иначе унёс бы с собой и мост в телефоны, которому она
+# не нужна.
+bmv-common = { path = "../../crates/bmv-common", features = ["geoip"] }
 bmv-signal = { path = "../../crates/bmv-signal" }
 # bmv-tunnel здесь больше не нужен: и TUN, и качание трафика поднимает
 # bmv-desktop (общий с терминалом путь), а прямых обращений к крейту в src/ и
@@ -35,8 +38,6 @@ qrcode = { version = "0.14", default-features = false }
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"] }
 # Буфер обмена — кнопка «вставить код» на вкладке VPN.
 arboard = "3"
-# Распаковка встроенной гео-базы ip2cc.dat (флаг страны по IP, как на Android).
-flate2 = "1"
 # Папка конфигурации ОС — стабильный id хоста между запусками (чтобы не плодить
 # клоны в каталоге), как device_host_id в prefs на Android.
 directories = "5"

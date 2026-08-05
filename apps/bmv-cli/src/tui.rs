@@ -524,11 +524,12 @@ fn vpn_key(code: KeyCode, engine: &EngineSlot, app: &Shared, vpn_task: &mut VpnT
             let cands = {
                 let a = app.lock().unwrap();
                 let own = a.host_code.clone();
-                // Своя страна — из поля анонса: встроенной базы IP→страна в
-                // терминале нет (см. default_host_name).
-                let my_cc = a.hosts.iter().find(|h| h.id == own).map(|h| h.country.clone());
+                // Страна — тем же правилом, что и на экране (`host_cc`): в поле
+                // анонса по умолчанию лежит служебное `auto`, и брать его как
+                // страну значило считать «auto» и своей, и чужой сразу.
+                let my_cc = a.hosts.iter().find(|h| h.id == own).map(host_cc).filter(|c| !c.is_empty());
                 bmv_desktop::tunnel::rank_candidates(&a.hosts, my_cc.as_deref(), &own, &|h| {
-                    (!h.country.is_empty()).then(|| h.country.clone())
+                    Some(host_cc(h)).filter(|c| !c.is_empty())
                 })
             };
             if cands.is_empty() {
@@ -1351,13 +1352,19 @@ const INPUT_KEYS: &str = "Enter — ок · Esc — отмена";
 const TOAST_LIFE: Duration = Duration::from_secs(4);
 
 fn ui(f: &mut Frame, a: &App) {
+    // ПОЛОТНО КРАСИМ САМИ, И ПЕРВЫМ ДЕЛОМ. Раньше не красили вовсе — сквозь весь
+    // экран просвечивал фон чужого терминала, и на светлой или серой теме вид
+    // рассыпался: цвет страницы у нас правильный (`BG`), он просто нигде не
+    // применялся ко всему кадру.
+    f.render_widget(skin::page(), f.area());
+    // Содержимое — колонкой по центру (`skin::column`), как окно и телефоны.
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .horizontal_margin(2)
         .vertical_margin(1)
         .constraints([Constraint::Length(3), Constraint::Min(3), Constraint::Length(1)])
         .spacing(1)
-        .split(f.area());
+        .split(skin::column(f.area()));
 
     // Значок связи в шапке — та же тройка, что и в карточке «Связь»: смысл берём
     // у справочника, а не решаем заново. Раньше здесь стоял свой разбор
@@ -1381,19 +1388,24 @@ fn ui(f: &mut Frame, a: &App) {
         render_input(f, chunks[1], inp);
     }
 
+    // ПОДПИСИ КЛАВИШ УКОРОЧЕНЫ ПОД САМЫЙ УЗКИЙ ТЕРМИНАЛ, а не под колонку: в
+    // 70 клеток экрана содержимому достаётся 66, и прежние строки («Enter
+    // подкл/откл», «Enter изменить/переключить») обрывались на полуслове.
     let keys = if a.input.is_some() {
         INPUT_KEYS
     } else {
         match a.tab {
-            Tab::Vpn => "↑↓ выбор · Enter подкл/откл · C старт · K по коду · Tab вкладки · q выход",
-            Tab::Host => "↑↓ поле · Enter изменить/вкл · N код · Shift+Q QR · ←→ вкладки · q выход",
-            Tab::Server => "↑↓ поле · Enter изменить/переключить · ←→ вкладки · q выход",
+            Tab::Vpn => "↑↓ выбор · Enter вкл/выкл · C старт · K код · ←→ вкладки · q выход",
+            Tab::Host => "↑↓ поле · Enter меняет · N код · Shift+Q QR · ←→ вкладки · q выход",
+            Tab::Server => "↑↓ поле · Enter меняет · ←→ вкладки · q выход",
         }
     };
-    let mut bottom = vec![skin::hint(format!(" {keys} "))];
-    if let Some((msg, alarm, _)) = a.toast.as_ref().filter(|(_, _, t)| t.elapsed() < TOAST_LIFE) {
-        bottom.push(skin::toast(msg, *alarm));
-    }
+    // Сообщение занимает нижнюю строку ЦЕЛИКОМ: вдвоём с подсказкой они в колонку
+    // не помещались, а обрезалось бы как раз то, что важнее и живёт 4 секунды.
+    let bottom = match a.toast.as_ref().filter(|(_, _, t)| t.elapsed() < TOAST_LIFE) {
+        Some((msg, alarm, _)) => skin::toast(msg, *alarm),
+        None => skin::hint(keys),
+    };
     f.render_widget(Paragraph::new(Line::from(bottom)), chunks[2]);
 }
 
@@ -1461,55 +1473,6 @@ fn vpn_tab(f: &mut Frame, area: Rect, a: &App) {
     };
     f.render_widget(Paragraph::new(status).wrap(Wrap { trim: true }).block(skin::card(" Статус ")), rows[0]);
 
-    let items: Vec<ListItem> = if a.hosts.is_empty() {
-        // ПУСТО ПО ДВУМ РАЗНЫМ ПРИЧИНАМ, и человеку нужно разное: ждать связи
-        // или действовать (`view::empty_directory_hint`). Здесь на оба случая
-        // стояла одна фраза «Живых хостов сейчас нет…» — она отправляла искать
-        // чужой хост того, у кого просто отвалился интернет.
-        let empty = view::empty_directory_hint(a.coord_ok);
-        vec![ListItem::new(Text::from(
-            empty.lines().map(|l| Line::from(skin::hint(l))).collect::<Vec<_>>(),
-        ))]
-    } else {
-        a.hosts
-            .iter()
-            .map(|h| {
-                let name = view::host_display_name(&h.name, &h.id);
-                let dot = skin::state_dot(if h.online { State::On } else { State::Off });
-                let lock = if h.has_password { " 🔒" } else { "" };
-                let cc = if h.country.is_empty() { String::new() } else { format!("  {}", h.country) };
-                // Забитый хост ГАСНЕТ — здесь это замена погашенной кнопке из
-                // трёх других оболочек: подключиться к нему всё равно нельзя.
-                let usable = view::host_usable(h.online, h.guests, h.max_guests);
-                let title = format!("{name}{lock}");
-                // МЫ СЕЙЧАС В ЭТОЙ СЕТИ. Не «выбран курсором» — это разные вещи:
-                // курсор стоит на одной строке, а работает соединение с другой.
-                // Берём id ИЗ ТУННЕЛЯ (`Vpn::On`), а не из «подключаюсь»: там
-                // лежит имя для показа, и метить им строку значило бы обещать
-                // работающую сеть до того, как она встала.
-                let live = matches!(&a.vpn, Vpn::On { id, .. } if id == &h.id);
-                let mut spans = vec![
-                    skin::live_mark(live),
-                    Span::raw(format!("{dot} ")),
-                    if usable { skin::value(title) } else { skin::hint(title) },
-                    skin::hint(format!("   👥 {}/{}{cc}   {}", h.guests, h.max_guests, proto_short(&h.protocol))),
-                ];
-                // Отклик есть только у выбранного хоста (меряем один — см.
-                // spawn_refresh), и цифра красится по общей линейке тревоги.
-                if let Some((pid, ms)) = &a.host_ping {
-                    if pid == &h.id {
-                        let (text, alarm) = view::ping(*ms);
-                        spans.push(skin::alarm_text(format!("   ⏱ {text}"), alarm));
-                    }
-                }
-                ListItem::new(Line::from(spans))
-            })
-            .collect()
-    };
-    let mut st = ListState::default();
-    if !a.hosts.is_empty() {
-        st.select(Some(a.sel.min(a.hosts.len() - 1)));
-    }
     // При обрыве список НЕ трётся (иначе он мигал бы пустотой на каждой
     // заминке), но и выдавать вчерашние цифры за живые нельзя — говорим прямо.
     let title = if a.coord_ok == Some(false) && !a.hosts.is_empty() {
@@ -1517,11 +1480,102 @@ fn vpn_tab(f: &mut Frame, area: Rect, a: &App) {
     } else {
         " Доступные хосты "
     };
-    let list = List::new(items)
-        .block(skin::card(title))
-        .highlight_style(skin::selected())
-        .highlight_symbol("");
-    f.render_stateful_widget(list, rows[1], &mut st);
+    // Рамку рисуем САМИ, чтобы над списком встала шапка колонок: у виджета
+    // списка своей шапки нет, а без неё колонки читаются как случайные отступы.
+    let card = skin::card(title);
+    let inner = card.inner(rows[1]);
+    f.render_widget(card, rows[1]);
+
+    if a.hosts.is_empty() {
+        // ПУСТО ПО ДВУМ РАЗНЫМ ПРИЧИНАМ, и человеку нужно разное: ждать связи
+        // или действовать (`view::empty_directory_hint`). Здесь на оба случая
+        // стояла одна фраза «Живых хостов сейчас нет…» — она отправляла искать
+        // чужой хост того, у кого просто отвалился интернет.
+        let empty = view::empty_directory_hint(a.coord_ok);
+        let text: Vec<Line> = empty.lines().map(|l| Line::from(skin::hint(l))).collect();
+        f.render_widget(Paragraph::new(text), inner);
+        return;
+    }
+
+    // ИМЯ БЕРЁТ ВСЁ, ЧТО ОСТАЛОСЬ ОТ ОСТАЛЬНЫХ КОЛОНОК. На узком терминале
+    // остаётся мало — тогда имя обрежется многоточием, но колонки справа
+    // останутся на своих местах: раньше длинное имя двигало вправо всю строку.
+    // Колонки страны и замка держим, только если им есть что показать хотя бы у
+    // одной строки, — иначе они отодвигали бы все имена в пустоту.
+    let has_cc = a.hosts.iter().any(|h| !host_cc(h).is_empty());
+    let has_lock = a.hosts.iter().any(|h| h.has_password);
+    let fixed = skin::host_row_fixed(has_cc, has_lock);
+    let name_w = (inner.width as usize).saturating_sub(fixed).max(8);
+    let rows_area = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Min(1)])
+        .split(inner);
+    // Слева от имени — колонки-значки: планка, значок состояния и то из пары
+    // «страна/замок», что сегодня показывается.
+    let left = fixed - (1 + skin::COL_GUESTS + 1 + skin::COL_PROTO + 1 + skin::COL_PING);
+    f.render_widget(Paragraph::new(skin::host_head(left, name_w)), rows_area[0]);
+
+    let items: Vec<ListItem> = a
+        .hosts
+        .iter()
+        .map(|h| {
+            let name = view::host_display_name(&h.name, &h.id);
+            let dot = skin::state_dot(if h.online { State::On } else { State::Off });
+            let lock = if h.has_password { "🔒" } else { "" };
+            // Забитый хост ГАСНЕТ — здесь это замена погашенной кнопке из
+            // трёх других оболочек: подключиться к нему всё равно нельзя.
+            let usable = view::host_usable(h.online, h.guests, h.max_guests);
+            let cc = if has_cc { format!("{} ", skin::cell(host_cc(h), skin::COL_CC)) } else { String::new() };
+            let lock = if has_lock { format!("{} ", skin::cell(lock, skin::COL_LOCK)) } else { String::new() };
+            // МЫ СЕЙЧАС В ЭТОЙ СЕТИ. Не «выбран курсором» — это разные вещи:
+            // курсор стоит на одной строке, а работает соединение с другой.
+            // Берём id ИЗ ТУННЕЛЯ (`Vpn::On`), а не из «подключаюсь»: там
+            // лежит имя для показа, и метить им строку значило бы обещать
+            // работающую сеть до того, как она встала.
+            let live = matches!(&a.vpn, Vpn::On { id, .. } if id == &h.id);
+            let title = skin::cell(name, name_w);
+            let mut spans = vec![
+                skin::live_mark(live),
+                Span::raw(format!("{dot} ")),
+                skin::hint(cc),
+                Span::raw(lock),
+                if usable { skin::value(title) } else { skin::hint(title) },
+                skin::hint(format!(
+                    " {} {} ",
+                    skin::rcell(format!("{}/{}", h.guests, h.max_guests), skin::COL_GUESTS),
+                    skin::cell(proto_short(&h.protocol), skin::COL_PROTO),
+                )),
+            ];
+            // Отклик есть только у выбранного хоста (меряем один — см.
+            // spawn_refresh), и цифра красится по общей линейке тревоги.
+            if let Some((pid, ms)) = &a.host_ping {
+                if pid == &h.id {
+                    let (text, alarm) = view::ping(*ms);
+                    spans.push(skin::alarm_text(skin::rcell(text, skin::COL_PING), alarm));
+                }
+            }
+            ListItem::new(Line::from(spans))
+        })
+        .collect();
+
+    let mut st = ListState::default();
+    st.select(Some(a.sel.min(a.hosts.len() - 1)));
+    let list = List::new(items).highlight_style(skin::selected()).highlight_symbol("");
+    f.render_stateful_widget(list, rows_area[1], &mut st);
+}
+
+/// КОД СТРАНЫ ХОСТА ДЛЯ ПОКАЗА, либо пусто.
+///
+/// Правило — общее (`view::host_country`): страна определяется ПО АДРЕСУ, а
+/// поле каталога берётся запасным и только если в нём настоящий код. Своей
+/// копии здесь нет: раньше терминал печатал поле как есть и показывал человеку
+/// служебное `auto` в каждой строке, а определения по адресу не имел вовсе —
+/// разбор базы лежал в двоичном крейте окна и снаружи не звался.
+///
+/// Строка, а не `Option`: место разметки считается по ширине, и пусто здесь
+/// значит «колонка схлопывается» (см. `skin::host_row_fixed`).
+fn host_cc(h: &HostInfo) -> String {
+    view::host_country(&h.ip, &h.country).unwrap_or_default()
 }
 
 fn host_tab(f: &mut Frame, area: Rect, a: &App) {
@@ -1778,20 +1832,120 @@ mod tests {
         }
     }
 
-    /// Рендер со заполненным каталогом (флаги/пароль/протоколы/выбор) — без паники.
+    /// Каталог на все случаи: страна объявлена, служебное слово, пусто; имена
+    /// короткие и длинные; пароль, забитый хост, разные протоколы.
+    fn populated() -> Vec<HostInfo> {
+        vec![
+            HostInfo { id: "NG4RDJDM".into(), name: "USA · Dallas".into(), online: true, guests: 2, max_guests: 120, protocol: "noise".into(), country: "us".into(), has_password: false, endpoints: vec!["203.0.113.10:60861".into()], ..Default::default() },
+            HostInfo { id: "AB12CD34".into(), name: "Домашний".into(), online: true, guests: 0, max_guests: 8, protocol: "noise-obfs".into(), country: "auto".into(), has_password: true, endpoints: vec![], ..Default::default() },
+            HostInfo { id: "ZZ99YY88".into(), name: "Очень длинное имя хоста, которое не влезет".into(), online: true, guests: 16, max_guests: 16, protocol: "plain".into(), country: String::new(), has_password: false, endpoints: vec![], ..Default::default() },
+        ]
+    }
+
+    /// Рендер со заполненным каталогом (страна/пароль/протоколы/выбор) — без паники.
     #[test]
     fn renders_populated() {
         let mut app = mk(Tab::Vpn, Vpn::Off, HostMode::Off);
-        app.hosts = vec![
-            HostInfo { id: "NG4RDJDM".into(), name: "USA · Dallas".into(), online: true, guests: 2, max_guests: 120, protocol: "noise".into(), country: "🇺🇸".into(), has_password: false, endpoints: vec!["203.0.113.10:60861".into()], ..Default::default() },
-            HostInfo { id: "AB12CD34".into(), name: "Домашний".into(), online: true, guests: 0, max_guests: 8, protocol: "noise-obfs".into(), country: "🇷🇺".into(), has_password: true, endpoints: vec![], ..Default::default() },
-        ];
+        app.hosts = populated();
         app.sel = 1;
         for tab in [Tab::Vpn, Tab::Host, Tab::Server] {
             app.tab = tab;
             let mut term = ratatui::Terminal::new(TestBackend::new(74, 22)).unwrap();
             term.draw(|f| ui(f, &app)).unwrap();
         }
+    }
+
+    /// Нарисовать вкладку VPN с каталогом и отдать буфер на разбор по клеткам.
+    fn draw(w: u16, h: u16) -> ratatui::buffer::Buffer {
+        let mut app = mk(Tab::Vpn, Vpn::Off, HostMode::Off);
+        app.hosts = populated();
+        app.toast = None;
+        let mut term = ratatui::Terminal::new(TestBackend::new(w, h)).unwrap();
+        term.draw(|f| ui(f, &app)).unwrap();
+        term.backend().buffer().clone()
+    }
+
+    /// КОЛОНКИ НЕ РАЗЪЕЗЖАЮТСЯ НИ НА ОДНОЙ ШИРИНЕ.
+    ///
+    /// Имя хоста, число гостей и протокол шли подряд через пробелы, и у строк с
+    /// разными именами всё съезжало. Ловим по значку протокола: он открывает
+    /// свою колонку, и если она у каждой строки на своём месте — колонки едут.
+    /// Меряем в КЛЕТКАХ буфера, то есть ровно тем, чем терминал рисует: по
+    /// длине строки эмодзи (ширина 2) считались за один знак.
+    #[test]
+    fn columns_line_up_at_every_width() {
+        for (w, h) in [(160u16, 32u16), (100, 32), (70, 32)] {
+            let buf = draw(w, h);
+            let mut xs = std::collections::BTreeSet::new();
+            for y in 0..buf.area.height {
+                for x in 0..buf.area.width {
+                    if ["🔐", "🎭", "🔓"].contains(&buf[(x, y)].symbol()) {
+                        xs.insert(x);
+                    }
+                }
+            }
+            assert_eq!(xs.len(), 1, "ширина {w}: колонка протокола разъехалась по {xs:?}");
+        }
+    }
+
+    /// СЛУЖЕБНОЕ СЛОВО НЕ ПОПАДАЕТ НА ЭКРАН.
+    ///
+    /// В поле страны хост по умолчанию пишет `auto` — «определи сам», — и
+    /// терминал печатал это слово человеку в каждой строке каталога. Объявленную
+    /// страну показываем, только если это настоящий код.
+    #[test]
+    fn a_service_word_never_reaches_the_screen() {
+        let buf = draw(100, 32);
+        let text: String = (0..buf.area.height)
+            .map(|y| (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect::<String>())
+            .collect();
+        assert!(!text.contains("auto"), "служебное слово из объявления хоста ушло на экран");
+        assert!(text.contains("US"), "настоящий код страны обязан показываться");
+    }
+
+    /// ПОДСКАЗКА КЛАВИШ ВЛЕЗАЕТ В САМЫЙ УЗКИЙ ТЕРМИНАЛ.
+    ///
+    /// Подсказка живёт в одну строку и не переносится: не влезла — обрывается на
+    /// полуслове, и обрывается как раз хвост, где написано, чем выйти. Ловим по
+    /// последнему слову.
+    #[test]
+    fn the_key_hints_fit_the_narrowest_terminal() {
+        let mut app = mk(Tab::Vpn, Vpn::Off, HostMode::Off);
+        app.toast = None; // сообщение занимает строку вместо подсказки
+        for tab in [Tab::Vpn, Tab::Host, Tab::Server] {
+            app.tab = tab;
+            let mut term = ratatui::Terminal::new(TestBackend::new(70, 24)).unwrap();
+            term.draw(|f| ui(f, &app)).unwrap();
+            let buf = term.backend().buffer();
+            let y = buf.area.height - 2; // последняя строка колонки: снизу поле в 1
+            let line: String = (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect();
+            assert!(line.contains("q выход"), "подсказка обрезана: {line:?}");
+        }
+    }
+
+    /// ФОН ЧЁРНЫЙ, СОДЕРЖИМОЕ — КОЛОНКОЙ ПО ЦЕНТРУ.
+    ///
+    /// Полотно не красилось вовсе: сквозь весь кадр просвечивал фон чужого
+    /// терминала (у владельца — серый). И содержимое на широком окне
+    /// расползалось от левого края на всю ширину.
+    #[test]
+    fn the_page_is_black_and_the_content_is_a_centred_column() {
+        let buf = draw(160, 32);
+        for y in 0..buf.area.height {
+            // Вторую клетку эмодзи терминалу не отдают вовсе (её закрывает сам
+            // значок), и она остаётся с умолчаниями — спрашивать с неё нечего.
+            let mut covered = 0usize;
+            for x in 0..buf.area.width {
+                let c = &buf[(x, y)];
+                if covered == 0 {
+                    assert_ne!(c.bg, Color::Reset, "клетка ({x},{y}) отдана фону чужого терминала");
+                }
+                covered = Span::raw(c.symbol()).width().saturating_sub(1);
+            }
+        }
+        // Рамка шапки: колонка по центру плюс поле в две клетки.
+        let left = (0..buf.area.width).find(|x| buf[(*x, 1)].symbol().trim() != "");
+        assert_eq!(left, Some((160 - skin::PAGE_W) / 2 + 2), "содержимое не по центру");
     }
 
     #[test]
