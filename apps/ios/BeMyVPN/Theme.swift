@@ -110,6 +110,10 @@ enum Theme {
     static func picked(_ tint: Color = accent) -> Color { mix(card, tint, 0.14) }
     static func touched(_ tint: Color = accent) -> Color { mix(card, tint, 0.06) }
 
+    static let floatShadow = 0.35
+    static let floatShadowBlur: CGFloat = 8
+    static let floatShadowLift: CGFloat = 5
+
     static let copiedMs: TimeInterval = 1.3
     // ── КОНЕЦ: значения из design/palette.toml ──
 

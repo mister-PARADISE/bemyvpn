@@ -244,7 +244,8 @@ export component VpnPage inherits Rectangle {
     property <color> tint: vpn-state == 1 ? Theme.amber : vpn-state == 2 ? Theme.accent : vpn-state == 3 ? Theme.red : Theme.dim;
 
     // ── ПРОКРУЧИВАЕМОЕ (во всю высоту; панель ПАРИТ поверх) ─────────────
-    PageScroll {
+    // Имя нужно ради умной прокрутки к раскрытой карточке (`scroll.reveal`).
+    scroll := PageScroll {
         panel-h: panel.height;
 
         // ── Свежий релиз ──
@@ -405,7 +406,7 @@ export component VpnPage inherits Rectangle {
             color: Theme.dim; font-size: 14px;
             horizontal-alignment: center; wrap: word-wrap;
         }
-        for h in root.hosts: HostCard {
+        for h in root.hosts: card := HostCard {
             h: h;
             // Данные не живые — показываем это САМИМ СПИСКОМ: приглушённое
             // читается как «неактуально» мгновенно и без слов.
@@ -419,6 +420,21 @@ export component VpnPage inherits Rectangle {
                 // идёт циклом, пока карточка открыта, и без сигнала о закрытии
                 // его нечем было бы остановить.
                 root.expanded-host(root.expanded);
+            }
+            // РАСКРЫЛИ — ПОДТЯНУТЬ КАРТОЧКУ В ВИДИМОЕ. Прокрутка сама за
+            // выросшей карточкой не идёт: у последней в списке всё, что ниже
+            // заголовка, уезжало под нав-бар, и «Подключить» человек не видел
+            // вовсе.
+            //
+            // ЕДЕМ ЗА САМОЙ ВЫСОТОЙ, А НЕ ПО ЧАСАМ И НЕ ПО ОДНОМУ РЫВКУ В
+            // МОМЕНТ НАЖАТИЯ. Сразу после нажатия прокручивать НЕЧЕГО: страница
+            // ещё короче окна, и прокрутка честно зажимает сдвиг в ноль —
+            // проверено на живом окне, список не двигался вовсе. Здесь же
+            // подтягивание идёт на КАЖДОЕ изменение высоты: карточка растёт
+            // 220мс, и список едет вместе с ней, доезжая ровно к концу роста.
+            // Отмерять миллисекунды не приходится.
+            changed height => {
+                if (root.expanded == h.id) { scroll.reveal(card.y, card.height); }
             }
             connect(id) => { root.connect(id); }
             copy-text(t) => { root.copy-text(t); }

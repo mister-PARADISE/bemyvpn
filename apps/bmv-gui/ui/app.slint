@@ -56,7 +56,9 @@ component NavCell inherits Rectangle {
     Rectangle {
         x: 2px; y: 3px;
         width: parent.width - 4px; height: parent.height - 6px;
-        border-radius: 22px;
+        // Концентричность: внешний радиус минус отступ бара. Считается, а не
+        // вписано числом — внешний радиус стал общим с панелью.
+        border-radius: Theme.float-radius - 6px;
         background: root.acting ? Theme.picked(root.hue)
                   : root.current ? Theme.picked(Theme.accent)
                   : transparent;
@@ -279,12 +281,14 @@ export component AppWindow inherits Window {
     // Ореол бара — ОТДЕЛЬНЫМ СОСЕДОМ ПЕРЕД ним, иначе он лёг бы поверх заливки:
     // в Slint дети рисуются над фоном родителя, а `z` нет вовсе.
     FloatHalo {
-        radius: 28px;
         lift-up: true;
         x: bar.x; y: bar.y; width: bar.width; height: bar.height;
     }
     bar := FloatCard {
-        radius: 28px;
+        // РАДИУС НЕ ПЕРЕДАЁТСЯ: он один на оба парящих блока
+        // (Theme.float-radius). Здесь стояло 28 против 22 у панели, и от этого
+        // расходилось ГАШЕНИЕ — его ширина считается от радиуса.
+        //
         // Бар прижат снизу — тень уходит ВВЕРХ, к содержимому. Вниз она уезжала
         // под сам бар, в полосу, на которую никто не смотрит.
         lift-up: true;

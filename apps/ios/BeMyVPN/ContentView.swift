@@ -64,7 +64,11 @@ struct NavBar: View {
         // ВТОРОЙ ПАРЯЩИЙ СЛОЙ: отделка та же, что у панели состояния
         // (floatSurface). Свой цвет, подобранный на глаз, разошёлся бы с
         // панелью при первой же правке темы. `up` — бар прижат снизу.
-        .background(floatSurface(radius: 28, stroke: Theme.hairlineFloat, up: true))
+        //
+        // РАДИУС НЕ ПЕРЕДАЁТСЯ: он один на оба парящих блока (`floatRadius`).
+        // Здесь стояло 28 против 22 у панели, и от этого расходилось ГАШЕНИЕ —
+        // его ширина считается от радиуса.
+        .background(floatSurface(stroke: Theme.hairlineFloat, up: true))
         .padding(.horizontal, 18)
         // safe-area пробита на корне (ContentView), поэтому зазор снизу задаём
         // руками. Нужно ОДНОВРЕМЕННО: (1) не влезать в зону home-indicator внизу
@@ -74,9 +78,10 @@ struct NavBar: View {
         .padding(.bottom, 42)
     }
 
-    /// Радиус внутренней таблетки. Концентричность: внешний R − отступ.
-    /// 28 − 6 = 22; иначе внутренняя форма не следует внешней.
-    private let innerR: CGFloat = 22
+    /// Радиус внутренней таблетки. Концентричность: внешний R − отступ,
+    /// иначе внутренняя форма не следует внешней. Считается, а не вписан:
+    /// внешний радиус переехал в `floatRadius` и стал общим с панелью.
+    private let innerR: CGFloat = floatRadius - 6
 
     /// Высота коробки значка. ОБЯЗАНА быть фиксированной: `Image(systemName:)`
     /// подгоняется под рамку конкретного символа, а она у bolt/xmark/shield
@@ -355,7 +360,12 @@ struct VPNTab: View {
             }
     }
 
+    // `GeometryReader` + `ScrollViewReader` — ради умной прокрутки к раскрытой
+    // карточке (см. `HostCard`). Ничего не рисуют и разметку не трогают: первый
+    // отдаёт высоту окна прокрутки, второй — саму прокрутку.
     private var scrollBody: some View {
+        GeometryReader { vp in
+        ScrollViewReader { scroll in
         ScrollView(showsIndicators: false) {
             VStack(alignment: .leading, spacing: 14) {
                 sectionLabel("Подключиться по коду")
@@ -445,7 +455,7 @@ struct VPNTab: View {
                     // Данные не живые — показываем это САМИМ СПИСКОМ, а не ещё
                     // одним элементом: приглушённое читается как «неактуально»
                     // мгновенно и без слов.
-                    ForEach(shown) { HostCard(host: $0) }
+                    ForEach(shown) { HostCard(host: $0, scroll: scroll, viewportH: vp.size.height) }
                         .opacity(stale ? 0.55 : 1)
                         .animation(.easeInOut(duration: 0.4), value: stale)
                 }
@@ -455,6 +465,8 @@ struct VPNTab: View {
             // `safeAreaInset` иначе отрезает. Расстояние от кромки панели до
             // покоящегося содержимого осталось прежним, 34.
             .padding(.horizontal, 20).padding(.top, 10).padding(.bottom, 20).navPadding()
+        }
+        }
         }
     }
 }
@@ -566,7 +578,13 @@ struct VPNHero: View {
 struct HostCard: View {
     @EnvironmentObject var app: AppState
     let host: Host
+    /// Прокрутка списка — только чтобы подтянуть себя, когда раскрылись.
+    let scroll: ScrollViewProxy
+    /// Высота окна прокрутки: из неё считается доля привязки (см. ниже).
+    let viewportH: CGFloat
     @State private var password = ""
+    /// Своя высота по замеру: по ней (а НЕ по часам) ждём конца раскрытия.
+    @State private var cardH: CGFloat = 0
     private var expanded: Bool { app.expandedId == host.id }
     /// Заливка плиток внутри раскрытой карточки: ЧИСТАЯ СТУПЕНЬ s3, БЕЗ ПОДКРАСКИ.
     ///
@@ -686,6 +704,53 @@ struct HostCard: View {
         // Обрезка по скруглению: пока карточка растёт, содержимое не должно
         // вылезать за её край.
         .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        // ЗАМЕР СВОЕЙ ВЫСОТЫ — не ради разметки, а ради ожидания ниже.
+        .background(GeometryReader { g in
+            Color.clear
+                .onAppear { cardH = g.size.height }
+                .onChange(of: g.size.height) { cardH = $0 }
+        })
+        // РАСКРЫЛИ — ПОДТЯНУТЬ КАРТОЧКУ В ВИДИМОЕ. Прокрутка сама за выросшей
+        // карточкой не идёт: у последней в списке всё, что ниже заголовка,
+        // уезжало под нав-бар, и «Подключить» человек не видел вовсе.
+        //
+        // ЖДЁМ ПО САМОЙ ВЫСОТЕ, А НЕ ПО ЧАСАМ. Раскрытие — ДВЕ анимации подряд:
+        // коробка растёт (0.2с), содержимое проявляется (0.06 + 0.22с).
+        // Отмеренные миллисекунды ловят карточку на середине роста, и прокрутка
+        // подтягивается к промежуточному размеру. Ключ задачи включает
+        // ЗАМЕРЕННУЮ высоту: тронулась дальше — ожидание начинается заново,
+        // замерла на 80мс — двигаем один раз и уже по готовой высоте.
+        //
+        // Ключ — состояние `app.expandedId`, а не жест: карточку раскрывает ещё
+        // и ввод кода, и разбор QR (`connectByCode`), и те пути тапа не знают.
+        .task(id: "\(expanded)|\(Int(cardH))") {
+            guard expanded, cardH > 0, viewportH > cardH else { return }
+            try? await Task.sleep(nanoseconds: 80_000_000)
+            guard !Task.isCancelled else { return }
+            withAnimation(.easeInOut(duration: 0.25)) {
+                scroll.scrollTo(host.id, anchor: UnitPoint(x: 0, y: bottomAnchor))
+            }
+        }
+    }
+
+    /// ВИДИМАЯ = КАРТОЧКА ПЛЮС НИЖНИЙ ОТСТУП, А НЕ ОДНА КАРТОЧКА.
+    ///
+    /// `anchor: .bottom` совмещает низ карточки с низом окна прокрутки — то
+    /// есть загоняет её ровно под нав-бар: замер на симуляторе показал промах
+    /// вниз ровно на клиренс, и «Подключить» оставался срезанным. Нужен низ
+    /// карточки на `navClearance` ВЫШЕ низа окна — там же, где он встаёт при
+    /// прокрутке до конца, на верхней кромке гашения.
+    ///
+    /// Привязка одной долей и совмещает: доля `k` ставит точку на `k` высоты
+    /// карточки в точку на `k` высоты окна, значит верх карточки встаёт на
+    /// `k·(V−H)`. Приравняв это к `V − клиренс − H`, получаем долю ниже. Своей
+    /// прокрутки «на столько-то точек» у SwiftUI нет — только доля.
+    ///
+    /// Хвост-мишень ростом в клиренс тут не работает: SwiftUI целится в рамку
+    /// СТРОКИ списка, и полоска, погашенная отрицательным отступом, считается
+    /// нулевой (проверено — промах был ровно на её высоту).
+    private var bottomAnchor: CGFloat {
+        max(0, (viewportH - navClearance - cardH) / (viewportH - cardH))
     }
 
     /// Флаг страны крупно слева — как аватарка, на всю высоту строки.

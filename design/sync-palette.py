@@ -95,8 +95,20 @@ def pad(names):
     return max(len(n) for n in names)
 
 
+# ТЕНЬ ПАРЯЩЕГО СЛОЯ — ОДНИ ЧИСЛА НА ДВЕ ОБОЛОЧКИ, И ЕДИНСТВЕННОЕ МЕСТО, ГДЕ
+# ЖИВЁТ ПЕРЕСЧЁТ ЕДИНИЦ. У SwiftUI `.shadow(radius:)` — это σ размытия, у Slint
+# `drop-shadow-blur` — его удвоенное значение. Разница платформенная, поэтому и
+# лежит она у раскладчика: в источнике число ОДНО, в темах — одно и то же
+# размытие. Раньше в источнике его не было вовсе, а в двух оболочках стояли 8 и
+# 16, и сверить их глазами было нельзя.
+SLINT_BLUR = 2
+
+# Android тени НЕ РИСУЕТ (замер: 1/255 на почти чёрном фоне, плюс системная тень
+# Compose не умеет вверх — а нав-бару нужно вверх), терминал не знает и самих
+# поверхностей. Поэтому `[float]` раскладывается только в Slint и Swift: выдать
+# им мёртвые константы значило бы завести настройку без читателя.
 def render_slint(d, roles):
-    c, e, m, t = d["colors"], d["edges"], d["mix"], d["timing"]
+    c, e, m, t, f = d["colors"], d["edges"], d["mix"], d["timing"], d["float"]
     names = [NAMES["slint"].get(k, k) for k in ORDER]
     w = pad(names)
     out = [
@@ -124,13 +136,17 @@ def render_slint(d, roles):
         f"public pure function touched(tint: color) -> color "
         f"{{ return root.card.mix(tint, {num(1 - m['touched'])}); }}",
         "",
+        f"out property <float> float-shadow: {num(f['shadow'])};",
+        f"out property <length> float-shadow-blur: {num(SLINT_BLUR * f['shadow_blur'])}px;",
+        f"out property <length> float-shadow-lift: {num(f['shadow_lift'])}px;",
+        "",
         f"out property <duration> copied-ms: {num(t['copied_ms'])}ms;",
     ]
     return out
 
 
 def render_swift(d, roles):
-    c, e, m, t = d["colors"], d["edges"], d["mix"], d["timing"]
+    c, e, m, t, f = d["colors"], d["edges"], d["mix"], d["timing"], d["float"]
     names = [NAMES["swift"].get(k, k) for k in ORDER]
     w = pad(names)
     out = [
@@ -150,6 +166,10 @@ def render_swift(d, roles):
         "",
         f"static func picked(_ tint: Color = accent) -> Color {{ mix(card, tint, {num(m['picked'])}) }}",
         f"static func touched(_ tint: Color = accent) -> Color {{ mix(card, tint, {num(m['touched'])}) }}",
+        "",
+        f"static let floatShadow = {num(f['shadow'])}",
+        f"static let floatShadowBlur: CGFloat = {num(f['shadow_blur'])}",
+        f"static let floatShadowLift: CGFloat = {num(f['shadow_lift'])}",
         "",
         f"static let copiedMs: TimeInterval = {num(t['copied_ms'] / 1000)}",
     ]
