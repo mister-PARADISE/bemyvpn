@@ -80,6 +80,19 @@ try {
     }
 
     # 3. Window.
+    #
+    # SOFTWARE RENDERER, ON PURPOSE. The runner has no GPU and no OpenGL at all:
+    # the default femtovg renderer dies at startup with "Failed to initialize
+    # OpenGL driver: Could not locate glCreateShader symbol" and the process
+    # exits with code 1. Slint ships a software rasterizer in its default
+    # features, so winit-software needs no change to Cargo.toml.
+    #
+    # Price of this, stated plainly: the frame below is drawn by Slint's own
+    # rasteriser, not by the GPU path a real user gets. Layout, text, fonts,
+    # flags and colours are the real thing; antialiasing and gradients may
+    # differ by a hair from a machine with a video card. The Linux job keeps
+    # femtovg (llvmpipe), so the GPU path is still covered there.
+    $env:SLINT_BACKEND = 'winit-software'
     $env:BEMYVPN_CONFIG = "$tmp\gui.toml"
     $app = Start-Bg $gui @() 'gui' $false
     $h = [IntPtr]::Zero

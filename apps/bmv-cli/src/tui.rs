@@ -1388,13 +1388,14 @@ fn ui(f: &mut Frame, a: &App) {
         render_input(f, chunks[1], inp);
     }
 
-    // ПОДПИСИ КЛАВИШ УКОРОЧЕНЫ ПОД КОЛОНКУ: в 72 клетки (`skin::PAGE_W` минус
-    // поля) прежние строки не влезали и обрезались на полуслове.
+    // ПОДПИСИ КЛАВИШ УКОРОЧЕНЫ ПОД САМЫЙ УЗКИЙ ТЕРМИНАЛ, а не под колонку: в
+    // 70 клеток экрана содержимому достаётся 66, и прежние строки («Enter
+    // подкл/откл», «Enter изменить/переключить») обрывались на полуслове.
     let keys = if a.input.is_some() {
         INPUT_KEYS
     } else {
         match a.tab {
-            Tab::Vpn => "↑↓ выбор · Enter вкл/выкл · C старт · K код · Tab вкладки · q выход",
+            Tab::Vpn => "↑↓ выбор · Enter вкл/выкл · C старт · K код · ←→ вкладки · q выход",
             Tab::Host => "↑↓ поле · Enter меняет · N код · Shift+Q QR · ←→ вкладки · q выход",
             Tab::Server => "↑↓ поле · Enter меняет · ←→ вкладки · q выход",
         }
@@ -1405,7 +1406,7 @@ fn ui(f: &mut Frame, a: &App) {
         Some((msg, alarm, _)) => skin::toast(msg, *alarm),
         None => skin::hint(keys),
     };
-    f.render_widget(Paragraph::new(Line::from(vec![Span::raw(" "), bottom])), chunks[2]);
+    f.render_widget(Paragraph::new(Line::from(bottom)), chunks[2]);
 }
 
 fn render_input(f: &mut Frame, area: Rect, inp: &Input) {
@@ -1499,12 +1500,20 @@ fn vpn_tab(f: &mut Frame, area: Rect, a: &App) {
     // ИМЯ БЕРЁТ ВСЁ, ЧТО ОСТАЛОСЬ ОТ ОСТАЛЬНЫХ КОЛОНОК. На узком терминале
     // остаётся мало — тогда имя обрежется многоточием, но колонки справа
     // останутся на своих местах: раньше длинное имя двигало вправо всю строку.
-    let name_w = (inner.width as usize).saturating_sub(skin::HOST_ROW_FIXED).max(8);
+    // Колонки страны и замка держим, только если им есть что показать хотя бы у
+    // одной строки, — иначе они отодвигали бы все имена в пустоту.
+    let has_cc = a.hosts.iter().any(|h| !host_cc(h).is_empty());
+    let has_lock = a.hosts.iter().any(|h| h.has_password);
+    let fixed = skin::host_row_fixed(has_cc, has_lock);
+    let name_w = (inner.width as usize).saturating_sub(fixed).max(8);
     let rows_area = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(1), Constraint::Min(1)])
         .split(inner);
-    f.render_widget(Paragraph::new(skin::host_head(name_w)), rows_area[0]);
+    // Слева от имени — колонки-значки: планка, значок состояния и то из пары
+    // «страна/замок», что сегодня показывается.
+    let left = fixed - (1 + skin::COL_GUESTS + 1 + skin::COL_PROTO + 1 + skin::COL_PING);
+    f.render_widget(Paragraph::new(skin::host_head(left, name_w)), rows_area[0]);
 
     let items: Vec<ListItem> = a
         .hosts
@@ -1516,7 +1525,8 @@ fn vpn_tab(f: &mut Frame, area: Rect, a: &App) {
             // Забитый хост ГАСНЕТ — здесь это замена погашенной кнопке из
             // трёх других оболочек: подключиться к нему всё равно нельзя.
             let usable = view::host_usable(h.online, h.guests, h.max_guests);
-            let cc = skin::cell(host_cc(h), skin::COL_CC);
+            let cc = if has_cc { format!("{} ", skin::cell(host_cc(h), skin::COL_CC)) } else { String::new() };
+            let lock = if has_lock { format!("{} ", skin::cell(lock, skin::COL_LOCK)) } else { String::new() };
             // МЫ СЕЙЧАС В ЭТОЙ СЕТИ. Не «выбран курсором» — это разные вещи:
             // курсор стоит на одной строке, а работает соединение с другой.
             // Берём id ИЗ ТУННЕЛЯ (`Vpn::On`), а не из «подключаюсь»: там
@@ -1527,8 +1537,8 @@ fn vpn_tab(f: &mut Frame, area: Rect, a: &App) {
             let mut spans = vec![
                 skin::live_mark(live),
                 Span::raw(format!("{dot} ")),
-                skin::hint(format!("{cc} ")),
-                Span::raw(format!("{} ", skin::cell(lock, skin::COL_LOCK))),
+                skin::hint(cc),
+                Span::raw(lock),
                 if usable { skin::value(title) } else { skin::hint(title) },
                 skin::hint(format!(
                     " {} {} ",
@@ -1903,6 +1913,26 @@ mod tests {
         assert!(text.contains("US"), "настоящий код страны обязан показываться");
     }
 
+    /// ПОДСКАЗКА КЛАВИШ ВЛЕЗАЕТ В САМЫЙ УЗКИЙ ТЕРМИНАЛ.
+    ///
+    /// Подсказка живёт в одну строку и не переносится: не влезла — обрывается на
+    /// полуслове, и обрывается как раз хвост, где написано, чем выйти. Ловим по
+    /// последнему слову.
+    #[test]
+    fn the_key_hints_fit_the_narrowest_terminal() {
+        let mut app = mk(Tab::Vpn, Vpn::Off, HostMode::Off);
+        app.toast = None; // сообщение занимает строку вместо подсказки
+        for tab in [Tab::Vpn, Tab::Host, Tab::Server] {
+            app.tab = tab;
+            let mut term = ratatui::Terminal::new(TestBackend::new(70, 24)).unwrap();
+            term.draw(|f| ui(f, &app)).unwrap();
+            let buf = term.backend().buffer();
+            let y = buf.area.height - 2; // последняя строка колонки: снизу поле в 1
+            let line: String = (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect();
+            assert!(line.contains("q выход"), "подсказка обрезана: {line:?}");
+        }
+    }
+
     /// ФОН ЧЁРНЫЙ, СОДЕРЖИМОЕ — КОЛОНКОЙ ПО ЦЕНТРУ.
     ///
     /// Полотно не красилось вовсе: сквозь весь кадр просвечивал фон чужого
@@ -1912,8 +1942,15 @@ mod tests {
     fn the_page_is_black_and_the_content_is_a_centred_column() {
         let buf = draw(160, 32);
         for y in 0..buf.area.height {
+            // Вторую клетку эмодзи терминалу не отдают вовсе (её закрывает сам
+            // значок), и она остаётся с умолчаниями — спрашивать с неё нечего.
+            let mut covered = 0usize;
             for x in 0..buf.area.width {
-                assert_ne!(buf[(x, y)].bg, Color::Reset, "клетка ({x},{y}) отдана фону чужого терминала");
+                let c = &buf[(x, y)];
+                if covered == 0 {
+                    assert_ne!(c.bg, Color::Reset, "клетка ({x},{y}) отдана фону чужого терминала");
+                }
+                covered = Span::raw(c.symbol()).width().saturating_sub(1);
             }
         }
         // Рамка шапки: колонка по центру плюс поле в две клетки.
