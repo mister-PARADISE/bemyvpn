@@ -25,7 +25,12 @@
 //! шлёт BYE, откатывает маршруты и выходит: «повисшего» root-VPN не остаётся.
 //! root запрашивается ОДИН раз за сессию.
 
-use std::io::{BufRead, BufReader, Write};
+// BufRead/BufReader нужны только Unix-ветке: на Windows отдельного root-процесса
+// нет, туннель качается в самом окне (`inproc_serve`), и построчного чтения из
+//управляющего сокета там не существует.
+#[cfg(not(windows))]
+use std::io::{BufRead, BufReader};
+use std::io::Write;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -59,6 +64,7 @@ const CLAIM_WINDOW: Duration = Duration::from_secs(180);
 /// `read_to_string(...).unwrap_or_default()`, то есть при любом сбое чтения
 /// становился ПУСТОЙ строкой — и тогда любой локальный процесс, приславший
 /// пустую первую строку, получал этого root-хелпера в своё распоряжение.
+#[cfg(not(windows))]
 fn token_ok(expected: &str, got: &str) -> bool {
     !expected.is_empty() && got.trim() == expected
 }
@@ -71,9 +77,11 @@ fn token_ok(expected: &str, got: &str) -> bool {
 /// админом (манифест UAC), туннель крутится в нём (см. `inproc_serve`).
 #[cfg(not(windows))]
 pub fn run_helper(port_file: &str, token_file: &str, up_file: &str) -> ! {
-    // Весь вывод уходит в журнал рядом с файлом порта (см. `helper_log`), и это
-    // ЕДИНСТВЕННОЕ, что видно про root-процесс: окно его не породило напрямую,
-    // ни кода возврата, ни stderr оно не получит.
+    // Вывод НИКУДА НЕ ПИШЕТСЯ И НЕ ЧИТАЕТСЯ. Окно не породило этот процесс
+    // напрямую и ни кода возврата, ни потока ошибок от него не получит — а
+    // заводить ради этого файл нельзя: VPN не оставляет следов в системе.
+    // Человеку и так довольно знать, что включить не вышло; различать «отменил
+    // пароль» и «помощник не поднялся» надо было мне при отладке, не ему.
     let raw = std::fs::read_to_string(token_file);
     if let Err(e) = &raw {
         eprintln!("хелпер: токен {token_file} не прочитался: {e}");
@@ -606,12 +614,6 @@ fn spawn_and_connect(on_state: Arc<dyn Fn(i32, String, String) + Send + Sync>, u
     write_private(&token_file, &token)?;
     let _ = std::fs::remove_file(&port_file);
     let _ = std::fs::remove_file(up_file); // свежий старт: старый маркер не путает GUI
-    // Журнал заводим МЫ, под пользователем: `>` в root-овом шелле существующий
-    // файл только усечёт и владельца не переназначит. Иначе при строгом umask у
-    // root мы не прочитали бы собственную улику — ровно та же ловушка, из-за
-    // которой не читался файл порта.
-    let _ = std::fs::File::create(helper_log(&port_file));
-
     // Путь к настройкам ищем ЗДЕСЬ, под пользователем, и отдаём помощнику готовым:
     // у root свой HOME (`/var/root`, `/root`), и сам он нашёл бы не тот файл или
     // ничего (см. `guest_config`). Абсолютный — рабочий каталог root-процесса не
@@ -643,29 +645,19 @@ fn spawn_and_connect(on_state: Arc<dyn Fn(i32, String, String) + Send + Sync>, u
         }
         std::thread::sleep(Duration::from_millis(100));
     }
-    // Журнал хелпера читаем ДО уборки каталога — он и есть улика, когда root-процесс
-    // умер молча (не тот путь к бинарю, паника в рантайме, пустой токен → exit 1).
-    let log = std::fs::read_to_string(helper_log(&port_file)).unwrap_or_default();
     let _ = std::fs::remove_file(&token_file);
     let _ = std::fs::remove_file(&port_file);
-    let _ = std::fs::remove_file(helper_log(&port_file));
     let _ = std::fs::remove_dir(&dir);
     if port == 0 {
-        // ЧЕЛОВЕКУ — ОДНА ФРАЗА, УЛИКИ — В ЖУРНАЛ. Раньше сюда склеивались
-        // «помощник не отдал порт», текст ошибки чтения файла и последние пять
-        // строк журнала через « | » — и всё это уезжало в ЗАГОЛОВОК состояния
-        // (21px, жирный). Читать это было невозможно, а сделать по нему всё
-        // равно нечего: случая ровно два — пароль не ввели, либо помощник не
-        // поднялся, и в обоих следующий шаг один и тот же.
-        let tail: Vec<&str> = log.lines().rev().take(5).collect();
-        if !last_err.is_empty() {
-            eprintln!("хелпер: {last_err}");
-        }
-        if tail.is_empty() {
-            return Err("Нужен пароль администратора — без него VPN не включить.".into());
-        }
-        eprintln!("хелпер не поднялся: {}", tail.into_iter().rev().collect::<Vec<_>>().join(" | "));
-        return Err("Не удалось включить VPN. Попробуйте ещё раз.".into());
+        // ОДНА ФРАЗА, И НИКАКИХ УЛИК. Случая ровно два — пароль не ввели либо
+        // помощник не поднялся, — и следующий шаг у человека в обоих один.
+        // Раньше ради их различения писался файл журнала: он существовал только
+        // для отладки и оседал в системе. Не пишем ничего и не гадаем.
+        return Err(if last_err.is_empty() {
+            "Нужен пароль администратора — без него VPN не включить.".to_string()
+        } else {
+            "Не удалось включить VPN. Попробуйте ещё раз.".to_string()
+        });
     }
 
     let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).map_err(|e| e.to_string())?;
@@ -713,15 +705,6 @@ fn write_private(path: &std::path::Path, data: &str) -> Result<(), String> {
 
 // ── Запуск root-процесса с системным запросом пароля ─────────────────────────
 
-/// Куда root-хелпер пишет свой вывод — рядом с файлом порта, в том же каталоге
-/// 0700. Раньше вывод уходил в /dev/null, и молча умерший root-процесс (не тот
-/// путь к бинарю, паника в рантайме, `exit 1` из-за нечитаемого токена) был
-/// неотличим от «человек отменил пароль». В общий /tmp этот файл класть нельзя —
-/// туда сосед по машине подложит симлинк, а пишет по нему root.
-#[cfg(not(windows))]
-fn helper_log(port_file: &std::path::Path) -> std::path::PathBuf {
-    port_file.with_file_name("helper.log")
-}
 
 /// Путь → безопасный аргумент для `/bin/sh`. Одинарные кавычки закрывают пробелы,
 /// но НЕ закрывают саму одинарную кавычку: путь вида `/Users/o'brien/Моё.app`
@@ -740,9 +723,13 @@ fn elevate_launch(exe: &std::path::Path, port_file: &std::path::Path, token_file
     // Переменные окружения помощнику не передать (osascript и pkexec их не несут),
     // поэтому путь к настройкам идёт ПЯТЫМ аргументом; читает его `run_helper`.
     let sh = format!(
-        "{} --tunnel-helper {} {} {} {} >{} 2>&1 &",
-        sh_quote(exe), sh_quote(port_file), sh_quote(token_file), sh_quote(up_file), sh_quote(cfg_file),
-        sh_quote(&helper_log(port_file))
+        // ВЫВОД — В /dev/null, И ЭТО ПРИНЦИП, А НЕ ЭКОНОМИЯ. Раньше он уходил в
+        // файл рядом с портом, чтобы отличить «человек отменил пароль» от «помощник
+        // не поднялся». Различать это нужно было МНЕ при отладке, а не человеку:
+        // следующий шаг у него один и тот же — попробовать ещё раз. Ради моего
+        // удобства в системе оседал файл. VPN не оставляет следов нигде.
+        "{} --tunnel-helper {} {} {} {} >/dev/null 2>&1 &",
+        sh_quote(exe), sh_quote(port_file), sh_quote(token_file), sh_quote(up_file), sh_quote(cfg_file)
     );
     // `with prompt` — ЭТО И ЕСТЬ ТЕКСТ, КОТОРЫЙ ЧЕЛОВЕК ЧИТАЕТ В ОКНЕ ПАРОЛЯ.
     // Без него macOS печатает в окне саму команду: шесть абсолютных путей,
@@ -766,13 +753,8 @@ fn elevate_launch(exe: &std::path::Path, port_file: &std::path::Path, token_file
     // вычищает нарочно, и `BEMYVPN_CONFIG` до помощника бы не доехал.
     let mut cmd = std::process::Command::new("pkexec");
     cmd.arg(exe).arg("--tunnel-helper").arg(port_file).arg(token_file).arg(up_file).arg(cfg_file);
-    // Файл создаём МЫ (пользователь) и отдаём дескриптором: так root не создаёт
-    // его сам и путь не переоткрывается по нашу сторону.
-    if let Ok(f) = std::fs::File::create(helper_log(port_file)) {
-        if let Ok(dup) = f.try_clone() {
-            cmd.stdout(std::process::Stdio::from(f)).stderr(std::process::Stdio::from(dup));
-        }
-    }
+    // Вывод помощника — в никуда, как и на macOS: файла журнала у нас нет.
+    cmd.stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
     cmd.spawn().map(|_| ()).map_err(|e| {
         eprintln!("pkexec не запустился: {e}");
         "Нужен пароль администратора — без него VPN не включить.".to_string()
@@ -793,6 +775,9 @@ mod tests {
     /// превращает его в "". Со сравнением «строка == строка» такой хелпер
     /// принимал ЛЮБОГО, кто прислал пустую первую строку, — а принимает он
     /// команду CONNECT с произвольным координатором, то есть весь трафик машины.
+    // На Windows отдельного root-процесса нет, и `token_ok` там не собирается —
+    // значит и тест не должен, иначе сборка под Windows красная на ровном месте.
+    #[cfg(not(windows))]
     #[test]
     fn an_empty_token_never_authenticates_anyone() {
         assert!(!token_ok("", ""), "пустой токен обязан отвергать всех");
