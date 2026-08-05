@@ -93,13 +93,14 @@ try {
     # than the one we started. The first process exits with code 0 as soon as it
     # has spawned the second, so we look up the window by executable name.
     $env:BEMYVPN_CONFIG = "$tmp\gui.toml"
-    Start-Bg $gui @() 'gui' $false | Out-Null
+    $started = Start-Bg $gui @() 'gui' $false
     $h = [IntPtr]::Zero
+    $owner = 0
     for ($i = 0; $i -lt 60; $i++) {
         $live = @(Get-Process -Name 'bemyvpn-gui' -ErrorAction SilentlyContinue)
         foreach ($p in $live) {
             $p.Refresh()
-            if ($p.MainWindowHandle -ne [IntPtr]::Zero) { $h = $p.MainWindowHandle; break }
+            if ($p.MainWindowHandle -ne [IntPtr]::Zero) { $h = $p.MainWindowHandle; $owner = $p.Id; break }
         }
         if ($h -ne [IntPtr]::Zero) { break }
         # No process left and no window: nobody is going to draw anything.
@@ -107,7 +108,12 @@ try {
         Start-Sleep -Seconds 1
     }
     if ($h -eq [IntPtr]::Zero) { throw 'no window appeared within 60 s' }
-    Write-Host "window handle: $h"
+    # Say out loud WHICH path was exercised, so a future run cannot quietly stop
+    # testing the fallback: a different pid means the GPU path failed and the app
+    # restarted itself on the software rasteriser, which is what this runner has
+    # to do. The same pid would mean it found working OpenGL.
+    $how = if ($owner -eq $started.Id) { 'GPU path (OpenGL found)' } else { 'software rasteriser after self-restart' }
+    Write-Host "window handle: $h, pid $owner (started $($started.Id)) - $how"
 
     Add-Type @'
 using System;
