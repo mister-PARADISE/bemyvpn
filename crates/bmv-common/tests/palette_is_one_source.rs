@@ -135,6 +135,152 @@ fn every_shell_carries_every_color() {
     );
 }
 
+/// Беда №3: ЦВЕТ ПРИЕХАЛ В РАЗМЕТКУ САМ, МИМО ПАЛИТРЫ.
+///
+/// Первые два часовых сверяют ЧИСЛА в темах. Эта беда другая: числа в темах в
+/// порядке, а на экран попадает цвет, которого в теме нет вовсе, — потому что
+/// его рисует не наша разметка, а чужая. Так и случилось: ползунок «Лимит
+/// гостей» был `Slider` из `std-widgets`, а тот красится приватным
+/// `FluentPalette.accent-background` — системным синим `#005FB8`. Подменить его
+/// нельзя (везде `out property`), в `design/palette.toml` синего нет вообще, и
+/// ни один часовой не краснел: в разметке не было НИ ОДНОГО цветового литерала.
+/// Замер со снимков: ход `#005FB8`, кольцо бегунка `#FFFFFF`, неактивная часть
+/// `#040406` — и вдобавок на маке те же три места давали `#C7C7CC` и `#484849`,
+/// потому что Slint подставляет стиль по системе сборки.
+///
+/// Отсюда три проверки — по одному способу протечки на оболочку.
+#[test]
+fn markup_does_not_bring_color_from_outside() {
+    let root = repo_root();
+    let mut missing = Vec::new();
+
+    // ── 1. ОКНО: готовый виджет со своей темой ──────────────────────────────
+    //
+    // `ScrollView` разрешён нарочно и он в списке ЕДИНСТВЕННЫЙ: полосы прокрутки
+    // у него выключены навсегда (`ScrollBarPolicy.always-off` в `PageScroll`),
+    // то есть рисовать своим цветом ему нечего. Всякий другой виджет из набора
+    // приезжает вместе с чужой палитрой — как приехал `Slider`.
+    const STOCK_ALLOWED: &[&str] = &["ScrollView"];
+    // ── 2. ОКНО: цвет числом на месте ───────────────────────────────────────
+    //
+    // Список ИСЧЕРПЫВАЮЩИЙ и намеренно короткий. Оба литерала — известный долг:
+    // это «белое с альфой» ~0.09, написанное одинаково во всех трёх оболочках,
+    // но безымянное. Своего ключа в источнике у него нет, а завести ключ значит
+    // разложить его скриптом по четырём темам, включая терминал. Пока долг
+    // записан здесь: добавить третий литерал молча теперь нельзя.
+    const KNOWN_LITERALS: &[(&str, &str)] = &[
+        ("apps/bmv-gui/ui/components.slint", "#FFFFFF0A"), // наведение на «Новый код»
+        ("apps/bmv-gui/ui/vpn_page.slint", "#FFFFFF17"),   // дорожка полосы заполненности
+    ];
+
+    let ui = root.join("apps/bmv-gui/ui");
+    let mut files: Vec<_> = std::fs::read_dir(&ui)
+        .expect("apps/bmv-gui/ui")
+        .filter_map(|e| e.ok().map(|e| e.file_name().to_string_lossy().into_owned()))
+        .filter(|n| n.ends_with(".slint") && n != "theme.slint")
+        .collect();
+    files.sort();
+    assert!(files.len() >= 5, "в ui/ подозрительно мало разметки ({}) — сломан обход", files.len());
+
+    let mut seen_literals = Vec::new();
+    for name in &files {
+        let rel = format!("apps/bmv-gui/ui/{name}");
+        let src = std::fs::read_to_string(root.join(&rel)).unwrap_or_else(|e| panic!("{rel}: {e}"));
+        // Комментарии — не разметка: в них цвета НАЗЫВАЮТ (вот этот часовой и
+        // называет `#005FB8`), а не рисуют. Блочных комментариев в ui/ нет.
+        for line in src.lines().map(|l| l.split("//").next().unwrap_or("")) {
+            if line.contains("\"std-widgets.slint\"") {
+                let names = line
+                    .split('{')
+                    .nth(1)
+                    .and_then(|s| s.split('}').next())
+                    .unwrap_or_default();
+                for w in names.split(',').map(str::trim).filter(|w| !w.is_empty()) {
+                    if !STOCK_ALLOWED.contains(&w) {
+                        missing.push(format!(
+                            "{rel}: `{w}` из std-widgets — это готовый виджет со своей темой. \
+                             Собрать свой из Theme (образец — ValueSlider в components.slint)"
+                        ));
+                    }
+                }
+            }
+            // Цветовой литерал: решётка и дальше только 16-ричные цифры (6 или 8).
+            let bytes: Vec<char> = line.chars().collect();
+            for (i, c) in bytes.iter().enumerate() {
+                if *c != '#' {
+                    continue;
+                }
+                let hex: String =
+                    bytes[i + 1..].iter().take_while(|c| c.is_ascii_hexdigit()).collect();
+                if hex.len() == 6 || hex.len() == 8 {
+                    seen_literals.push((rel.clone(), format!("#{}", hex.to_uppercase())));
+                }
+            }
+        }
+    }
+    for (rel, lit) in &seen_literals {
+        if !KNOWN_LITERALS.iter().any(|(f, l)| f == rel && l == lit) {
+            missing.push(format!(
+                "{rel}: цвет {lit} написан числом на месте — он обязан приехать из Theme"
+            ));
+        }
+    }
+    for (rel, lit) in KNOWN_LITERALS {
+        if !seen_literals.iter().any(|(f, l)| f == rel && l == lit) {
+            missing.push(format!(
+                "{rel}: литерала {lit} больше нет — это хорошая новость, \
+                 вычеркните его из KNOWN_LITERALS, иначе список врёт"
+            ));
+        }
+    }
+
+    // ── 3. ТЕЛЕФОНЫ: система докрашивает то, о чём ей не сказали ────────────
+    //
+    // Здесь протечка ОБРАТНАЯ окну: не «чужой цвет написан», а «свой не написан
+    // вовсе», и системе остаётся подставить свой акцент. Ловится единственным
+    // способом — присутствием той самой одной подмены на корне: пропадёт она,
+    // и синева вернётся молча, во все поля ввода разом.
+    const GLOBALS: &[(&str, &[&str])] = &[
+        (
+            "apps/ios/BeMyVPN/BeMyVPNApp.swift",
+            &[
+                // Без него системный синий: тулбары листов, кнопка алерта,
+                // каретка и «капли» выделения во всех полях ввода.
+                ".tint(Theme.accent)",
+                // `.tint` красит у Slider только пройденный ход; бегунок и
+                // остаток дорожки настраиваются лишь через прокси UIKit.
+                "UISlider.appearance().thumbTintColor",
+                "UISlider.appearance().maximumTrackTintColor",
+            ],
+        ),
+        (
+            "apps/android/app/src/main/java/org/bemyvpn/ui/App.kt",
+            &[
+                "LocalTextSelectionColors provides", // иначе выделение — гугл-синий #4286F4
+                "LocalRippleTheme provides",         // иначе рябь на бегунке чёрная
+                "LocalContentColor provides",        // иначе запасной глиф чёрный по чёрному
+            ],
+        ),
+    ];
+    for (rel, needles) in GLOBALS {
+        let src = std::fs::read_to_string(root.join(rel)).unwrap_or_else(|e| panic!("{rel}: {e}"));
+        for n in *needles {
+            if !src.contains(n) {
+                missing.push(format!(
+                    "{rel}: пропала подмена `{n}` — цвет здесь снова назначает система"
+                ));
+            }
+        }
+    }
+
+    assert!(
+        missing.is_empty(),
+        "в разметку приехал цвет мимо палитры:\n  {}\n\
+         Цвета живут в design/palette.toml и приходят в разметку через Theme.",
+        missing.join("\n  ")
+    );
+}
+
 /// Канон бренда лежит не только в SVG.
 ///
 /// Логотип «Звено» палитре НЕ подчиняется (см. brand/README.md — «не

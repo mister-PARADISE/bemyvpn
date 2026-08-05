@@ -28,7 +28,17 @@ bmv-signal = { path = "../../crates/bmv-signal" }
 bmv-desktop = { path = "../../crates/bmv-desktop" }
 # femtovg (GPU) — HiDPI/Retina, сглаживание. Флаги-эмодзи он не умеет, поэтому
 # флаги стран рисуем PNG-картинками (см. flags/ + geo.rs), как на Android визуально.
-slint = { version = "1.8" }
+#
+# НИЖНЯЯ ГРАНИЦА 1.15 — НЕ ВКУСОВЩИНА, А УСЛОВИЕ РАБОТЫ БЕЗ ВИДЕОКАРТЫ. До 1.15
+# программный растеризатор ронял процесс, как только в кадре исчезал хоть один
+# элемент (обновился список, погасло `if`): `compute_dirty_regions` держал
+# `borrow_mut` кеша геометрии, пока считал габариты элемента, а расчёт габаритов
+# лениво достраивал повторитель и сносил старые строки — те лезли в тот же кеш
+# вторым `borrow_mut` («RefCell already borrowed», partial_renderer.rs:818).
+# Slint 1.15.0 переставил расчёт габаритов ВЫШЕ взятия кеша (issue #9882, PR
+# #9883) — перекрытия заимствований не осталось. Сторож — тест
+# `the_software_renderer_survives_lists_changing_under_it`.
+slint = { version = "1.15" }
 # Декод встроенных PNG-флагов в slint::Image.
 image = { version = "0.25", default-features = false, features = ["png"] }
 # Встраивание папки флагов в бинарь.
@@ -50,8 +60,15 @@ display-info = "0.5.9"
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
+# Системное окно с ошибкой, когда окно приложения поднять не вышло: у релиза под
+# Windows нет консоли, и eprintln! уходит в никуда (см. report_startup_failure).
+# Крейт и так уже в дереве сборки (его тянут winit и directories) — новой ценой
+# это не оборачивается.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_UI_WindowsAndMessaging"] }
+
 [build-dependencies]
-slint-build = "1.8"
+slint-build = "1.15"   # версия компилятора разметки идёт в ногу с slint
 # Встраивает Windows-манифест (UAC requireAdministrator + HiDPI) в exe. На не-Windows
 # целях no-op, поэтому держим в общих build-deps, а вызываем по target в build.rs.
 embed-resource = "3"
@@ -60,4 +77,4 @@ embed-resource = "3"
 # Безголовая оболочка Slint для тестов окна: даёт настоящее дерево элементов и
 # раскладку без экрана. Без неё вылет при переключении вкладок ловился бы только
 # руками на живом окне — а он и жил там четыре версии подряд.
-i-slint-backend-testing = "1.14.1"
+i-slint-backend-testing = "1.15"

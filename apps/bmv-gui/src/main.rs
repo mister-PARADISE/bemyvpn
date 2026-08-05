@@ -223,6 +223,295 @@ fn fit_height(screen_h: f32) -> f32 {
     (screen_h * SHARE - TITLE_BAR).max(MIN_H).round()
 }
 
+/// Имя запасного рисовальщика — программный растеризатор.
+///
+/// Он УЖЕ в бинаре: фича `renderer-software` входит в набор Slint по умолчанию,
+/// доставать ничего не нужно. Строка та же, что понимает `SLINT_BACKEND`, но
+/// ставим её не переменной, а `BackendSelector` (см. `main`).
+const SW_BACKEND: &str = "winit-software";
+
+/// СВОЯ метка «этот запуск — уже перезапуск на запасном рисовальщике».
+///
+/// Именно АРГУМЕНТ, и ни в коем случае не переменная окружения:
+///
+/// 1. Окружение НАСЛЕДУЕТСЯ чужими перезапусками. Обновление перезапускает нас
+///    руками `cmd` (`bmv_common::update::spawn_exe_updater`: `start "" "<exe>"`),
+///    и переменная переехала бы в новый процесс. Машина, один раз свалившаяся на
+///    растеризатор, осталась бы на нём НАВСЕГДА — в том числе после установки
+///    драйвера видеокарты. Аргументов `start` не передаёт: метка умирает вместе
+///    с процессом, и следующий запуск снова пробует видеокарту.
+/// 2. Предохранителем от петли раньше служила ЧУЖАЯ `SLINT_BACKEND`, а её
+///    содержимое нам не подвластно. Пустая строка или неизвестное имя Slint
+///    молча уводит на видеокарту (i-slint-backend-selector/lib.rs:94 и :119 —
+///    «Could not load rendering backend …, fallback to default»), то есть
+///    падение остаётся, а починка оказывается заранее запрещена.
+const SW_FLAG: &str = "--software-renderer";
+
+/// ОКНО ХОТЬ РАЗ НАРИСОВАЛОСЬ — и с этого мгновения перезапускать себя нельзя
+/// НИКОГДА (иначе приложение воскресало бы у человека после закрытия).
+///
+/// Признак не наш домысел, а слово самого рисовальщика: femtovg зовёт
+/// `RenderingSetup` из ПЕРВОГО `render()`, когда GL-контекст уже создан и кадр
+/// пошёл (i-slint-renderer-femtovg/lib.rs:118-124). Все отказы, ради которых
+/// существует запасной путь, случаются РАНЬШЕ — при создании окна
+/// (`renderer.resume` → `set_opengl_context`), поэтому здесь ещё `false`.
+///
+/// Почему не `Window::is_visible()`: он отвечает «звали ли `show()`»
+/// (i-slint-core/window.rs:1445 — `strong_component_ref.is_some()`), а `show()`
+/// на winit честно отдаёт `Ok` ещё до того, как окно вообще создано.
+///
+/// В ЗАПАСНОМ РЕЖИМЕ признак не поднимается: программный растеризатор
+/// `set_rendering_notifier` не умеет (у трейта `Renderer` умолчание —
+/// `SetRenderingNotifierError::Unsupported`, i-slint-core/renderer.rs:115). Это
+/// ничего не ломает — там перезапуск и так запрещён меткой `SW_FLAG`, а
+/// сообщение человеку составлено так, чтобы годиться в обоих случаях.
+static WINDOW_SHOWN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// ПРОБОВАТЬ ЛИ ЗАПАСНОЙ РИСОВАЛЬЩИК. Правило одно: окно НИ РАЗУ не
+/// показывалось, и мы ещё не в запасном режиме.
+///
+/// Сверки текста ошибки со словом «OpenGL» здесь больше нет. Она пропускала
+/// добрую половину отказов старта, и все они кончаются тем же — окна нет:
+/// «Failed to retrieve a window handle for window we just created» и «Error
+/// obtaining window handle to adjust nsview layer contents placement»
+/// (i-slint-backend-winit/renderer/femtovg/glcontext.rs:151 и :198), «Error
+/// initializing winit event loop» (там же lib.rs:578), «Winit backend failed to
+/// find a suitable renderer» (lib.rs:763). Признак «окна не было» покрывает их
+/// все разом и не зависит от чужих формулировок.
+///
+/// Окружения функция не видит вовсе — и не должна: чужая `SLINT_BACKEND` не
+/// вправе ни запретить починку, ни разрешить воскрешение.
+fn should_try_software(args: &[std::ffi::OsString], window_shown: bool) -> bool {
+    !window_shown && !software_mode(args)
+}
+
+/// Метка запасного режима на месте — этот запуск уже перезапущенный.
+///
+/// Одно место на оба вопроса («включать ли растеризатор» и «перезапускаться ли
+/// снова»): прочти их по-разному — и приложение однажды закрутится в петлю.
+fn software_mode(args: &[std::ffi::OsString]) -> bool {
+    args.iter().any(|a| a.to_str() == Some(SW_FLAG))
+}
+
+/// Команда, которой мы перезапускаем СЕБЯ на запасном рисовальщике.
+///
+/// Ни одной переменной окружения она не задаёт — в этом весь смысл, см. `SW_FLAG`.
+/// Сторож — `the_fallback_mode_does_not_survive_a_restart_someone_else_makes`.
+fn software_restart(
+    exe: std::path::PathBuf,
+    args: impl Iterator<Item = std::ffi::OsString>,
+) -> std::process::Command {
+    let mut cmd = std::process::Command::new(exe);
+    cmd.args(args).arg(SW_FLAG);
+    cmd
+}
+
+/// МАШИНА БЕЗ ВИДЕОКАРТЫ: окно не поднялось — перезапустить себя на программном
+/// растеризаторе. Возвращает `true`, если перезапуск отправлен.
+///
+/// Зачем вообще. Slint по умолчанию рисует видеокартой (femtovg/OpenGL). На
+/// свежей Windows БЕЗ ДРАЙВЕРА видеокарты, в виртуальной машине и в части
+/// сеансов удалённого рабочего стола OpenGL нет вовсе — femtovg проверяет наличие
+/// `glCreateShader` и отказывается. Окна человек не видит ВООБЩЕ, а процесс молча
+/// уходит с кодом 1: консоли у релиза нет (`windows_subsystem = "windows"`).
+///
+/// Почему ПЕРЕЗАПУСКОМ, а не переключением на месте. Переключиться в том же
+/// запуске нельзя — три отдельных замка, каждый закрывает дверь сам по себе:
+///   1. Отказ приходит не при выборе рисовальщика, а из УЖЕ КРУТЯЩЕГОСЯ цикла
+///      событий: femtovg трогает OpenGL только в момент создания окна, а до того
+///      и `AppWindow::new()` (если сам цикл событий поднялся), и `show()` честно
+///      отдают `Ok`.
+///   2. `slint::platform::set_platform` ставится один раз за процесс, второй
+///      вызов — `AlreadySet`, сброса нет.
+///   3. winit не даёт создать второй цикл событий в процессе
+///      (`EventLoopError::RecreationAttempt`).
+///
+/// Оставался второй путь — заранее самому проверить, есть ли OpenGL. Это своя
+/// копия пробы glutin (окно, пиксельный формат, контекст, `wglGetProcAddress`);
+/// ошибись она в другую сторону — и машина С видеокартой поехала бы на CPU, то
+/// есть чинили бы редкий случай ценой основного. Перезапуск ошибиться не может:
+/// он случается только после НАСТОЯЩЕГО отказа.
+///
+/// Предохранитель от петли — СВОЯ метка `SW_FLAG` в аргументах: перезапущенный
+/// процесс видит её и второй раз не перезапускается. Раньше эту роль играла
+/// чужая `SLINT_BACKEND`, и мусор в ней выключал починку насовсем.
+///
+/// ЗНАЧКИ. Они у нас — вектор (`Path`, ui/icons.slint), и до Slint 1.15
+/// программный растеризатор не рисовал `Path` ВОВСЕ: на месте значка оставалась
+/// пустота. Владелец эту цену принял дословно — «если нету видеокарты, то пускай
+/// их у него не будет, ничего страшного», — а перевод значков в картинки уже
+/// делали и ОТКАТИЛИ (4dacbef). ЧИНИТЬ КАРТИНКАМИ ЗАПРЕЩЕНО И СЕЙЧАС.
+///
+/// С 1.15 платить не приходится: программный растеризатор научился `Path`
+/// (i-slint-renderer-software, фича `path`, включена вместе со `std`). Проверено
+/// на живом окне: `SLINT_BACKEND=winit-software` + `SLINT_DEBUG_PERFORMANCE`
+/// говорит «Backend: software», и все три вкладки со значками. Пустота вернётся,
+/// если кто-то соберёт крейт без `std`, — не повод возвращать картинки.
+///
+/// И ЧТО УЖЕ НЕ ТАК — чтобы не искали заново. Здесь стояло: «вкладка „Сервер“
+/// роняет процесс, своей правкой не лечится». Первое было правдой, второе —
+/// нет, и вина была не на списке серверов.
+///
+/// Падало ЛЮБОЕ исчезновение элемента из кадра, а «Сохранить и проверить» на
+/// вкладке «Сервер» просто гасило разом четыре блока парящей панели
+/// (`if coord-state == 1:`). Ронял не повторитель, а `Conditional`: в Slint
+/// 1.14.1 `compute_dirty_regions` брал `borrow_mut` кеша геометрии и не
+/// отпускал, пока считал габариты элемента (partial_renderer.rs:417 и 423), а
+/// расчёт габаритов — это раскладка, и она лениво доводит `if`-блоки и
+/// повторители до ума: сносит прежние поддеревья, а снос идёт за вторым
+/// `borrow_mut` того же кеша (:818, «RefCell already borrowed»). На видеокарте
+/// этого нет вовсе — femtovg не заворачивается в `PartialRenderer`.
+///
+/// Лечится ОБНОВЛЕНИЕМ: Slint 1.15 поднял расчёт габаритов выше взятия кеша
+/// (upstream #9882 / #9883). Нижняя граница закреплена в Cargo.toml, сторож —
+/// тест `the_software_renderer_survives_elements_vanishing_between_frames`.
+/// «1.14.1 — последняя» было просто неверно: 1.15 вышла раньше разбора.
+fn restart_on_software_renderer() -> bool {
+    let args: Vec<std::ffi::OsString> = std::env::args_os().collect();
+    if !should_try_software(&args, WINDOW_SHOWN.load(std::sync::atomic::Ordering::SeqCst)) {
+        return false;
+    }
+    let Ok(exe) = std::env::current_exe() else { return false };
+    software_restart(exe, args.into_iter().skip(1)).spawn().is_ok()
+}
+
+/// ОТКАЗ СТАРТА ОКНА — ОДНИМ МЕСТОМ на все три канала, которыми он приходит:
+/// `AppWindow::new()` (там создаётся цикл событий winit), `ui.run()` (там
+/// создаётся само окно и GL-контекст) и паника (см. `arm_startup_panic_hook`).
+///
+/// Возвращается только если помочь не вышло: перезапуск уводит из процесса
+/// НЕМЕДЛЕННО. Раньше родитель после `spawn` дочитывал `main` до конца, и на
+/// машине пару секунд жили два наших процесса: остановка tokio и деструкторы
+/// занимают заметное время, а работу уже делает потомок.
+fn startup_failed(err: slint::PlatformError) -> Result<(), Box<dyn std::error::Error>> {
+    if restart_on_software_renderer() {
+        std::process::exit(0);
+    }
+    report_startup_failure(&err.to_string());
+    Err(err.into())
+}
+
+/// ПАНИКА ДО ПЕРВОГО КАДРА — ТОТ ЖЕ ОТКАЗ СТАРТА, только другим каналом.
+///
+/// На пути создания окна femtovg не только возвращает ошибки, но и ПАНИКУЕТ:
+/// `.expect("internal error: Could not find any matching GL configuration")`
+/// (i-slint-backend-winit/renderer/femtovg/glcontext.rs:89 — glutin не отдал ни
+/// одной подходящей конфигурации) и два `.unwrap()` в
+/// i-slint-renderer-femtovg/opengl.rs:113 и :142 (`OpenGl::new_from_function_cstr`
+/// и `Canvas::new_with_text_context`). `Result` от `ui.run()` их не видит вовсе,
+/// и на Windows без консоли человек снова не видит НИЧЕГО — то есть исходная
+/// жалоба остаётся как была.
+///
+/// Обработчик паники зовётся ДО раскрутки стека (и до `abort`, если сборку
+/// когда-нибудь переведут на `panic = "abort"`), поэтому ловит и такое.
+///
+/// ЧУЖИЕ ПАНИКИ НЕ НАШИ: сверяем поток. Паника в задаче tokio к окну отношения
+/// не имеет, и перезапускаться на ней нельзя.
+///
+/// Разбирается ЛЮБАЯ паника до первого кадра, не только графическая: человек в
+/// любом случае остался без окна и без единого слова, а разбираться, чья именно
+/// паника, по её тексту — та же сверка чужих формулировок, от которой мы
+/// избавились в `should_try_software`. Худшее, что даёт лишний перезапуск, —
+/// вторая такая же паника в потомке, и уже она доедет до человека сообщением.
+fn arm_startup_panic_hook() {
+    let main_thread = std::thread::current().id();
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        if std::thread::current().id() != main_thread
+            || WINDOW_SHOWN.load(std::sync::atomic::Ordering::SeqCst)
+        {
+            previous(info);
+            return;
+        }
+        if restart_on_software_renderer() {
+            std::process::exit(0);
+        }
+        report_startup_failure(&info.to_string());
+        // Своим выходом, а не раскруткой: показывать поверх системного окна ещё
+        // и стандартный отчёт о панике (на Windows он всё равно уходит в никуда)
+        // человеку незачем.
+        std::process::exit(1);
+    }));
+}
+
+/// СКАЗАТЬ ЧЕЛОВЕКУ, что запустить окно не вышло, — СРЕДСТВАМИ САМОЙ СИСТЕМЫ.
+///
+/// Своего окна для этого нет и быть не может: сообщение как раз о том, что
+/// рисовать мы не умеем. Печать в поток тоже не годится — у релиза под Windows
+/// консоли нет вовсе (`windows_subsystem = "windows"`), и строка уходит в
+/// никуда; ровно на это и жалуются. Здесь стояло «на Unix есть консоль» — это
+/// было неправдой: у `.app`, запущенного мышью, и у ярлыка на Linux её нет
+/// ровно так же.
+///
+/// Своей печати в журнал в клиенте нет и быть не может
+/// (`crates/bmv-common/tests/no_journal_in_the_client.rs`) — поэтому ниже
+/// системные средства, а не `eprintln!`.
+///
+/// Формулировка годится и для паники ПОСЛЕ показа окна в запасном режиме (там
+/// признак `WINDOW_SHOWN` не поднимается, см. его): первая строка не утверждает,
+/// что окна не было, а совет отделён условием.
+fn report_startup_failure(details: &str) {
+    let text = format!(
+        "BeMyVPN не смог продолжить работу.\n\n{details}\n\n\
+         Если окно так и не появилось: похоже, на этой машине нет ни видеокарты \
+         с OpenGL, ни рабочего запасного рисовальщика. Обычно помогает установка \
+         драйвера видеокарты."
+    );
+
+    // Windows: системное окно. Модальное НАРОЧНО — сообщение, которое некому
+    // прочесть, бессмысленно, а больше процессу делать нечего: за `MessageBoxW`
+    // сразу выход. FOREGROUND и TOPMOST обязательны: родитель к этому моменту
+    // уже ушёл, и без них окно всплывает ПОД чужими — то есть снова «ничего не
+    // происходит».
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            MessageBoxW, MB_ICONERROR, MB_OK, MB_SETFOREGROUND, MB_TOPMOST,
+        };
+        // Обе строки — UTF-16 с завершающим нулём: MessageBoxW читает до него.
+        let wide = |s: &str| s.encode_utf16().chain(std::iter::once(0)).collect::<Vec<u16>>();
+        let (body, title) = (wide(&text), wide("BeMyVPN"));
+        // SAFETY: оба указателя — на живые буферы с нулём на конце, окна-владельца
+        // нет (его-то и не создалось), флаги — константы из windows-sys.
+        unsafe {
+            MessageBoxW(
+                std::ptr::null_mut(),
+                body.as_ptr(),
+                title.as_ptr(),
+                MB_OK | MB_ICONERROR | MB_SETFOREGROUND | MB_TOPMOST,
+            )
+        };
+    }
+
+    // macOS: `display alert` рисует сама система. `osascript` есть в любой
+    // системе с самой её установки — доставать нечего.
+    #[cfg(target_os = "macos")]
+    {
+        // Строковый литерал AppleScript: обратный слэш, кавычка и перевод
+        // строки — единственное, что его ломает. Текст свой, но в него подставлен
+        // чужой (`details`), и он бывает любым.
+        let esc = text.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', "\\n");
+        let _ = std::process::Command::new("/usr/bin/osascript")
+            .arg("-e")
+            .arg(format!("display alert \"BeMyVPN\" message \"{esc}\" as critical"))
+            .status();
+    }
+
+    // Linux: своего окна сообщений у системы нет, есть три расхожие утилиты.
+    // Пробуем по очереди до первой, которая нашлась. Не нашлось ни одной —
+    // остаётся стандартный вывод причины возвратом `Err` из `main`.
+    #[cfg(all(unix, not(target_os = "macos")))]
+    for (prog, args) in [
+        ("zenity", &["--error", "--title=BeMyVPN", "--text"][..]),
+        ("kdialog", &["--title", "BeMyVPN", "--error"][..]),
+        ("xmessage", &["-center"][..]),
+    ] {
+        if std::process::Command::new(prog).args(args).arg(&text).status().is_ok() {
+            return;
+        }
+    }
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Режим привилегированного туннель-хелпера (root): поднят самим приложением
     // через системный запрос пароля. Без окна — только качает туннель. Никогда
@@ -259,7 +548,40 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let saved_proto = config.default_protocol.clone();
     let engine: EngineSlot = Arc::new(Mutex::new(Arc::new(BmvEngine::from_config(config))));
 
-    let ui = AppWindow::new()?;
+    // ЗАПАСНОЙ РИСОВАЛЬЩИК — по СВОЕЙ метке в аргументах (см. `SW_FLAG`), а не
+    // по `SLINT_BACKEND`. `BackendSelector` переменную ПЕРЕБИВАЕТ: имя
+    // разбирается на бэкенд и рисовальщик сразу (`winit` + `software`), а ветка
+    // чтения `SLINT_BACKEND` в i-slint-backend-selector/api.rs:279 работает
+    // только когда что-то из двух не задано. Поэтому чужой мусор в переменной
+    // наш запасной путь не ломает.
+    if software_mode(&std::env::args_os().collect::<Vec<_>>()) {
+        if let Err(e) = slint::BackendSelector::new().backend_name(SW_BACKEND.to_string()).select()
+        {
+            return startup_failed(e);
+        }
+    }
+
+    // Ловушку на панику ставим ЗДЕСЬ: ниже начинается всё, что имеет отношение к
+    // окну, — создание цикла событий (`AppWindow::new`) и потом самого окна
+    // (`ui.run`). Выше неё паника означала бы что-то другое, и разбирать её как
+    // отказ рисовальщика было бы враньём.
+    arm_startup_panic_hook();
+
+    // ОТКАЗ ЗДЕСЬ ТОЖЕ РАЗБИРАЕМ. Внутри `AppWindow::new()` создаётся цикл
+    // событий winit (сгенерированный `new()` зовёт `window_adapter_ref()`, тот —
+    // `create_window_adapter`, а он поднимает бэкенд целиком, включая
+    // `EventLoop::build`, i-slint-backend-winit/lib.rs:578). Раньше эта ошибка
+    // уходила через `?` — мимо и запасного пути, и человека.
+    let ui = match AppWindow::new() {
+        Ok(ui) => ui,
+        Err(e) => return startup_failed(e),
+    };
+    // «ОКНО ПОКАЗАЛОСЬ» — со слов самого рисовальщика, см. `WINDOW_SHOWN`.
+    // Программный растеризатор такого не умеет и отвечает `Unsupported` — там
+    // признак и не нужен (перезапуск запрещён меткой).
+    let _ = ui.window().set_rendering_notifier(|_, _| {
+        WINDOW_SHOWN.store(true, std::sync::atomic::Ordering::SeqCst);
+    });
     {
         let (w, h) = window_size();
         ui.set_win_w(w);
@@ -508,9 +830,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     wire_host(&ui, engine.clone(), host_task, handle.clone(), host_started, my_ip_for_host);
     wire_coord(&ui, engine, coord_full.clone());
 
-    ui.run()?;
-    // Маркер и его каталог уберёт `Drop` у `up_dir` — в том числе если `ui.run()`
-    // вернул ошибку и мы ушли отсюда через `?` (см. `helper::PrivateDir`).
+    // Окно закрыто — или НЕ ОТКРЫЛОСЬ ВОВСЕ (машина без видеокарты). Второй
+    // случай разбирает `startup_failed`: молча уходить с кодом 1 нельзя, консоли
+    // у релиза нет.
+    if let Err(e) = ui.run() {
+        // Каталог обмена убираем САМИ: при удачном перезапуске `startup_failed`
+        // уходит из процесса немедленно, а `std::process::exit` деструкторов не
+        // зовёт — иначе во временной папке копился бы мусор.
+        drop(up_dir);
+        return startup_failed(e);
+    }
+    // Маркер и его каталог уберёт `Drop` у `up_dir` (см. `helper::PrivateDir`) —
+    // а на пути отказа выше он снят вручную, потому что оттуда мы уходим
+    // `std::process::exit`, минуя деструкторы.
 
     // Окно закрыто. На Windows туннель живёт в этом процессе, поэтому явно просим
     // откатить маршруты/DNS и даём мгновение отработать (иначе резкий выход
@@ -1709,6 +2041,272 @@ mod tests {
         let ids: Vec<String> =
             visible_hosts(&list, "", "", false).iter().map(|x| x.id.clone()).collect();
         assert_eq!(ids, ["ЖИВОЙ", "МОЙ"]);
+    }
+
+    /// КОГДА ПРОБОВАТЬ ЗАПАСНОЙ РИСОВАЛЬЩИК, А КОГДА НЕЛЬЗЯ.
+    ///
+    /// Три правила, и за каждым своя поломка:
+    /// * окна не было ни разу → пробуем. Это и есть машина без видеокарты, и
+    ///   решение НЕ зависит от того, как чужой код подписал свой отказ: сверка
+    ///   по слову «OpenGL» пропускала половину отказов старта (winit не смог
+    ///   поднять цикл событий, окно создалось, но не отдало handle, рисовальщик
+    ///   не нашёлся вовсе);
+    /// * окно человек уже видел → НИКОГДА. Иначе приложение воскресает после
+    ///   того, как его закрыли, — прямой запрет;
+    /// * метка запасного режима уже стоит → НИКОГДА, это петля перезапусков.
+    ///
+    /// Окружения решение не видит вовсе — и не должно: раньше предохранителем
+    /// служила чужая `SLINT_BACKEND`, и пустая строка в ней выключала починку.
+    #[test]
+    fn the_fallback_is_tried_only_when_the_window_was_never_shown() {
+        let args = |v: &[&str]| v.iter().map(std::ffi::OsString::from).collect::<Vec<_>>();
+
+        // Обычный запуск, окна не было — единственный случай, когда пробуем.
+        assert!(should_try_software(&args(&["bemyvpn-gui"]), false));
+        // Чужие аргументы решению не мешают.
+        assert!(should_try_software(&args(&["bemyvpn-gui", "--что-то"]), false));
+
+        // Окно показывалось — не перезапускаемся ни при каких аргументах.
+        assert!(!should_try_software(&args(&["bemyvpn-gui"]), true));
+        assert!(!should_try_software(&args(&["bemyvpn-gui", "--что-то"]), true));
+
+        // Метка запасного режима — второго перезапуска не будет.
+        assert!(!should_try_software(&args(&["bemyvpn-gui", SW_FLAG]), false));
+        assert!(!should_try_software(&args(&["bemyvpn-gui", SW_FLAG]), true));
+    }
+
+    /// ЗАПАСНОЙ РЕЖИМ НЕ ПЕРЕЖИВАЕТ ПЕРЕЗАПУСК, КОТОРЫЙ ДЕЛАЕМ НЕ МЫ.
+    ///
+    /// Обновление перезапускает приложение чужими руками:
+    /// `bmv_common::update::spawn_exe_updater` пишет .cmd со `start "" "<exe>"`
+    /// — БЕЗ аргументов, но с унаследованным ОКРУЖЕНИЕМ. Пока признак жил в
+    /// `SLINT_BACKEND`, машина, один раз свалившаяся на растеризатор, оставалась
+    /// на нём навсегда — в том числе после установки драйвера видеокарты.
+    ///
+    /// Отсюда правило: команда перезапуска не задаёт НИ ОДНОЙ переменной
+    /// окружения, а метка едет аргументом.
+    #[test]
+    fn the_fallback_mode_does_not_survive_a_restart_someone_else_makes() {
+        let cmd = software_restart(
+            "/opt/bemyvpn/bemyvpn-gui".into(),
+            [std::ffi::OsString::from("--свой-аргумент")].into_iter(),
+        );
+
+        assert_eq!(
+            cmd.get_envs().count(),
+            0,
+            "запасной режим уехал в окружение — он переживёт чужой перезапуск",
+        );
+
+        // Метка — в аргументах, рядом с теми, что были у нас.
+        let args: Vec<String> = cmd.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
+        assert_eq!(args, ["--свой-аргумент", SW_FLAG]);
+
+        // ПЕТЛЯ ЗАКРЫТА: потомок, увидев свои же аргументы, не перезапустится.
+        let child: Vec<std::ffi::OsString> = std::iter::once(std::ffi::OsString::from("bemyvpn-gui"))
+            .chain(cmd.get_args().map(|a| a.to_os_string()))
+            .collect();
+        assert!(software_mode(&child), "потомок не узнаёт свою же метку");
+        assert!(!should_try_software(&child, false), "потомок перезапустится снова — это петля");
+    }
+
+    // ── НАСТОЯЩИЙ ПРОГРАММНЫЙ РАСТЕРИЗАТОР В ТЕСТЕ ──────────────────────────
+    //
+    // Тестовая оболочка Slint (`init_no_event_loop`) НЕ РИСУЕТ вовсе, а падение
+    // без видеокарты живёт именно в рисовальщике. Поэтому здесь поднимается тот
+    // же `SoftwareRenderer`, что и у `SLINT_BACKEND=winit-software`.
+    //
+    // Оболочка ПОВТОРЯЕТ winit в одной мелочи: `update_window_properties`
+    // читает ограничения раскладки корня (winitwindowadapter.rs:1207). Slint
+    // зовёт это при показе окна и потом по нулевому таймеру, когда свойства
+    // окна меняются (window.rs:375), — так дерево «усаживается» ДО кадра. Без
+    // этой мелочи оболочка краснела бы даже там, где живое окно живёт. А вот
+    // таймеры МЕЖДУ правкой и кадром здесь не крутятся нарочно — почему,
+    // сказано у `sw_frame`.
+    const SW_W: u32 = 400;
+    const SW_H: u32 = 820;
+
+    struct SwWindow {
+        window: slint::Window,
+        renderer: slint::platform::software_renderer::SoftwareRenderer,
+        size: std::cell::Cell<slint::PhysicalSize>,
+    }
+
+    impl slint::platform::WindowAdapter for SwWindow {
+        fn window(&self) -> &slint::Window {
+            &self.window
+        }
+        fn size(&self) -> slint::PhysicalSize {
+            self.size.get()
+        }
+        fn set_size(&self, size: slint::WindowSize) {
+            self.size.set(size.to_physical(1.));
+            self.window
+                .dispatch_event(slint::platform::WindowEvent::Resized { size: size.to_logical(1.) });
+        }
+        fn renderer(&self) -> &dyn slint::platform::Renderer {
+            &self.renderer
+        }
+        fn update_window_properties(&self, properties: slint::platform::WindowProperties<'_>) {
+            // ТО САМОЕ, ЧТО ДЕЛАЕТ WINIT. Читает `layout_info` корня, а вместе с
+            // ним — всё, до чего раскладка корня дотягивается.
+            let _ = properties.layout_constraints();
+        }
+    }
+
+    thread_local! {
+        static SW: RefCell<Option<Rc<SwWindow>>> = const { RefCell::new(None) };
+    }
+
+    struct SwPlatform;
+    impl slint::platform::Platform for SwPlatform {
+        fn create_window_adapter(
+            &self,
+        ) -> Result<Rc<dyn slint::platform::WindowAdapter>, slint::PlatformError> {
+            use slint::platform::software_renderer::{RepaintBufferType, SoftwareRenderer};
+            let w = Rc::new_cyclic(|weak: &std::rc::Weak<SwWindow>| SwWindow {
+                window: slint::Window::new(weak.clone()),
+                // Тот же тип буфера, что softbuffer отдаёт на живой машине.
+                renderer: SoftwareRenderer::new_with_repaint_buffer_type(
+                    RepaintBufferType::ReusedBuffer,
+                ),
+                size: std::cell::Cell::new(slint::PhysicalSize::new(SW_W, SW_H)),
+            });
+            SW.with(|s| *s.borrow_mut() = Some(w.clone()));
+            Ok(w)
+        }
+    }
+
+    /// Окно на программном растеризаторе. Только ОДИН раз на поток теста:
+    /// оболочка Slint ставится на поток и не сбрасывается.
+    fn sw_window() -> AppWindow {
+        slint::platform::set_platform(Box::new(SwPlatform)).unwrap();
+        let ui = AppWindow::new().unwrap();
+        ui.window().set_size(slint::LogicalSize::new(SW_W as f32, SW_H as f32));
+        ui
+    }
+
+    /// Один кадр СРАЗУ ПОСЛЕ ПРАВКИ СВОЙСТВ — без прогона таймеров между ними.
+    ///
+    /// Это НЕ упрощение, а ХУДШИЙ ИЗ ЖИВЫХ ПОРЯДКОВ, и именно он убивал окно.
+    /// Slint «усаживает» раскладку заранее в нулевом таймере (window.rs:375), а
+    /// winit крутит таймеры в начале оборота цикла (event_loop.rs:470). Когда
+    /// свойства меняются В ХОДЕ оборота (нажали кнопку, пришло обновление из
+    /// ядра), перерисовка успевает раньше таймера — усадки не было, и дерево
+    /// перестраивается уже под рисовальщиком. Прогони мы здесь таймеры, проверка
+    /// зеленела бы на сломанном Slint.
+    fn sw_frame() {
+        let w = SW.with(|s| s.borrow().clone()).expect("окно не поднято");
+        let mut buf = vec![
+            slint::platform::software_renderer::Rgb565Pixel(0);
+            (SW_W * SW_H) as usize
+        ];
+        w.renderer.render(&mut buf, SW_W as usize);
+    }
+
+    /// БЕЗ ВИДЕОКАРТЫ ОКНО НЕ УМИРАЕТ ОТ ТОГО, ЧТО С ЭКРАНА ЧТО-ТО ПРОПАЛО.
+    ///
+    /// Ловим то, из-за чего запасной путь был бесполезен: под
+    /// `SLINT_BACKEND=winit-software` вкладка «Сервер» убивала ПРОЦЕСС при
+    /// нажатии «Сохранить и проверить» — «RefCell already borrowed»,
+    /// i-slint-core/partial_renderer.rs:818. Поломка чужая и она НАСТОЯЩАЯ, а не
+    /// наша неаккуратность с моделями:
+    ///
+    ///   `compute_dirty_regions` (1.14.1, partial_renderer.rs:417) брал
+    ///   `borrow_mut` кеша геометрии и НЕ ОТПУСКАЛ его, пока на строке 423 считал
+    ///   габариты элемента. Расчёт габаритов — это раскладка, а раскладка лениво
+    ///   достраивает `if`-блоки и повторители (`Conditional::ensure_updated`,
+    ///   `Repeater::ensure_updated`). Достраивая, они СНОСЯТ прежние поддеревья,
+    ///   а снос идёт в `free_graphics_resources` — за вторым `borrow_mut` того же
+    ///   кеша. На видеокарте этого нет: femtovg не заворачивается в
+    ///   `PartialRenderer` вовсе.
+    ///
+    /// Починено переходом на Slint 1.15 (upstream issue #9882, PR #9883:
+    /// расчёт габаритов поднят ВЫШЕ взятия кеша). Нижняя граница закреплена в
+    /// Cargo.toml — эта проверка сторожит её. Вернётся 1.14.x — покраснеет.
+    ///
+    /// ГОНЯЕМ ВСЕ ТРИ ВКЛАДКИ, а не только «Сервер»: гибли не списки, а любой
+    /// элемент, исчезающий из кадра, — а таких `if`-ов на экранах десятки.
+    #[test]
+    fn the_software_renderer_survives_elements_vanishing_between_frames() {
+        let ui = sw_window();
+        ui.show().unwrap();
+        sw_frame();
+
+        // ── «Сервер»: то самое падение ──────────────────────────────────
+        ui.set_tab(2);
+        ui.set_server_history(str_model(&["a.example".to_string()]));
+        sw_frame();
+        // Условия ПАРЯЩЕЙ ПАНЕЛИ: `if coord-state == 1:` гасит разом четыре
+        // блока (строка состояния, адрес, плитки, «ВАШ IP»). Ровно это и делает
+        // «Сохранить и проверить»: связь сбрасывается в «проверяю».
+        for s in [1, 2, 1, 0, 1, 2, 0] {
+            ui.set_coord_state(s);
+            sw_frame();
+        }
+        // Условие ВНУТРИ ПРОКРУТКИ + подпись про туннель.
+        for (e, v) in [("беда", 2), ("", 0), ("беда", 2), ("", 0)] {
+            ui.set_config_error(e.into());
+            ui.set_coord_state(1);
+            ui.set_vpn_state(v);
+            sw_frame();
+        }
+        // Список недавних серверов: и рост, и УСЫХАНИЕ до пустого (тогда
+        // пропадает и заголовок «Недавние серверы» — ещё два `if`).
+        for h in [vec!["b.example"], vec!["c.example", "d.example"], vec![], vec!["e.example"]] {
+            ui.set_server_history(str_model(&h.iter().map(|s| s.to_string()).collect::<Vec<_>>()));
+            sw_frame();
+        }
+
+        // ── «VPN»: каталог, недавние, состояние туннеля ─────────────────
+        ui.set_tab(0);
+        sw_frame();
+        for hosts in [vec!["ALPHA"], vec!["ALPHA", "BRAVO", "CHARLIE"], vec![], vec!["DELTA"]] {
+            ui.set_hosts(str_hosts(&hosts));
+            ui.set_recent_names(str_model(&hosts.iter().map(|s| s.to_string()).collect::<Vec<_>>()));
+            ui.set_recent_ids(str_model(&hosts.iter().map(|s| s.to_string()).collect::<Vec<_>>()));
+            sw_frame();
+        }
+        for s in [0, 1, 2, 3, 0] {
+            ui.set_vpn_state(s);
+            ui.set_vpn_host_id(if s == 2 { "DELTA".into() } else { "".into() });
+            sw_frame();
+        }
+        // Блок обновления — целая карточка, появляющаяся и пропадающая.
+        for v in ["1.99", "", "1.99", ""] {
+            ui.set_update_version(v.into());
+            sw_frame();
+        }
+
+        // ── «Хост»: раздача включается и выключается ────────────────────
+        ui.set_tab(1);
+        sw_frame();
+        for s in [0, 1, 2, 3, 2, 0] {
+            ui.set_host_state(s);
+            ui.set_host_code(if s == 2 { "КОД123".into() } else { "".into() });
+            ui.set_host_error(if s == 3 { "не вышло".into() } else { "".into() });
+            sw_frame();
+        }
+
+        // Поля ввода: у них своя ветка рисования (`draw_text_input`), и на живом
+        // экране набор с клавиатуры проверить не вышло — значит проверяем здесь.
+        for t in ["", "к", "коротко", "очень длинное имя хоста для проверки", ""] {
+            ui.set_host_name(t.into());
+            ui.set_host_password(t.into());
+            sw_frame();
+            ui.set_tab(2);
+            ui.set_coord_field(t.into());
+            sw_frame();
+            ui.set_tab(1);
+        }
+
+        // ── И ещё круг по вкладкам с живым каталогом ────────────────────
+        for tab in [0, 2, 1, 0, 2, 1, 0] {
+            ui.set_tab(tab);
+            ui.set_hosts(str_hosts(if tab == 0 { &["ECHO", "FOXTROT"] } else { &[] }));
+            sw_frame();
+        }
+        ui.hide().unwrap();
     }
 
     /// Путь уходит в `do shell script … with administrator privileges`, то есть

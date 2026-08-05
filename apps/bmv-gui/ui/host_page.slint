@@ -11,11 +11,10 @@
 // Код сети НЕ показывается, пока раздача выключена: давать его некому.
 // Копирование и QR живут на нижней полке (app.slint) — под большим пальцем.
 import { Theme } from "theme.slint";
-import { StatTile, CopyTile, SectionLabel, Field, BigChip,
+import { StatTile, CopyTile, SectionLabel, Field, BigChip, ValueSlider,
          StatusLine, BigCode, QuietButton, ShareButton, FloatPanel, PageScroll, Hero } from "components.slint";
 import { IconRouter, IconRenew, IconCopy, IconQr, IconGlobe, IconEyeOff, IconPeople, IconWarning,
          IconShieldLock, IconMask, IconShieldSlash } from "icons.slint";
-import { Slider } from "std-widgets.slint";
 
 component ProtoChipIcon inherits Rectangle {
     in property <string> id;
@@ -112,7 +111,7 @@ export component HostPage inherits Rectangle {
             Rectangle { horizontal-stretch: 1; }
             Text { text: root.host-max; color: Theme.accent; font-size: 17px; font-weight: 800; font-family: "monospace"; }
         }
-        Slider {
+        ValueSlider {
             minimum: 1; maximum: 256; value: root.host-max;
             changed(v) => { root.host-max = Math.round(v); }
             released(v) => { root.host-max = Math.round(v); root.apply-host(); }

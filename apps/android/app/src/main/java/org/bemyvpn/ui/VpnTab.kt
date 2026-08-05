@@ -10,7 +10,6 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.border
 import androidx.compose.foundation.horizontalScroll
@@ -146,7 +145,9 @@ fun VpnTab(app: AppState, bottomPad: Dp, openScanner: () -> Unit) {
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Icon(Icons.Filled.QrCodeScanner, null, Modifier.size(18.dp), tint = Theme.accent)
-            Text("Сканировать QR", color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.Bold)
+            // `Theme.fg`, а не чистый белый: иконка слева уже из темы, и подпись
+            // рядом с ней была единственной строкой приложения в #FFFFFF.
+            Text("Сканировать QR", color = Theme.fg, fontSize = 15.sp, fontWeight = FontWeight.Bold)
         }
 
         // Недавние показываем ТОЛЬКО пока они онлайн (есть в живом каталоге).
@@ -775,7 +776,10 @@ private fun UpdateBanner(app: AppState) {
                     .clip(RoundedCornerShape(11.dp))
                     .background(Theme.picked(btn))
                     .border(1.dp, Theme.edge(btn), RoundedCornerShape(11.dp))
-                    .clickable { app.doUpdate() }
+                    // `pressable`, как все прочие кнопки приложения: голый
+                    // `clickable` брал `LocalIndication` — чёрную заливку 30%
+                    // поверх мятной подкраски, и одна эта кнопка мигала не так.
+                    .pressable { app.doUpdate() }
                     .padding(horizontal = 18.dp),
                 contentAlignment = Alignment.Center,
             ) {

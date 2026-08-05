@@ -403,7 +403,9 @@ struct VPNTab: View {
                 Button { showScanner = true } label: {
                     HStack(spacing: 8) {
                         Image(systemName: "qrcode.viewfinder").font(.system(size: 16, weight: .bold)).foregroundColor(Theme.accent)
-                        Text("Сканировать QR").font(.system(size: 15, weight: .bold)).foregroundColor(.white)
+                        // `Theme.fg`, а не чистый белый: значок слева уже из темы,
+                        // и подпись рядом была единственной строкой в #FFFFFF.
+                        Text("Сканировать QR").font(.system(size: 15, weight: .bold)).foregroundColor(Theme.fg)
                     }
                     .frame(maxWidth: .infinity).padding(.vertical, 13)
                     .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Theme.cardHi)
