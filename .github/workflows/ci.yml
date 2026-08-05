@@ -98,3 +98,72 @@ jobs:
       # its tests can live in this job and nowhere else.
       - name: Test wintun fork (Windows)
         run: cargo test --manifest-path vendor/wintun/Cargo.toml
+
+  # ── КАК ВЫГЛЯДИТ ОКНО НА ЧУЖИХ ОС ───────────────────────────────────────────
+  #
+  # Windows и Linux у нас нет, а держать ради одного снимка виртуальную машину —
+  # дорого и разово. Раннеры GitHub — это НАСТОЯЩИЕ Windows и Linux, поэтому
+  # приложение запускается прямо там и присылает снимок экрана артефактом. Не
+  # «когда-нибудь проверим», а на каждый прогон.
+  #
+  # Почему здесь, а не отдельным файлом: это ровно проверка (тот же повод, те же
+  # ветки и PR, тот же кэш Rust). Отдельный workflow означал бы вторую копию
+  # триггеров и второй холодный кэш ради двух задач.
+  #
+  # Обе задачи НЕЗАВИСИМЫ от test/windows-check и ничего у них не меняют. Метки
+  # раннеров те же, что уже работают в release.yml (ubuntu-latest, windows-latest),
+  # мёртвых меток здесь нет.
+  #
+  # Сборка РЕЛИЗНАЯ: снимок должен показывать то, что уезжает людям (под Windows
+  # у релиза нет консольного окна — windows_subsystem). LTO выключен ровно как в
+  # release.yml, иначе Slint съедает память и минуты.
+  gui-screenshot-linux:
+    runs-on: ubuntu-latest
+    env:
+      CARGO_PROFILE_RELEASE_LTO: "false"
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # К списку из job'а test добавлены: xvfb (экрана у раннера нет),
+      # libgl1-mesa-dri (софтверный OpenGL llvmpipe — femtovg рисует через GPU,
+      # которого нет), x11-utils+xdotool (найти окно), imagemagick (снять и
+      # пересчитать цвета).
+      - name: Системные зависимости (Slint + виртуальный экран + снимок)
+        run: sudo apt-get update && sudo apt-get install -y libfontconfig-dev libxkbcommon-dev libxkbcommon-x11-0 libwayland-dev libxcb1-dev libx11-dev libgl1-mesa-dev libegl1-mesa-dev librsvg2-bin xvfb libgl1-mesa-dri x11-utils xdotool imagemagick
+      # Терминальный бинарь нужен не «заодно»: он же поднимает локальный
+      # координатор и двух хостов, иначе каталог в окне пуст.
+      - name: Сборка окна и терминала
+        run: cargo build --release -p bmv-gui -p bmv-cli
+      - name: Снимок окна
+        run: bash tools/ci-shot-linux.sh shot
+      - name: Выложить снимок
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gui-screenshot-linux
+          path: shot/
+
+  gui-screenshot-windows:
+    runs-on: windows-latest
+    env:
+      CARGO_PROFILE_RELEASE_LTO: "false"
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # Имена шагов и весь вывод скрипта — ЛАТИНИЦЕЙ, как и в windows-check:
+      # кириллица в выводе Windows-раннера уже роняла задачу ошибкой кодировки.
+      # Рабочий стол у раннера настоящий, виртуальный экран поднимать не нужно.
+      - name: Build GUI and CLI
+        run: cargo build --release -p bmv-gui -p bmv-cli
+      - name: Screenshot of the app window
+        run: pwsh -File tools/ci-shot-windows.ps1 shot
+      - name: Upload screenshot
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gui-screenshot-windows
+          path: shot/
