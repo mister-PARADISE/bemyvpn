@@ -128,15 +128,17 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       # К списку из job'а test добавлены: xvfb (экрана у раннера нет),
       # libgl1-mesa-dri (софтверный OpenGL llvmpipe — femtovg рисует через GPU,
-      # которого нет), x11-utils+xdotool (найти окно), imagemagick (снять и
-      # пересчитать цвета).
+      # которого нет), x11-utils+xdotool (найти окно и щёлкнуть по вкладке),
+      # imagemagick (снять экран), fluxbox+x11-xserver-utils (заголовок окна,
+      # панель задач и цвет фона — иначе «рабочий стол» это чёрное поле),
+      # python3-pil (проверка снимков, tools/ci-shot-check.py).
       - name: Системные зависимости (Slint + виртуальный экран + снимок)
-        run: sudo apt-get update && sudo apt-get install -y libfontconfig-dev libxkbcommon-dev libxkbcommon-x11-0 libwayland-dev libxcb1-dev libx11-dev libgl1-mesa-dev libegl1-mesa-dev librsvg2-bin xvfb libgl1-mesa-dri x11-utils xdotool imagemagick
+        run: sudo apt-get update && sudo apt-get install -y libfontconfig-dev libxkbcommon-dev libxkbcommon-x11-0 libwayland-dev libxcb1-dev libx11-dev libgl1-mesa-dev libegl1-mesa-dev librsvg2-bin xvfb libgl1-mesa-dri x11-utils xdotool imagemagick fluxbox x11-xserver-utils python3-pil
       # Терминальный бинарь нужен не «заодно»: он же поднимает локальный
       # координатор и двух хостов, иначе каталог в окне пуст.
       - name: Сборка окна и терминала
         run: cargo build --release -p bmv-gui -p bmv-cli
-      - name: Снимок окна
+      - name: Снимки экрана по вкладкам
         run: bash tools/ci-shot-linux.sh shot
       - name: Выложить снимок
         if: always()
@@ -157,9 +159,13 @@ jobs:
       # Имена шагов и весь вывод скрипта — ЛАТИНИЦЕЙ, как и в windows-check:
       # кириллица в выводе Windows-раннера уже роняла задачу ошибкой кодировки.
       # Рабочий стол у раннера настоящий, виртуальный экран поднимать не нужно.
+      # Pillow reads the shots back in tools/ci-shot-check.py. Same checker as
+      # the Linux job, so both runners judge a frame by the same numbers.
+      - name: Install Pillow
+        run: python -m pip install --quiet pillow
       - name: Build GUI and CLI
         run: cargo build --release -p bmv-gui -p bmv-cli
-      - name: Screenshot of the app window
+      - name: Full-screen shots per tab
         run: pwsh -File tools/ci-shot-windows.ps1 shot
       - name: Upload screenshot
         if: always()
