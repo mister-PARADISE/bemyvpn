@@ -50,6 +50,13 @@ display-info = "0.5.9"
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
+# Системное окно с ошибкой, когда окно приложения поднять не вышло: у релиза под
+# Windows нет консоли, и eprintln! уходит в никуда (см. report_startup_failure).
+# Крейт и так уже в дереве сборки (его тянут winit и directories) — новой ценой
+# это не оборачивается.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_UI_WindowsAndMessaging"] }
+
 [build-dependencies]
 slint-build = "1.8"
 # Встраивает Windows-манифест (UAC requireAdministrator + HiDPI) в exe. На не-Windows

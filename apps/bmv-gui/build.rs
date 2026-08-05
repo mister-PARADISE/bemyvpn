@@ -22,6 +22,9 @@ fn main() {
         // бы победить → автозапрос UAC не сработает. Запрещаем линкеру генерировать
         // свой — остаётся ровно один манифест (наш, из bemyvpn.rc).
         println!("cargo:rustc-link-arg=/MANIFEST:NO");
+        // Пересобирать ресурсы и при правке самого значка: `embed-resource` следит
+        // только за .rc, а .ico подключён из него именем.
+        println!("cargo:rerun-if-changed=bemyvpn.ico");
         // Падаем громко: без манифеста не будет автозапроса UAC, и VPN не сможет
         // создать TUN/маршруты — лучше не собрать, чем собрать заведомо нерабочее.
         if let embed_resource::CompilationResult::Failed(e) =

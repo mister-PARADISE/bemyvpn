@@ -1019,6 +1019,7 @@ dependencies = [
  "slint",
  "slint-build",
  "tokio",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

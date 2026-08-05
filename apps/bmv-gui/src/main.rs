@@ -223,6 +223,92 @@ fn fit_height(screen_h: f32) -> f32 {
     (screen_h * SHARE - TITLE_BAR).max(MIN_H).round()
 }
 
+/// Имя запасного рисовальщика для `SLINT_BACKEND` — программный растеризатор.
+///
+/// Он УЖЕ в бинаре: фича `renderer-software` входит в набор Slint по умолчанию,
+/// доставать ничего не нужно.
+const SW_BACKEND: &str = "winit-software";
+
+/// МАШИНА БЕЗ ВИДЕОКАРТЫ: окно не поднялось — перезапустить себя на программном
+/// растеризаторе. Возвращает `true`, если перезапуск отправлен.
+///
+/// Зачем вообще. Slint по умолчанию рисует видеокартой (femtovg/OpenGL). На
+/// свежей Windows БЕЗ ДРАЙВЕРА видеокарты, в виртуальной машине и в части
+/// сеансов удалённого рабочего стола OpenGL нет вовсе — femtovg проверяет наличие
+/// `glCreateShader` и отказывается. Окна человек не видит ВООБЩЕ, а процесс молча
+/// уходит с кодом 1: консоли у релиза нет (`windows_subsystem = "windows"`).
+///
+/// Почему ПЕРЕЗАПУСКОМ, а не переключением на месте. Переключиться в том же
+/// запуске нельзя — три отдельных замка, каждый закрывает дверь сам по себе:
+///   1. Отказ приходит не при выборе рисовальщика, а из УЖЕ КРУТЯЩЕГОСЯ цикла
+///      событий: femtovg трогает OpenGL только в момент создания окна, а до того
+///      и `AppWindow::new()`, и `show()` честно отдают `Ok`.
+///   2. `slint::platform::set_platform` ставится один раз за процесс, второй
+///      вызов — `AlreadySet`, сброса нет.
+///   3. winit не даёт создать второй цикл событий в процессе
+///      (`EventLoopError::RecreationAttempt`).
+///
+/// Оставался второй путь — заранее самому проверить, есть ли OpenGL. Это своя
+/// копия пробы glutin (окно, пиксельный формат, контекст, `wglGetProcAddress`);
+/// ошибись она в другую сторону — и машина С видеокартой поехала бы на CPU, то
+/// есть чинили бы редкий случай ценой основного. Перезапуск ошибиться не может:
+/// он случается только после НАСТОЯЩЕГО отказа.
+///
+/// `SLINT_BACKEND` служит ещё и предохранителем от петли: перезапущенный процесс
+/// видит переменную в своём окружении и второй раз не перезапускается.
+fn restart_on_software_renderer(err: &slint::PlatformError) -> bool {
+    // Отказы femtovg при СОЗДАНИИ окна все до одного называют OpenGL по имени
+    // (i-slint-backend-winit/renderer/femtovg/glcontext.rs: «Error creating
+    // OpenGL display…», «Cannot create OpenGL context…», «Failed to initialize
+    // OpenGL driver: Could not locate glCreateShader symbol»). А поломки уже
+    // ВО ВРЕМЯ рисования подписаны иначе («FemtoVG: Error swapping buffers»), и
+    // на них перезапускаться нельзя: там окно человек уже видел, и приложение
+    // воскресло бы у него после закрытия.
+    //
+    // Сверка по тексту — да, чужому. Сторожит её проверка CI: снимок окна на
+    // Windows-раннере снимается БЕЗ подсказки `SLINT_BACKEND`, то есть ровно
+    // этим путём, и переименование в Slint покраснит задачу в тот же день.
+    if !err.to_string().contains("OpenGL") || std::env::var_os("SLINT_BACKEND").is_some() {
+        return false;
+    }
+    let Ok(exe) = std::env::current_exe() else { return false };
+    std::process::Command::new(exe)
+        .args(std::env::args_os().skip(1))
+        .env("SLINT_BACKEND", SW_BACKEND)
+        .spawn()
+        .is_ok()
+}
+
+/// СКАЗАТЬ ЧЕЛОВЕКУ, что окно не поднялось, — ТОЛЬКО НА WINDOWS.
+///
+/// На Unix ничего делать не нужно: консоль там есть, и `main`, вернувший `Err`,
+/// сам печатает причину — своей печати в клиенте нет и быть не может
+/// (`crates/bmv-common/tests/no_journal_in_the_client.rs`).
+///
+/// А у релиза под Windows консоли нет вовсе (`windows_subsystem = "windows"`):
+/// та же строка уходит в никуда, и остаётся ровно то, на что жалуются, — молчаливый
+/// выход с кодом 1. Системное окно доходит всегда и не требует, чтобы приложение
+/// уже умело рисовать (а оно как раз не умеет — именно об этом сообщение).
+#[cfg(windows)]
+fn report_startup_failure(err: &slint::PlatformError) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
+    let text = format!(
+        "Не удалось открыть окно BeMyVPN.\n\n{err}\n\n\
+         Похоже, на этой машине нет ни видеокарты с OpenGL, ни рабочего запасного \
+         рисовальщика. Обычно помогает установка драйвера видеокарты."
+    );
+    // Обе строки — UTF-16 с завершающим нулём: MessageBoxW читает до него.
+    let wide = |s: &str| s.encode_utf16().chain(std::iter::once(0)).collect::<Vec<u16>>();
+    let (body, title) = (wide(&text), wide("BeMyVPN"));
+    // SAFETY: оба указателя — на живые буферы с нулём на конце, окна-владельца
+    // нет (его-то и не создалось), флаги — константы из windows-sys.
+    unsafe { MessageBoxW(std::ptr::null_mut(), body.as_ptr(), title.as_ptr(), MB_OK | MB_ICONERROR) };
+}
+
+/// На Unix причину печатает сам `main` возвратом `Err` — см. версию для Windows.
+#[cfg(not(windows))]
+fn report_startup_failure(_err: &slint::PlatformError) {}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Режим привилегированного туннель-хелпера (root): поднят самим приложением
     // через системный запрос пароля. Без окна — только качает туннель. Никогда
@@ -508,7 +594,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     wire_host(&ui, engine.clone(), host_task, handle.clone(), host_started, my_ip_for_host);
     wire_coord(&ui, engine, coord_full.clone());
 
-    ui.run()?;
+    // Окно закрыто — или НЕ ОТКРЫЛОСЬ ВОВСЕ (машина без видеокарты). Второй
+    // случай разбирают `restart_on_software_renderer` и `report_startup_failure`:
+    // молча уходить с кодом 1 нельзя, консоли у релиза нет.
+    if let Err(e) = ui.run() {
+        if !restart_on_software_renderer(&e) {
+            report_startup_failure(&e);
+            return Err(e.into());
+        }
+        return Ok(());
+    }
     // Маркер и его каталог уберёт `Drop` у `up_dir` — в том числе если `ui.run()`
     // вернул ошибку и мы ушли отсюда через `?` (см. `helper::PrivateDir`).
 

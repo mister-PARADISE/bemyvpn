@@ -1,219 +1,189 @@
-// Векторные иконки (аналоги SF Symbols с iOS) — Path-команды в viewbox 24×24.
+// Значки (аналоги SF Symbols с iOS) — SVG в квадрате 24×24, файлы в icons/.
+//
+// ПОЧЕМУ SVG, А НЕ ЭЛЕМЕНТ `Path`. Значки были нарисованы командами `Path`
+// прямо здесь, и на машине С видеокартой это работало. А на машине БЕЗ неё
+// приложение уходит на программный растеризатор (см. `restart_on_software_renderer`
+// в main.rs), и у него `draw_path` — пустая заглушка `// TODO`
+// (i-slint-core/software_renderer.rs): значок занимает своё место в раскладке и
+// не выдаёт ни одного пикселя. Свежая Windows без драйвера видела экран, где щит,
+// стрелки, шевроны и содержимое кнопок «вставить» и «QR» просто отсутствуют —
+// кнопки выглядели пустыми квадратами. Картинку тот же растеризатор рисует, и SVG
+// в нём растеризуется через resvg, поэтому один и тот же файл годится ОБОИМ путям.
+//
+// `colorize` красит непрозрачные точки картинки в нужный цвет, поэтому в файлах
+// белое, а цвет приходит из разметки — ровно как раньше через `fill`/`stroke`.
+// Растр кешируется по (файл, размер, масштаб экрана), на Retina растеризуется в
+// физическом размере (femtovg itemrenderer: `target_size * scale_factor`), то есть
+// чёткость не теряется. Менять размер значка АНИМАЦИЕЙ теперь нельзя: каждый
+// кадр — новый размер, то есть заново resvg и заново текстура. Ни один значок
+// размер не анимирует, и заводить такую анимацию не нужно.
+//
+// РАЗНИЦА, КОТОРУЮ СТОИТ ЗНАТЬ: у `Path` толщина обводки задавалась в точках
+// ЭКРАНА и не зависела от размера значка (2px и в 12, и в 32 точках). У SVG
+// обводка живёт в координатах картинки и масштабируется вместе с ней — как у
+// любого значкового набора. Мелкие значки стали тоньше, крупные толще; числа
+// толщины в файлах те же, что стояли в `stroke-width`.
 //
 // `hole` — прорезь В ЦВЕТ ТОЙ ПОВЕРХНОСТИ, НА КОТОРОЙ ЗНАЧОК ЛЕЖИТ. Значения по
 // умолчанию берутся из темы, а не вписаны числом: вписанные отстали от палитры
 // на две правки подряд и рисовали поперёк значка щель чужого оттенка.
-// femtovg не рисует эмодзи, поэтому ВСЕ значки — вектор. Стиль единый:
-// заливка для «телесных» форм, обводка 2px для линейных.
 
 import { Theme } from "theme.slint";
 
-// Базовый заливной значок.
-component FillIcon inherits Path {
+// Базовый значок: картинка, перекрашенная в цвет значка.
+//
+// `image-fit: contain` — форма квадратная, как и все места, куда значок ставят;
+// с ним значок не растянется, даже если однажды попадёт в неквадратную ячейку.
+component Glyph inherits Image {
     in property <color> tint: white;
-    fill: root.tint;
-    viewbox-width: 24;
-    viewbox-height: 24;
-}
-
-// Базовый линейный значок.
-component StrokeIcon inherits Path {
-    in property <color> tint: white;
-    stroke: root.tint;
-    stroke-width: 2px;
-    fill: transparent;
-    viewbox-width: 24;
-    viewbox-height: 24;
+    colorize: root.tint;
+    image-fit: contain;
 }
 
 // ── Щиты (протоколы/статусы VPN) ─────────────────────────────────────────────
 
 // Щит целиком (shield.fill).
-export component IconShield inherits FillIcon {
-    commands: "M12 2 L20 5 L20 11 C20 16.5 16.6 20.4 12 22 C7.4 20.4 4 16.5 4 11 L4 5 Z";
+export component IconShield inherits Glyph {
+    source: @image-url("icons/shield.svg");
 }
 
 // Щит с галочкой (checkmark.shield.fill) — «подключено».
 export component IconShieldCheck inherits Rectangle {
     in property <color> tint: white;
     in property <color> hole: Theme.card;
-    FillIcon { width: 100%; height: 100%; tint: root.tint; commands: "M12 2 L20 5 L20 11 C20 16.5 16.6 20.4 12 22 C7.4 20.4 4 16.5 4 11 L4 5 Z"; }
-    Path {
-        width: 100%; height: 100%;
-        viewbox-width: 24; viewbox-height: 24;
-        stroke: root.hole; stroke-width: 2.4px; fill: transparent;
-        commands: "M8.4 11.8 L11 14.4 L15.8 9.2";
-    }
+    Glyph { width: 100%; height: 100%; tint: root.tint; source: @image-url("icons/shield.svg"); }
+    Glyph { width: 100%; height: 100%; tint: root.hole; source: @image-url("icons/shield-check.svg"); }
 }
 
 // Щит перечёркнут (shield.slash.fill) — «VPN выключен» / «без шифра».
 export component IconShieldSlash inherits Rectangle {
     in property <color> tint: white;
     in property <color> hole: Theme.card;
-    FillIcon { width: 100%; height: 100%; tint: root.tint; commands: "M12 2 L20 5 L20 11 C20 16.5 16.6 20.4 12 22 C7.4 20.4 4 16.5 4 11 L4 5 Z"; }
-    Path {
-        width: 100%; height: 100%;
-        viewbox-width: 24; viewbox-height: 24;
-        stroke: root.hole; stroke-width: 2.6px; fill: transparent;
-        commands: "M4.5 3.5 L19.5 20.5";
-    }
+    Glyph { width: 100%; height: 100%; tint: root.tint; source: @image-url("icons/shield.svg"); }
+    Glyph { width: 100%; height: 100%; tint: root.hole; source: @image-url("icons/shield-slash.svg"); }
 }
 
 // Щит с замочной скважиной (lock.shield.fill) — «Обычный» протокол.
 export component IconShieldLock inherits Rectangle {
     in property <color> tint: white;
     in property <color> hole: Theme.card;
-    FillIcon { width: 100%; height: 100%; tint: root.tint; commands: "M12 2 L20 5 L20 11 C20 16.5 16.6 20.4 12 22 C7.4 20.4 4 16.5 4 11 L4 5 Z"; }
-    FillIcon {
-        width: 100%; height: 100%;
-        tint: root.hole;
-        commands: "M12 8 A 2.4 2.4 0 0 1 14.4 10.4 C 14.4 11.3 13.9 12.1 13.1 12.5 L 14 16 L 10 16 L 10.9 12.5 C 10.1 12.1 9.6 11.3 9.6 10.4 A 2.4 2.4 0 0 1 12 8 Z";
-    }
+    Glyph { width: 100%; height: 100%; tint: root.tint; source: @image-url("icons/shield.svg"); }
+    Glyph { width: 100%; height: 100%; tint: root.hole; source: @image-url("icons/shield-keyhole.svg"); }
 }
 
 // «Маскировка» протокол — маскарадная маска с прорезями-глазами (evenodd). Как iOS
 // theatermasks.fill; чистая на любом размере.
-export component IconMask inherits FillIcon {
-    fill-rule: evenodd;
-    commands: "M3 8 C6 6.4 9 6.4 12 8 C15 6.4 18 6.4 21 8 C21.6 11.2 20 14.6 16.2 14.6 C14.1 14.6 12.9 13.1 12 11.7 C11.1 13.1 9.9 14.6 7.8 14.6 C4 14.6 2.4 11.2 3 8 Z M6.2 9.9 a1.5 1.5 0 1 0 3 0 a1.5 1.5 0 1 0 -3 0 Z M14.8 9.9 a1.5 1.5 0 1 0 3 0 a1.5 1.5 0 1 0 -3 0 Z";
+export component IconMask inherits Glyph {
+    source: @image-url("icons/mask.svg");
 }
 
 // ── Нав-бар и действия ───────────────────────────────────────────────────────
 
-export component IconBolt inherits FillIcon {
-    commands: "M13 2 L4.5 13.5 L10.5 13.5 L9 22 L19 9.5 L12.5 9.5 Z";
+export component IconBolt inherits Glyph {
+    source: @image-url("icons/bolt.svg");
 }
 
-export component IconX inherits StrokeIcon {
-    stroke-width: 2.6px;
-    commands: "M6 6 L18 18 M18 6 L6 18";
+export component IconX inherits Glyph {
+    source: @image-url("icons/x.svg");
 }
 
 // Сервер (server.rack): две полки с индикаторами.
-export component IconServer inherits Rectangle {
-    in property <color> tint: white;
-    StrokeIcon { width: 100%; height: 100%; tint: root.tint; commands: "M4 5 L20 5 L20 10 L4 10 Z M4 14 L20 14 L20 19 L4 19 Z"; }
-    FillIcon { width: 100%; height: 100%; tint: root.tint; commands: "M6.4 6.6 L9.4 6.6 L9.4 8.4 L6.4 8.4 Z M6.4 15.6 L9.4 15.6 L9.4 17.4 L6.4 17.4 Z"; }
+export component IconServer inherits Glyph {
+    source: @image-url("icons/server.svg");
 }
 
 // Роутер (wifi.router.fill): корпус + антенны.
-export component IconRouter inherits Rectangle {
-    in property <color> tint: white;
-    FillIcon { width: 100%; height: 100%; tint: root.tint; commands: "M3 13 L21 13 L21 19 L3 19 Z"; }
-    StrokeIcon { width: 100%; height: 100%; tint: root.tint; commands: "M7 13 L7 6 M17 13 L17 8.5"; }
-    FillIcon { width: 100%; height: 100%; tint: root.tint; commands: "M15.6 15 L18.4 15 L18.4 17.2 L15.6 17.2 Z"; }
+export component IconRouter inherits Glyph {
+    source: @image-url("icons/router.svg");
 }
 
 // ── Мелкие статусные ─────────────────────────────────────────────────────────
 
-export component IconLock inherits Rectangle {
-    in property <color> tint: white;
-    FillIcon { width: 100%; height: 100%; tint: root.tint; commands: "M5.5 10.5 L18.5 10.5 L18.5 21 L5.5 21 Z"; }
-    StrokeIcon { width: 100%; height: 100%; tint: root.tint; commands: "M8 10.5 L8 7.5 A 4 4 0 0 1 16 7.5 L16 10.5"; }
+export component IconLock inherits Glyph {
+    source: @image-url("icons/lock.svg");
 }
 
-export component IconLockOpen inherits Rectangle {
-    in property <color> tint: white;
-    FillIcon { width: 100%; height: 100%; tint: root.tint; commands: "M5.5 10.5 L18.5 10.5 L18.5 21 L5.5 21 Z"; }
-    StrokeIcon { width: 100%; height: 100%; tint: root.tint; commands: "M8 10.5 L8 7 A 4 4 0 0 1 15.6 5.4"; }
+export component IconLockOpen inherits Glyph {
+    source: @image-url("icons/lock-open.svg");
 }
 
 // Копировать (doc.on.doc): два листа.
-export component IconCopy inherits Rectangle {
-    in property <color> tint: white;
-    StrokeIcon { width: 100%; height: 100%; tint: root.tint; commands: "M9 4 L19 4 L19 16 M5 8 L15 8 L15 20 L5 20 Z"; }
+export component IconCopy inherits Glyph {
+    source: @image-url("icons/copy.svg");
 }
 
-// Крестик «закрыть». Рисуем линиями, а не символом «✕»: его нет в системном
-export component IconCheck inherits StrokeIcon {
-    stroke-width: 2.6px;
-    commands: "M4.5 12.5 L9.8 17.8 L19.5 7";
+// Галочка «готово» — линиями, а не символом «✓»: его нет в системном шрифте.
+export component IconCheck inherits Glyph {
+    source: @image-url("icons/check.svg");
 }
 
 // QR-код: три угловых квадрата + точки.
-export component IconQr inherits Rectangle {
-    in property <color> tint: white;
-    StrokeIcon { width: 100%; height: 100%; tint: root.tint; commands: "M4 4 L10 4 L10 10 L4 10 Z M14 4 L20 4 L20 10 L14 10 Z M4 14 L10 14 L10 20 L4 20 Z"; }
-    FillIcon { width: 100%; height: 100%; tint: root.tint; commands: "M13.6 13.6 L16 13.6 L16 16 L13.6 16 Z M17.6 13.6 L20 13.6 L20 16 L17.6 16 Z M13.6 17.6 L16 17.6 L16 20 L13.6 20 Z M17.6 17.6 L20 17.6 L20 20 L17.6 20 Z"; }
+export component IconQr inherits Glyph {
+    source: @image-url("icons/qr.svg");
 }
 
-export component IconArrowRight inherits StrokeIcon {
-    stroke-width: 2.4px;
-    commands: "M4.5 12 L19 12 M13.5 5.5 L20 12 L13.5 18.5";
+export component IconArrowRight inherits Glyph {
+    source: @image-url("icons/arrow-right.svg");
 }
 
 // Вставить (doc.on.clipboard): планшет + прищепка.
-export component IconPaste inherits Rectangle {
-    in property <color> tint: white;
-    StrokeIcon { width: 100%; height: 100%; tint: root.tint; commands: "M6 5.5 L5 5.5 L5 21 L19 21 L19 5.5 L18 5.5"; }
-    FillIcon { width: 100%; height: 100%; tint: root.tint; commands: "M8.5 3 L15.5 3 L15.5 7 L8.5 7 Z"; }
+export component IconPaste inherits Glyph {
+    source: @image-url("icons/paste.svg");
 }
 
 // Новый код (arrow.triangle.2.circlepath): две дуги со стрелками.
-export component IconRenew inherits Rectangle {
-    in property <color> tint: white;
-    StrokeIcon { width: 100%; height: 100%; tint: root.tint; commands: "M5 9 A 8 8 0 0 1 19 9 M19 15 A 8 8 0 0 1 5 15"; }
-    FillIcon { width: 100%; height: 100%; tint: root.tint; commands: "M19 4.5 L19.6 10.4 L14.4 8 Z M5 19.5 L4.4 13.6 L9.6 16 Z"; }
+export component IconRenew inherits Glyph {
+    source: @image-url("icons/renew.svg");
 }
 
 // Антенна (antenna.radiowaves.left.and.right).
-export component IconAntenna inherits Rectangle {
-    in property <color> tint: white;
-    StrokeIcon { width: 100%; height: 100%; tint: root.tint; commands: "M6.4 8 A 7.5 7.5 0 0 0 6.4 16 M17.6 8 A 7.5 7.5 0 0 1 17.6 16 M9 9.8 A 4.2 4.2 0 0 0 9 14.2 M15 9.8 A 4.2 4.2 0 0 1 15 14.2"; }
-    FillIcon { width: 100%; height: 100%; tint: root.tint; commands: "M12 10.4 A 1.6 1.6 0 0 1 12 13.6 A 1.6 1.6 0 0 1 12 10.4 Z M11.2 14.5 L12.8 14.5 L14 21 L10 21 Z"; }
+export component IconAntenna inherits Glyph {
+    source: @image-url("icons/antenna.svg");
 }
 
-// Антенна перечёркнута — «нет связи».
+// Антенна перечёркнута — «нет связи». Прорезь шире самой черты: она отделяет
+// черту от антенны цветом поверхности, на которой значок лежит.
 export component IconAntennaOff inherits Rectangle {
     in property <color> tint: white;
     in property <color> hole: Theme.tile;
     IconAntenna { width: 100%; height: 100%; tint: root.tint; }
-    Path { width: 100%; height: 100%; viewbox-width: 24; viewbox-height: 24; stroke: root.hole; stroke-width: 3.6px; fill: transparent; commands: "M4 3 L21 20"; }
-    Path { width: 100%; height: 100%; viewbox-width: 24; viewbox-height: 24; stroke: root.tint; stroke-width: 2px; fill: transparent; commands: "M5 4 L20 19"; }
+    Glyph { width: 100%; height: 100%; tint: root.hole; source: @image-url("icons/antenna-cut.svg"); }
+    Glyph { width: 100%; height: 100%; tint: root.tint; source: @image-url("icons/antenna-slash.svg"); }
 }
 
-export component IconChevronRight inherits StrokeIcon {
-    commands: "M9 5.5 L15.5 12 L9 18.5";
+export component IconChevronRight inherits Glyph {
+    source: @image-url("icons/chevron-right.svg");
 }
 
-export component IconChevronUp inherits StrokeIcon {
-    commands: "M5.5 15 L12 8.5 L18.5 15";
+export component IconChevronUp inherits Glyph {
+    source: @image-url("icons/chevron-up.svg");
 }
 
 // Гости (person.2.fill): две фигурки.
-export component IconPeople inherits FillIcon {
-    commands: "M9 6.6 A 2.8 2.8 0 0 1 9 12.2 A 2.8 2.8 0 0 1 9 6.6 Z M3.4 18.6 C3.8 15.4 6.1 13.6 9 13.6 C11.9 13.6 14.2 15.4 14.6 18.6 Z M16.2 7.6 A 2.4 2.4 0 0 1 16.2 12.4 A 2.4 2.4 0 0 1 16.2 7.6 Z M15.8 13.9 C18.3 14.1 20.2 15.7 20.6 18.6 L15.9 18.6 C15.8 16.7 15.1 15.1 13.9 13.9 C14.5 14 15.1 13.9 15.8 13.9 Z";
+export component IconPeople inherits Glyph {
+    source: @image-url("icons/people.svg");
 }
 
 // Глобус (публичный хост).
-export component IconGlobe inherits Rectangle {
-    in property <color> tint: white;
-    StrokeIcon { width: 100%; height: 100%; tint: root.tint; commands: "M12 3 A 9 9 0 0 1 12 21 A 9 9 0 0 1 12 3 Z M3 12 L21 12 M12 3 A 13 13 0 0 0 12 21 M12 3 A 13 13 0 0 1 12 21"; }
+export component IconGlobe inherits Glyph {
+    source: @image-url("icons/globe.svg");
 }
 
 // Глаз перечёркнут (скрытый хост).
-export component IconEyeOff inherits Rectangle {
-    in property <color> tint: white;
-    StrokeIcon { width: 100%; height: 100%; tint: root.tint; commands: "M3 12 C5.4 8 8.4 6 12 6 C15.6 6 18.6 8 21 12 C18.6 16 15.6 18 12 18 C8.4 18 5.4 16 3 12 Z"; }
-    FillIcon { width: 100%; height: 100%; tint: root.tint; commands: "M12 9.4 A 2.6 2.6 0 0 1 12 14.6 A 2.6 2.6 0 0 1 12 9.4 Z"; }
-    Path { width: 100%; height: 100%; viewbox-width: 24; viewbox-height: 24; stroke: root.tint; stroke-width: 2px; fill: transparent; commands: "M5 4.5 L19 19.5"; }
+export component IconEyeOff inherits Glyph {
+    source: @image-url("icons/eye-off.svg");
 }
 
 // Предупреждение (exclamationmark.triangle.fill).
 export component IconWarning inherits Rectangle {
     in property <color> tint: white;
     in property <color> hole: Theme.bg;
-    FillIcon { width: 100%; height: 100%; tint: root.tint; commands: "M12 3 L22 20 L2 20 Z"; }
-    FillIcon { width: 100%; height: 100%; tint: root.hole; commands: "M11.1 9 L12.9 9 L12.6 14.6 L11.4 14.6 Z M11.1 16.2 L12.9 16.2 L12.9 18 L11.1 18 Z"; }
+    Glyph { width: 100%; height: 100%; tint: root.tint; source: @image-url("icons/warning.svg"); }
+    Glyph { width: 100%; height: 100%; tint: root.hole; source: @image-url("icons/warning-bang.svg"); }
 }
 
-// Питание (power) — включатель раздачи в нав-баре.
-export component IconPower inherits Rectangle {
-    in property <color> tint: white;
-    StrokeIcon {
-        width: 100%; height: 100%; tint: root.tint;
-        // Дуга разомкнута сверху, вертикальная черта в разрыве — канонический
-        // знак питания.
-        commands: "M7.6 6.6 A 7.5 7.5 0 1 0 16.4 6.6 M12 3 L12 11.5";
-    }
+// Питание (power) — включатель раздачи в нав-баре. Дуга разомкнута сверху,
+// вертикальная черта в разрыве — канонический знак питания.
+export component IconPower inherits Glyph {
+    source: @image-url("icons/power.svg");
 }

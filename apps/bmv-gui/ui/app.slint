@@ -91,6 +91,13 @@ export { HostRow }
 
 export component AppWindow inherits Window {
     title: "BeMyVPN";
+    // Значок в заголовке окна и в панели задач. Значка в exe тут НЕ ХВАТАЕТ:
+    // winit регистрирует класс окна с hIcon = 0 и шлёт WM_SETICON с нулём, то
+    // есть ресурс из bemyvpn.rc до заголовка не доходит и Windows рисует
+    // стандартную заглушку. Slint растеризует это в 64×64 (умноженные на масштаб
+    // экрана) и ставит окну и таскбару. На macOS winit значок окна игнорирует —
+    // там его берут из .app-бандла; на Linux ставится в оболочку рабочего стола.
+    icon: @image-url("../../../brand/icon-512.png");
     default-font-size: 14px;
     background: Theme.bg;
     // СТАРТОВЫЙ РАЗМЕР ЗАДАЁТ RUST (см. window_size): ширина всегда проектная,

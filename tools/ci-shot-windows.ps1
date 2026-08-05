@@ -81,25 +81,29 @@ try {
 
     # 3. Window.
     #
-    # SOFTWARE RENDERER, ON PURPOSE. The runner has no GPU and no OpenGL at all:
-    # the default femtovg renderer dies at startup with "Failed to initialize
-    # OpenGL driver: Could not locate glCreateShader symbol" and the process
-    # exits with code 1. Slint ships a software rasterizer in its default
-    # features, so winit-software needs no change to Cargo.toml.
+    # NO SLINT_BACKEND HINT HERE, ON PURPOSE. This runner has no GPU and no
+    # OpenGL at all - exactly the machine a user with a fresh Windows and no
+    # display driver has. The app must cope on its own, and it does: the GPU
+    # path fails at window creation, and the app restarts ITSELF with the
+    # software rasteriser (restart_on_software_renderer in main.rs). Setting
+    # SLINT_BACKEND here would test our hint instead of that mechanism - and
+    # would also disarm it, since the variable is its loop guard.
     #
-    # Price of this, stated plainly: the frame below is drawn by Slint's own
-    # rasteriser, not by the GPU path a real user gets. Layout, text, fonts,
-    # flags and colours are the real thing; antialiasing and gradients may
-    # differ by a hair from a machine with a video card. The Linux job keeps
-    # femtovg (llvmpipe), so the GPU path is still covered there.
-    $env:SLINT_BACKEND = 'winit-software'
+    # Consequence for the code below: the window belongs to a DIFFERENT process
+    # than the one we started. The first process exits with code 0 as soon as it
+    # has spawned the second, so we look up the window by executable name.
     $env:BEMYVPN_CONFIG = "$tmp\gui.toml"
-    $app = Start-Bg $gui @() 'gui' $false
+    Start-Bg $gui @() 'gui' $false | Out-Null
     $h = [IntPtr]::Zero
     for ($i = 0; $i -lt 60; $i++) {
-        if ($app.HasExited) { throw "GUI exited early, code $($app.ExitCode)" }
-        $app.Refresh()
-        if ($app.MainWindowHandle -ne [IntPtr]::Zero) { $h = $app.MainWindowHandle; break }
+        $live = @(Get-Process -Name 'bemyvpn-gui' -ErrorAction SilentlyContinue)
+        foreach ($p in $live) {
+            $p.Refresh()
+            if ($p.MainWindowHandle -ne [IntPtr]::Zero) { $h = $p.MainWindowHandle; break }
+        }
+        if ($h -ne [IntPtr]::Zero) { break }
+        # No process left and no window: nobody is going to draw anything.
+        if ($live.Count -eq 0) { throw 'GUI exited and never opened a window' }
         Start-Sleep -Seconds 1
     }
     if ($h -eq [IntPtr]::Zero) { throw 'no window appeared within 60 s' }
@@ -164,6 +168,9 @@ public class Win32 {
 }
 finally {
     foreach ($p in $procs) { if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue } }
+    # By name as well: the window belongs to the process the app restarted itself
+    # as, and that one was never in $procs.
+    Stop-Process -Name 'bemyvpn-gui' -Force -ErrorAction SilentlyContinue
     # Logs travel with the artifact: a red run is unreadable without them.
     Get-ChildItem -Path $tmp -Filter '*.out' -ErrorAction SilentlyContinue | Copy-Item -Destination $out
     Get-ChildItem -Path $tmp -Filter '*.err' -ErrorAction SilentlyContinue | Copy-Item -Destination $out
