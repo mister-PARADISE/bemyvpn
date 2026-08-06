@@ -236,7 +236,11 @@ fun rememberSecondTick(): Long {
  */
 fun Modifier.tileBackground(accent: Color? = null, fill: Color = Theme.tile): Modifier = this
     .background(fill, RoundedCornerShape(12.dp))
-    .border(1.dp, accent ?: Theme.hairline, RoundedCornerShape(12.dp))
+    // Кромка БЕЛАЯ (`hairlineInner`), а не синяя: плитка лежит ВНУТРИ блока — на
+    // парящей панели или в раскрытой карточке, — и от подложки её уже отделяет
+    // перепад заливки в 8.21 по L*. Синяя читалась бы там как подсветка, то есть
+    // как «выделено», чего у плитки нет. См. «не везде» в Theme.kt.
+    .border(1.dp, accent ?: Theme.hairlineInner, RoundedCornerShape(12.dp))
 
 /** Общая «шапка» плитки — подпись мелко сверху, значение снизу. */
 @Composable
@@ -769,6 +773,13 @@ private fun Modifier.fadeBottom(): Modifier = this
  * быть. Пробовали: панель на время переезда оставалась пустой, и мигание блока
  * во весь верх экрана заметнее того рывка, ради которого всё затевалось. Едет
  * ТОЛЬКО высота, а лишнее у нижней кромки снимает маска (`fadeBottom`).
+ *
+ * `tint` ОСТАЛСЯ БЕЗ ЧИТАТЕЛЯ и подлежит удалению. Он держал цвет кромки, а
+ * кромка панели теперь общая с нав-баром (`hairlineFloat`). В окне ручку уже
+ * убрали вместе с тремя её вызовами; здесь она ждёт правки в `VpnTab.kt:350` —
+ * файл в текущей работе чужой. Убирать так: этот параметр плюс `PinnedPanel(tint)`
+ * в `VpnTab.kt:350`, `HostTab.kt:78`, `ServerTab.kt:131`. На iOS ручка остаётся
+ * живой: там `tint` — ключ анимации панели, а не цвет кромки.
  */
 @Composable
 fun PinnedPanel(tint: Color, content: @Composable ColumnScope.() -> Unit) {
@@ -785,13 +796,16 @@ fun PinnedPanel(tint: Color, content: @Composable ColumnScope.() -> Unit) {
                 .fillMaxWidth()
                 // Ореол — РАНЬШЕ отделки: рисуется под карточкой, а не поверх.
                 .floatHalo(floatRadius)
-                // Рамка берёт цвет состояния: на «нет связи» контур красный.
-                // 0.30, КАК В ОКНЕ И НА iOS. Здесь стояло 0.45 — расхождение
-                // держалось незаметным, пока состояние красилось тёмным синим;
-                // на светлом dim «выключено» тот же 0.45 дал ободок #5D636C,
-                // вдвое ярче собственной заливки панели, и кольцо стало самым
-                // светлым пятном экрана.
-                .floatSurface(floatRadius, tint.copy(alpha = 0.30f))
+                // КРОМКА БОЛЬШЕ НЕ КРАСИТСЯ СОСТОЯНИЕМ, И ЭТО ПОЧИНКА, А НЕ
+                // ПОТЕРЯ. Здесь стояло `tint.copy(alpha = 0.30f)`: контур панели
+                // выходил яркостью 70 (мята) и 72 (dim «выключено») при 40 у
+                // волосяной линии нав-бара — втрое заметнее соседа по ОДНОМУ И
+                // ТОМУ ЖЕ слою. Теперь оба берут `hairlineFloat`: #252F40,
+                // яркость 46, разницы нет по построению. Состояние с панели не
+                // пропало — его несёт диск (`StateDisc`), которому оно и
+                // полагается; кромка про состояние ничего не знала, она просто
+                // была самым светлым пятном экрана.
+                .floatSurface(floatRadius, Theme.hairlineFloat)
                 // Глушит тапы по пустым местам карточки: без этого палец
                 // проваливался бы на карточку хоста, лежащую ПОД панелью.
                 // Прокрутке не мешает — при протяжке жест выигрывает скролл, а
@@ -894,7 +908,8 @@ fun QuietButton(icon: ImageVector, title: String, tap: () -> Unit) {
         Modifier
             .fillMaxWidth()
             .height(34.dp)
-            .border(1.dp, if (did) Theme.edgeDone() else Theme.hairline, RoundedCornerShape(10.dp))
+            // Кромка БЕЛАЯ: кнопка живёт только внутри парящей панели.
+            .border(1.dp, if (did) Theme.edgeDone() else Theme.hairlineInner, RoundedCornerShape(10.dp))
             .pressable(onTap = { tap(); did = true }),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally),

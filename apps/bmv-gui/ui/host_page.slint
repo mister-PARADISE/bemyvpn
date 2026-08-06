@@ -171,8 +171,6 @@ export component HostPage inherits Rectangle {
     // Объявлена ПОСЛЕ прокрутки намеренно: `z` в Slint нет, поверх рисуется
     // тот, кто объявлен последним.
     panel := FloatPanel {
-        tint: root.tint;
-
         // ── раздача идёт: значок компактный, место отдано пользе ──
         if root.host-state == 2: StatusLine {
             name: "Раздаю";

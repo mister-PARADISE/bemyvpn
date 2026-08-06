@@ -281,6 +281,133 @@ fn markup_does_not_bring_color_from_outside() {
     );
 }
 
+/// Беда №4: СИНЯЯ КРОМКА ПРОЛЕЗЛА ВНУТРЬ БЛОКА.
+///
+/// Кромка в приложении синяя (`outline` — второе кольцо иконки), но НЕ ВЕЗДЕ:
+/// синий она только там, где элемент лежит ПРЯМО НА СТРАНИЦЕ и кромка держит
+/// границу. Внутри блока — на плитке парящей панели, на плашке флага в карточке,
+/// на негромкой кнопке — кромка остаётся БЕЛОЙ (`hairline-inner`): там перепад
+/// заливки и так 8.21 по L*, кромке нечего держать, и синий читался бы как
+/// подсветка, то есть как «это выделено», чего у плитки нет.
+///
+/// ПРАВИЛО, КОТОРОЕ ДЕРЖИТСЯ ПАМЯТЬЮ, НЕ ДЕРЖИТСЯ. Первые три часовых сверяют
+/// ЧИСЛА в темах — а эта беда числа не трогает: и синий, и белый в теме на
+/// месте, просто в разметке взяли не тот. Отличить их можно ровно одним
+/// способом — знать, где белому место, и не пускать его больше никуда.
+///
+/// СПИСОК ИСЧЕРПЫВАЮЩИЙ И СВЕРЯЕТСЯ В ОБЕ СТОРОНЫ: пропала строка — кто-то
+/// покрасил внутренность синим; появилась лишняя — кто-то увёл страницу в белый.
+/// Оттого он и не рассыпается со временем: список, который врёт, краснеет сам.
+///
+/// ЧЕГО ЭТОТ ЧАСОВОЙ НЕ ЛОВИТ: плитку, собранную В ОБХОД общей заготовки
+/// (`TileFrame` в окне, `tileBackground` на телефонах). Такую он увидит только
+/// как лишнее место в списке, если её сделают белой, — а синюю не увидит вовсе.
+/// Это осознанный потолок: чтобы поймать её, надо разбирать вложенность разметки
+/// на трёх языках, а плитки мимо заготовки в приложении нет ни одной.
+#[test]
+fn the_blue_edge_does_not_creep_inside_blocks() {
+    // Где кромке положено быть БЕЛОЙ, и почему это «внутри блока».
+    const INNER: &[(&str, &str)] = &[
+        // ── окно ────────────────────────────────────────────────────────────
+        // Заготовка всех плиток: и на панели состояния, и в раскрытой карточке.
+        ("apps/bmv-gui/ui/components.slint", "in property <color> stroke: Theme.hairline-inner;"),
+        // Плитка, которая копируется тапом (код, IP) — та же заготовка.
+        ("apps/bmv-gui/ui/components.slint", "copied ? Theme.edge-done(Theme.accent) : Theme.hairline-inner;"),
+        // «Новый код» — негромкая кнопка ВНУТРИ парящей панели.
+        ("apps/bmv-gui/ui/components.slint", "root.did ? Theme.edge-done(Theme.accent) : Theme.hairline-inner;"),
+        // Плашка флага 56×56 — внутри карточки хоста, а не на странице.
+        ("apps/bmv-gui/ui/vpn_page.slint", "border-color: Theme.hairline-inner;"),
+        // ── iPhone ──────────────────────────────────────────────────────────
+        ("apps/ios/BeMyVPN/Kit.swift", "accent ?? Theme.hairlineInner"), // заготовка плиток
+        ("apps/ios/BeMyVPN/Kit.swift", "Theme.edgeDone() : Theme.hairlineInner"), // «Новый код»
+        // ── Android ─────────────────────────────────────────────────────────
+        ("apps/android/app/src/main/java/org/bemyvpn/ui/Common.kt", "accent ?: Theme.hairlineInner"),
+        ("apps/android/app/src/main/java/org/bemyvpn/ui/Common.kt", "Theme.edgeDone() else Theme.hairlineInner"),
+    ];
+    // Плашка флага на телефонах в списке ПОКА НЕТ, и это не забывчивость: она
+    // живёт в `ContentView.swift` и `VpnTab.kt`, а те в этой работе были чужим
+    // участком (там параллельно переносили кнопку QR). Сейчас она там синяя,
+    // как всё, что берёт `Theme.hairline`. Правка — по строке на оболочку,
+    // `Theme.hairline` → `Theme.hairlineInner` у плашки 56×56; вместе с ней сюда
+    // добавляются две строки, и тогда три оболочки снова сойдутся.
+
+    let root = repo_root();
+    // Как белая кромка зовётся в каждой оболочке. Терминал не спрашиваем: рамок
+    // он не рисует вовсе — см. `[colors] outline` в источнике.
+    let tokens = ["Theme.hairline-inner", "Theme.hairlineInner"];
+
+    let mut missing = Vec::new();
+    for (rel, needle) in INNER {
+        let src = std::fs::read_to_string(root.join(rel)).unwrap_or_else(|e| panic!("{rel}: {e}"));
+        if !src.contains(needle) {
+            missing.push(format!(
+                "{rel}: пропало «{needle}» — здесь кромка обязана быть БЕЛОЙ. \
+                 Внутри блока синяя читается как подсветка, а не как граница"
+            ));
+        }
+    }
+
+    // Обратная сторона: белая кромка не должна появиться НИГДЕ, кроме списка.
+    // Считаем по всем оболочкам сразу — тогда новое место видно, в какой бы из
+    // них его ни завели.
+    let mut seen = Vec::new();
+    for rel in shell_markup(&root) {
+        let src = std::fs::read_to_string(root.join(&rel)).unwrap_or_else(|e| panic!("{rel}: {e}"));
+        for line in src.lines() {
+            // Комментарии — не разметка: в них кромку НАЗЫВАЮТ, а не рисуют.
+            let code = line.split("//").next().unwrap_or("");
+            for t in tokens {
+                if code.contains(t) {
+                    seen.push(format!("{rel}: {}", line.trim()));
+                }
+            }
+        }
+    }
+    if seen.len() != INNER.len() {
+        missing.push(format!(
+            "белая кромка стоит в {} местах, а в списке их {}. \
+             Каждое место белой кромки обязано быть в INNER — иначе список врёт:\n    {}",
+            seen.len(),
+            INNER.len(),
+            seen.join("\n    ")
+        ));
+    }
+
+    assert!(
+        missing.is_empty(),
+        "правило «кромка синяя, но НЕ ВЕЗДЕ» сломалось:\n  {}\n\
+         Синяя (`hairline`, `hairline-float`) — то, что лежит на СТРАНИЦЕ и сам парящий слой.\n\
+         Белая (`hairline-inner`) — то, что лежит ВНУТРИ блока. Разбор — в theme.slint.",
+        missing.join("\n  ")
+    );
+}
+
+/// Разметка всех графических оболочек — там, где кромку РИСУЮТ. Темы сюда не
+/// входят: в них кромку объявляют, и белый токен обязан там быть по построению.
+fn shell_markup(root: &Path) -> Vec<String> {
+    let mut out: Vec<String> = std::fs::read_dir(root.join("apps/bmv-gui/ui"))
+        .expect("apps/bmv-gui/ui")
+        .filter_map(|e| e.ok().map(|e| e.file_name().to_string_lossy().into_owned()))
+        .filter(|n| n.ends_with(".slint") && n != "theme.slint")
+        .map(|n| format!("apps/bmv-gui/ui/{n}"))
+        .collect();
+    for (dir, ext, theme) in [
+        ("apps/ios/BeMyVPN", ".swift", "Theme.swift"),
+        ("apps/android/app/src/main/java/org/bemyvpn/ui", ".kt", ""),
+    ] {
+        let mut more: Vec<String> = std::fs::read_dir(root.join(dir))
+            .unwrap_or_else(|e| panic!("{dir}: {e}"))
+            .filter_map(|e| e.ok().map(|e| e.file_name().to_string_lossy().into_owned()))
+            .filter(|n| n.ends_with(ext) && n != theme)
+            .map(|n| format!("{dir}/{n}"))
+            .collect();
+        out.append(&mut more);
+    }
+    out.sort();
+    assert!(out.len() >= 15, "разметки подозрительно мало ({}) — сломан обход", out.len());
+    out
+}
+
 /// Канон бренда лежит не только в SVG.
 ///
 /// Логотип «Звено» палитре НЕ подчиняется (см. brand/README.md — «не

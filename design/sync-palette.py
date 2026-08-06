@@ -79,7 +79,8 @@ def rgb(hexstr):
 
 # ── отрисовка блоков ─────────────────────────────────────────────────────────
 # Порядок цветов один во всех четырёх темах — так их можно сверять глазами.
-ORDER = ["bg", "card", "card_hi", "tile", "float", "accent", "fg", "dim", "red", "amber"]
+ORDER = ["bg", "card", "card_hi", "tile", "float", "accent", "fg", "dim", "red", "amber",
+         "outline"]
 # Имя цвета в каждой оболочке (там, где оно отличается от ключа источника).
 NAMES = {
     "slint": {"card_hi": "card-hi", "float": "float-bg"},
@@ -87,6 +88,14 @@ NAMES = {
     "kotlin": {"card_hi": "cardHi"},
 }
 # Терминалу поверхности не нужны: у него их нет, кроме подсветки строки (s2).
+#
+# `outline` ЕМУ ТОЖЕ НЕ ДОСТАЁТСЯ, И ЭТО РЕШЕНИЕ, А НЕ ПРОПУСК. Терминальная
+# оболочка не рисует рамок вовсе — ни `Block::bordered`, ни псевдографики: блоки
+# в ней разделены пустой строкой и подсветкой строки под курсором. Красить
+# нечего. Даже будь там рамка, доля кромки (0.207 / 0.126) в терминале
+# непредставима: прозрачности нет, и `#6EA2FF` встал бы в полную силу — вчетверо
+# ярче задуманного. Появится в терминале рамка — цвет ей брать не отсюда, а
+# заводить честную запись здесь же (см. `[colors] outline` в источнике).
 CLI = [("ACCENT", "accent"), ("AMBER", "amber"), ("RED", "red"), ("DIM", "dim"),
        ("FG", "fg"), ("BG", "bg"), ("SEL", "card_hi")]
 
@@ -113,8 +122,9 @@ def render_slint(d, roles):
     ]
     out += [
         "",
-        f"out property <color> hairline: #FFFFFF.with-alpha({num(e['hairline'])});",
-        f"out property <color> hairline-float: #FFFFFF.with-alpha({num(e['hairline_float'])});",
+        f"out property <color> hairline: root.outline.with-alpha({num(e['hairline'])});",
+        f"out property <color> hairline-float: root.outline.with-alpha({num(e['hairline_float'])});",
+        f"out property <color> hairline-inner: #FFFFFF.with-alpha({num(e['hairline_inner'])});",
         f"public pure function edge(tint: color, hover: bool) -> color "
         f"{{ return tint.with-alpha(hover ? {num(e['edge_bright'])} : {num(e['edge'])}); }}",
         f"public pure function edge-soft(tint: color) -> color "
@@ -157,8 +167,9 @@ def render_swift(d, roles):
     ]
     out += [
         "",
-        f"static let hairline = Color.white.opacity({num(e['hairline'])})",
-        f"static let hairlineFloat = Color.white.opacity({num(e['hairline_float'])})",
+        f"static let hairline = outline.opacity({num(e['hairline'])})",
+        f"static let hairlineFloat = outline.opacity({num(e['hairline_float'])})",
+        f"static let hairlineInner = Color.white.opacity({num(e['hairline_inner'])})",
         "static func edge(_ tint: Color = accent, bright: Bool = false) -> Color "
         f"{{ tint.opacity(bright ? {num(e['edge_bright'])} : {num(e['edge'])}) }}",
         f"static func edgeSoft(_ tint: Color = accent) -> Color {{ tint.opacity({num(e['edge_soft'])}) }}",
@@ -194,8 +205,9 @@ def render_kotlin(d, roles):
     ]
     out += [
         "",
-        f"val hairline = Color.White.copy(alpha = {num(e['hairline'])}f)",
-        f"val hairlineFloat = Color.White.copy(alpha = {num(e['hairline_float'])}f)",
+        f"val hairline = outline.copy(alpha = {num(e['hairline'])}f)",
+        f"val hairlineFloat = outline.copy(alpha = {num(e['hairline_float'])}f)",
+        f"val hairlineInner = Color.White.copy(alpha = {num(e['hairline_inner'])}f)",
         "fun edge(tint: Color = accent, bright: Boolean = false): Color = "
         f"tint.copy(alpha = if (bright) {num(e['edge_bright'])}f else {num(e['edge'])}f)",
         f"fun edgeSoft(tint: Color = accent): Color = tint.copy(alpha = {num(e['edge_soft'])}f)",
