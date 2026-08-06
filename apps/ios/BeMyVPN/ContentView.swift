@@ -326,6 +326,24 @@ struct VPNTab: View {
         else { app.connectByCode(s) }
     }
 
+    /// Кнопка в строке кода: одна отделка на все три (ступень s2, скругление 10,
+    /// высота 44). Различаются они только шириной и краской глифа — этим и несёт
+    /// старшинство «перейти».
+    ///
+    /// `label` — подпись ДЛЯ ОЗВУЧКИ: рядом с глифом нет текста, и без неё
+    /// VoiceOver прочитал бы имя системного значка вместо действия.
+    private func codeButton(_ icon: String, label: String, width: CGFloat = 44,
+                            glyph: CGFloat = 17, weight: Font.Weight = .semibold,
+                            tint: Color = Theme.dim, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: icon).font(.system(size: glyph, weight: weight)).foregroundColor(tint)
+                .frame(width: width, height: 44)
+                .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Theme.cardHi)
+                    .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(Theme.hairline, lineWidth: 1)))
+        }
+        .accessibilityLabel(label)
+    }
+
     /// Чип недавнего хоста: маленький флаг слева, затем имя. Первый (последний,
     /// к кому подключались) — подсвечен акцентной рамкой.
     private func recentChip(_ id: String, highlighted: Bool) -> some View {
@@ -372,11 +390,20 @@ struct VPNTab: View {
                 HStack(spacing: 6) {
                     TextField("КОД СЕТИ", text: $code)
                         .foregroundColor(Theme.fg).autocorrectionDisabled().textInputAutocapitalization(.characters).padding(12)
-                    Button { if let s = UIPasteboard.general.string { code = s } } label: {
-                        Image(systemName: "doc.on.clipboard").font(.system(size: 17, weight: .semibold)).foregroundColor(Theme.dim)
-                            .frame(width: 44, height: 44)
-                            .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Theme.cardHi)
-                                .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(Theme.hairline, lineWidth: 1)))
+                    // ТРИ ДЕЙСТВИЯ НАД ОДНИМ И ТЕМ ЖЕ — В ОДНОЙ СТРОКЕ. «Снять код
+                    // камерой» стояло отдельной широкой кнопкой под полем, хотя это
+                    // такой же способ НАПОЛНИТЬ поле, как «вставить», — и занимало
+                    // целую строку экрана.
+                    //
+                    // Порядок: редкое слева, завершающее справа, у большого пальца.
+                    // Скан нужен реже всех (требует второго экрана рядом), поэтому
+                    // он крайний слева — и обе прежние кнопки остались там же, где
+                    // к ним привыкли. Краска глифа у скана `dim`, как у «вставить»:
+                    // это два равных способа наполнить поле, а мята обещала бы
+                    // «работает/включено» (по той же причине её сняли с «перейти»).
+                    codeButton("qrcode.viewfinder", label: "Сканировать QR") { showScanner = true }
+                    codeButton("doc.on.clipboard", label: "Вставить код") {
+                        if let s = UIPasteboard.general.string { code = s }
                     }
                     // Перейти — ТА ЖЕ СТУПЕНЬ, ЧТО У «ВСТАВИТЬ» (s2). Мята отсюда
                     // снята: она обещает «работает/включено», а это просто
@@ -384,33 +411,13 @@ struct VPNTab: View {
                     // одном экране выходило три ступени кнопок; владелец
                     // посмотрел и выбрал одну. Старшинство несут ДРУГИЕ признаки,
                     // и их два: кнопка шире (52 против 44) и глиф в ней светлый
-                    // (fg против dim у «вставить»).
-                    Button { let c = code; code = ""; app.connectByCode(c) } label: {
-                        Image(systemName: "arrow.right").font(.system(size: 21, weight: .bold))
-                            .foregroundColor(Theme.fg).frame(width: 52, height: 44)
-                            .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Theme.cardHi)
-                                .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(Theme.hairline, lineWidth: 1)))
+                    // (fg против dim у двух соседок).
+                    codeButton("arrow.right", label: "Подключиться по коду",
+                               width: 52, glyph: 21, weight: .bold, tint: Theme.fg) {
+                        let c = code; code = ""; app.connectByCode(c)
                     }
                 }
                 .padding(5).background(Theme.card).cornerRadius(14)
-
-                // «Сканировать QR» — ТА ЖЕ СТУПЕНЬ, ЧТО У ДВУХ КНОПОК КОДА (s2).
-                // Стояла на s3 и была самым светлым пятном страницы, хотя это не
-                // главное действие экрана. Ступень s1 («на ступень выше своей
-                // подложки», а подложка здесь — страница) не годится: рядом лежит
-                // поле кода, оно ровно на s1, и кнопка слилась бы с ним в одно
-                // пятно. Один экран — одна ступень для кнопки.
-                Button { showScanner = true } label: {
-                    HStack(spacing: 8) {
-                        Image(systemName: "qrcode.viewfinder").font(.system(size: 16, weight: .bold)).foregroundColor(Theme.accent)
-                        // `Theme.fg`, а не чистый белый: значок слева уже из темы,
-                        // и подпись рядом была единственной строкой в #FFFFFF.
-                        Text("Сканировать QR").font(.system(size: 15, weight: .bold)).foregroundColor(Theme.fg)
-                    }
-                    .frame(maxWidth: .infinity).padding(.vertical, 13)
-                    .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Theme.cardHi)
-                        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(Theme.hairline, lineWidth: 1)))
-                }
 
                 // Недавние показываем ТОЛЬКО пока они онлайн (есть в живом
                 // каталоге). Оффлайн-хост исчезает из строки; вернётся в сеть —

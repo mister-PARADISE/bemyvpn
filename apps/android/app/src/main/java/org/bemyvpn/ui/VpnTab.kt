@@ -126,29 +126,7 @@ fun VpnTab(app: AppState, bottomPad: Dp, openScanner: () -> Unit) {
         UpdateBanner(app)
 
         SectionLabel("Подключиться по коду")
-        CodeField(app, code, { code = it })
-
-        // «Сканировать QR» — ТА ЖЕ СТУПЕНЬ, ЧТО У ДВУХ КНОПОК КОДА (s2). Стояла
-        // на s3 и была самым светлым пятном страницы, хотя это не главное
-        // действие экрана. Ступень s1 («на ступень выше своей подложки», а
-        // подложка здесь — страница) не годится: рядом лежит поле кода, оно
-        // ровно на s1, и кнопка слилась бы с ним в одно пятно. Один экран —
-        // одна ступень для кнопки.
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .background(Theme.cardHi, RoundedCornerShape(12.dp))
-                .border(1.dp, Theme.hairline, RoundedCornerShape(12.dp))
-                .pressable(onTap = openScanner)
-                .padding(vertical = 13.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Icon(Icons.Filled.QrCodeScanner, null, Modifier.size(18.dp), tint = Theme.accent)
-            // `Theme.fg`, а не чистый белый: иконка слева уже из темы, и подпись
-            // рядом с ней была единственной строкой приложения в #FFFFFF.
-            Text("Сканировать QR", color = Theme.fg, fontSize = 15.sp, fontWeight = FontWeight.Bold)
-        }
+        CodeField(app, code, { code = it }, openScanner)
 
         // Недавние показываем ТОЛЬКО пока они онлайн (есть в живом каталоге).
         val onlineRecent = app.recent.filter { app.hostById(it)?.online == true }
@@ -247,9 +225,9 @@ private fun rememberReveal(
     }
 }
 
-/** Поле «КОД СЕТИ» + вставить из буфера + перейти. */
+/** Поле «КОД СЕТИ» + снять камерой + вставить из буфера + перейти. */
 @Composable
-private fun CodeField(app: AppState, code: String, onCode: (String) -> Unit) {
+private fun CodeField(app: AppState, code: String, onCode: (String) -> Unit, openScanner: () -> Unit) {
     val clipboard = LocalClipboardManager.current
     Row(
         Modifier
@@ -264,30 +242,54 @@ private fun CodeField(app: AppState, code: String, onCode: (String) -> Unit) {
             keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Characters, autoCorrect = false),
             boxed = false,
         )
-        Box(
-            Modifier.size(width = 44.dp, height = 44.dp)
-                .background(Theme.cardHi, RoundedCornerShape(10.dp))
-                .border(1.dp, Theme.hairline, RoundedCornerShape(10.dp))
-                .pressable { clipboard.getText()?.text?.let(onCode) },
-            contentAlignment = Alignment.Center,
-        ) {
-            Icon(Icons.Filled.ContentPaste, null, Modifier.size(18.dp), tint = Theme.dim)
-        }
-        Box(
-            // Перейти — ТА ЖЕ СТУПЕНЬ, ЧТО У «ВСТАВИТЬ» (s2). Мята отсюда снята:
-            // она обещает «работает/включено», а это просто переход. Ступень
-            // выше соседки тут тоже была лишней — на одном экране выходило три
-            // ступени кнопок; владелец посмотрел и выбрал одну. Старшинство
-            // несут ДРУГИЕ признаки, и их два: кнопка шире (52 против 44) и глиф
-            // в ней светлый (fg против dim у «вставить»).
-            Modifier.size(width = 52.dp, height = 44.dp)
-                .background(Theme.cardHi, RoundedCornerShape(10.dp))
-                .border(1.dp, Theme.hairline, RoundedCornerShape(10.dp))
-                .pressable { val c = code; onCode(""); app.connectByCode(c) },
-            contentAlignment = Alignment.Center,
-        ) {
-            Icon(Icons.AutoMirrored.Filled.ArrowForward, null, Modifier.size(22.dp), tint = Theme.fg)
-        }
+        // ТРИ ДЕЙСТВИЯ НАД ОДНИМ И ТЕМ ЖЕ — В ОДНОЙ СТРОКЕ. «Снять код камерой»
+        // стояло отдельной широкой кнопкой под полем, хотя это такой же способ
+        // НАПОЛНИТЬ поле, как «вставить», — и занимало целую строку экрана.
+        //
+        // Порядок: редкое слева, завершающее справа, у большого пальца. Скан
+        // нужен реже всех (требует второго экрана рядом), поэтому он крайний
+        // слева — и обе прежние кнопки остались там же, где к ним привыкли.
+        // Краска глифа у скана `dim`, как у «вставить»: это два равных способа
+        // наполнить поле, а мята обещала бы «работает/включено» (по той же
+        // причине её сняли с «перейти»).
+        CodeButton(Icons.Filled.QrCodeScanner, "Сканировать QR", onTap = openScanner)
+        CodeButton(Icons.Filled.ContentPaste, "Вставить код") { clipboard.getText()?.text?.let(onCode) }
+        // Перейти — ТА ЖЕ СТУПЕНЬ, ЧТО У «ВСТАВИТЬ» (s2). Мята отсюда снята:
+        // она обещает «работает/включено», а это просто переход. Ступень
+        // выше соседки тут тоже была лишней — на одном экране выходило три
+        // ступени кнопок; владелец посмотрел и выбрал одну. Старшинство
+        // несут ДРУГИЕ признаки, и их два: кнопка шире (52 против 44) и глиф
+        // в ней светлый (fg против dim у двух соседок).
+        CodeButton(
+            Icons.AutoMirrored.Filled.ArrowForward, "Подключиться по коду",
+            width = 52.dp, glyph = 22.dp, tint = Theme.fg,
+        ) { val c = code; onCode(""); app.connectByCode(c) }
+    }
+}
+
+/** Кнопка в строке кода: одна отделка на все три (ступень s2, скругление 10,
+ *  высота 44). Различаются они только шириной и краской глифа — этим и несёт
+ *  старшинство «перейти».
+ *
+ *  `label` — подпись ДЛЯ ОЗВУЧКИ: рядом с глифом нет текста, и без неё TalkBack
+ *  прочитал бы безымянную кнопку. */
+@Composable
+private fun CodeButton(
+    icon: ImageVector,
+    label: String,
+    width: Dp = 44.dp,
+    glyph: Dp = 18.dp,
+    tint: Color = Theme.dim,
+    onTap: () -> Unit,
+) {
+    Box(
+        Modifier.size(width = width, height = 44.dp)
+            .background(Theme.cardHi, RoundedCornerShape(10.dp))
+            .border(1.dp, Theme.hairline, RoundedCornerShape(10.dp))
+            .pressable(onTap = onTap),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(icon, label, Modifier.size(glyph), tint = tint)
     }
 }
 
