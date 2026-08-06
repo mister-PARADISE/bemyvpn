@@ -230,9 +230,7 @@ struct ServerTab: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
 
                 sectionLabel("Другой адрес сервера")
-                TextField("адрес сервера", text: $coordField)
-                    .foregroundColor(Theme.fg).autocorrectionDisabled().textInputAutocapitalization(.never)
-                    .padding(14).background(Theme.card).cornerRadius(14)
+                BmvField("адрес сервера", text: $coordField, caps: .never)
 
                 Button { app.saveCoordinator(coordField.isEmpty ? app.coordinator : coordField) } label: { calmButton("Сохранить и проверить") }
                 if app.coordinator != Core.defaultCoordinator {
@@ -388,8 +386,7 @@ struct VPNTab: View {
             VStack(alignment: .leading, spacing: 14) {
                 sectionLabel("Подключиться по коду")
                 HStack(spacing: 6) {
-                    TextField("КОД СЕТИ", text: $code)
-                        .foregroundColor(Theme.fg).autocorrectionDisabled().textInputAutocapitalization(.characters).padding(12)
+                    BmvField("КОД СЕТИ", text: $code, caps: .characters, boxed: false).padding(12)
                     // ТРИ ДЕЙСТВИЯ НАД ОДНИМ И ТЕМ ЖЕ — В ОДНОЙ СТРОКЕ. «Снять код
                     // камерой» стояло отдельной широкой кнопкой под полем, хотя это
                     // такой же способ НАПОЛНИТЬ поле, как «вставить», — и занимало
@@ -417,7 +414,22 @@ struct VPNTab: View {
                         let c = code; code = ""; app.connectByCode(c)
                     }
                 }
-                .padding(5).background(Theme.card).cornerRadius(14)
+                // СТРОКА КОДА — ЭТО САМО ПОЛЕ, А НЕ КОРОБКА С ПОЛЕМ ВНУТРИ: текст
+                // лежит прямо на этой заливке, кнопки просто припаркованы в правом
+                // её конце. Поэтому кромка идёт по внешнему контуру строки — там,
+                // где на самом деле кончается поле; обвести вместо этого внутренний
+                // участок значило бы провести линию посреди сплошной заливки одного
+                // цвета.
+                //
+                // КНОПКИ ВНУТРИ ОСТАЮТСЯ СИНИМИ, И ЭТО НЕ ИСКЛЮЧЕНИЕ ИЗ ПРАВИЛА, А
+                // ЕГО ПРИЧИНА. Белую волосяную получает то, что заливка родителя УЖЕ
+                // отделила: плитка на парящей панели отстоит от неё на 8.21 по L*,
+                // кромке там нечего держать. Здесь перепад s1→s2 всего 2.42 —
+                // заливка не отделяет ничего, и кромка кнопки остаётся несущей.
+                .padding(5)
+                .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Theme.card))
+                .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .stroke(Theme.hairline, lineWidth: 1))
 
                 // Недавние показываем ТОЛЬКО пока они онлайн (есть в живом
                 // каталоге). Оффлайн-хост исчезает из строки; вернётся в сеть —
@@ -689,8 +701,12 @@ struct HostCard: View {
                 }
 
                 if host.hasPassword {
-                    SecureField("Пароль", text: $password).foregroundColor(Theme.fg)
-                        .padding(12).background(Theme.tile).cornerRadius(11)
+                    // Кромка БЕЛАЯ: поле лежит ВНУТРИ раскрытой карточки, рядом с
+                    // плитками, и берёт их волосяную (см. «не везде» в Theme.swift).
+                    BmvField("Пароль", text: $password, secure: true, boxed: false)
+                        .padding(12)
+                        .background(RoundedRectangle(cornerRadius: 11, style: .continuous).fill(Theme.tile)
+                            .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).stroke(Theme.hairlineInner, lineWidth: 1)))
                 }
                 Button { app.connect(host, password: password) } label: { calmButton("Подключить") }
                     .disabled(!host.usable).opacity(host.usable ? 1 : 0.5)
@@ -812,7 +828,9 @@ struct HostCard: View {
     private var flagAvatar: some View {
         ZStack {
             RoundedRectangle(cornerRadius: 14, style: .continuous).fill(expanded ? Theme.tile : Theme.cardHi)
-            RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(Theme.hairline, lineWidth: 1)
+            // Кромка БЕЛАЯ: плашка лежит ВНУТРИ карточки, а не на странице
+            // (см. «не везде» в Theme.swift).
+            RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(Theme.hairlineInner, lineWidth: 1)
             Text(hostFlag(host)).font(.system(size: 29)).opacity(0.85)
         }
         .frame(width: 56, height: 56)
@@ -1021,8 +1039,7 @@ struct HostTab: View {
                     .foregroundColor(Theme.dim).font(.system(size: 13))
 
                 sectionLabel("Имя хоста (видно в каталоге)")
-                TextField("Имя", text: $app.hostName)
-                    .foregroundColor(Theme.fg).padding(14).background(Theme.card).cornerRadius(14)
+                BmvField("Имя", text: $app.hostName)
                     .onChange(of: app.hostName) { _ in app.applyHostDebounced() }
 
                 // ПАРОЛЬ ⇒ СЕТЬ ВСЕГДА СКРЫТАЯ. Правило соблюдает ядро (см.
@@ -1079,8 +1096,7 @@ struct HostTab: View {
                 }
 
                 sectionLabel("Пароль (пусто = без пароля)")
-                TextField("без пароля", text: $app.hostPassword)
-                    .foregroundColor(Theme.fg).padding(14).background(Theme.card).cornerRadius(14)
+                BmvField("без пароля", text: $app.hostPassword)
                     .onChange(of: app.hostPassword) { _ in app.applyHostDebounced() }
 
                 sectionLabel("Протокол")

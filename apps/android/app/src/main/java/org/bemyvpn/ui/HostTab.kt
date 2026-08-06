@@ -75,7 +75,7 @@ fun HostTab(app: AppState, bottomPad: Dp) {
     // Панель — НАЛОЖЕНИЕ поверх прокрутки: настройки идут во всю высоту и
     // уходят ПОД неё (см. FloatingPanelLayout).
     FloatingPanelLayout(panel = {
-    PinnedPanel(tint) {
+    PinnedPanel {
         val starting = app.starting
         val err = app.hostError
         if (app.hosting) {

@@ -326,7 +326,12 @@ component HostCard inherits Rectangle {
                         ProtoIcon { id: h.proto-id; width: 12px; height: 12px; tint: Theme.fg; hole: root.tile-fill; }
                     }
                 }
-                if h.locked: Field { placeholder: "Пароль"; secure: true; text <=> root.guest-password; }
+                // Кромка БЕЛАЯ: поле лежит ВНУТРИ раскрытой карточки, рядом с
+                // плитками, и берёт их волосяную (см. «не везде» в theme.slint).
+                if h.locked: Field {
+                    placeholder: "Пароль"; secure: true; text <=> root.guest-password;
+                    stroke: Theme.hairline-inner;
+                }
                 // Та же спокойная кнопка, что и на остальных экранах — теперь
                 // общий компонент, а не её копия здесь.
                 CalmButton {
@@ -483,10 +488,23 @@ export component VpnPage inherits Rectangle {
 
         // ── Подключиться по коду ──
         SectionLabel { text: "Подключиться по коду"; }
+        // СТРОКА КОДА — ЭТО САМО ПОЛЕ, А НЕ КОРОБКА С ПОЛЕМ ВНУТРИ: текст лежит
+        // прямо на этой заливке, кнопки просто припаркованы в правом её конце.
+        // Поэтому кромка идёт по внешнему контуру строки — там, где на самом деле
+        // кончается поле; обвести вместо этого внутренний участок значило бы
+        // провести линию посреди сплошной заливки одного цвета.
+        //
+        // КНОПКИ ВНУТРИ ОСТАЮТСЯ СИНИМИ, И ЭТО НЕ ИСКЛЮЧЕНИЕ ИЗ ПРАВИЛА, А ЕГО
+        // ПРИЧИНА. Белую волосяную получает то, что заливка родителя УЖЕ отделила:
+        // плитка на парящей панели отстоит от неё на 8.21 по L*, кромке там нечего
+        // держать. Здесь перепад s1→s2 всего 2.42 — заливка не отделяет ничего,
+        // и кромка кнопки остаётся несущей.
         Rectangle {
             height: 54px;
             border-radius: 14px;
             background: Theme.card;
+            border-width: 1px;
+            border-color: Theme.hairline;
             HorizontalLayout {
                 padding: 5px;
                 spacing: 6px;

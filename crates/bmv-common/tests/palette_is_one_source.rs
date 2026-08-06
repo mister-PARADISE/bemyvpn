@@ -317,19 +317,25 @@ fn the_blue_edge_does_not_creep_inside_blocks() {
         ("apps/bmv-gui/ui/components.slint", "root.did ? Theme.edge-done(Theme.accent) : Theme.hairline-inner;"),
         // Плашка флага 56×56 — внутри карточки хоста, а не на странице.
         ("apps/bmv-gui/ui/vpn_page.slint", "border-color: Theme.hairline-inner;"),
+        // Пароль гостя — единственное поле ввода НЕ на странице: оно живёт в
+        // раскрытой карточке, рядом с плитками, и берёт их кромку. Остальные
+        // четыре поля лежат на странице и синие (`Field` без `stroke`).
+        ("apps/bmv-gui/ui/vpn_page.slint", "stroke: Theme.hairline-inner;"),
         // ── iPhone ──────────────────────────────────────────────────────────
         ("apps/ios/BeMyVPN/Kit.swift", "accent ?? Theme.hairlineInner"), // заготовка плиток
         ("apps/ios/BeMyVPN/Kit.swift", "Theme.edgeDone() : Theme.hairlineInner"), // «Новый код»
+        // Плашка флага 56×56 — та же, что в окне: внутри карточки хоста.
+        ("apps/ios/BeMyVPN/ContentView.swift", "cornerRadius: 14, style: .continuous).stroke(Theme.hairlineInner"),
+        // Пароль гостя в раскрытой карточке — он же.
+        ("apps/ios/BeMyVPN/ContentView.swift", "cornerRadius: 11, style: .continuous).stroke(Theme.hairlineInner"),
         // ── Android ─────────────────────────────────────────────────────────
         ("apps/android/app/src/main/java/org/bemyvpn/ui/Common.kt", "accent ?: Theme.hairlineInner"),
         ("apps/android/app/src/main/java/org/bemyvpn/ui/Common.kt", "Theme.edgeDone() else Theme.hairlineInner"),
+        // Плашка флага 56×56 — она же на Android.
+        ("apps/android/app/src/main/java/org/bemyvpn/ui/VpnTab.kt", "Theme.hairlineInner, RoundedCornerShape(14.dp)"),
+        // Пароль гостя в раскрытой карточке — он же.
+        ("apps/android/app/src/main/java/org/bemyvpn/ui/VpnTab.kt", "Theme.hairlineInner, RoundedCornerShape(11.dp)"),
     ];
-    // Плашка флага на телефонах в списке ПОКА НЕТ, и это не забывчивость: она
-    // живёт в `ContentView.swift` и `VpnTab.kt`, а те в этой работе были чужим
-    // участком (там параллельно переносили кнопку QR). Сейчас она там синяя,
-    // как всё, что берёт `Theme.hairline`. Правка — по строке на оболочку,
-    // `Theme.hairline` → `Theme.hairlineInner` у плашки 56×56; вместе с ней сюда
-    // добавляются две строки, и тогда три оболочки снова сойдутся.
 
     let root = repo_root();
     // Как белая кромка зовётся в каждой оболочке. Терминал не спрашиваем: рамок

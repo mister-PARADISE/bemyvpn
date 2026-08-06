@@ -128,7 +128,7 @@ private fun ServerHero(app: AppState) {
 
     // Когда связь есть, круг уступает место цифрам: смотреть на большой значок
     // «всё хорошо» смысла нет, а панель висит на экране постоянно.
-    PinnedPanel(tint) {
+    PinnedPanel {
         if (app.serverOnline == true) {
             StatusLine(Icons.Filled.SettingsInputAntenna, Native.nativeLinkText(online), tint)
             Text(addr, color = Theme.dim, fontSize = 13.sp, fontFamily = FontFamily.Monospace)

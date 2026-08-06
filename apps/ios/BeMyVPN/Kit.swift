@@ -190,6 +190,72 @@ private struct TileBody<Trailing: View>: View {
     }
 }
 
+/// ПОЛЕ ВВОДА — ОДНА ЗАГОТОВКА НА ВСЕ ПЯТЬ ПОЛЕЙ ПРИЛОЖЕНИЯ.
+///
+/// Заготовки здесь не было вовсе: поля стояли в `ContentView.swift` пятью
+/// копиями подряд, и копии успели разойтись — паддинг 14 против 12, скругление
+/// 14 против 11, автокоррекция выключена у двух из пяти, `SecureField` взят у
+/// одного пароля из двух. У окна и у Android общая деталь есть давно (`Field` в
+/// `components.slint`, `BmvTextField` в `Common.kt`), и оболочки разъезжались
+/// ровно здесь — четыре раза подряд.
+///
+/// КРОМКА У ПОЛЯ ЕСТЬ, И ЭТО ПОЧИНКА, А НЕ УКРАШЕНИЕ. Рамки не было ни у одной
+/// копии: поле держалось одной заливкой `card` (#121519) на странице `bg`
+/// (#08090B) — перепад 4.19 по L*, самый узкий в приложении. Жаловались ровно на
+/// это («некоторые детали слабо отличимы от фона»): пустое поле с негромким
+/// плейсхолдером не читалось как место, куда можно писать.
+///
+/// КРОМКА СИНЯЯ, ПОТОМУ ЧТО ПОЛЕ В КОРОБКЕ ЛЕЖИТ НА СТРАНИЦЕ (имя хоста, пароль
+/// раздачи, адрес сервера — все три такие). Два поля лежат иначе — код сети и
+/// пароль гостя, — и оба идут сюда с `boxed: false`: коробку им рисует место
+/// вызова, оно же и выбирает кромку.
+///
+/// ПОЛЕМ ОНО И ОСТАЁТСЯ, ХОТЯ КРОМКА ТЕПЕРЬ ТА ЖЕ, ЧТО У КНОПОК РЯДОМ. Кромка им
+/// общая по построению — обоим её даёт правило «лежит на странице». Различают их
+/// ДРУГИЕ признаки, и их три: ступень заливки (поле s1 #121519, кнопки строки
+/// кода s2 #161A1F), скругление (14 против 10) и содержимое — у поля подпись
+/// прижата влево и негромкая, у кнопки глиф по центру.
+///
+/// АВТОКОРРЕКЦИЯ ВЫКЛЮЧЕНА У ВСЕХ, А НЕ У ДВУХ ИЗ ПЯТИ. В полях приложения нет
+/// ни одного связного текста: имя хоста, пароль, код сети, адрес сервера — всё
+/// это имена собственные и строки, которые подсказчик только портит.
+struct BmvField: View {
+    let placeholder: String
+    @Binding var text: String
+    let secure: Bool
+    let caps: TextInputAutocapitalization
+    let boxed: Bool
+
+    init(_ placeholder: String, text: Binding<String>, secure: Bool = false,
+         caps: TextInputAutocapitalization = .sentences, boxed: Bool = true) {
+        self.placeholder = placeholder
+        self._text = text
+        self.secure = secure
+        self.caps = caps
+        self.boxed = boxed
+    }
+
+    var body: some View {
+        let input = Group {
+            if secure { SecureField(placeholder, text: $text) } else { TextField(placeholder, text: $text) }
+        }
+        .foregroundColor(Theme.fg)
+        .autocorrectionDisabled()
+        .textInputAutocapitalization(caps)
+
+        return Group {
+            if boxed {
+                input.padding(14)
+                    .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Theme.card))
+                    .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .stroke(Theme.hairline, lineWidth: 1))
+            } else {
+                input
+            }
+        }
+    }
+}
+
 /// Фон плитки: единый для всех — разница только в содержимом, не в оформлении.
 ///
 /// `fill` — нейтральная ступень s3, ОДНА И ТА ЖЕ у плиток панели состояния и у

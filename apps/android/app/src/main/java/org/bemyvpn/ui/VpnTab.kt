@@ -229,10 +229,22 @@ private fun rememberReveal(
 @Composable
 private fun CodeField(app: AppState, code: String, onCode: (String) -> Unit, openScanner: () -> Unit) {
     val clipboard = LocalClipboardManager.current
+    // СТРОКА КОДА — ЭТО САМО ПОЛЕ, А НЕ КОРОБКА С ПОЛЕМ ВНУТРИ: текст лежит
+    // прямо на этой заливке, кнопки просто припаркованы в правом её конце.
+    // Поэтому кромка идёт по внешнему контуру строки — там, где на самом деле
+    // кончается поле; обвести вместо этого внутренний участок значило бы
+    // провести линию посреди сплошной заливки одного цвета.
+    //
+    // КНОПКИ ВНУТРИ ОСТАЮТСЯ СИНИМИ, И ЭТО НЕ ИСКЛЮЧЕНИЕ ИЗ ПРАВИЛА, А ЕГО
+    // ПРИЧИНА. Белую волосяную получает то, что заливка родителя УЖЕ отделила:
+    // плитка на парящей панели отстоит от неё на 8.21 по L*, кромке там нечего
+    // держать. Здесь перепад s1→s2 всего 2.42 — заливка не отделяет ничего,
+    // и кромка кнопки остаётся несущей.
     Row(
         Modifier
             .fillMaxWidth()
             .background(Theme.card, RoundedCornerShape(14.dp))
+            .border(1.dp, Theme.hairline, RoundedCornerShape(14.dp))
             .padding(5.dp),
         horizontalArrangement = Arrangement.spacedBy(6.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -349,7 +361,7 @@ private fun VpnHero(app: AppState, showInvite: (String) -> Unit) {
     if (live != null) known.value = live
     val host = known.value
 
-    PinnedPanel(tint) {
+    PinnedPanel {
         val icon: ImageVector = when (kind) {
             VPN_ON -> Icons.Filled.VerifiedUser
             VPN_CONNECTING, VPN_RECONNECTING -> Icons.Filled.Shield
@@ -612,7 +624,9 @@ fun HostCard(app: AppState, host: Host, reveal: suspend (LayoutCoordinates) -> U
             Box(
                 Modifier.size(56.dp)
                     .background(if (expanded) Theme.tile else Theme.cardHi, RoundedCornerShape(14.dp))
-                    .border(1.dp, Theme.hairline, RoundedCornerShape(14.dp)),
+                    // Кромка БЕЛАЯ: плашка лежит ВНУТРИ карточки, а не на
+                    // странице (см. «не везде» в Theme.kt).
+                    .border(1.dp, Theme.hairlineInner, RoundedCornerShape(14.dp)),
                 contentAlignment = Alignment.Center,
             ) { Text(hostFlag(host), fontSize = 29.sp, modifier = Modifier.alpha(0.85f)) }
 
@@ -700,7 +714,13 @@ fun HostCard(app: AppState, host: Host, reveal: suspend (LayoutCoordinates) -> U
                 }
 
                 if (host.hasPassword) {
-                    Box(Modifier.fillMaxWidth().background(Theme.tile, RoundedCornerShape(11.dp)).padding(12.dp)) {
+                    // Кромка БЕЛАЯ: поле лежит ВНУТРИ раскрытой карточки, рядом
+                    // с плитками, и берёт их волосяную (см. «не везде» в Theme.kt).
+                    Box(
+                        Modifier.fillMaxWidth().background(Theme.tile, RoundedCornerShape(11.dp))
+                            .border(1.dp, Theme.hairlineInner, RoundedCornerShape(11.dp))
+                            .padding(12.dp),
+                    ) {
                         BmvTextField(password, { password = it }, "Пароль", secure = true, boxed = false)
                     }
                 }
