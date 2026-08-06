@@ -199,8 +199,13 @@ private struct TileBody<Trailing: View>: View {
 private func tileBackground(_ accent: Color?, fill: Color = Theme.tile) -> some View {
     RoundedRectangle(cornerRadius: 12, style: .continuous)
         .fill(fill)
+        // Кромка БЕЛАЯ (`hairlineInner`), а не синяя: плитка лежит ВНУТРИ блока —
+        // на парящей панели или в раскрытой карточке, — и от подложки её уже
+        // отделяет перепад заливки в 8.21 по L*. Синяя читалась бы там как
+        // подсветка, то есть как «выделено», чего у плитки нет. См. «не везде»
+        // в Theme.swift.
         .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous)
-            .stroke(accent ?? Theme.hairline, lineWidth: 1))
+            .stroke(accent ?? Theme.hairlineInner, lineWidth: 1))
 }
 
 /// Строка состояния для РАБОТАЮЩЕГО режима: значок кружком, название, часы.
@@ -288,7 +293,8 @@ struct QuietButton: View {
             .foregroundColor(did ? Theme.accent : Theme.dim)
             .frame(maxWidth: .infinity).frame(height: 34)
             .background(RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .stroke(did ? Theme.edgeDone() : Theme.hairline, lineWidth: 1))
+                // Кромка БЕЛАЯ: кнопка живёт только внутри парящей панели.
+                .stroke(did ? Theme.edgeDone() : Theme.hairlineInner, lineWidth: 1))
         }.buttonStyle(PressStyle())
     }
 }
@@ -363,10 +369,16 @@ struct PinnedPanel<Content: View>: View {
             // должны читаться одним языком. Тень навешена ВНУТРИ `.background`,
             // на саму фигуру: снаружи она легла бы и на текст панели.
             //
-            // КОЛЬЦО СОСТОЯНИЯ ТИШЕ СОДЕРЖИМОГО (0.30, было 0.45): на 0.45
-            // обводка была ярче самой панели, и вся «высота» держалась на ней.
-            // Покажут состояние иначе — панель не станет от этого плоской.
-            .background(floatSurface(stroke: tint.opacity(0.30)))
+            // КРОМКА БОЛЬШЕ НЕ КРАСИТСЯ СОСТОЯНИЕМ, И ЭТО ПОЧИНКА, А НЕ ПОТЕРЯ.
+            // Здесь стояло `tint.opacity(0.30)`: контур панели выходил яркостью
+            // 70 (мята) и 72 (dim «выключено») при 40 у волосяной линии
+            // нав-бара — втрое заметнее соседа по ОДНОМУ И ТОМУ ЖЕ слою. Теперь
+            // оба берут `hairlineFloat`: #252F40, яркость 46, разницы нет по
+            // построению. Состояние с панели не пропало — его несёт диск
+            // (`StateDisc`), которому оно и полагается; кромка про состояние
+            // ничего не знала, она просто была самым светлым пятном экрана.
+            // `tint` тут остаётся: он ключ анимации ниже, см. `.animation`.
+            .background(floatSurface(stroke: Theme.hairlineFloat))
             // СНИЗУ РОВНО ВЫЛЕТ ОРЕОЛА, и это не про воздух. `safeAreaInset`
             // обрезает всё, что вылезает за его границу, а граница — это отступ
             // обёртки: при прежних 12 гашение обрывалось на 12pt под панелью

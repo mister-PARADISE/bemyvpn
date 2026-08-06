@@ -215,7 +215,9 @@ component HostCard inherits Rectangle {
                     border-radius: 14px;
                     background: root.expanded ? Theme.tile : Theme.card-hi;
                     border-width: 1px;
-                    border-color: Theme.hairline;
+                    // Кромка БЕЛАЯ: плашка лежит ВНУТРИ карточки, а не на
+                    // странице (см. «не везде» в theme.slint).
+                    border-color: Theme.hairline-inner;
                     if h.has-flag: Image { source: h.flag-img; width: 34px; height: 24px; opacity: 0.85; }
                     if !h.has-flag: Text { text: "🌍"; font-size: 26px; opacity: 0.85; }
                 }
@@ -620,8 +622,6 @@ export component VpnPage inherits Rectangle {
     // Объявлена ПОСЛЕ прокрутки намеренно: `z` в Slint нет, поверх рисуется
     // тот, кто объявлен последним.
     panel := FloatPanel {
-        tint: root.tint;
-
         // ── подключено: значок компактный, место отдано пользе ──
         if root.vpn-state == 2: StatusLine {
             name: "Подключено";

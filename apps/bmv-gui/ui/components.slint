@@ -90,7 +90,12 @@ component StateDisc inherits Rectangle {
 
 // Каркас плитки: подпись мелко сверху, значение снизу (TileBody на iOS).
 component TileFrame inherits Rectangle {
-    in property <color> stroke: Theme.hairline;
+    /// БЕЛАЯ, А НЕ СИНЯЯ, И ЭТО «НЕ ВЕЗДЕ» ИЗ ТЕМЫ. Плитка лежит ВНУТРИ блока —
+    /// на парящей панели или в раскрытой карточке, — и от подложки её уже
+    /// отделяет перепад заливки в 8.21 по L*. Кромке здесь нечего держать, она
+    /// вспомогательная; синяя читалась бы как подсветка, то есть как «выделено»,
+    /// чего у плитки нет.
+    in property <color> stroke: Theme.hairline-inner;
     /// Заливка плитки — нейтральная ступень s3, ОДНА И ТА ЖЕ у плиток панели
     /// состояния и у плиток внутри раскрытой карточки хоста. Ручка оставлена
     /// затем, что раскрытая карточка задаёт заливку одним местом на всю сетку
@@ -206,7 +211,7 @@ export component CopyTile inherits TileFrame {
     in property <string> value;
     callback copy(string);
     property <bool> copied: false;
-    stroke: copied ? Theme.edge-done(Theme.accent) : Theme.hairline;
+    stroke: copied ? Theme.edge-done(Theme.accent) : Theme.hairline-inner;
     reset := Timer {
         interval: Theme.copied-ms;
         running: root.copied;
@@ -270,12 +275,15 @@ export component CopyTile inherits TileFrame {
 /// оно рисуется ПОД карточкой, а дети в Slint всегда над фоном родителя.
 export component FloatCard inherits Rectangle {
     in property <length> radius: Theme.float-radius;
-    /// Рамка по бокам и снизу. У панели её место занимает кольцо состояния.
-    in property <color> stroke: Theme.hairline-float;
     border-radius: root.radius;
     background: Theme.float-bg;
     border-width: 1px;
-    border-color: root.stroke;
+    /// Рамка по бокам и снизу — ОДНА на панель состояния и на нав-бар, и
+    /// задавать её снаружи БОЛЬШЕ НЕЛЬЗЯ. Ручка `stroke` здесь была, и ровно
+    /// через неё панель уехала на свой цвет состояния в 0.30 — то есть втрое
+    /// ярче соседа по тому же слою. Ручка убрана: два края одного слоя не могут
+    /// отличаться, если отличаться нечем.
+    border-color: Theme.hairline-float;
     @children
 }
 
@@ -361,9 +369,6 @@ export component FloatHalo inherits Rectangle {
 /// соседом ПЕРЕД ней: дети рисуются над фоном родителя, поэтому гашение может
 /// лежать под карточкой только раньше её в объявлении.
 export component FloatPanel inherits Rectangle {
-    /// Цвет состояния — им светится кольцо. ТИШЕ СОДЕРЖИМОГО: на 0.45 обводка
-    /// выходила ярче самой панели, и вся «высота» держалась на ней.
-    in property <color> tint: Theme.accent;
     x: 0;
     y: 0;
     width: 100%;
@@ -380,9 +385,17 @@ export component FloatPanel inherits Rectangle {
     box := VerticalLayout {
         padding: Theme.pad;
         padding-bottom: 12px;
-        // Общий парящий блок: фон и тень — те же, что у нав-бара.
+        // Общий парящий блок: фон и КРОМКА — те же, что у нав-бара.
+        //
+        // КРОМКА БОЛЬШЕ НЕ КРАСИТСЯ СОСТОЯНИЕМ, И ЭТО ПОЧИНКА, А НЕ ПОТЕРЯ.
+        // Здесь стояло `tint.with-alpha(0.30)`: контур панели выходил яркостью
+        // 70 (мята) и 72 (dim «выключено») при 40 у волосяной линии нав-бара —
+        // втрое заметнее соседа по ОДНОМУ И ТОМУ ЖЕ слою. Теперь оба берут
+        // `hairline-float`: #252F40, яркость 46, разницы нет по построению.
+        // Состояние с панели не пропало — его несёт диск (`StateDisc`), которому
+        // оно и полагается; кромка про состояние ничего не знала, она просто
+        // была самым светлым пятном экрана.
         FloatCard {
-            stroke: root.tint.with-alpha(0.30);
             // Глушит клики по пустым местам карточки: без неё тап проваливался
             // бы на карточку хоста, лежащую ПОД панелью. Стоит ПЕРВОЙ —
             // содержимое объявлено ниже и в попадании выигрывает у неё.
@@ -747,7 +760,9 @@ export component QuietButton inherits Rectangle {
     border-radius: 10px;
     background: ta.has-hover ? #FFFFFF0A : transparent;
     border-width: 1px;
-    border-color: root.did ? Theme.edge-done(Theme.accent) : Theme.hairline;
+    // Кромка БЕЛАЯ: кнопка живёт внутри парящей панели, то есть ВНУТРИ блока
+    // (см. «не везде» в theme.slint). На странице она не появляется ни разу.
+    border-color: root.did ? Theme.edge-done(Theme.accent) : Theme.hairline-inner;
     animate border-color { duration: 180ms; easing: ease-out; }
     reset := Timer { interval: Theme.copied-ms; running: root.did; triggered() => { root.did = false; } }
     HorizontalLayout {

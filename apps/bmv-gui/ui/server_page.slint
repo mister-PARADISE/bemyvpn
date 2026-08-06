@@ -101,8 +101,6 @@ export component ServerPage inherits Rectangle {
     // Объявлена ПОСЛЕ прокрутки намеренно: `z` в Slint нет, поверх рисуется
     // тот, кто объявлен последним.
     panel := FloatPanel {
-        tint: root.tint;
-
         // ── связь есть: значок компактный, место отдано цифрам ──
         if root.coord-state == 1: StatusLine {
             name: root.status-text;
