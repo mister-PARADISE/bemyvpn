@@ -20,7 +20,7 @@ object HostState {
 }
 
 /**
- * Foreground-сервис хост-режима: телефон раздаёт интернет. VPN-права НЕ нужны —
+ * Foreground-сервис хост-режима: телефон работает чьим-то VPN. VPN-права НЕ нужны —
  * хост работает через обычные сокеты (userspace-стек в ядре). Foreground +
  * START_STICKY + параметры из prefs → раздача живёт, когда приложение свёрнуто,
  * и поднимается заново, если сервис перезапустила система.
@@ -142,7 +142,9 @@ class HostService : Service() {
         }
         val notif = builder
             .setContentTitle("BeMyVPN — хост")
-            .setContentText("Вы раздаёте интернет")
+            // Не «Вы раздаёте интернет»: ничего вы не раздаёте — через ваш
+            // канал ходит в сеть тот, кому свой перекрыли.
+            .setContentText("Вы работаете чьим-то VPN")
             .setSmallIcon(android.R.drawable.ic_menu_share)
             .setOngoing(true)
             .build()

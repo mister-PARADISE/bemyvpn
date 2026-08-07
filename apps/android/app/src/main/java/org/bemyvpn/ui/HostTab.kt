@@ -53,7 +53,7 @@ import org.bemyvpn.protoDesc
 import org.bemyvpn.protoName
 import org.bemyvpn.uptimeText
 
-/** Вкладка «Хост» — раздать свой интернет. */
+/** Вкладка «Хост» — стать чьим-то VPN: пустить чужой трафик через свой канал. */
 @Composable
 fun HostTab(app: AppState, bottomPad: Dp) {
     var showQR by remember { mutableStateOf(false) }
@@ -131,7 +131,10 @@ fun HostTab(app: AppState, bottomPad: Dp) {
                     when {
                         starting -> "Пробиваю канал наружу…"
                         err != null -> err
-                        else -> "Станьте выходной точкой для друзей"
+                        // Не «для друзей»: публичный хост берут из общего
+                        // списка чужие люди. И не «выходная точка» — так эту
+                        // работу называем мы, а не тот, кто ею пользуется.
+                        else -> "Станьте чьим-то VPN"
                     },
                     color = if (err != null && !starting) Theme.red else Theme.dim,
                     fontSize = 13.sp, textAlign = androidx.compose.ui.text.style.TextAlign.Center,
@@ -150,8 +153,14 @@ fun HostTab(app: AppState, bottomPad: Dp) {
             .padding(top = panelH + 6.dp, bottom = bottomPad),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
+        // ЧТО ЗДЕСЬ ПРОИСХОДИТ НА САМОМ ДЕЛЕ. Стояло «Раздайте свой интернет:
+        // … станет выходной точкой для гостей» — и это описывало не тот продукт.
+        // У гостя интернет ЕСТЬ; ему закрыли доступ, и он просит не мегабайтов,
+        // а чужую страну на выходе. Дословно совпадает с окном и iOS (сторож —
+        // crates/bmv-common/tests/host_copy_matches_everywhere.rs); отличается
+        // только название устройства.
         Text(
-            "Раздайте свой интернет: телефон станет выходной точкой для гостей.",
+            "Через ваш канал выйдет в сеть тот, кому закрыли доступ. Для него телефон станет выходом в интернет — сайты увидят вашу страну, а не его.",
             color = Theme.dim, fontSize = 13.sp,
         )
 
