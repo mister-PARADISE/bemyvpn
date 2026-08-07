@@ -171,10 +171,30 @@
 <div class="wrap">
 
   <div class="top">
-    <svg class="logo" viewBox="0 0 120 120" fill="none" aria-label="Звено">
-      <circle cx="46" cy="60" r="27" stroke="#6EA2FF" stroke-width="9"/>
-      <circle cx="74" cy="60" r="27" stroke="#2FE0A8" stroke-width="9"/>
-      <path d="M60 37.5a27 27 0 0 0 0 45" stroke="#6EA2FF" stroke-width="9"/>
+    <!-- «Звено» — канон из brand/logo.svg, один в один. Здесь была своя,
+         упрощённая сцепка: поверх МЯТНОГО кольца рисовалась СИНЯЯ дуга, и
+         часть мятного кольца оказывалась чужого цвета. Настоящая сцепка
+         делается маской: снизу синее поверх мятного, сверху мятное поверх
+         синего — границы повторяют сами кольца, швов нет. -->
+    <svg class="logo" viewBox="0 0 100 100" fill="none" aria-label="Звено">
+      <defs>
+        <linearGradient id="gB" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stop-color="#6EA2FF"/><stop offset="1" stop-color="#3D6FE0"/>
+        </linearGradient>
+        <linearGradient id="gG" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stop-color="#3EE6A8"/><stop offset="1" stop-color="#14B981"/>
+        </linearGradient>
+        <mask id="lensTop" maskUnits="userSpaceOnUse" x="0" y="0" width="100" height="100">
+          <rect width="100" height="100" fill="black"/>
+          <circle cx="37" cy="50" r="19" fill="none" stroke="white" stroke-width="11"/>
+          <rect y="50" width="100" height="50" fill="black"/>
+        </mask>
+      </defs>
+      <circle cx="63" cy="50" r="19" fill="none" stroke="url(#gG)" stroke-width="11"/>
+      <circle cx="37" cy="50" r="19" fill="none" stroke="url(#gB)" stroke-width="11"/>
+      <g mask="url(#lensTop)">
+        <circle cx="63" cy="50" r="19" fill="none" stroke="url(#gG)" stroke-width="11"/>
+      </g>
     </svg>
     <h1>BeMyVPN</h1>
     <p class="tagline">Интернет через <em>чужой канал</em> — и никакого сервера посередине.</p>
