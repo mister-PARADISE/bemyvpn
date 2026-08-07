@@ -72,8 +72,23 @@ jobs:
   # macos-13) брать нельзя: job с ней не падает, а ждёт вечно и молча держит всё,
   # что от него зависит — снаружи это выглядит как пустая группа раннеров и
   # пустой список шагов.
+  #
+  # ДВЕ МАШИНЫ, А НЕ ОДНА. Windows-ARM собирался ТОЛЬКО по тегу, и именно там
+  # проехала поломка, которую эта задача обязана была поймать: правило статической
+  # линковки рантайма в .cargo/config.toml было прописано под одну цель (x86_64),
+  # ARM-сборка ушла в релиз без вшитого vcruntime и у человека не запустилась
+  # вовсе. Проверка на одном x86_64 такое пропускает по определению. Раннеры
+  # windows-11-arm бесплатны для публичного репозитория, как и остальные.
   windows-check:
-    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            pe: x86_64
+          - os: windows-11-arm
+            pe: ARM64
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -101,6 +116,36 @@ jobs:
       # its tests can live in this job and nowhere else.
       - name: Test wintun fork (Windows)
         run: cargo test --manifest-path vendor/wintun/Cargo.toml
+
+      # Здесь `check` уже не хватает: линковки он не делает, а проверить надо
+      # ИМЕННО ГОТОВЫЙ ФАЙЛ. Терминал, а не окно, — потому что флаг рантайма
+      # общий на всю цель, а слинтовое окно тянуло бы минуты ради того же ответа.
+      - name: Build terminal exe (Windows)
+        run: cargo build -p bmv-cli
+
+      # Сторож. Красный, если exe снова начнёт требовать внешний рантайм MSVC.
+      # Смотрит в таблицу импортов файла, а НЕ в .cargo/config.toml: конфиг может
+      # быть верным, а флаг не доехать (RUSTFLAGS из окружения вытесняет секции
+      # целиком). Проверка того же файла стоит и в release.yml — там она важнее,
+      # потому что оттуда файлы уезжают людям.
+      - name: Verify exe (arch + static CRT)
+        run: python tools/check-windows-exe.py target/debug/bemyvpn.exe ${{ matrix.pe }}
+
+      # Свойства файла против того, что печатает сама программа. Локально
+      # BMV_VERSION не задана, и обе стороны обязаны сойтись на «0.0-dev»: это
+      # ровно тот случай, когда запасное значение в build.rs разъехалось бы с
+      # bmv_common::version молча.
+      - name: Verify version info
+        shell: pwsh
+        timeout-minutes: 2
+        run: |
+          $vi = (Get-Item target/debug/bemyvpn.exe).VersionInfo
+          $vi | Format-List * | Out-String | Write-Host
+          $said = (& target/debug/bemyvpn.exe version | Select-Object -First 1).Trim()
+          Write-Host "program says: '$said', file properties say: '$($vi.FileVersion)'"
+          if ($vi.FileVersion -ne $said) { Write-Host "FAIL: version mismatch"; exit 1 }
+          if (-not $vi.ProductName) { Write-Host "FAIL: ProductName is empty"; exit 1 }
+          Write-Host "OK: version info matches the program"
 
   # ── ANDROID ─────────────────────────────────────────────────────────────────
   #

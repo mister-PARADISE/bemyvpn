@@ -40,7 +40,12 @@ WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
 APP="$WORK/BeMyVPN.app"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/bemyvpn-gui"
-sed "s/__VERSION__/$VERSION/g" "$HERE/Info.plist" > "$APP/Contents/Info.plist"
+# Разделитель `|`, а не `/`: в версию попадает GITHUB_REF_NAME, и при ручном
+# прогоне выпуска с ветки это её ИМЯ. У ветки вида `win/arm-runtime` косая черта
+# закрывала выражение sed раньше времени, и задача падала с «bad flag in
+# substitute command». По тегу (v1.37) косой черты нет — потому и не всплывало,
+# пока проверочный прогон не понадобился с ветки.
+sed "s|__VERSION__|$VERSION|g" "$HERE/Info.plist" > "$APP/Contents/Info.plist"
 
 # Иконка: полный iconset (все размеры + @2x) → iconutil (чёткая на всех масштабах).
 ICON="$WORK/BeMyVPN.iconset"; mkdir -p "$ICON"

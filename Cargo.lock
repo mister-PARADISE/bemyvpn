@@ -925,6 +925,7 @@ dependencies = [
  "bmv-signal",
  "clap",
  "crossterm",
+ "embed-resource",
  "futures",
  "libc",
  "qrcode",

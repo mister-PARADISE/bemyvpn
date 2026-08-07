@@ -177,6 +177,7 @@ jobs:
           - os: windows-latest
             asset: bemyvpn-windows-x86_64-terminal.exe
             bin: bemyvpn.exe
+            pe: x86_64          # что должно стоять в заголовке PE — см. шаг проверки
           - os: macos-latest
             asset: bemyvpn-macos-arm64-terminal
             bin: bemyvpn
@@ -189,6 +190,7 @@ jobs:
           - os: windows-11-arm
             asset: bemyvpn-windows-arm64-terminal.exe
             bin: bemyvpn.exe
+            pe: ARM64
           # Intel-маков здесь НЕТ, и это осознанно.
           #
           # Ярлык macos-13 GitHub вывел из эксплуатации 4 декабря 2025. Задача с
@@ -214,6 +216,37 @@ jobs:
       - name: Rename asset
         shell: bash
         run: cp "target/release/${{ matrix.bin }}" "${{ matrix.asset }}"
+      # ── Windows-половина проверок. Те же сторожа, что у окна: терминал уезжает
+      # людям тем же файлом и точно так же не запустится без вшитого рантайма.
+      - name: Defender scan (report only)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: pwsh -File tools/scan-defender.ps1 "${{ matrix.asset }}"
+      - name: Upload artifact
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: cli-${{ matrix.os }}
+          path: ${{ matrix.asset }}
+      - name: Verify exe (arch + static CRT)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: python tools/check-windows-exe.py "${{ matrix.asset }}" "${{ matrix.pe }}"
+      # Версия в свойствах файла против версии, которую печатает САМА программа.
+      # Их считают разные механизмы (ресурс из build.rs и option_env! в
+      # bmv-common), а источник обязан быть один — BMV_VERSION.
+      - name: Verify version info
+        if: runner.os == 'Windows'
+        shell: pwsh
+        timeout-minutes: 2
+        run: |
+          $vi = (Get-Item "${{ matrix.asset }}").VersionInfo
+          $vi | Format-List * | Out-String | Write-Host
+          $said = (& ".\${{ matrix.asset }}" version | Select-Object -First 1).Trim()
+          Write-Host "program says: '$said', file properties say: '$($vi.FileVersion)'"
+          if ($vi.FileVersion -ne $said) { Write-Host "FAIL: version mismatch"; exit 1 }
+          if (-not $vi.ProductName) { Write-Host "FAIL: ProductName is empty"; exit 1 }
+          Write-Host "OK: version info matches the program"
       - name: Publish to Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
@@ -387,30 +420,41 @@ jobs:
       - name: Rename exe
         shell: bash
         run: cp target/release/bemyvpn-gui.exe "bemyvpn-windows-${{ matrix.arch }}.exe"
-      # Страховка от повторения: сверяем, что в заголовке PE та архитектура,
-      # которую обещает имя файла. Ошибись мы снова — задача упадёт здесь, а не
-      # у человека, скачавшего нерабочий файл.
-      - name: Verify architecture
-        shell: bash
-        run: |
-          python -c "
-          import struct, sys
-          d = open('bemyvpn-windows-${{ matrix.arch }}.exe','rb').read(0x200)
-          pe = struct.unpack('<I', d[0x3c:0x40])[0]
-          m = struct.unpack('<H', d[pe+4:pe+6])[0]
-          got = {0x8664:'x86_64', 0xAA64:'ARM64'}.get(m, hex(m))
-          want = '${{ matrix.pe }}'
-          # ТОЛЬКО ASCII: консоль Windows не умеет кириллицу в выводе, и
-          # печать по-русски роняла шаг с UnicodeEncodeError — проверка
-          # отрабатывала верно, а сборка падала на сообщении о её успехе.
-          print('PE arch: got %s, want %s' % (got, want))
-          sys.exit(0 if got == want else 1)
-          "
+      # Антивирус — ПРЕДУПРЕЖДАЕТ, НЕ РОНЯЕТ (см. шапку скрипта). Стоит до
+      # сторожей, чтобы имя срабатывания попадало в журнал даже когда сборка
+      # признана негодной по другой причине.
+      - name: Defender scan (report only)
+        shell: pwsh
+        run: pwsh -File tools/scan-defender.ps1 "bemyvpn-windows-${{ matrix.arch }}.exe"
+      # Выгрузка ДО сторожей: если сторож покраснеет, файл всё равно можно
+      # скачать и рассмотреть, а не собирать заново ради одной таблицы импортов.
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: gui-windows-${{ matrix.os }}
           path: bemyvpn-windows-*.exe
+      # Сторож готового файла: архитектура из заголовка PE (ARM-сборка однажды
+      # уехала в релиз под именем x86_64) и отсутствие внешнего рантайма MSVC
+      # (ARM-сборка уехала без вшитого vcruntime и не запустилась у человека).
+      # Проверяем ФАЙЛ, а не .cargo/config.toml: конфиг может быть правильным, а
+      # флаг — не доехать (RUSTFLAGS из окружения вытесняет секции целиком).
+      - name: Verify exe (arch + static CRT)
+        shell: bash
+        run: python tools/check-windows-exe.py "bemyvpn-windows-${{ matrix.arch }}.exe" "${{ matrix.pe }}"
+      # Сведения о файле: непустые и той же версии, что и тег. Пустые свойства —
+      # это и голая строка в Проводнике, и лишний повод для SmartScreen.
+      - name: Verify version info
+        shell: pwsh
+        run: |
+          $vi = (Get-Item "bemyvpn-windows-${{ matrix.arch }}.exe").VersionInfo
+          $vi | Format-List * | Out-String | Write-Host
+          $want = "${{ github.ref_name }}" -replace '^v', ''
+          if ($vi.FileVersion -ne $want) {
+            Write-Host "FAIL: FileVersion is '$($vi.FileVersion)', expected '$want'"
+            exit 1
+          }
+          if (-not $vi.ProductName) { Write-Host "FAIL: ProductName is empty"; exit 1 }
+          Write-Host "OK: version info matches $want"
       - name: Publish to Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
