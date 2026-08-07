@@ -967,6 +967,7 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "axum-server",
+ "flate2",
  "futures-util",
  "hex",
  "hmac",

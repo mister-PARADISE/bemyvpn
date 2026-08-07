@@ -41,6 +41,14 @@ rustls-acme = { version = "0.13", default-features = false, features = ["ring", 
 # (StreamExt/SinkExt). Раньше был только под tls.
 futures-util = { version = "0.3", default-features = false, features = ["sink"] }
 
+[build-dependencies]
+# ТОЛЬКО НА СБОРКЕ — в бинарь не попадают. Страница скачивания вшита в
+# координатор, и всё, что можно сделать с ней заранее (сжать, посчитать ETag),
+# делается здесь, а не на каждый запрос. flate2 в проекте уже есть (bmv-common,
+# geoip), чистый Rust — кросс-сборки под Android/Windows не ломает.
+flate2 = "1"
+sha2 = "0.10"
+
 [dev-dependencies]
 # WS-КЛИЕНТ ТОЛЬКО ДЛЯ ТЕСТОВ. Жизненный цикл сокета (кто владеет записью, что
 # происходит при переподключении, кто кого выселяет) живёт ВНУТРИ обработчика и

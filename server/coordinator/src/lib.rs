@@ -27,11 +27,12 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use axum::{
+    body::Body,
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
         ConnectInfo, State,
     },
-    http::{HeaderMap, StatusCode},
+    http::{header, HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     routing::get,
     Router,
@@ -1404,6 +1405,101 @@ async fn ws_conn(socket: WebSocket, state: Db, ip: IpAddr, _guard: WsConnGuard) 
     }
 }
 
+// ── страница скачивания ──────────────────────────────────────────────────────
+//
+// ПОЧЕМУ ОНА ЖИВЁТ ЗДЕСЬ. Приложение делается для сетей с ограничениями. Закрыт
+// GitHub — закрыта и страница на GitHub Pages, то есть человек не может даже
+// скачать то, чем этот запрет обходят. Координатор же доступен по определению:
+// недоступен он — не работает и сам продукт. Значит страница на нём открывается
+// ровно тогда, когда есть смысл её открывать.
+//
+// ВШИТА В БИНАРЬ, а не читается с диска: бинарь возят копированием одного файла,
+// и страница обязана ехать вместе с ним, а не отдельным «не забыть». Заодно на
+// пути запроса нет ни файловой системы, ни её ошибок.
+
+/// Исходная страница. `include_str!` — путь считается от этого файла.
+const PAGE_HTML: &str = include_str!("../../../site/index.html");
+/// Та же страница в gzip: ≈19 КБ → ≈5 КБ. Готовит `build.rs` при сборке —
+/// содержимое известно заранее, жать его на каждый запрос незачем.
+const PAGE_GZ: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/index.html.gz"));
+/// ETag посчитан на сборке (SHA-256 содержимого). У сжатого варианта он ДРУГОЙ:
+/// это разные тела, и посредник, который их не различит, отдаст gzip тому, кто
+/// его не просил.
+const PAGE_ETAG: &str = concat!("\"", env!("BMV_PAGE_ETAG"), "\"");
+const PAGE_ETAG_GZ: &str = concat!("\"", env!("BMV_PAGE_ETAG"), "-gz\"");
+/// Пять минут. Страница меняется только вместе с выпуском, то есть редко, но
+/// зависать у людей на неделю не должна: через пять минут браузер переспросит и
+/// получит 304 в пару сотен байт вместо пяти килобайт. `must-revalidate` НЕ
+/// ставим намеренно — если координатор на минуту недоступен, пусть браузер
+/// покажет сохранённое; у этой аудитории связь как раз рвётся.
+const PAGE_CACHE: &str = "public, max-age=300";
+
+/// Понимает ли клиент gzip. `gzip;q=0` — это ЗАПРЕТ, а не разрешение: такое
+/// шлют некоторые посредники, и отдать им сжатое значит отдать мусор.
+fn accepts_gzip(headers: &HeaderMap) -> bool {
+    let Some(v) = headers.get(header::ACCEPT_ENCODING).and_then(|v| v.to_str().ok()) else {
+        return false;
+    };
+    v.split(',').any(|entry| {
+        let mut parts = entry.split(';').map(str::trim);
+        parts.next() == Some("gzip")
+            && !parts.any(|p| p.strip_prefix("q=").and_then(|q| q.parse::<f32>().ok()) == Some(0.0))
+    })
+}
+
+/// Отдать страницу.
+///
+/// ЧЕМ ОНА ОТДЕЛЕНА ОТ ГЛАВНОЙ РАБОТЫ: обработчик не берёт `State` и не трогает
+/// ни одной общей структуры — ни каталога хостов, ни счётчиков соединений, ни их
+/// мьютексов. Тело уходит прямо из статической памяти, без копии и аллокации.
+/// Поэтому наплыв на страницу физически не может замедлить регистрацию хостов и
+/// знакомство гостей: у них попросту нет ничего общего.
+///
+/// Пер-IP квоту `ws_admit` сюда НЕ подключаем, и это осознанно. Она считает
+/// ДОЛГОЖИВУЩИЕ сокеты под общим мьютексом; дёргать его на каждый GET значило бы
+/// своими руками свести страницу с главным путём — ровно то, чего избегаем. Хуже
+/// того, общий счётчик позволил бы флудом по странице выесть квоту, из-за
+/// которой потом не подключится честный хост.
+async fn page(headers: HeaderMap) -> Response {
+    let gz = accepts_gzip(&headers);
+    let etag = if gz { PAGE_ETAG_GZ } else { PAGE_ETAG };
+
+    // Повторный заход: у человека уже есть эта самая страница — подтверждаем
+    // одной строкой вместо всего тела.
+    let known = headers
+        .get(header::IF_NONE_MATCH)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| {
+            v.split(',').any(|t| {
+                let t = t.trim();
+                t == "*" || t == etag
+            })
+        });
+    if known {
+        return Response::builder()
+            .status(StatusCode::NOT_MODIFIED)
+            .header(header::ETAG, etag)
+            .header(header::CACHE_CONTROL, PAGE_CACHE)
+            .body(Body::empty())
+            .expect("заголовки константные");
+    }
+
+    let mut b = Response::builder()
+        // Кодировка ОБЯЗАТЕЛЬНА: страница целиком на русском, без неё браузер
+        // угадывает и угадывает неверно.
+        .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
+        .header(header::CACHE_CONTROL, PAGE_CACHE)
+        .header(header::ETAG, etag)
+        // Разным клиентам уходит разное тело — общий кэш обязан различать их.
+        .header(header::VARY, "accept-encoding");
+    if gz {
+        b = b.header(header::CONTENT_ENCODING, "gzip");
+    }
+    // Оба тела статические: `Bytes::from_static` не копирует и не выделяет.
+    b.body(if gz { Body::from(PAGE_GZ) } else { Body::from(PAGE_HTML) })
+        .expect("заголовки константные")
+}
+
 // ── публичный вход (для бинаря и встраивания в приложения) ───────────────────
 
 /// Поднять координатор на `bind` и работать до срабатывания `shutdown`.
@@ -1467,8 +1563,14 @@ pub async fn serve(
     // (снапшот + дельты), знакомство гостя с хостом. Живость = сам сокет (закрылся →
     // хост убран мгновенно; «тихая смерть» — WS-пингом). Больше нет ни одного
     // HTTP-эндпойнта: даже мониторинг живости сервера — это открытие /v1/ws.
+    // Плюс страница скачивания на корне — единственное, что тут есть кроме
+    // протокола. `/index.html` ведёт туда же: под этим именем страница лежала на
+    // GitHub Pages, и уже написанные ссылки не должны упираться в 404 — стоит
+    // это одной строки. HEAD axum отвечает на `get` сам.
     let app = Router::new()
         .route("/v1/ws", get(ws_handler))
+        .route("/", get(page))
+        .route("/index.html", get(page))
         .with_state(state);
 
     // НАТИВНЫЙ HTTPS: если переданы пути к сертификату (из конфига `[server]`) —
@@ -2420,7 +2522,7 @@ mod tests {
 
         /// Поднять координатор на случайном порту с ИЗВЕСТНЫМ секретом подписи
         /// (иначе анонс отклонят на первом клейме).
-        async fn spawn_coord() -> SocketAddr {
+        pub(super) async fn spawn_coord() -> SocketAddr {
             // Секрет через env — тот же путь, что у оператора; файл не трогаем.
             // Ровно один раз на весь бинарь: setenv в многопоточном процессе
             // гонится с getenv соседних тестов.
@@ -2435,7 +2537,7 @@ mod tests {
 
         /// Клиент с ПОДДЕЛЬНЫМ (для сервера — доверенным, т.к. мы с loopback)
         /// внешним IP: иначе наблюдаемый 127.0.0.1 не публикуется и анонс = 422.
-        async fn client(
+        pub(super) async fn client(
             addr: SocketAddr,
             ip: &str,
         ) -> tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>> {
@@ -2445,7 +2547,7 @@ mod tests {
         }
 
         /// Отправить анонс хоста и дождаться ответа сервера (hostok/error).
-        async fn announce<S>(ws: &mut S, id: &str, token: &str) -> String
+        pub(super) async fn announce<S>(ws: &mut S, id: &str, token: &str) -> String
         where
             S: SinkExt<CMsg, Error = tokio_tungstenite::tungstenite::Error>
                 + StreamExt<Item = std::result::Result<CMsg, tokio_tungstenite::tungstenite::Error>>
@@ -2477,7 +2579,7 @@ mod tests {
         }
 
         /// Спросить у координатора, есть ли ещё такой хост (resolve по коду).
-        async fn resolvable(addr: SocketAddr, id: &str) -> bool {
+        pub(super) async fn resolvable(addr: SocketAddr, id: &str) -> bool {
             let mut ws = client(addr, "45.11.22.44").await;
             ws.send(CMsg::Text(serde_json::json!({"t":"resolve","id":7,"code":id}).to_string())).await.unwrap();
             loop {
@@ -2736,5 +2838,171 @@ mod tests {
                 "подсказка ушла постороннему: уход гостя дёргал бы проверку живости у всех подряд",
             );
         }
+    }
+
+    // ── КАТЕГОРИЯ С: СТРАНИЦА СКАЧИВАНИЯ ──────────────────────────────────────
+    //
+    // Страница отдаётся тем же сервером, что и протокол, поэтому проверяем её
+    // по-настоящему — сырым HTTP в тот же сокет, а не вызовом обработчика.
+    // Только так видно то, ради чего всё и делалось: заголовки, 304 и то, что
+    // `/v1/ws` остался жив рядом.
+    mod page_route {
+        use super::*;
+        // Поднять координатор и поговорить с ним по WS умеет соседний модуль —
+        // второго такого набора не заводим.
+        use super::ws_life::{announce, client, resolvable, spawn_coord};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        /// Сырой HTTP/1.1-запрос. Готового HTTP-клиента в dev-зависимостях нет,
+        /// и ради пяти запросов тянуть целый крейт дороже, чем написать их
+        /// руками. `Connection: close` избавляет от разбора длины тела: сервер
+        /// сам закончит ответ разрывом.
+        async fn http(addr: SocketAddr, path: &str, extra: &str) -> (String, Vec<u8>) {
+            let req = format!("GET {path} HTTP/1.1\r\nHost: bemyvpn.test\r\nConnection: close\r\n{extra}\r\n");
+            let mut s = tokio::net::TcpStream::connect(addr).await.expect("координатор не отвечает");
+            s.write_all(req.as_bytes()).await.expect("запрос не ушёл");
+            let mut buf = Vec::new();
+            s.read_to_end(&mut buf).await.expect("ответ не дочитан");
+            let end = buf.windows(4).position(|w| w == b"\r\n\r\n").expect("в ответе нет конца заголовков");
+            (String::from_utf8_lossy(&buf[..end]).into_owned(), buf[end + 4..].to_vec())
+        }
+
+        /// Значение заголовка из сырого ответа. Регистр не важен — сервер волен
+        /// писать как хочет, а тест не должен от этого зависеть.
+        fn head_val(head: &str, name: &str) -> Option<String> {
+            let want = format!("{}:", name.to_ascii_lowercase());
+            head.lines()
+                .find(|l| l.to_ascii_lowercase().starts_with(&want))
+                .map(|l| l[want.len()..].trim().to_string())
+        }
+
+        /// Корень отдаёт саму страницу, целиком и с правильным типом. Кодировка
+        /// в типе ОБЯЗАТЕЛЬНА: страница на русском и своего `<meta charset>`
+        /// у неё нет — без неё браузер угадает и угадает неверно.
+        #[tokio::test]
+        async fn root_serves_the_page_as_utf8_html() {
+            let addr = spawn_coord().await;
+            let (head, body) = http(addr, "/", "").await;
+            assert!(head.starts_with("HTTP/1.1 200 "), "корень не отдал страницу: {}", head.lines().next().unwrap_or(""));
+            assert_eq!(
+                head_val(&head, "content-type").as_deref(),
+                Some("text/html; charset=utf-8"),
+                "тип содержимого без кодировки — кириллица приедет мусором",
+            );
+            assert_eq!(body, PAGE_HTML.as_bytes(), "тело не совпадает со вшитой страницей");
+            // Не «просто 200»: это ровно та страница, за которой пришли.
+            assert!(String::from_utf8_lossy(&body).contains("Скачать"), "в теле нет кнопки скачивания");
+        }
+
+        /// Тот же файл лежал на GitHub Pages под именем index.html — уже
+        /// написанные ссылки не должны упираться в 404.
+        #[tokio::test]
+        async fn index_html_is_the_same_page() {
+            let addr = spawn_coord().await;
+            let (h1, b1) = http(addr, "/", "").await;
+            let (h2, b2) = http(addr, "/index.html", "").await;
+            assert!(h2.starts_with("HTTP/1.1 200 "), "/index.html не отдаётся");
+            assert_eq!(b1, b2, "по двум адресам отдаются разные страницы");
+            assert_eq!(head_val(&h1, "etag"), head_val(&h2, "etag"), "ETag у одной и той же страницы разный");
+        }
+
+        /// Повторный заход не должен тащить страницу заново: браузер называет
+        /// свой ETag — сервер отвечает «не изменилось» и пустым телом.
+        #[tokio::test]
+        async fn known_etag_answers_304_without_body() {
+            let addr = spawn_coord().await;
+            let (head, _) = http(addr, "/", "").await;
+            let etag = head_val(&head, "etag").expect("ETag не выдан — повторный заход будет качать всё заново");
+            assert!(etag.starts_with('"') && etag.ends_with('"'), "ETag не в кавычках: {etag}");
+            assert!(head_val(&head, "cache-control").is_some(), "нет Cache-Control — кэшировать нечем");
+
+            let (head2, body2) = http(addr, "/", &format!("If-None-Match: {etag}\r\n")).await;
+            assert!(head2.starts_with("HTTP/1.1 304 "), "знакомый ETag не дал 304: {}", head2.lines().next().unwrap_or(""));
+            assert!(body2.is_empty(), "при 304 пришло тело в {} байт", body2.len());
+            assert_eq!(head_val(&head2, "etag").as_deref(), Some(etag.as_str()), "в 304 не тот ETag");
+
+            // Чужой ETag — это другая страница, её обязаны прислать целиком.
+            let (head3, body3) = http(addr, "/", "If-None-Match: \"deadbeef\"\r\n").await;
+            assert!(head3.starts_with("HTTP/1.1 200 "), "устаревший ETag не заставил прислать страницу");
+            assert_eq!(body3, PAGE_HTML.as_bytes());
+        }
+
+        /// Сжатое уходит только тому, кто его просил, и под ОТДЕЛЬНЫМ ETag —
+        /// иначе кэш-посредник вернёт gzip тому, кто его не понимает.
+        #[tokio::test]
+        async fn gzip_goes_only_to_those_who_asked() {
+            let addr = spawn_coord().await;
+            let (plain, plain_body) = http(addr, "/", "").await;
+            let (gz, gz_body) = http(addr, "/", "Accept-Encoding: gzip, deflate\r\n").await;
+
+            assert_eq!(head_val(&plain, "content-encoding"), None, "сжатое ушло тому, кто не просил");
+            assert_eq!(head_val(&gz, "content-encoding").as_deref(), Some("gzip"), "просивший gzip не получил сжатого");
+            assert_eq!(head_val(&gz, "vary").as_deref().map(str::to_ascii_lowercase), Some("accept-encoding".into()),
+                "без Vary общий кэш отдаст gzip тому, кто его не понимает");
+            assert_ne!(head_val(&plain, "etag"), head_val(&gz, "etag"), "у разных тел одинаковый ETag");
+            assert!(gz_body.starts_with(&[0x1f, 0x8b]), "тело не похоже на gzip");
+            assert!(gz_body.len() * 2 < plain_body.len(), "сжатие не дало и двух раз: {} против {}", gz_body.len(), plain_body.len());
+
+            // `gzip;q=0` — это ЗАПРЕТ. Прислать сжатое такому клиенту = прислать мусор.
+            let (no, _) = http(addr, "/", "Accept-Encoding: gzip;q=0, identity\r\n").await;
+            assert_eq!(head_val(&no, "content-encoding"), None, "gzip;q=0 прочитан как разрешение");
+
+            // Свой ETag сжатого тоже обязан давать 304, иначе повторный заход
+            // качает пять килобайт впустую.
+            let etag = head_val(&gz, "etag").unwrap();
+            let (again, body) = http(addr, "/", &format!("Accept-Encoding: gzip\r\nIf-None-Match: {etag}\r\n")).await;
+            assert!(again.starts_with("HTTP/1.1 304 "), "ETag сжатого не дал 304");
+            assert!(body.is_empty());
+        }
+
+        /// ГЛАВНОЕ: страница появилась рядом, а не вместо. Протокол на том же
+        /// порту обязан работать как работал.
+        #[tokio::test]
+        async fn ws_still_works_next_to_the_page() {
+            let addr = spawn_coord().await;
+            let (head, _) = http(addr, "/", "").await;
+            assert!(head.starts_with("HTTP/1.1 200 "));
+
+            let mut ws = client(addr, "45.11.22.33").await;
+            assert_eq!(announce(&mut ws, "PAGENEIGH001", "tok").await, "hostok", "страница сломала регистрацию хоста");
+            assert!(resolvable(addr, "PAGENEIGH001").await, "хост не находится по коду");
+
+            // И страница после работы протокола тоже никуда не делась.
+            let (head2, _) = http(addr, "/", "").await;
+            assert!(head2.starts_with("HTTP/1.1 200 "), "после работы протокола страница отвалилась");
+        }
+    }
+
+    /// Сжатый вариант обязан быть ТОЙ ЖЕ страницей. Последние четыре байта
+    /// gzip — длина исходника; разошлась, значит в бинаре лежат две разные
+    /// страницы и половине посетителей уедет старая.
+    #[test]
+    fn gzip_variant_is_built_from_this_very_page() {
+        assert!(PAGE_GZ.starts_with(&[0x1f, 0x8b]), "это не gzip");
+        let tail: [u8; 4] = PAGE_GZ[PAGE_GZ.len() - 4..].try_into().unwrap();
+        assert_eq!(
+            u32::from_le_bytes(tail) as usize,
+            PAGE_HTML.len(),
+            "сжатое собрано не из этой страницы",
+        );
+    }
+
+    /// Разбор Accept-Encoding. `gzip;q=0` — запрет, а не разрешение, и слово
+    /// «gzip» внутри другого названия кодировки разрешением не является.
+    #[test]
+    fn accept_encoding_is_read_literally() {
+        let hdr = |v: &str| {
+            let mut h = HeaderMap::new();
+            h.insert(header::ACCEPT_ENCODING, v.parse().unwrap());
+            h
+        };
+        assert!(accepts_gzip(&hdr("gzip")));
+        assert!(accepts_gzip(&hdr("br, gzip, deflate")));
+        assert!(accepts_gzip(&hdr("gzip;q=0.5")));
+        assert!(!accepts_gzip(&hdr("gzip;q=0")), "явный запрет прочитан как разрешение");
+        assert!(!accepts_gzip(&hdr("gzip;q=0.0")), "явный запрет прочитан как разрешение");
+        assert!(!accepts_gzip(&hdr("identity")));
+        assert!(!accepts_gzip(&hdr("x-gzip-not-really")), "чужое название принято за gzip");
+        assert!(!accepts_gzip(&HeaderMap::new()), "без заголовка сжатие не предлагаем");
     }
 }
