@@ -102,7 +102,8 @@ pub async fn download(url: &str, max_bytes: usize) -> Result<Vec<u8>> {
 /// (~19 МБ); 64 МБ дают запас на рост и при этом не дают залить память.
 pub const MAX_ASSET_BYTES: usize = 64 * 1024 * 1024;
 
-/// Заменить СВОЙ исполняемый файл скачанным и вернуть путь к резервной копии.
+/// Заменить СВОЙ исполняемый файл скачанным. Возвращает ПАРУ путей: свой файл
+/// и резервную копию (`(exe, bak)`).
 ///
 /// Порядок важен: сначала кладём новый файл РЯДОМ, потом переименованиями
 /// меняем местами. `rename` в пределах одной папки атомарен, поэтому на диске
@@ -111,11 +112,30 @@ pub const MAX_ASSET_BYTES: usize = 64 * 1024 * 1024;
 ///
 /// Работающий процесс при этом не страдает: на Unix он держит СТАРЫЙ inode и
 /// продолжает выполняться до перезапуска.
+///
+/// СВОЙ ПУТЬ ВОЗВРАЩАЕТСЯ НЕ ДЛЯ УДОБСТВА — СПРОСИТЬ ЕГО ПОСЛЕ ПОДМЕНЫ НЕЛЬЗЯ.
+/// На Linux `current_exe()` читает `/proc/self/exe`, а это ссылка на inode, а не
+/// на имя: после переименования она показывает `…/bemyvpn.bak`, а если старый
+/// файл удалить — `…/bemyvpn (deleted)`. Кто спросит заново, получит путь
+/// РЕЗЕРВНОЙ КОПИИ. Ровно на этом ломался автоперезапуск службы: он искал юнит с
+/// таким ExecStart и, конечно, не находил. На macOS путь берётся от момента
+/// запуска и переименованием не меняется — поэтому на машине разработчика
+/// ошибка не воспроизводится вовсе, и её никто не видел до боевого сервера.
 #[cfg(unix)]
-pub fn replace_self(new_bytes: &[u8]) -> Result<std::path::PathBuf> {
+pub fn replace_self(new_bytes: &[u8]) -> Result<(std::path::PathBuf, std::path::PathBuf)> {
+    let me = std::env::current_exe().map_err(|e| Error::Net(format!("свой путь: {e}")))?;
+    replace_file(&me, new_bytes)
+}
+
+/// Тело подмены, отвязанное от «себя»: путь приходит аргументом.
+///
+/// Отвязано ради проверяемости — на настоящем бинаре такое не погоняешь, а на
+/// временном файле в песочнице проверяется и порядок переименований, и то, что
+/// наружу отдаётся ИСХОДНЫЙ путь (см. тест `swap_reports_the_path_it_replaced`).
+#[cfg(unix)]
+fn replace_file(me: &std::path::Path, new_bytes: &[u8]) -> Result<(std::path::PathBuf, std::path::PathBuf)> {
     use std::os::unix::fs::PermissionsExt;
 
-    let me = std::env::current_exe().map_err(|e| Error::Net(format!("свой путь: {e}")))?;
     let dir = me.parent().ok_or_else(|| Error::Net("нет родительской папки".into()))?;
     let tmp = dir.join(format!(".bemyvpn-new-{}", std::process::id()));
     let bak = me.with_extension("bak");
@@ -126,13 +146,13 @@ pub fn replace_self(new_bytes: &[u8]) -> Result<std::path::PathBuf> {
 
     // Старый — в .bak (откат), новый — на его место.
     let _ = std::fs::remove_file(&bak);
-    std::fs::rename(&me, &bak).map_err(|e| Error::Net(format!("резервная копия: {e}")))?;
-    if let Err(e) = std::fs::rename(&tmp, &me) {
+    std::fs::rename(me, &bak).map_err(|e| Error::Net(format!("резервная копия: {e}")))?;
+    if let Err(e) = std::fs::rename(&tmp, me) {
         // Подмена не удалась — возвращаем старый файл, иначе останемся без бинаря.
-        let _ = std::fs::rename(&bak, &me);
+        let _ = std::fs::rename(&bak, me);
         return Err(Error::Net(format!("подмена: {e}")));
     }
-    Ok(bak)
+    Ok((me.to_path_buf(), bak))
 }
 
 
@@ -409,6 +429,34 @@ mod tests {
                 assert!(name.starts_with("bemyvpn-"), "имя не по шаблону: {name}");
             }
         }
+    }
+
+    /// СТОРОЖ ТОЙ САМОЙ ПОЛОМКИ: подмена обязана отдать наружу ИСХОДНЫЙ путь.
+    ///
+    /// У владельца боевого координатора `bemyvpn update` написал «службы,
+    /// запускающей этот файл, не нашлось» — при живой службе. Причина: путь к
+    /// себе спрашивали ПОВТОРНО, уже после подмены, а на Linux `current_exe()`
+    /// читает `/proc/self/exe` (ссылку на inode) и после переименования отдаёт
+    /// `…/bemyvpn.bak`. Искать юнит по такому пути бессмысленно.
+    ///
+    /// Проверяем на временном файле, а не на настоящем бинаре: подмена
+    /// настоящая, но безобидная. Спроси `replace_file` путь у ОС ещё раз —
+    /// получил бы путь тестового бинаря, и первая же проверка покраснеет.
+    #[cfg(unix)]
+    #[test]
+    fn swap_reports_the_path_it_replaced() {
+        let dir = std::env::temp_dir().join(format!("bmv-replace-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("песочница");
+        let me = dir.join("bemyvpn");
+        std::fs::write(&me, b"OLD").expect("старый файл");
+
+        let (exe, bak) = replace_file(&me, b"NEW").expect("подмена");
+
+        assert_eq!(exe, me, "наружу ушёл не тот путь, который подменяли");
+        assert_ne!(exe, bak, "путь к себе совпал с резервной копией — это и была поломка");
+        assert_eq!(std::fs::read(&exe).unwrap(), b"NEW", "на месте старого файла не новый");
+        assert_eq!(std::fs::read(&bak).unwrap(), b"OLD", "откат невозможен: в .bak не старый файл");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
