@@ -12,3 +12,38 @@
    шлёт WM_SETICON с нулём, то есть ресурс exe до заголовка не доходит. Заголовок
    и панель задач одевает `icon:` у Window в ui/app.slint. */
 1 ICON "bemyvpn.ico"
+
+/* Сведения о файле — то, что Проводник показывает во вкладке «Подробно», а
+   SmartScreen и Defender читают, прикидывая, доверять ли незнакомому exe.
+   Без этого блока свойства файла ПУСТЫ: ни названия, ни издателя, ни версии, —
+   а безымянный exe без подписи модели-эвристики не любят особенно.
+
+   Версия подставляется из BMV_VERSION в build.rs — из ТОГО ЖЕ источника, что и
+   bmv_common::version::VERSION внутри программы, чтобы свойства файла и ответ
+   `bemyvpn version` не разошлись. Сторож в CI сверяет их у готового exe.
+   Имя владельца тут не пишем сознательно: репозиторий публичный. */
+1 VERSIONINFO
+FILEVERSION BMV_VER_NUM
+PRODUCTVERSION BMV_VER_NUM
+FILEOS 0x40004L    /* VOS_NT_WINDOWS32 */
+FILETYPE 0x1L      /* VFT_APP */
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "041904B0"   /* русский (0x419) + Unicode (1200) */
+        BEGIN
+            VALUE "CompanyName",      "BeMyVPN"
+            VALUE "FileDescription",  "BeMyVPN — P2P VPN «Будь моим VPN»"
+            VALUE "FileVersion",      BMV_VER_STR
+            VALUE "InternalName",     "bemyvpn-gui"
+            VALUE "LegalCopyright",   "© BeMyVPN"
+            VALUE "OriginalFilename", "bemyvpn-gui.exe"
+            VALUE "ProductName",      "BeMyVPN"
+            VALUE "ProductVersion",   BMV_VER_STR
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x419, 1200
+    END
+END

@@ -46,3 +46,9 @@ qrcode = { version = "0.14", default-features = false }
 # geteuid: режим 24/7 (systemd-демон) доступен только под root на Linux.
 [target.'cfg(target_os = "linux")'.dependencies]
 libc = "0.2"
+
+[build-dependencies]
+# Встраивает сведения о файле (VERSIONINFO) в Windows-exe. На не-Windows целях
+# не вызывается вовсе (см. build.rs). Крейт уже в дереве сборки — им же окно
+# встраивает свой манифест и значок.
+embed-resource = "3"
