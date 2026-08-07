@@ -1,0 +1,364 @@
+<!doctype html>
+<meta charset="utf-8">
+<!-- Без этой строки телефон верстает страницу в 980 точек и отдаляет её, чтобы
+     влезла: текст становится втрое мельче читаемого. А половина тех, за кем мы
+     пришли, открывает её именно с телефона — вкладки Android и iPhone тут же. -->
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BeMyVPN — скачать</title>
+
+<style>
+  /* Без этого ширина 100% + внутренние отступы дают блок ШИРЕ контейнера,
+     и главная кнопка вылезает вправо. */
+  *, *::before, *::after { box-sizing: border-box; }
+
+  /* Тема одна — тёмная, как само приложение. Это выбор, а не пропуск. */
+  :root {
+    --bg: #08090B;
+    --card: #121519;
+    --float: #1A1E24;
+    --tile: #2A2F39;
+    --line: #253249;      /* синяя кромка — то, что лежит на странице */
+    --line-in: #3B3F49;   /* белая волосяная — то, что внутри блока */
+    --text: #ECEEF2;
+    --dim: #A5AAB5;
+    --mint: #2FE0A8;
+    --blue: #6EA2FF;
+    color-scheme: dark;
+  }
+  body {
+    background: var(--bg); color: var(--text);
+    font-family: ui-sans-serif, -apple-system, "Segoe UI", Roboto, sans-serif;
+    line-height: 1.6; -webkit-font-smoothing: antialiased;
+    overflow-x: hidden;
+  }
+  .wrap { max-width: 33rem; margin: 0 auto; padding: 3.5rem 1.25rem 4rem; }
+
+  /* ── шапка ── */
+  .top { text-align: center; }
+  .logo { width: 84px; height: 84px; margin: 0 auto 1.3rem; display: block; }
+  h1 { font-size: 2.1rem; font-weight: 700; letter-spacing: -.028em; margin-bottom: .5rem; }
+  .tagline {
+    font-size: 1.2rem; text-wrap: balance; max-width: 22rem; margin: 0 auto; line-height: 1.4;
+  }
+  .tagline em { color: var(--mint); font-style: normal; font-weight: 640; }
+  .subline { color: var(--dim); font-size: .95rem; margin-top: .7rem; text-wrap: balance; }
+
+  /* ── выбор системы ── */
+  .picker {
+    display: flex; gap: .3rem; margin: 2.2rem 0 .9rem;
+    background: var(--card); border: 1px solid var(--line);
+    border-radius: 13px; padding: .3rem;
+  }
+  .picker button {
+    flex: 1 1 0; min-width: 0; background: none; border: 1px solid transparent;
+    border-radius: 10px; padding: .5rem .15rem; cursor: pointer;
+    color: var(--dim); font: inherit; font-size: .82rem; font-weight: 600;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    transition: color .12s ease, background .12s ease;
+  }
+  .picker button:hover { color: var(--text); }
+  .picker button[aria-selected="true"] {
+    background: var(--float); border-color: var(--line-in); color: var(--text);
+  }
+  .picker button:focus-visible { outline: 2px solid var(--mint); outline-offset: 1px; }
+
+  /* ── кнопка ──
+     Имя файла живёт ВНУТРИ неё. Отдельной плашкой оно было непонятно к чему
+     привязано, а здесь вопрос не возникает: это же и есть то, что скачается. */
+  .primary {
+    display: flex; align-items: center; justify-content: center; gap: .75rem;
+    width: 100%; background: var(--mint); border: 0; border-radius: 14px;
+    padding: .95rem 1.25rem; text-decoration: none;
+    color: #06120E; letter-spacing: -.01em;
+    transition: filter .15s ease, transform .06s ease;
+  }
+  .primary .txt { display: flex; flex-direction: column; align-items: center; min-width: 0; }
+  .primary .big { font-size: 1.15rem; font-weight: 700; line-height: 1.25; }
+  .primary .file {
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-size: .72rem; font-weight: 500; color: rgba(6, 18, 14, .62);
+    margin-top: .12rem; max-width: 100%;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .primary:hover { filter: brightness(1.08); }
+  .primary:active { transform: translateY(1px); }
+  .primary:focus-visible { outline: 2px solid var(--mint); outline-offset: 3px; }
+  .primary svg { width: 20px; height: 20px; flex: none; }
+  .primary.off {
+    background: var(--card); border: 1px solid var(--line-in);
+    color: var(--dim); font-weight: 600; font-size: 1rem; cursor: default;
+  }
+  .primary.off:hover { filter: none; }
+  .primary.off:active { transform: none; }
+
+  .free { text-align: center; color: var(--dim); font-size: .84rem; margin-top: .8rem; }
+
+  /* ── три шага ── */
+  h2 {
+    font-size: .74rem; letter-spacing: .13em; text-transform: uppercase;
+    color: var(--dim); font-weight: 650; margin: 3.2rem 0 1rem;
+  }
+  .steps { display: grid; gap: .6rem; }
+  .step {
+    display: flex; gap: .85rem; align-items: baseline;
+    background: var(--card); border: 1px solid var(--line);
+    border-radius: 12px; padding: .85rem 1rem;
+  }
+  .step .n {
+    flex: none; width: 1.3rem; color: var(--blue);
+    font-weight: 700; font-size: .92rem; font-variant-numeric: tabular-nums;
+  }
+  .step p { font-size: .95rem; }
+  .step b { font-weight: 640; }
+  .step .quiet { color: var(--dim); }
+
+  /* ── для сервера ── */
+  details.server {
+    margin-top: 1rem; background: var(--card);
+    border: 1px solid var(--line); border-radius: 13px; padding: .9rem 1.05rem;
+  }
+  details.server summary { cursor: pointer; list-style: none; font-size: .92rem; }
+  details.server summary::-webkit-details-marker { display: none; }
+  details.server summary::before { content: "▸ "; color: var(--blue); }
+  details.server[open] summary::before { content: "▾ "; }
+  details.server summary .why { display: block; color: var(--dim); font-size: .84rem; padding-left: 1.1rem; }
+
+  .cmd { margin-top: .9rem; }
+  .cmd-top { display: flex; align-items: center; gap: .5rem; margin-bottom: .5rem; }
+  .cmd-top span { color: var(--dim); font-size: .82rem; }
+  .cmd-top button {
+    margin-left: auto; background: var(--tile); color: var(--text);
+    border: 1px solid var(--line-in); border-radius: 8px;
+    padding: .26rem .6rem; font: inherit; font-size: .78rem; cursor: pointer;
+  }
+  .cmd-top button:hover { border-color: var(--mint); color: var(--mint); }
+  .cmd pre {
+    overflow-x: auto; margin: 0; background: var(--float);
+    border: 1px solid var(--line-in); border-radius: 9px; padding: .7rem .8rem;
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-size: .76rem; line-height: 1.55;
+  }
+  .cmd .hint { color: var(--dim); font-size: .8rem; margin-top: .55rem; }
+  .cmd .hint code {
+    font-family: ui-monospace, Menlo, monospace; font-size: .92em;
+    color: var(--text); background: var(--float);
+    border: 1px solid var(--line-in); border-radius: 5px; padding: .04em .3em;
+  }
+
+  .term { margin-top: 1rem; display: flex; flex-wrap: wrap; gap: .4rem; }
+  .term-name { color: var(--dim); font-size: .82rem; width: 100%; margin-bottom: .1rem; }
+  .chip {
+    display: inline-block; text-decoration: none;
+    background: var(--tile); border: 1px solid var(--line-in); border-radius: 9px;
+    padding: .3rem .65rem; color: var(--text);
+    font-size: .8rem; font-family: ui-monospace, Menlo, monospace;
+  }
+  .chip:hover { border-color: var(--mint); color: var(--mint); }
+
+  .note {
+    margin-top: 1.5rem; border-left: 2px solid var(--blue);
+    padding: .15rem 0 .15rem 1rem; color: var(--dim); font-size: .88rem;
+  }
+  .note b { color: var(--text); font-weight: 640; }
+
+  footer {
+    margin-top: 2.8rem; padding-top: 1.4rem; border-top: 1px solid var(--line-in);
+    text-align: center; color: var(--dim); font-size: .84rem;
+  }
+  footer a { color: var(--blue); text-underline-offset: 3px; }
+</style>
+
+<div class="wrap">
+
+  <div class="top">
+    <svg class="logo" viewBox="0 0 120 120" fill="none" aria-label="Звено">
+      <circle cx="46" cy="60" r="27" stroke="#6EA2FF" stroke-width="9"/>
+      <circle cx="74" cy="60" r="27" stroke="#2FE0A8" stroke-width="9"/>
+      <path d="M60 37.5a27 27 0 0 0 0 45" stroke="#6EA2FF" stroke-width="9"/>
+    </svg>
+    <h1>BeMyVPN</h1>
+    <p class="tagline">Интернет через <em>чужой канал</em> — и никакого сервера посередине.</p>
+    <p class="subline">Открытый список хостов из разных стран. Или свой, по коду. Бесплатно, без учётных записей.</p>
+  </div>
+
+  <div class="picker" role="tablist" aria-label="Выберите систему">
+    <button role="tab" data-os="mac">macOS</button>
+    <button role="tab" data-os="win">Windows</button>
+    <button role="tab" data-os="linux">Linux</button>
+    <button role="tab" data-os="android">Android</button>
+    <button role="tab" data-os="ios">iPhone</button>
+  </div>
+
+  <a class="primary" id="main" href="#">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"
+         stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M12 3v13m0 0 5-5m-5 5-5-5M4 20h16"/>
+    </svg>
+    <span class="txt">
+      <span class="big" id="mainLabel">Скачать</span>
+      <span class="file" id="mainFile"></span>
+    </span>
+  </a>
+
+  <div class="note" id="warn" hidden>
+    <b>Windows покажет предупреждение.</b> Программа не подписана сертификатом.
+    Нажмите «Подробнее» → «Выполнить в любом случае».
+  </div>
+  <div class="note" id="iosNote" hidden>
+    <b>Для iPhone публичной сборки пока нет.</b> Приложения, которые раздают чужой
+    трафик, Apple в магазин не пускает. Ищем путь.
+  </div>
+  <div class="note" id="intelNote" hidden>
+    <b>У вас мак на процессоре Intel.</b> Сборки под него пока нет — только под
+    Apple Silicon. Пока подойдёт версия для терминала ниже.
+  </div>
+
+  <h2>Как это работает</h2>
+  <div class="steps">
+    <div class="step"><span class="n">1</span><p>Открываете список <b>хостов</b> — живых компьютеров и телефонов в разных странах, чьи владельцы раздают свой интернет.</p></div>
+    <div class="step"><span class="n">2</span><p>Выбираете любой и жмёте «Старт». <span class="quiet">Если кто-то раздаёт лично для вас — вводите его код, и в общем списке он не появится.</span></p></div>
+    <div class="step"><span class="n">3</span><p>Трафик идёт <b>напрямую</b> к этому хосту. Наш сервер только знакомит вас и в разговоре не участвует.</p></div>
+    <div class="step"><span class="n">4</span><p>Можно и наоборот — <b>раздать свой</b> интернет тем, у кого его нет.</p></div>
+  </div>
+
+  <h2>Хотите помочь людям?</h2>
+  <details class="server">
+    <summary>Поднять хост на сервере<span class="why">Одна команда — и вашим каналом сможет пользоваться тот, у кого своего нет</span></summary>
+
+    <div class="cmd">
+      <div class="cmd-top">
+        <span>Linux — архитектуру подставит сама</span>
+        <button type="button" id="copy">Скопировать</button>
+      </div>
+      <pre id="cmdText">curl -fsSL https://github.com/mister-PARADISE/bemyvpn/releases/latest/download/bemyvpn-linux-$(uname -m | sed s/aarch64/arm64/)-terminal -o bemyvpn &amp;&amp; chmod +x bemyvpn &amp;&amp; sudo ./bemyvpn install &amp;&amp; sudo bemyvpn</pre>
+      <p class="hint">
+        Скачивает, ставит себя в систему — дальше команда просто <code>bemyvpn</code>,
+        из любой папки — и открывает меню: имя, лимит гостей, протокол, пароль.
+        Оттуда же ставится служба, чтобы раздача пережила выход из SSH и
+        перезагрузку — за этим <code>sudo</code> и нужен. Сама раздача прав
+        администратора не требует.
+      </p>
+    </div>
+
+    <div class="term">
+      <span class="term-name">Другие системы — вручную</span>
+      <a class="chip" href="https://github.com/mister-PARADISE/bemyvpn/releases/latest/download/bemyvpn-linux-x86_64-terminal">Linux x86-64</a>
+      <a class="chip" href="https://github.com/mister-PARADISE/bemyvpn/releases/latest/download/bemyvpn-linux-arm64-terminal">Linux ARM</a>
+      <a class="chip" href="https://github.com/mister-PARADISE/bemyvpn/releases/latest/download/bemyvpn-macos-arm64-terminal">macOS</a>
+      <a class="chip" href="https://github.com/mister-PARADISE/bemyvpn/releases/latest/download/bemyvpn-windows-x86_64-terminal.exe">Windows x86-64</a>
+      <a class="chip" href="https://github.com/mister-PARADISE/bemyvpn/releases/latest/download/bemyvpn-windows-arm64-terminal.exe">Windows ARM</a>
+    </div>
+  </details>
+
+  <footer>
+    Не та система или нужен другой файл — <a href="https://github.com/mister-PARADISE/bemyvpn/releases/latest">все версии и архитектуры на GitHub</a>.
+    Там же исходный код.
+  </footer>
+</div>
+
+<script>
+  // ССЫЛКИ НЕ ЗАВИСЯТ ОТ ВЫПУСКА. GitHub держит постоянный адрес
+  // /releases/latest/download/<имя файла> — он всегда ведёт на свежий выпуск.
+  // Поэтому сайту не нужно ни обращаться к их API, ни пересобираться после
+  // каждого тега: выложили релиз — сайт уже отдаёт новое.
+  var BASE = "https://github.com/mister-PARADISE/bemyvpn/releases/latest/download/";
+
+  // Одна система — одна запись. Разрядность внутри, а не отдельной строкой.
+  var OS = {
+    mac:     { name: "macOS",   builds: [["Apple Silicon", "bemyvpn-macos-arm64.dmg"]] },
+    win:     { name: "Windows", builds: [["x86-64", "bemyvpn-windows-x86_64.exe"], ["ARM", "bemyvpn-windows-arm64.exe"]] },
+    linux:   { name: "Linux",   builds: [["x86-64", "bemyvpn-linux-x86_64.AppImage"], ["ARM", "bemyvpn-linux-arm64.AppImage"]] },
+    android: { name: "Android", builds: [["APK", "bemyvpn-android-arm64.apk"]] },
+    ios:     { name: "iPhone",  builds: [] }
+  };
+
+  var cur = "win", curBuild = 0, sure = false, intelMac = false;
+
+  // ── УГАДАТЬ СИСТЕМУ И РАЗРЯДНОСТЬ ────────────────────────────────────────
+  // Строка браузера про разрядность почти всегда врёт: Windows на ARM
+  // представляется как x86 ради совместимости, а мак на Apple Silicon пишет
+  // «Intel Mac OS X». Поэтому спрашиваем ещё два источника.
+  function archFromGpu() {
+    // Видеокарта себя не скрывает: у Apple Silicon это «Apple GPU»/«Apple M…»,
+    // у мака на Intel — «Intel…». Единственный надёжный способ отличить их
+    // из браузера.
+    try {
+      var c = document.createElement("canvas");
+      var gl = c.getContext("webgl") || c.getContext("experimental-webgl");
+      if (!gl) return "";
+      var ext = gl.getExtension("WEBGL_debug_renderer_info");
+      return ext ? String(gl.getParameter(ext.UNMASKED_RENDERER_WEBGL)) : "";
+    } catch (e) { return ""; }
+  }
+
+  function guess() {
+    var ua = navigator.userAgent;
+    if (/Android/i.test(ua)) return ["android", 0, true];
+    if (/iPhone|iPad|iPod/i.test(ua)) return ["ios", 0, true];
+    if (/Win/i.test(ua)) return ["win", /ARM|aarch64/i.test(ua) ? 1 : 0, false];
+    if (/Mac/i.test(ua)) {
+      var gpu = archFromGpu();
+      if (/Intel/i.test(gpu)) intelMac = true;
+      return ["mac", 0, /Apple/i.test(gpu)];
+    }
+    if (/Linux/i.test(ua)) return ["linux", /aarch64|arm/i.test(ua) ? 1 : 0, /aarch64|arm/i.test(ua)];
+    return ["win", 0, false];
+  }
+
+  function paint() {
+    var os = OS[cur], btn = document.getElementById("main");
+    var label = document.getElementById("mainLabel"), file = document.getElementById("mainFile");
+    document.querySelectorAll(".picker button").forEach(function (b) {
+      b.setAttribute("aria-selected", b.dataset.os === cur ? "true" : "false");
+    });
+    document.getElementById("warn").hidden = cur !== "win";
+    document.getElementById("iosNote").hidden = cur !== "ios";
+    document.getElementById("intelNote").hidden = !(cur === "mac" && intelMac);
+
+    if (!os.builds.length) {
+      btn.className = "primary off";
+      btn.removeAttribute("href");
+      label.textContent = "Сборки для " + os.name + " пока нет";
+      file.textContent = "";
+      return;
+    }
+    // Разрядность выбирает сама и молча. Ошиблись — внизу ссылка на GitHub,
+    // где лежат все файлы; переспрашивать каждого ради редкого случая
+    // значит мешать всем остальным.
+    var b = os.builds[curBuild];
+    btn.className = "primary";
+    btn.href = BASE + b[1];
+    label.textContent = "Скачать для " + os.name;
+    file.textContent = b[1];
+  }
+
+  var g = guess(); cur = g[0]; curBuild = g[1]; sure = g[2];
+
+  // Можно открыть страницу сразу под нужную систему: ?os=android.
+  // Пригождается для прямых ссылок («скачать для Android») и для показа
+  // страницы такой, какой её увидят с другого устройства.
+  var forced = window.__forceOs ||
+    (new URLSearchParams(location.search).get("os") || "").toLowerCase();
+  if (OS[forced]) { cur = forced; curBuild = 0; sure = false; }
+
+  if (navigator.userAgentData && navigator.userAgentData.getHighEntropyValues) {
+    navigator.userAgentData.getHighEntropyValues(["architecture"]).then(function (h) {
+      if (h.architecture) {
+        var arm = h.architecture === "arm";
+        if (cur === "win" || cur === "linux") { curBuild = arm ? 1 : 0; sure = true; }
+      }
+      paint();
+    }).catch(paint);
+  } else { paint(); }
+
+  document.querySelectorAll(".picker button").forEach(function (b) {
+    b.addEventListener("click", function () { cur = b.dataset.os; curBuild = 0; sure = false; paint(); });
+  });
+  document.getElementById("copy").addEventListener("click", function () {
+    var btn = this;
+    navigator.clipboard.writeText(document.getElementById("cmdText").textContent).then(function () {
+      btn.textContent = "Скопировано";
+      setTimeout(function () { btn.textContent = "Скопировать"; }, 1600);
+    });
+  });
+</script>
