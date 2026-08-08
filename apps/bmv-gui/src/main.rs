@@ -598,7 +598,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // проекция в разметку — тоже одним местом (`show_vpn*`). Здесь эти строки
     // раздавались из одиннадцати мест сразу.
     show_vpn_off(&ui, "");
-    ui.set_host_status("Раздача выключена".into());
     // Сохранённые настройки раздачи — на экран.
     ui.set_host_name(saved_host.name.into());
     ui.set_host_public(saved_host.public);
@@ -1486,7 +1485,7 @@ fn wire_host(
                 byhandle.spawn(async move { let _ = tokio::time::timeout(Duration::from_secs(3), eng.host_deannounce()).await; });
             }
             *hs.lock().unwrap() = None;
-            set_host(&weak, 0, "Раздача выключена".into(), String::new());
+            set_host(&weak, 0, String::new());
             return;
         }
         let (name, public, max, password, protocol) = weak.upgrade()
@@ -1503,7 +1502,6 @@ fn wire_host(
         if let Some(ui) = weak.upgrade() {
             save_config(&engine_tg, &ui); // раздача пошла с этими настройками — они и сохраняются
             ui.set_host_state(1);
-            ui.set_host_status("Запускаюсь…".into());
             ui.set_host_error("".into());
             // КОД НЕ СТИРАЕМ. Он выдан сервером, валиден и переживает
             // перезапуск. Стирали его здесь, а восстанавливать было некому:
@@ -1559,7 +1557,7 @@ fn wire_host(
             };
             *heng2.lock().unwrap() = Some(eng.clone());
             *hs2.lock().unwrap() = Some(std::time::Instant::now());
-            set_host(&weak, 2, "Раздаю интернет".into(), eng.host_id().to_string());
+            set_host(&weak, 2, eng.host_id().to_string());
 
             // Всё дерево раздачи — в bmv_desktop::hosting: там сессии гостей
             // порождаются в тот же JoinSet, поэтому abort() этой задачи гасит и
@@ -1568,7 +1566,7 @@ fn wire_host(
             bmv_desktop::hosting::serve_host(eng.clone(), hub).await;
             heng2.lock().unwrap().take();
             *hs2.lock().unwrap() = None;
-            set_host(&weak, 0, "Раздача выключена".into(), String::new());
+            set_host(&weak, 0, String::new());
         });
         *ht.borrow_mut() = Some(task);
     });
@@ -1600,7 +1598,7 @@ fn wire_host(
                 byh.spawn(async move { let _ = tokio::time::timeout(Duration::from_secs(3), eng.host_deannounce()).await; });
             }
             *hs_nc.lock().unwrap() = None;
-            set_host(&weak, 0, "Раздача выключена".into(), String::new());
+            set_host(&weak, 0, String::new());
             if was {
                 // Раздавали → авто-рестарт: toggle сам запросит свежий код.
                 let weak2 = weak.clone();
@@ -1658,12 +1656,11 @@ fn wire_host(
     }
 }
 
-fn set_host(weak: &Weak<AppWindow>, state: i32, text: String, code: String) {
+fn set_host(weak: &Weak<AppWindow>, state: i32, code: String) {
     let weak = weak.clone();
     let _ = slint::invoke_from_event_loop(move || {
         if let Some(ui) = weak.upgrade() {
             ui.set_host_state(state);
-            ui.set_host_status(text.into());
             // Пустой код = сохранить прежний (после стопа код всё равно виден, как
             // на iOS/Android). Реально меняем только на непустой (старт/новый код).
             if !code.is_empty() { ui.set_host_code(code.into()); }
@@ -1677,7 +1674,6 @@ fn set_host_err(weak: &Weak<AppWindow>, msg: String) {
     let _ = slint::invoke_from_event_loop(move || {
         if let Some(ui) = weak.upgrade() {
             ui.set_host_state(0);
-            ui.set_host_status("Раздача выключена".into());
             // Код НЕ сбрасываем — он валиден, пригодится для повторной попытки.
             ui.set_host_error(msg.into());
         }

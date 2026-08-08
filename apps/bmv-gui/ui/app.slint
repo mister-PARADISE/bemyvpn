@@ -137,7 +137,6 @@ export component AppWindow inherits Window {
     in property <string> vpn-elapsed;
     // ── хост ──
     in property <int> host-state;
-    in property <string> host-status;
     in property <string> host-code;
     in property <string> host-error;
     in property <string> host-ip;
@@ -244,7 +243,6 @@ export component AppWindow inherits Window {
             }
             if tab == 1: HostPage {
                 host-state: root.host-state;
-                host-status: root.host-status;
                 host-code: root.host-code;
                 host-error: root.host-error;
                 host-ip: root.host-ip;
