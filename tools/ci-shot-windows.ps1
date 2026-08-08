@@ -171,6 +171,15 @@ public class Win32 {
     // topmost: MinimizeAll does not touch it, SetForegroundWindow does not beat
     // it, and every shot came out as a picture of that wizard. HWND_TOPMOST does.
     [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int w, int ht, uint flags);
+    // Sweeping foreign full-screen windows off the desktop. The ARM runner boots
+    // straight into the Windows out-of-box wizard ("Choose privacy settings"),
+    // which is topmost, has no minimise box, and survives both MinimizeAll and
+    // HWND_TOPMOST on our own window - every frame came out a picture of it.
+    // SW_HIDE takes any window, wizard or not.
+    public delegate bool EnumProc(IntPtr h, IntPtr p);
+    [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc cb, IntPtr p);
+    [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
+    [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
 }
 '@
 
@@ -260,7 +269,9 @@ public class Win32 {
     [void][Win32]::DwmGetWindowAttribute($h, 9, [ref]$fr, 16)
     [void][Win32]::GetWindowRect($h, [ref]$wr)
     $inv = [Globalization.CultureInfo]::InvariantCulture
-    function Fmt([double]$v) { return $v.ToString('0.0', $inv) }
+    # '0.##', not '0.0': the scale 1.25 printed as "1.3" and the table read as if
+    # 125% had never been measured.
+    function Fmt([double]$v) { return $v.ToString('0.##', $inv) }
     Write-Host ("MEASURE client {0}x{1} px = {2}x{3} pt" -f $cr.Right, $cr.Bottom,
         (Fmt ($cr.Right / $dpi)), (Fmt ($cr.Bottom / $dpi)))
     Write-Host ("MEASURE visible frame {0}x{1} px = {2}x{3} pt (border {4} pt a side, title {5} pt)" -f
@@ -277,7 +288,30 @@ public class Win32 {
     # включена»: проверка узнаёт открытую вкладку по мятой заливке ячейки, а у
     # работающей раздачи ячейка становится «Стоп» и красится КРАСНЫМ — то есть
     # верный кадр она объявила бы поломкой.
+    # Hide every visible top-level window of ANOTHER process that covers most of
+    # the screen. Ours is spared by pid, so the sweep cannot hide the app itself.
+    function Clear-Desktop([int]$keepPid) {
+        $sw = [Windows.Forms.Screen]::PrimaryScreen.Bounds
+        $cb = [Win32+EnumProc] {
+            param($wh, $lp)
+            if (-not [Win32]::IsWindowVisible($wh)) { return $true }
+            $pid2 = 0
+            [void][Win32]::GetWindowThreadProcessId($wh, [ref]$pid2)
+            if ($pid2 -eq $keepPid) { return $true }
+            $r = New-Object Win32+RECT
+            [void][Win32]::GetWindowRect($wh, [ref]$r)
+            if (($r.Right - $r.Left) -ge $sw.Width * 0.6 -and ($r.Bottom - $r.Top) -ge $sw.Height * 0.6) {
+                Write-Host "hiding a full-screen window of pid $pid2"
+                [void][Win32]::ShowWindow($wh, 0)   # SW_HIDE
+            }
+            return $true
+        }
+        [void][Win32]::EnumWindows($cb, [IntPtr]::Zero)
+    }
+
     function Shoot([int]$tab, [string]$name, [bool]$judge = $true) {
+        Clear-Desktop $script:owner
+        [void][Win32]::SetForegroundWindow($script:h)
         # Park the cursor off the bar: it can land in the frame, and holding it
         # over a cell would mean measuring the hovered cell instead of the open one.
         [void][Win32]::SetCursorPos(4, 4)
@@ -301,6 +335,13 @@ public class Win32 {
         [Win32]::mouse_event(0x04, 0, 0, 0, [IntPtr]::Zero)   # LEFTUP
         Start-Sleep -Seconds 2
     }
+
+    # The shots and the width sweep are INDEPENDENT answers to two different
+    # questions, so a failure of the first must not swallow the second: the shots
+    # depend on a desktop we do not own (see Clear-Desktop), the measurement does
+    # not. The error is kept and rethrown after the sweep has printed its table.
+    $shotError = $null
+    try {
 
     Shoot 0 'vpn'
     Open-Tab 1
@@ -327,6 +368,8 @@ public class Win32 {
         (Join-Path $out 'windows-host.png'),
         (Join-Path $out 'windows-server.png')) + $rect) | Out-Null
 
+    } catch { $shotError = $_; Write-Host "shots failed, measuring anyway: $($_.Exception.Message)" }
+
     # ── THE SAME WINDOW AT FOUR SCREEN SCALES ────────────────────────────────
     #
     # "Too wide on Windows" has to be answered for the scales people actually
@@ -347,6 +390,11 @@ public class Win32 {
     # pure-function one and lives in the tests of main.rs.
     Stop-Process -Name 'bemyvpn-gui' -Force -ErrorAction SilentlyContinue
     Start-Sleep -Seconds 2
+    # The reference is the app's OWN width at 100%, not a number copied from the
+    # source: the layout width lives in main.rs (and is deliberately not the same
+    # on every OS), and a second copy here would go stale the day it changes.
+    # The statement being checked is "the same in points at every scale".
+    $ref = 0.0
     $wrong = @()
     $n = 0
     foreach ($sf in 1.0, 1.25, 1.5, 2.0) {
@@ -361,15 +409,18 @@ public class Win32 {
         $wpt = $c2.Right / $sf
         Write-Host ("SCALE {0}: client {1}x{2} px = {3} pt wide (OS scale {4})" -f
             (Fmt $sf), $c2.Right, $c2.Bottom, (Fmt $wpt), (Fmt $osdpi))
-        if ([Math]::Abs($wpt - 400.0) -gt 1.0) {
-            $wrong += ("scale {0}: {1} pt instead of 400" -f (Fmt $sf), (Fmt $wpt))
+        if ($ref -eq 0.0) { $ref = $wpt }
+        elseif ([Math]::Abs($wpt - $ref) -gt 1.0) {
+            $wrong += ("scale {0}: {1} pt instead of {2}" -f (Fmt $sf), (Fmt $wpt), (Fmt $ref))
         }
         Stop-Process -Name 'bemyvpn-gui' -Force -ErrorAction SilentlyContinue
         Start-Sleep -Seconds 2
     }
     $env:SLINT_SCALE_FACTOR = $null
-    if ($wrong.Count -gt 0) { throw ("window width is not 400 pt everywhere: " + ($wrong -join '; ')) }
-    Write-Host 'OK: 400 pt wide at 100%, 125%, 150% and 200%'
+    if ($wrong.Count -gt 0) { throw ("window width changes with the screen scale: " + ($wrong -join '; ')) }
+    Write-Host ("OK: {0} pt wide at 100%, 125%, 150% and 200%" -f (Fmt $ref))
+
+    if ($shotError) { throw $shotError }
 }
 finally {
     foreach ($p in $procs) { if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue } }
