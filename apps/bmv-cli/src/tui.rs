@@ -156,6 +156,11 @@ struct App {
     host_code: String, // выданный сервером код (виден и до старта раздачи)
     host_sig: String,  // подпись кода сервером — координатор требует её при анонсе
     host_started: Option<Instant>,
+    /// СВОИ гости: (сейчас, предел) у ЖИВОГО движка раздачи. `None` — своего
+    /// движка в этом процессе нет (раздачу ведёт демон 24/7), и цифр мы не
+    /// знаем. Раньше их искали в каталоге по своему же коду — у скрытой раздачи
+    /// записи там нет, и счётчик стоял на нуле навсегда.
+    host_guests: Option<(u32, u32)>,
     show_qr: bool,
     coord: String,
     coord_ok: Option<bool>,
@@ -240,6 +245,7 @@ pub async fn run(config: Config, seed: Seed) -> Result<(), Box<dyn std::error::E
         host_code: config.host.id.clone(),
         host_sig: config.host.code_sig.clone(),
         host_started: None,
+        host_guests: None,
         show_qr: false,
         coord,
         coord_ok: None,
@@ -297,6 +303,10 @@ pub async fn run(config: Config, seed: Seed) -> Result<(), Box<dyn std::error::E
     let mut draw_err = None;
     loop {
         {
+            // Свои цифры — у СВОЕГО движка, перед каждой отрисовкой. Каталог для
+            // них неверный источник: скрытой раздачи в нём нет по определению, и
+            // счётчик у неё стоял бы на нуле, пока к человеку подключаются.
+            app.lock().unwrap().host_guests = host_engine.lock().unwrap().as_ref().map(|e| e.host_guests());
             let a = app.lock().unwrap();
             if let Err(e) = terminal.draw(|f| ui(f, &a)) {
                 draw_err = Some(e);
@@ -1619,11 +1629,21 @@ fn host_tab(f: &mut Frame, area: Rect, a: &App) {
         skin::code(if code.is_empty() { String::new() } else { format!("    🔑 {code}") }),
     ])];
     if on247 || matches!(a.host, HostMode::On { .. }) {
-        // Гости — из живого каталога (работает и для демона, если хост публичный).
-        let guests = a.hosts.iter().find(|h| h.id == code).map(|h| h.guests).unwrap_or(0);
+        // ГОСТИ — У СВОЕГО ДВИЖКА, а не из каталога по своему же коду. Скрытой
+        // раздачи в каталоге нет по определению, поэтому прежний поиск себя
+        // показывал ей вечный ноль: к человеку подключались, а он не видел.
+        //
+        // `None` — раздачу ведёт демон 24/7, своего движка в этом процессе нет.
+        // Тогда честный прочерк: ноль здесь врал бы ровно тем же — «никто не
+        // подключён» вместо «мы не в курсе». Публичного демона видно в общем
+        // списке на вкладке «VPN», там цифра живая.
+        let (guests, max) = match a.host_guests {
+            Some((g, m)) => (g.to_string(), m),
+            None => ("—".to_string(), a.hset.max_guests),
+        };
         let up = a.host_started.map(uptime).unwrap_or_default();
         let tail = if up.is_empty() { String::new() } else { format!("    ⏳ {up}") };
-        head.push(Line::from(skin::live(format!("👥 {guests}/{}{tail}", a.hset.max_guests))));
+        head.push(Line::from(skin::live(format!("👥 {guests}/{max}{tail}"))));
     }
     f.render_widget(Paragraph::new(head).wrap(Wrap { trim: true }).block(skin::card(" Раздача ")), rows[0]);
 
@@ -1788,6 +1808,7 @@ mod tests {
             host_code: "ABCD1234".into(),
             host_sig: "SIG".into(),
             host_started: None,
+            host_guests: Some((2, 8)),
             show_qr: false,
             coord: "https://bemyvpn.net".into(),
             coord_ok: Some(true),
