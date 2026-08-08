@@ -163,16 +163,83 @@ impl AsyncWrite for TunDevice {
     }
 }
 
-/// Windows: `wintun.dll` вшита в exe (bmv-desktop::ensure_wintun) — распаковываем,
-/// чтобы LoadLibrary нашёл. Лицензия wintun разрешает немодифицированную копию.
+/// Вшитая `wintun.dll` — ПОД СВОЮ АРХИТЕКТУРУ, файл выбирается на сборке.
+///
+/// Раньше файл был ОДИН, `packaging/windows/wintun.dll`, и он был x86_64. Вшивался
+/// он во все Windows-сборки, включая ARM64, а такую библиотеку `LoadLibrary` на
+/// ARM не грузит в принципе. Адаптер не создавался, `make_tun` отдавал ошибку, и
+/// человек читал «нужны права администратора» — текст, не имеющий к причине
+/// никакого отношения. Внешние сторожа этого не видели: они смотрят импорты exe,
+/// а библиотека лежит внутри блобом.
+///
+/// ОТКУДА ФАЙЛЫ И ПОЧЕМУ ИМ МОЖНО ВЕРИТЬ. Оба — из одного официального архива
+/// `wintun-0.14.1.zip` с wintun.net: `bin/amd64/wintun.dll` и `bin/arm64/wintun.dll`.
+/// Подлинность архива доказана сличением, а не доверием к ссылке: amd64-файл из
+/// него оказался ПОБАЙТОВО равен библиотеке, которую проект возил с самого начала
+/// (SHA-256 `e5da8447dc2c…`, 427 552 Б). Значит архив — та же самая сборка, и
+/// arm64-файл (SHA-256 `f7ba89005544…`, 222 488 Б) взят из неё же.
+/// Лицензия wintun разрешает немодифицированную копию.
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+const WINTUN_DLL: &[u8] =
+    include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../packaging/windows/wintun-x86_64.dll"));
+#[cfg(all(target_os = "windows", target_arch = "aarch64"))]
+const WINTUN_DLL: &[u8] =
+    include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../packaging/windows/wintun-arm64.dll"));
+
+/// Ожидаемая метка архитектуры в заголовке PE вшитого файла.
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+const WINTUN_MACHINE: u16 = 0x8664;
+#[cfg(all(target_os = "windows", target_arch = "aarch64"))]
+const WINTUN_MACHINE: u16 = 0xAA64;
+
+// ТРЕТЬЕЙ АРХИТЕКТУРЫ У НАС НЕТ — И СОБИРАТЬСЯ ОНА НЕ ДОЛЖНА.
+// Без этого `WINTUN_DLL` просто не определился бы, и сообщение было бы про
+// «не найдено значение», а не про то, что делать. Молчаливая сборка exe без
+// рабочего туннеля — ровно та беда, из-за которой писан этот блок.
+#[cfg(all(target_os = "windows", not(any(target_arch = "x86_64", target_arch = "aarch64"))))]
+compile_error!(
+    "Windows: нет вшитой wintun.dll для этой архитектуры. Возьмите файл из официального \
+     архива wintun-0.14.1.zip с wintun.net (bin/<арх>/wintun.dll), положите его как \
+     packaging/windows/wintun-<арх>.dll и добавьте ветку к WINTUN_DLL/WINTUN_MACHINE в \
+     crates/bmv-desktop/src/lib.rs. Собирать VPN, у которого заведомо не поднимется \
+     туннель, нельзя."
+);
+
+/// СТОРОЖ РАЗРЯДНОСТИ, СЧИТАННЫЙ НА СБОРКЕ. Имя файла — это обещание, а не факт:
+/// прежняя поломка и состояла в том, что под общим именем лежал x86_64. Здесь
+/// читается сам заголовок PE, поэтому подменённый или перепутанный файл роняет
+/// компиляцию, а не гостя на чужой машине.
+#[cfg(target_os = "windows")]
+const _: () = {
+    // PE-заголовок: по смещению 0x3C лежит e_lfanew (адрес сигнатуры), дальше
+    // «PE\0\0» и два байта Machine. Хватает младших двух байт e_lfanew — он у
+    // всех наших файлов меньше 64 КБ.
+    let d = WINTUN_DLL;
+    let pe = d[0x3c] as usize | (d[0x3d] as usize) << 8;
+    assert!(
+        d[pe] == b'P' && d[pe + 1] == b'E' && d[pe + 2] == 0 && d[pe + 3] == 0,
+        "packaging/windows/wintun-*.dll: это не PE-файл. Нужна библиотека из официального \
+         архива wintun-0.14.1.zip с wintun.net."
+    );
+    assert!(
+        d[pe + 4] as u16 | (d[pe + 5] as u16) << 8 == WINTUN_MACHINE,
+        "packaging/windows/wintun-*.dll НЕ той разрядности, что цель сборки. В файл с именем \
+         одной архитектуры положили библиотеку другой — ровно так ARM-сборка и уехала людям с \
+         x86_64-библиотекой внутри. Возьмите bin/<арх>/wintun.dll из wintun-0.14.1.zip."
+    );
+};
+
+/// Windows: `wintun.dll` вшита в exe — распаковываем, чтобы LoadLibrary нашёл.
 ///
 /// Крейт `wintun`, который её грузит, у нас форкнут (vendor/wintun) — там `netsh`
 /// запускается с CREATE_NO_WINDOW, иначе при подключении мигают окна консоли.
 /// Про запрет на подъём `tun` до 0.8 — комментарий в корневом Cargo.toml.
 #[cfg(target_os = "windows")]
 fn ensure_wintun() -> Result<(), String> {
-    static WINTUN: &[u8] =
-        include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../packaging/windows/wintun.dll"));
+    const WINTUN: &[u8] = WINTUN_DLL;
+    // Сверка ПО ДЛИНЕ заодно чинит машины, на которых уже лежит чужая копия:
+    // ARM-сборка прошлых выпусков распаковывала сюда x86_64-библиотеку (427 552 Б
+    // против 222 488 Б), и при первом же запуске новой версии файл перепишется сам.
     let write_dll = |dir: &std::path::Path| -> std::io::Result<()> {
         let dst = dir.join("wintun.dll");
         if dst.metadata().map(|m| m.len() == WINTUN.len() as u64).unwrap_or(false) {
@@ -1034,6 +1101,29 @@ mod tests {
         assert_eq!(&framed[4..], &ip4, "снятие 4-байтового заголовка должно вернуть пакет");
         // Пустой ввод не должен паниковать.
         assert_eq!(utun_af_header(&[]), [0, 0, 0, 2]);
+    }
+}
+
+/// Windows: `wintun.dll` обязана ГРУЗИТЬСЯ на этой машине.
+///
+/// Проверка живая, а не по заголовку файла: библиотека вшита в exe, распакована
+/// нами и поднята `LoadLibrary` внутри крейта `tun` — сломаться может любое из
+/// трёх звеньев, а видно это только на настоящей Windows. Ровно это звено и
+/// отказало на Windows-ARM: в exe уезжала x86_64-библиотека, гость получал
+/// «нужны права администратора» вместо туннеля.
+///
+/// `#[ignore]`: нужен админ и заводится НАСТОЯЩИЙ адаптер. Гоняется на обоих
+/// Windows-раннерах CI (см. job `windows-check`), там админ есть.
+/// Вывод латиницей — кириллица в консоли Windows-раннера роняет шаг.
+#[cfg(all(test, target_os = "windows"))]
+mod wintun_live {
+    #[test]
+    #[ignore]
+    fn wintun_loads() {
+        match super::make_tun(&bmv_tunnel::TunParams::guest()) {
+            Ok((_dev, name)) => eprintln!("wintun OK: adapter '{name}' created"),
+            Err(e) => panic!("wintun FAILED: {e}"),
+        }
     }
 }
 
