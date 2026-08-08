@@ -32,6 +32,14 @@
 $ErrorActionPreference = 'Stop'
 
 $out = if ($args.Count -ge 1) { $args[0] } else { 'shot' }
+# Второй аргумент 'nostrict' — «кадры снимай и выкладывай, но за них не отвечай».
+# Нужен ровно для одного раннера: на windows-11-arm экран занят мастером первичной
+# настройки Windows. Его окна нет в EnumWindows (пробовали: четыре чужих окна
+# спрятались, мастер остался), HWND_TOPMOST его не перебивает, MinimizeAll не
+# берёт — все кадры выходят снимками мастера. ЗАМЕРЫ (MEASURE и SCALE) от этого
+# не страдают и остаются обязательными на обеих машинах: они читают размеры
+# нашего окна, а не картинку с экрана.
+$strict = -not ($args.Count -ge 2 -and $args[1] -eq 'nostrict')
 New-Item -ItemType Directory -Force -Path $out | Out-Null
 $tmp = Join-Path $env:RUNNER_TEMP 'bmvshot'
 New-Item -ItemType Directory -Force -Path $tmp | Out-Null
@@ -420,7 +428,10 @@ public class Win32 {
     if ($wrong.Count -gt 0) { throw ("window width changes with the screen scale: " + ($wrong -join '; ')) }
     Write-Host ("OK: {0} pt wide at 100%, 125%, 150% and 200%" -f (Fmt $ref))
 
-    if ($shotError) { throw $shotError }
+    if ($shotError) {
+        if ($strict) { throw $shotError }
+        Write-Host "shots are not judged on this runner (its desktop is not ours): $($shotError.Exception.Message)"
+    }
 }
 finally {
     foreach ($p in $procs) { if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue } }

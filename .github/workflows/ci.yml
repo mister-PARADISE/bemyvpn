@@ -277,8 +277,14 @@ jobs:
         include:
           - os: windows-latest
             arch: x86_64
+            shots: strict
+          # Кадры на этом раннере не судим: его рабочий стол занят мастером
+          # первичной настройки Windows, который не убирается ничем (разбор — в
+          # шапке tools/ci-shot-windows.ps1). Снимки всё равно снимаются и едут
+          # артефактом, а ЗАМЕРЫ ширины обязательны и здесь.
           - os: windows-11-arm
             arch: arm64
+            shots: nostrict
     runs-on: ${{ matrix.os }}
     env:
       CARGO_PROFILE_RELEASE_LTO: "false"
@@ -297,7 +303,7 @@ jobs:
       - name: Build GUI and CLI
         run: cargo build --release -p bmv-gui -p bmv-cli
       - name: Full-screen shots per tab
-        run: pwsh -File tools/ci-shot-windows.ps1 shot
+        run: pwsh -File tools/ci-shot-windows.ps1 shot ${{ matrix.shots }}
       - name: Upload screenshot
         if: always()
         uses: actions/upload-artifact@v4
