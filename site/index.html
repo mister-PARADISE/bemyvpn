@@ -197,8 +197,8 @@
       </g>
     </svg>
     <h1>BeMyVPN</h1>
-    <p class="tagline">Интернет через <em>чужой канал</em> — и никакого сервера посередине.</p>
-    <p class="subline">Открытый список хостов из разных стран. Или свой, по коду. Бесплатно, без учётных записей.</p>
+    <p class="tagline"><em>VPN от людей — для людей</em>.</p>
+    <p class="subline">Не серверы компании, а живые люди по всему миру, которые пускают других через свой интернет. Бесплатно, без подписок и учётных записей.</p>
   </div>
 
   <div class="picker" role="tablist" aria-label="Выберите систему">
@@ -220,48 +220,50 @@
     </span>
   </a>
 
+  <p class="free">Бесплатно навсегда. Исходный код открыт.</p>
+
   <div class="note" id="warn" hidden>
-    <b>Windows покажет предупреждение.</b> Программа не подписана сертификатом.
-    Нажмите «Подробнее» → «Выполнить в любом случае».
+    <b>Windows покажет предупреждение при запуске.</b> Так она встречает любую
+    программу без платной подписи — нашей у нас пока нет. Нажмите «Подробнее»
+    и «Выполнить в любом случае». Весь код открыт, его можно проверить.
   </div>
   <div class="note" id="iosNote" hidden>
-    <b>Для iPhone публичной сборки пока нет.</b> Приложения, которые раздают чужой
-    трафик, Apple в магазин не пускает. Ищем путь.
+    <b>Для iPhone сборки пока нет.</b> Apple не пускает в магазин приложения,
+    которые пропускают чужой трафик. Ищем, как обойти это законно.
   </div>
   <div class="note" id="intelNote" hidden>
-    <b>У вас мак на процессоре Intel.</b> Сборки под него пока нет — только под
-    Apple Silicon. Пока подойдёт версия для терминала ниже.
+    <b>У вас мак на процессоре Intel.</b> Все наши файлы для мака собраны под
+    Apple Silicon и на нём не запустятся. Сборки под Intel пока нет вовсе.
   </div>
 
   <h2>Как это работает</h2>
   <div class="steps">
-    <div class="step"><span class="n">1</span><p>Открываете список <b>хостов</b> — живых компьютеров и телефонов в разных странах, чьи владельцы раздают свой интернет.</p></div>
-    <div class="step"><span class="n">2</span><p>Выбираете любой и жмёте «Старт». <span class="quiet">Если кто-то раздаёт лично для вас — вводите его код, и в общем списке он не появится.</span></p></div>
-    <div class="step"><span class="n">3</span><p>Трафик идёт <b>напрямую</b> к этому хосту. Наш сервер только знакомит вас и в разговоре не участвует.</p></div>
-    <div class="step"><span class="n">4</span><p>Можно и наоборот — <b>раздать свой</b> интернет тем, у кого его нет.</p></div>
+    <div class="step"><span class="n">1</span><p>Открываете приложение и видите <b>список людей</b>, которые согласились пускать других через свой интернет. У каждого — страна и сколько уже гостей.</p></div>
+    <div class="step"><span class="n">2</span><p>Выбираете любого, жмёте «Старт» — и сайты видят <b>его страну, а не вашу</b>. <span class="quiet">Если кто-то включил хост лично для вас, он даст короткий код: в общем списке такого не будет.</span></p></div>
+    <div class="step"><span class="n">3</span><p>Дальше вы общаетесь <b>напрямую</b>. Наш сервер только помогает вам найти друг друга и в разговор не лезет — трафик через него не идёт.</p></div>
+    <div class="step"><span class="n">4</span><p>Можно и наоборот: <b>пустить кого-то через себя</b>. Тогда VPN для него — вы.</p></div>
   </div>
 
-  <h2>Хотите помочь людям?</h2>
+  <h2>Пустить других через себя</h2>
   <details class="server">
-    <summary>Поднять хост на сервере<span class="why">Одна команда — и вашим каналом сможет пользоваться тот, у кого своего нет</span></summary>
+    <summary>Поставить на сервер<span class="why">Одна команда — и вы работаете чьим-то VPN круглосуточно</span></summary>
 
     <div class="cmd">
       <div class="cmd-top">
-        <span>Linux — архитектуру подставит сама</span>
+        <span>Скопируйте в терминал сервера</span>
         <button type="button" id="copy">Скопировать</button>
       </div>
       <pre id="cmdText">curl -fsSL https://github.com/mister-PARADISE/bemyvpn/releases/latest/download/bemyvpn-linux-$(uname -m | sed s/aarch64/arm64/)-terminal -o bemyvpn &amp;&amp; chmod +x bemyvpn &amp;&amp; sudo ./bemyvpn install &amp;&amp; sudo bemyvpn</pre>
       <p class="hint">
-        Скачивает, ставит себя в систему — дальше команда просто <code>bemyvpn</code>,
-        из любой папки — и открывает меню: имя, лимит гостей, протокол, пароль.
-        Оттуда же ставится служба, чтобы раздача пережила выход из SSH и
-        перезагрузку — за этим <code>sudo</code> и нужен. Сама раздача прав
-        администратора не требует.
+        Команда сама подставит нужную сборку, скачает её и поставит в систему —
+        дальше достаточно набрать <code>bemyvpn</code> из любой папки. Откроется
+        меню: имя, сколько пускать гостей, пароль. Там же включается работа
+        круглосуточно, чтобы всё продолжалось после выхода из SSH и перезагрузки.
       </p>
     </div>
 
     <div class="term">
-      <span class="term-name">Другие системы — вручную</span>
+      <span class="term-name">Тот же файл для других систем</span>
       <a class="chip" href="https://github.com/mister-PARADISE/bemyvpn/releases/latest/download/bemyvpn-linux-x86_64-terminal">Linux x86-64</a>
       <a class="chip" href="https://github.com/mister-PARADISE/bemyvpn/releases/latest/download/bemyvpn-linux-arm64-terminal">Linux ARM</a>
       <a class="chip" href="https://github.com/mister-PARADISE/bemyvpn/releases/latest/download/bemyvpn-macos-arm64-terminal">macOS</a>
@@ -271,8 +273,7 @@
   </details>
 
   <footer>
-    Не та система или нужен другой файл — <a href="https://github.com/mister-PARADISE/bemyvpn/releases/latest">все версии и архитектуры на GitHub</a>.
-    Там же исходный код.
+    Скачалось не то? <a href="https://github.com/mister-PARADISE/bemyvpn/releases/latest">Все файлы — на GitHub</a>, там же исходный код.
   </footer>
 </div>
 
@@ -338,7 +339,7 @@
     if (!os.builds.length) {
       btn.className = "primary off";
       btn.removeAttribute("href");
-      label.textContent = "Сборки для " + os.name + " пока нет";
+      label.textContent = "Для " + os.name + " сборки пока нет";
       file.textContent = "";
       return;
     }
