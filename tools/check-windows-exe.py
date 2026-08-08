@@ -14,6 +14,13 @@ bemyvpn-windows-arm64.exe, когда правило крт-статика бы�
 отвечает «x86_64» на uname, и однажды ARM-сборка уже уехала в релиз под чужим
 именем.
 
+И ТРЕТЬЕ — РАЗРЯДНОСТЬ ВШИТОЙ wintun.dll. Она лежит внутри exe блобом
+(`include_bytes!` в bmv-desktop), внешних импортов не даёт и поэтому проверкой
+выше не видна вовсе. Ровно так в релиз уехал ARM-exe с x86_64-библиотекой
+внутри: сам файл был безупречно ARM64, туннель у гостя не поднимался ни разу, а
+CI был зелёный. Разрядность вшитой библиотеки обязана совпадать с разрядностью
+самого exe.
+
 Разбор PE своими руками — сознательно: dumpbin.exe лежит внутри Visual Studio и
 на PATH раннера его нет, а python есть на обоих (windows-latest и windows-11-arm).
 
@@ -33,6 +40,12 @@ CRT_MARKERS = ("vcruntime", "msvcp", "msvcr", "ucrtbase", "api-ms-win-crt")
 
 MACHINES = {0x8664: "x86_64", 0xAA64: "ARM64", 0x14C: "x86"}
 
+# Имя экспорта wintun.dll — якорь, по которому вшитая библиотека находится внутри
+# exe. Искать один лишь «MZ» мало: два байта встречаются в данных случайно (в
+# самой библиотеке их восемь), а этот экспорт есть в любой сборке wintun и больше
+# нигде в нашем бинаре не встречается.
+WINTUN_ANCHOR = b"WintunCreateAdapter"
+
 
 def rva_to_off(sections, rva):
     """Виртуальный адрес → смещение в файле (по таблице секций)."""
@@ -47,8 +60,30 @@ def cstr(data, off):
     return data[off:end].decode("ascii", "replace")
 
 
+def embedded_wintun(d):
+    """Архитектура вшитой в exe wintun.dll (или None, если её там нет).
+
+    От якоря идём НАЗАД до ближайшего «MZ», у которого по смещению 0x3C лежит
+    указатель на живую сигнатуру «PE\\0\\0»: это и есть начало вшитого образа.
+    Назад, а не вперёд от начала файла, — потому что первый «MZ» в exe это сам
+    exe, а случайные пары байт между ними отсеиваются проверкой сигнатуры.
+    """
+    a = d.find(WINTUN_ANCHOR)
+    if a < 0:
+        return None
+    i = d.rfind(b"MZ", 0, a)
+    while i > 0:
+        if i + 0x40 <= len(d):
+            pe = struct.unpack_from("<I", d, i + 0x3C)[0]
+            if 0 < pe < a - i and d[i + pe:i + pe + 4] == b"PE\0\0":
+                machine = struct.unpack_from("<H", d, i + pe + 4)[0]
+                return MACHINES.get(machine, hex(machine))
+        i = d.rfind(b"MZ", 0, i)
+    return None
+
+
 def parse(path):
-    """→ (архитектура, отсортированный список импортируемых DLL)."""
+    """→ (архитектура, отсортированный список импортируемых DLL, байты файла)."""
     with open(path, "rb") as f:
         d = f.read()
 
@@ -79,7 +114,7 @@ def parse(path):
             dlls.append(cstr(d, rva_to_off(sections, name_rva)))
             off += 20
 
-    return MACHINES.get(machine, hex(machine)), sorted(dlls, key=str.lower)
+    return MACHINES.get(machine, hex(machine)), sorted(dlls, key=str.lower), d
 
 
 def main():
@@ -89,10 +124,12 @@ def main():
 
     path = sys.argv[1]
     want_arch = sys.argv[2] if len(sys.argv) > 2 else None
-    arch, dlls = parse(path)
+    arch, dlls, data = parse(path)
+    wintun = embedded_wintun(data)
 
     print("=== %s ===" % path)
     print("PE arch: %s" % arch)
+    print("embedded wintun.dll arch: %s" % wintun)
     print("imports (%d):" % len(dlls))
     for name in dlls:
         print("  %s" % name)
@@ -100,6 +137,16 @@ def main():
     bad = []
     if want_arch and arch != want_arch:
         bad.append("PE arch is %s, expected %s" % (arch, want_arch))
+
+    # Библиотека обязана быть внутри И обязана быть той же разрядности. Её
+    # отсутствие тоже провал: без неё гость не поднимет туннель ни на одной
+    # машине, а exe при этом выглядит совершенно исправным.
+    if wintun is None:
+        bad.append("no wintun.dll embedded -- the guest cannot create a tunnel at all "
+                   "(see ensure_wintun in crates/bmv-desktop/src/lib.rs)")
+    elif wintun != arch:
+        bad.append("embedded wintun.dll is %s while the exe is %s -- LoadLibrary will "
+                   "refuse it and the guest will never get a tunnel" % (wintun, arch))
 
     crt = [n for n in dlls if any(m in n.lower() for m in CRT_MARKERS)]
     if crt:
@@ -114,7 +161,7 @@ def main():
             print("FAIL: %s" % line)
         return 1
 
-    print("OK: static CRT, no runtime DLL required")
+    print("OK: static CRT, no runtime DLL required, embedded wintun.dll matches the arch")
     return 0
 
 
