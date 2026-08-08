@@ -37,6 +37,10 @@ use axum::{
     routing::get,
     Router,
 };
+// Нужен только перенаправлению на 80-м, а его без TLS не бывает: во встроенной
+// сборке (телефон, без фичи tls) неиспользованный импорт — предупреждение.
+#[cfg(feature = "tls")]
+use axum::http::Uri;
 use futures_util::{SinkExt, StreamExt};
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
@@ -1500,6 +1504,117 @@ async fn page(headers: HeaderMap) -> Response {
         .expect("заголовки константные")
 }
 
+// ── перенаправление http → https (80-й порт) ─────────────────────────────────
+//
+// ЗАЧЕМ. Человек набирает в адресной строке `bemyvpn.net` — без схемы. Свежие
+// Chrome и Safari сами пробуют https, а сторонний браузер, окно внутри
+// мессенджера, старый Android и часть корпоративных сетей идут на 80-й порт. Там
+// не отвечал никто: пустой экран и жалоба «не открывается даже с VPN». Теперь
+// там отвечает 301 на тот же адрес по https — с тем же путём, той же строкой
+// запроса и тем же именем хоста, каким его набрал человек.
+//
+// ЭТО НЕ ВТОРАЯ ДВЕРЬ. На 80-м нет ни страницы, ни `/v1/ws`, ни каталога:
+// единственный маршрут — «всё остальное», и он всегда отвечает одним 301 без
+// тела. Обработчик, как и страница, не берёт `State` — общего состояния
+// координатора он не касается вовсе. Тело запроса не читается никогда: у
+// обработчика нет ни одного извлекателя тела, поэтому наплыв на 80-й не может
+// ни замедлить регистрацию хостов, ни съесть их квоты.
+//
+// ACME НЕ ЗАДЕТ. Встроенный Let's Encrypt (`rustls-acme`) доказывает владение
+// доменом через TLS-ALPN-01 — внутри TLS-рукопожатия на 443-м, по особому ALPN
+// `acme-tls/1`. 80-й порт ему не нужен ни при выпуске, ни при продлении — потому
+// сертификат и выпускался при наглухо закрытом 80-м. Если когда-нибудь
+// понадобится HTTP-01, приоритет 80-го отдаётся ACME явно: в роутер ниже надо
+// добавить ТОЧНЫЙ маршрут `/.well-known/acme-challenge/:token` с ответом
+// challenge'а — у axum точный маршрут всегда выигрывает у fallback, так что
+// проверка Let's Encrypt пойдёт в него, а не в перенаправление.
+
+/// Порт, куда браузер идёт за `http://…`. Не настройка: у перенаправления нет
+/// смысла ни на каком другом порту, а лишняя ручка — лишний способ выстрелить.
+#[cfg(feature = "tls")]
+const HTTP_PORT: u16 = 80;
+
+/// Куда отправлять. `None` — если `Host` не годится (нет, пустой, с посторонними
+/// символами): собрать абсолютный адрес не из чего. Подставить свой домен вместо
+/// него НЕЛЬЗЯ — имён у координатора может быть несколько, и увести человека на
+/// соседнее значит сломать ему вкладку.
+#[cfg(feature = "tls")]
+fn https_location(headers: &HeaderMap, uri: &Uri) -> Option<String> {
+    let host = headers.get(header::HOST)?.to_str().ok()?;
+    // Порт снимаем: `example.net:80` → `example.net`, `[::1]:80` → `[::1]`. Он
+    // от ЭТОГО слушателя, а на https нужен свой (по умолчанию 443) — оставить
+    // его значило бы позвать браузер по https на http-порт. Нечисловой хвост
+    // после ':' — часть имени или мусор, но не порт, и трогать его нечего.
+    let host = match host.rsplit_once(':') {
+        Some((name, port)) if !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()) => name,
+        _ => host,
+    };
+    // Имя пришло от клиента — это граница доверия. Пропускаем только то, из чего
+    // состоит настоящее имя хоста или литерал адреса: '/', '@', пробел и прочее
+    // превратили бы `Location` в адрес совсем другого места.
+    let sane = (1..=253).contains(&host.len())
+        && host
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b':' | b'[' | b']'));
+    if !sane {
+        return None;
+    }
+    // Путь и строка запроса — ровно как пришли. `OPTIONS *` пути не несёт: такому
+    // достаётся корень, а не мусорный адрес.
+    let target = uri
+        .path_and_query()
+        .map(|p| p.as_str())
+        .filter(|p| p.starts_with('/'))
+        .unwrap_or("/");
+    Some(format!("https://{host}{target}"))
+}
+
+/// Единственный ответ 80-го порта: 301 на https, без тела.
+#[cfg(feature = "tls")]
+async fn redirect_to_https(headers: HeaderMap, uri: Uri) -> Response {
+    let Some(loc) = https_location(&headers, &uri) else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    Response::builder()
+        .status(StatusCode::MOVED_PERMANENTLY)
+        .header(header::LOCATION, loc)
+        // Значение собрано из проверенных выше кусков, но падать на запросе
+        // из-за неожиданного символа мы не станем — хуже 400 ничего не будет.
+        .body(Body::empty())
+        .unwrap_or_else(|_| StatusCode::BAD_REQUEST.into_response())
+}
+
+/// Весь 80-й порт целиком: ни одного маршрута, только «всё остальное». Отдельной
+/// функцией — чтобы проверка гоняла ровно то же, что видит человек.
+#[cfg(feature = "tls")]
+fn redirect_app() -> Router {
+    Router::new().fallback(redirect_to_https)
+}
+
+/// Слушать и отвечать перенаправлением.
+#[cfg(feature = "tls")]
+async fn serve_redirect(at: SocketAddr) -> std::io::Result<()> {
+    let listener = tokio::net::TcpListener::bind(at).await?;
+    tracing::info!(%at, "перенаправление http → https включено");
+    axum::serve(listener, redirect_app()).await
+}
+
+/// Поднять перенаправление рядом с HTTPS. Не дался 80-й (занят чужим
+/// веб-сервером, или координатор запущен не от root) — 443 важнее: говорим об
+/// этом человеку понятной строкой и работаем дальше как раньше.
+#[cfg(feature = "tls")]
+fn spawn_redirect(at: SocketAddr) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        if let Err(e) = serve_redirect(at).await {
+            tracing::warn!(
+                "порт {at} не открылся ({e}). Сайт по https работает, но кто наберёт адрес \
+                 БЕЗ «https://» — увидит пустой экран. Освободите 80-й порт (там уже чей-то \
+                 веб-сервер?) или запустите координатор от root."
+            );
+        }
+    })
+}
+
 // ── публичный вход (для бинаря и встраивания в приложения) ───────────────────
 
 /// Поднять координатор на `bind` и работать до срабатывания `shutdown`.
@@ -1587,6 +1702,8 @@ pub async fn serve(
                 .await
                 .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, format!("TLS cert/key: {e}")))?;
             let handle = graceful(shutdown);
+            // Работаем по HTTPS → 80-й обязан отвечать перенаправлением.
+            let redir = spawn_redirect(SocketAddr::new(bind.ip(), HTTP_PORT));
             if let Some(tx) = bound {
                 let _ = tx.send(bind);
             }
@@ -1597,6 +1714,7 @@ pub async fn serve(
                 .await;
             reap.abort();
             deb.abort();
+            redir.abort();
             return res;
         }
         Tls::Acme { domains, email, cache } => {
@@ -1619,6 +1737,9 @@ pub async fn serve(
                 }
             });
             let handle = graceful(shutdown);
+            // 80-й ACME не нужен (проверка идёт по TLS-ALPN-01 на 443), поэтому
+            // перенаправление ему не мешает — см. разбор над `serve_redirect`.
+            let redir = spawn_redirect(SocketAddr::new(bind.ip(), HTTP_PORT));
             if let Some(tx) = bound {
                 let _ = tx.send(bind);
             }
@@ -1630,6 +1751,7 @@ pub async fn serve(
                 .await;
             reap.abort();
             deb.abort();
+            redir.abort();
             return res;
         }
     }
@@ -3004,5 +3126,144 @@ mod tests {
         assert!(!accepts_gzip(&hdr("identity")));
         assert!(!accepts_gzip(&hdr("x-gzip-not-really")), "чужое название принято за gzip");
         assert!(!accepts_gzip(&HeaderMap::new()), "без заголовка сжатие не предлагаем");
+    }
+
+    // ── КАТЕГОРИЯ П: 80-Й ПОРТ ────────────────────────────────────────────────
+    //
+    // Люди набирают `bemyvpn.net` без схемы и попадают на 80-й. Пока там не
+    // отвечал никто, часть браузеров показывала пустой экран. Проверяем ровно
+    // две вещи: что перенаправление ведёт туда, куда человек шёл, и что на 80-м
+    // больше НИЧЕГО не открылось.
+    #[cfg(feature = "tls")]
+    mod http_redirect {
+        use super::*;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        /// Запрос с заданным `Host` — как его пришлёт браузер.
+        fn from_host(host: &str) -> HeaderMap {
+            let mut h = HeaderMap::new();
+            h.insert(header::HOST, host.parse().unwrap());
+            h
+        }
+
+        /// Куда отправили. `None` — перенаправления не было.
+        async fn location(host: &str, target: &str) -> (StatusCode, Option<String>) {
+            let r = redirect_to_https(from_host(host), target.parse::<Uri>().unwrap()).await;
+            let loc = r
+                .headers()
+                .get(header::LOCATION)
+                .map(|v| v.to_str().unwrap().to_string());
+            (r.status(), loc)
+        }
+
+        /// Адрес, набранный человеком, обязан доехать целиком: и путь, и строка
+        /// запроса. Потерять их — значит высадить его на главной вместо того
+        /// места, по ссылке на которое он щёлкнул.
+        #[tokio::test]
+        async fn the_redirect_keeps_the_path_and_the_query() {
+            let (code, loc) = location("bemyvpn.net", "/download?os=android&v=2").await;
+            assert_eq!(code, StatusCode::MOVED_PERMANENTLY, "перенаправление обязано быть постоянным (301)");
+            assert_eq!(loc.as_deref(), Some("https://bemyvpn.net/download?os=android&v=2"));
+
+            // Голый корень — тоже корень, а не пустой адрес.
+            assert_eq!(location("bemyvpn.net", "/").await.1.as_deref(), Some("https://bemyvpn.net/"));
+        }
+
+        /// Имя берём ИЗ ЗАПРОСА, а не из конфига: у координатора может быть
+        /// несколько имён (и голый IP), и увести человека на соседнее — значит
+        /// сломать ему вкладку. Порт при этом снимаем: он от http-слушателя, а
+        /// на https нужен свой.
+        #[tokio::test]
+        async fn the_name_comes_from_the_request() {
+            assert_eq!(location("bemyvpn.net", "/").await.1.as_deref(), Some("https://bemyvpn.net/"));
+            assert_eq!(location("coord.example", "/").await.1.as_deref(), Some("https://coord.example/"));
+            assert_eq!(location("bemyvpn.net:80", "/a").await.1.as_deref(), Some("https://bemyvpn.net/a"));
+            // Литерал IPv6 не должен развалиться на «имя» и «порт» по последнему ':'.
+            assert_eq!(location("[2001:db8::1]", "/a").await.1.as_deref(), Some("https://[2001:db8::1]/a"));
+            assert_eq!(location("[2001:db8::1]:80", "/a").await.1.as_deref(), Some("https://[2001:db8::1]/a"));
+        }
+
+        /// `Host` приходит от клиента — это граница доверия. Имя с посторонними
+        /// символами увело бы человека совсем в другое место, поэтому такому не
+        /// отвечаем адресом вовсе.
+        #[tokio::test]
+        async fn a_forged_host_gets_no_address() {
+            for host in ["чужой.example", "evil.example/bemyvpn.net", "a@evil.example", " ", ""] {
+                let mut h = HeaderMap::new();
+                if let Ok(v) = host.parse() {
+                    h.insert(header::HOST, v);
+                }
+                let r = redirect_to_https(h, "/".parse::<Uri>().unwrap()).await;
+                assert_eq!(r.status(), StatusCode::BAD_REQUEST, "принят негодный Host: {host:?}");
+                assert!(r.headers().get(header::LOCATION).is_none(), "негодный Host попал в адрес: {host:?}");
+            }
+            // И без Host'а вовсе (HTTP/1.0) собирать абсолютный адрес не из чего.
+            let r = redirect_to_https(HeaderMap::new(), "/".parse::<Uri>().unwrap()).await;
+            assert_eq!(r.status(), StatusCode::BAD_REQUEST);
+        }
+
+        /// На 80-м НЕ ДОЛЖНО быть второй двери: ни страницы, ни протокола. Тут
+        /// проверяем не обработчик, а весь порт целиком — сырым запросом в
+        /// настоящий сокет, иначе лишний маршрут в роутере остался бы незамечен.
+        #[tokio::test]
+        async fn nothing_but_the_redirect_lives_on_that_port() {
+            let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let at = l.local_addr().unwrap();
+            tokio::spawn(async move {
+                let _ = axum::serve(l, redirect_app()).await;
+            });
+
+            let raw = |req: String| async move {
+                let mut s = tokio::net::TcpStream::connect(at).await.expect("порт не отвечает");
+                s.write_all(req.as_bytes()).await.expect("запрос не ушёл");
+                let mut buf = Vec::new();
+                s.read_to_end(&mut buf).await.expect("ответ не дочитан");
+                let end = buf.windows(4).position(|w| w == b"\r\n\r\n").expect("нет конца заголовков");
+                (String::from_utf8_lossy(&buf[..end]).to_lowercase(), buf[end + 4..].to_vec())
+            };
+
+            // Корень: перенаправление, а НЕ страница скачивания.
+            let (head, body) = raw(
+                "GET /?os=android HTTP/1.1\r\nHost: bemyvpn.net\r\nConnection: close\r\n\r\n".into(),
+            )
+            .await;
+            assert!(head.starts_with("http/1.1 301 "), "корень 80-го ответил не перенаправлением: {head}");
+            assert!(head.contains("location: https://bemyvpn.net/?os=android"), "адрес перенаправления не тот: {head}");
+            assert!(!head.contains("text/html"), "на 80-м открылась страница: {head}");
+            assert!(body.is_empty(), "перенаправление тащит тело: {} байт", body.len());
+
+            // Протокол на 80-м не поднимается — только перенаправление.
+            let (head, _) = raw(
+                "GET /v1/ws HTTP/1.1\r\nHost: bemyvpn.net\r\nConnection: close\r\n\
+                 Upgrade: websocket\r\nSec-WebSocket-Version: 13\r\n\
+                 Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n"
+                    .into(),
+            )
+            .await;
+            assert!(head.starts_with("http/1.1 301 "), "на 80-м открылся протокол: {head}");
+        }
+
+        /// 443 важнее. На сервере может стоять чужой веб-сервер, а под обычным
+        /// пользователем привилегированный порт не открыть вовсе — координатор
+        /// обязан продолжить работу, а не упасть на старте.
+        #[tokio::test]
+        async fn a_busy_port_does_not_take_the_coordinator_down() {
+            let busy = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let at = busy.local_addr().unwrap();
+
+            // Ровно то, что делает serve(): задача обязана тихо закончиться.
+            let task = spawn_redirect(at);
+            tokio::time::timeout(Duration::from_secs(5), task)
+                .await
+                .expect("перенаправление зависло на занятом порту")
+                .expect("перенаправление паникует — паника утащила бы за собой и запуск");
+
+            // И порт остался у того, кто его держал: мы его не отобрали.
+            let _ = tokio::net::TcpStream::connect(at).await.expect("чужой сервер на этом порту умер");
+            tokio::time::timeout(Duration::from_secs(5), busy.accept())
+                .await
+                .expect("соединение ушло не тому, кто держит порт")
+                .expect("чужой слушатель сломался");
+        }
     }
 }
