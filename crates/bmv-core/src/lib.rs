@@ -171,6 +171,21 @@ impl BmvEngine {
         &self.host_id
     }
 
+    /// ХОСТ О СЕБЕ: сколько гостей сейчас и сколько разрешено.
+    ///
+    /// Оболочки брали эти цифры, НАХОДЯ СЕБЯ В ОБЩЕМ КАТАЛОГЕ. Каталог для этого
+    /// неверный источник по построению: скрытая раздача в него не попадает
+    /// (`build_announce`, `public`), поэтому у скрытого хоста счётчик стоял на
+    /// нуле навсегда — к человеку подключались, а он этого не видел. Да и
+    /// публичному хосту цифра приезжала кругом через сервер, с опозданием.
+    ///
+    /// Здесь она берётся из живого учёта (`GuestSlot`): слот занимается только
+    /// после успешного рукопожатия и снимается на любом выходе. Ровно эти же две
+    /// цифры уходят в анонс — `build_announce` зовёт этот метод.
+    pub fn host_guests(&self) -> (u32, u32) {
+        (self.active_guests.lock().len() as u32, self.host_max.load(Ordering::SeqCst))
+    }
+
     // Здесь был `classify_nat` — «определить тип NAT для UI и раннего вывода
     // «нужен релей»». Ни одной оболочкой он не звался НИ РАЗУ: ни релея, ни
     // экрана диагностики в продукте нет, а строки "cone"/"symmetric" некому было
@@ -395,6 +410,9 @@ impl BmvEngine {
         // рассогласования между оболочками быть не может.
         let has_password = !self.host_password.lock().is_empty();
         let public = self.host_public.load(Ordering::SeqCst) && !has_password;
+        // Те же две цифры, что показывает экран (`host_guests`), — одним вызовом.
+        // Порознь они разъезжались бы молча: в каталоге одно, в окне другое.
+        let (guests, max_guests) = self.host_guests();
         bmv_signal::HostAnnounce {
             id: self.host_id.clone(),
             token: self.host_token.clone(),
@@ -402,8 +420,8 @@ impl BmvEngine {
             endpoints: self.host_endpoints.lock().clone(),
             country: self.config.host.country_hint.clone(),
             public,
-            max_guests: self.host_max.load(Ordering::SeqCst),
-            guests: self.active_guests.lock().len() as u32,
+            max_guests,
+            guests,
             has_password,
             protocol: self.host_protocol.lock().clone(),
             code_sig: self.host_code_sig.clone(),

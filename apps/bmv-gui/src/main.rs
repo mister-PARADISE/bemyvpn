@@ -39,6 +39,10 @@ const DEFAULT_COORD: &str = "https://bemyvpn.net";
 const VPN_FAILED: &str = "Не удалось подключиться";
 
 type EngineSlot = Arc<Mutex<Arc<BmvEngine>>>;
+/// Живой движок раздачи (пока раздаём). ЕДИНСТВЕННЫЙ источник своих цифр: имя
+/// нужно, потому что слот ходит теперь в две стороны — в настройки хоста и в
+/// тик-задачу, которая рисует плитки «ГОСТЕЙ» и «ВАШ IP».
+type HostEngine = Arc<Mutex<Option<Arc<BmvEngine>>>>;
 type Ts = Arc<Mutex<Option<std::time::Instant>>>;
 /// Замеры отклика: id хоста → готовая строка для плитки («24 мс» / «—» / «…»).
 /// Живёт рядом с каталогом, потому что строки каталога пересобираются на каждом
@@ -126,6 +130,26 @@ fn show_vpn_off(ui: &AppWindow, sub: &str) {
 /// Заполнить карточку активного подключения по записи хоста. Зовётся В МОМЕНТ
 /// подключения (данные уже на руках — гость выбрал этот хост) и потом на каждом
 /// обновлении каталога, чтобы живые цифры (гости) не отставали.
+/// Заполнить карточку СВОЕЙ раздачи. Значения — свои, а не из чужого списка:
+/// адрес тот, что видит координатор («whoami», он же стоит на вкладке «Сервер»),
+/// гости — из живого счётчика движка (`BmvEngine::host_guests`).
+///
+/// ЗДЕСЬ БЫЛ ПОИСК СЕБЯ В КАТАЛОГЕ — `list.iter().find(|h| h.id == свой код)`. У
+/// публичного хоста это работало, у СКРЫТОГО не работало никогда: скрытой
+/// раздачи в каталоге нет по определению, `find` не находил ничего, и обе плитки
+/// оставались пустыми навсегда. Гости при этом тоже стояли на нуле — человек не
+/// видел, что к нему подключились. Соседний блок гостя эту же ловушку обошёл
+/// давно (см. `fill_vpn_card` и комментарий при нём), на своей стороне её
+/// оставили.
+///
+/// `HostInfo` этой функции не нужен и не должен быть нужен: сторож
+/// `crates/bmv-common/tests/a_host_knows_itself.rs` следит, чтобы свои сведения
+/// снова не начали брать из записи каталога.
+fn fill_host_card(ui: &AppWindow, my_ip: &str, guests: u32, max: u32) {
+    ui.set_host_ip(if my_ip.is_empty() { "—".into() } else { my_ip.into() });
+    ui.set_host_guests(format!("{guests} / {max}").into());
+}
+
 fn fill_vpn_card(ui: &AppWindow, h: &HostInfo) {
     ui.set_vpn_ip(if h.ip.is_empty() { "—".into() } else { h.ip.clone().into() });
     ui.set_vpn_country(host_cc(h).unwrap_or_else(|| "—".into()).into());
@@ -871,14 +895,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // вкладке «Хост» он был виден, не дожидаясь «Стать хостом».
     ensure_host_code(&ui, &engine, &handle);
 
+    // Движок раздачи заводится ЗДЕСЬ, а не внутри `wire_host`: свои цифры (гости)
+    // читает из него тик-задача обновления, и другого источника у неё нет —
+    // каталог для собственной раздачи неверен по построению (скрытой в нём нет).
+    let host_engine: HostEngine = Arc::new(Mutex::new(None));
     spawn_refresh(engine.clone(), hosts.clone(), ui.as_weak(), &handle,
-                  host_started.clone(), vpn_since.clone(), recent_ids.clone(), my_ip.clone(), up_file.clone(), pings.clone());
+                  host_started.clone(), vpn_since.clone(), recent_ids.clone(), my_ip.clone(), up_file.clone(), pings.clone(),
+                  host_engine.clone());
     let hosts_for_probe = hosts.clone();
     // Копия для имени хоста по умолчанию: сам my_ip уходит в wire_vpn.
     let my_ip_for_host = my_ip.clone();
     wire_vpn(&ui, hosts, hlp, my_ip, coord_full.clone());
     wire_expand_probe(&ui, hosts_for_probe, engine.clone(), &handle, pings);
-    wire_host(&ui, engine.clone(), host_task, handle.clone(), host_started, my_ip_for_host);
+    wire_host(&ui, engine.clone(), host_task, handle.clone(), host_started, my_ip_for_host, host_engine);
     wire_coord(&ui, engine, coord_full.clone());
 
     // Окно закрыто — или НЕ ОТКРЫЛОСЬ ВОВСЕ (машина без видеокарты). Второй
@@ -1188,6 +1217,7 @@ fn spawn_refresh(
     my_ip_slot: Arc<Mutex<String>>,
     up_file: std::path::PathBuf,
     pings: Pings,
+    host_engine: HostEngine,
 ) {
     let pings = pings.clone();
     // ── Тик 1с: часы сессии + примирение статуса по файл-маркеру хелпера.
@@ -1195,6 +1225,10 @@ fn spawn_refresh(
     {
         let (weak, vpn_since, host_started, up_file, hosts) =
             (weak.clone(), vpn_since.clone(), host_started.clone(), up_file.clone(), hosts.clone());
+        // Свои сведения о раздаче — отсюда: адрес, каким его видит координатор,
+        // и ЖИВОЙ счётчик гостей у самого движка. Каталог не спрашиваем: своей
+        // записи в нём у скрытой раздачи нет, и поля пустовали бы навсегда.
+        let (my_ip_host, heng_tick) = (my_ip_slot.clone(), host_engine.clone());
         handle.spawn(async move {
             loop {
                 // Надёжный сигнал «туннель поднят» — файл-маркер от хелпера (id хоста).
@@ -1214,6 +1248,8 @@ fn spawn_refresh(
                 }
                 let vpn_el = vpn_since.lock().unwrap().map(|t| view::session_clock(t.elapsed().as_secs()));
                 let host_el = host_started.lock().unwrap().map(|t| view::session_clock(t.elapsed().as_secs()));
+                let host_own = heng_tick.lock().unwrap().as_ref().map(|e| e.host_guests());
+                let host_ip = my_ip_host.lock().unwrap().clone();
                 let (weak2, names) = (weak.clone(), hosts.clone());
                 let _ = slint::invoke_from_event_loop(move || {
                     let Some(ui) = weak2.upgrade() else { return };
@@ -1243,7 +1279,11 @@ fn spawn_refresh(
                         show_vpn_off(&ui, "");
                     }
                     if ui.get_vpn_state() == 2 { ui.set_vpn_elapsed(vpn_el.unwrap_or_default().into()); }
-                    if ui.get_host_state() == 2 { ui.set_host_elapsed(host_el.unwrap_or_default().into()); }
+                    if ui.get_host_state() == 2 {
+                        ui.set_host_elapsed(host_el.unwrap_or_default().into());
+                        let (guests, max) = host_own.unwrap_or((0, 0));
+                        fill_host_card(&ui, &host_ip, guests, max);
+                    }
                 });
                 tokio::time::sleep(Duration::from_secs(1)).await;
             }
@@ -1338,14 +1378,11 @@ fn spawn_refresh(
                 ui.set_recent_names(str_model(&r_names));
                 ui.set_recent_ids(str_model(&r_ids));
 
-                // Инфо-блок своей раздачи (часы ведёт тик-задача).
-                if ui.get_host_state() == 2 {
-                    let id = ui.get_host_code().to_string();
-                    if let Some(h) = list.iter().find(|h| h.id == id) {
-                        ui.set_host_ip(if h.ip.is_empty() { "—".into() } else { h.ip.clone().into() });
-                        ui.set_host_guests(format!("{} / {}", h.guests, h.max_guests).into());
-                    }
-                }
+                // Инфо-блока СВОЕЙ раздачи здесь больше нет: свои цифры хост
+                // знает сам, и ведёт их тик-задача (`fill_host_card`). Каталог
+                // для них — источник неверный по построению: скрытой раздачи в
+                // нём нет, и у неё поля пустовали навсегда.
+                //
                 // Инфо-блок подключения (часы ведёт тик-задача). Здесь только
                 // ОБНОВЛЕНИЕ живых цифр: первично карточку заполняет fill_vpn_card
                 // в момент подключения — иначе поля пустуют до следующего ответа
@@ -1508,8 +1545,10 @@ fn wire_host(
     host_started: Ts,
     // Свой внешний IP — из него берётся страна для имени хоста по умолчанию.
     my_ip: Arc<Mutex<String>>,
+    // Слот живого движка раздачи. Заводится снаружи: из него же тик-задача берёт
+    // ЖИВОЕ число гостей для плитки «ГОСТЕЙ».
+    host_engine: HostEngine,
 ) {
-    let host_engine: Arc<Mutex<Option<Arc<BmvEngine>>>> = Arc::new(Mutex::new(None));
     let engine_nc = engine.clone(); // для «Новый код» (engine уходит в toggle-замыкание)
     let engine_ap = engine.clone(); // для «Применить» (сохранение настроек)
     let engine_tg = engine.clone(); // для сохранения настроек при старте раздачи
@@ -1578,7 +1617,13 @@ fn wire_host(
             if id.is_empty() || sig.is_empty() {
                 match BmvEngine::from_config(base.clone()).host_new_code().await {
                     Ok((c, s)) if !c.is_empty() && !s.is_empty() => { id = c; sig = s; store::save_host_creds(&id, &sig); }
-                    _ => return set_host_err(&weak, "Сервер не выдал код сети. Проверьте связь и попробуйте ещё раз.".into()),
+                    // Сервер ОБЪЯСНИЛ отказ (нет связи, отклонён запрос, свой
+                    // текст координатора) — его слова человек и читает. Здесь
+                    // стоял общий `_`, и объяснение выбрасывалось: «проверьте
+                    // связь» уходило и тому, у кого просто не задан адрес сервера.
+                    Err(e) => return set_host_err(&weak, e.to_string()),
+                    // Ответ пришёл, а кодом его не назовёшь — почему, мы не знаем.
+                    Ok(_) => return set_host_err(&weak, "Сервер не выдал код сети. Проверьте связь и попробуйте ещё раз.".into()),
                 }
             }
             let mut eng = Arc::new(BmvEngine::from_config(build(&id, &sig)));

@@ -24,12 +24,95 @@ use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 pub mod hosting;
 pub mod tunnel;
 
+/// ПОЧЕМУ не поднялся сетевой адаптер — ПРИЗНАКОМ, а не строкой.
+///
+/// Раньше `make_tun` отдавал `Result<_, String>`, а гостевой слой выбрасывал этот
+/// текст не глядя (`Err(_)`) и печатал человеку «нужны права администратора» — на
+/// ЛЮБУЮ неудачу. Так владельцу на Windows-ARM и предлагали ввести пароль, хотя
+/// дело было в библиотеке не той разрядности: он вводил пароль, ничего не
+/// менялось, и понять почему было нельзя. Догадка стояла на месте утверждения.
+///
+/// Приём одолжен у `bmv_common::Error::Refused { code, reason }`: род неудачи
+/// едет ОТДЕЛЬНЫМ значением, а слова к нему подбираются в одном месте (`human`).
+/// Разбирать чужой текст подстрокой нельзя — это то же враньё, только позже
+/// (сторож `crates/bmv-common/tests/no_code_by_substring.rs` ровно про это).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TunFail {
+    /// Не хватило прав. ЗНАЕМ ТОЧНО: система ответила «доступ запрещён».
+    NoRights,
+    /// Библиотека адаптера не загрузилась. Windows: `wintun.dll` не той
+    /// разрядности (та самая поломка на ARM) либо её не удалось положить рядом.
+    DriverLoad,
+    /// Устройства для туннеля в системе нет. Linux: не собран/не загружен модуль
+    /// `tun`, либо в контейнер не проброшен `/dev/net/tun`.
+    NoDevice,
+    /// Причина неизвестна. Так и говорим — советов из воздуха не берём.
+    Unknown,
+}
+
+impl TunFail {
+    /// Все виды — чтобы сторож ниже прошёлся по каждому, а не по тем, что вспомнил.
+    pub const ALL: [TunFail; 4] = [TunFail::NoRights, TunFail::DriverLoad, TunFail::NoDevice, TunFail::Unknown];
+
+    /// Что читает человек. ОДНО МЕСТО на обе десктопные оболочки: окно и терминал
+    /// показывают эту строку как есть (`State::Failed`), поэтому копий у неё нет
+    /// и разъехаться нечему.
+    ///
+    /// Правило простое: знаем причину — называем её и говорим, что делать; не
+    /// знаем — так и пишем. Совет про пароль стоит РОВНО у `NoRights`, и это
+    /// проверяет `the_password_advice_belongs_only_to_a_rights_failure`.
+    pub fn human(self) -> &'static str {
+        match self {
+            TunFail::NoRights => {
+                "Не удалось включить VPN — нужны права администратора. Запустите приложение ещё раз и введите пароль."
+            }
+            TunFail::DriverLoad => {
+                "Не удалось включить VPN: библиотека сетевого адаптера не загрузилась. Проверьте, что стоит \
+                 сборка для вашего процессора (ARM или x86), и обновите приложение."
+            }
+            TunFail::NoDevice => {
+                "Не удалось включить VPN: в системе нет устройства для туннеля (/dev/net/tun). На Linux его \
+                 даёт модуль tun — «modprobe tun»; в контейнере устройство надо пробросить внутрь."
+            }
+            TunFail::Unknown => {
+                "Не удалось включить VPN: сетевой адаптер не создался, а причину система не назвала — назвать \
+                 её не можем и мы. Попробуйте ещё раз."
+            }
+        }
+    }
+}
+
+/// Ошибка крейта `tun` → род неудачи. ЕДИНСТВЕННОЕ место, где неизвестное
+/// становится известным, поэтому и сторож у него один (`only_a_permission_error…`).
+///
+/// Всё, чего мы не опознали, идёт в `Unknown` — и это не лень, а обещание: сюда
+/// нельзя дописать «а ещё это скорее всего права», иначе вернётся ровно та ложь,
+/// из-за которой писан весь этот кусок.
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+fn classify(e: &tun::Error) -> TunFail {
+    match e {
+        // Windows: `wintun::load()` не смог поднять библиотеку. Именно так
+        // выглядела ARM-поломка — LoadLibrary отказывает файлу чужой разрядности.
+        #[cfg(target_os = "windows")]
+        tun::Error::WintunError(wintun::Error::LibLoading(_)) => TunFail::DriverLoad,
+        tun::Error::Io(io) => match io.kind() {
+            // EPERM/EACCES: /dev/net/tun на Linux, utun-сокет на macOS.
+            std::io::ErrorKind::PermissionDenied => TunFail::NoRights,
+            std::io::ErrorKind::NotFound => TunFail::NoDevice,
+            _ => TunFail::Unknown,
+        },
+        _ => TunFail::Unknown,
+    }
+}
+
 /// Создать десктопный TUN (нужен root/sudo). Android/iOS дают готовый fd мимо этого.
 /// Возвращает устройство И РЕАЛЬНОЕ имя интерфейса: на macOS ядро само выдаёт
 /// `utunN` (кастомное «bmv0» там невалидно → «invalid device name»), а маршруты
 /// ставить надо именно по выданному имени.
+///
+/// Ошибка — `TunFail`, а не строка: см. пояснение при типе.
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-pub fn make_tun(params: &TunParams) -> Result<(TunDevice, String), String> {
+pub fn make_tun(params: &TunParams) -> Result<(TunDevice, String), TunFail> {
     use tun::Device; // трейт с .name()
     #[cfg(target_os = "windows")]
     ensure_wintun()?; // dll вшита в exe — никакого отдельного файла в релизе
@@ -47,8 +130,8 @@ pub fn make_tun(params: &TunParams) -> Result<(TunDevice, String), String> {
     config.platform(|p| {
         p.packet_information(false); // чистые IP-пакеты, без 4-байтного заголовка
     });
-    let dev = tun::create_as_async(&config).map_err(|e| e.to_string())?;
-    let name = dev.get_ref().name().map_err(|e| e.to_string())?;
+    let dev = tun::create_as_async(&config).map_err(|e| classify(&e))?;
+    let name = dev.get_ref().name().map_err(|e| classify(&e))?;
     Ok((
         TunDevice {
             inner: dev,
@@ -234,8 +317,13 @@ const _: () = {
 /// Крейт `wintun`, который её грузит, у нас форкнут (vendor/wintun) — там `netsh`
 /// запускается с CREATE_NO_WINDOW, иначе при подключении мигают окна консоли.
 /// Про запрет на подъём `tun` до 0.8 — комментарий в корневом Cargo.toml.
+///
+/// Неудача здесь — это `DriverLoad`, а не «нет прав»: библиотеку не удалось даже
+/// положить рядом, значит грузить нечего. Причина у такого отказа (диск полон,
+/// каталог только для чтения) человеку из строки состояния всё равно не видна, а
+/// делать ему надо то же самое — взять исправную сборку.
 #[cfg(target_os = "windows")]
-fn ensure_wintun() -> Result<(), String> {
+fn ensure_wintun() -> Result<(), TunFail> {
     const WINTUN: &[u8] = WINTUN_DLL;
     // Сверка ПО ДЛИНЕ заодно чинит машины, на которых уже лежит чужая копия:
     // ARM-сборка прошлых выпусков распаковывала сюда x86_64-библиотеку (427 552 Б
@@ -258,8 +346,8 @@ fn ensure_wintun() -> Result<(), String> {
         .map(std::path::PathBuf::from)
         .unwrap_or_else(std::env::temp_dir)
         .join("BeMyVPN");
-    std::fs::create_dir_all(&base).map_err(|e| format!("wintun: {e}"))?;
-    write_dll(&base).map_err(|e| format!("wintun: {e}"))?;
+    std::fs::create_dir_all(&base).map_err(|_| TunFail::DriverLoad)?;
+    write_dll(&base).map_err(|_| TunFail::DriverLoad)?;
     // Правка PATH — ГЛОБАЛЬНАЯ и не потокобезопасная (в многопоточном процессе
     // чужой поток может читать окружение ровно в этот момент). Делаем её
     // РОВНО ОДИН раз за процесс: повторные вызовы make_tun иначе и правили бы
@@ -881,26 +969,124 @@ fn adapter_index_windows(name: &str) -> Option<String> {
     None
 }
 
+/// Что читает человек, когда системная команда маршрутизации отказала.
+///
+/// ЗДЕСЬ СТОЯЛО «нужны права администратора. Запустите приложение ещё раз и
+/// введите пароль» — вторая копия той же лжи, что жила в гостевом слое. И здесь
+/// она была даже наглее: до `run` доходят ТОЛЬКО после того, как `make_tun`
+/// отработал успешно, а сетевой адаптер без прав администратора (root, CAP_NET_ADMIN,
+/// elevated-процесс на Windows) не создаётся вовсе. Значит права у нас ЕСТЬ —
+/// доказано предыдущей строкой, — и обвинять их нельзя ни при какой ошибке.
+///
+/// Причину назвать нечем: `route`/`netsh`/`ip` отказывают одинаково молча, а их
+/// ругань мы не сохраняем нарочно (см. ниже). Поэтому — честное «не знаем».
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+const ROUTES_FAILED: &str = "Не удалось направить трафик в туннель: система отклонила настройку маршрутов и \
+                             причину не назвала. Попробуйте ещё раз.";
+
 // ── общий запуск команды ──
 //
 // Через `bmv_common::command`, а не `Command::new`: на Windows он ставит
 // CREATE_NO_WINDOW, без которого каждый route/netsh мигает окном консоли.
 //
-// Текст ошибки отсюда доезжает ДО ЧЕЛОВЕКА, в строку состояния. Ругань `route`/
-// `netsh`/`ip` («writing to routing socket: not permitted») ему не говорит
-// ничего, а причина у неё почти всегда одна — не хватило прав. Её и называем.
+// Текст ошибки отсюда доезжает ДО ЧЕЛОВЕКА, в строку состояния — поэтому он и
+// стоит отдельной константой (`ROUTES_FAILED`), под сторожем.
 //
 // Саму ругань НЕ СОХРАНЯЕМ НИГДЕ, хотя разбирать поломку по ней было удобно: в
 // аргументах сетевых команд стоят адрес шлюза и имя интерфейса, то есть запись
 // об этом вызове — запись о сети человека.
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 fn run(cmd: &str, args: &[&str]) -> Result<(), String> {
-    const HUMAN: &str = "Не удалось настроить сеть — нужны права администратора. Запустите приложение ещё раз и введите пароль.";
-    let out = bmv_common::command(cmd).args(args).output().map_err(|_| HUMAN.to_string())?;
+    let out = bmv_common::command(cmd).args(args).output().map_err(|_| ROUTES_FAILED.to_string())?;
     if out.status.success() {
         Ok(())
     } else {
-        Err(HUMAN.to_string())
+        Err(ROUTES_FAILED.to_string())
+    }
+}
+
+/// СТОРОЖ НА САМУ ЛОЖЬ: совет про пароль стоит РОВНО там, где дело в правах.
+///
+/// Поломка, ради которой он написан, выглядела так: человек на Windows-ARM читал
+/// «нужны права администратора… введите пароль», послушно вводил его — и ничего
+/// не менялось, потому что дело было в библиотеке не той разрядности. Совет был
+/// не просто бесполезен: он увёл человека от настоящей причины на несколько дней.
+///
+/// Проверяется не намерение, а ТЕКСТ — тот самый, что читает человек. Слова
+/// подобраны так, чтобы поймать возврат прежней фразы в любом её пересказе.
+#[cfg(test)]
+mod honest_failures {
+    use super::TunFail;
+
+    /// Слова, которыми объясняют нехватку ПРАВ. Годятся только для `NoRights`.
+    const BLAMES_RIGHTS: [&str; 4] = ["админ", "пароль", "sudo", "root"];
+
+    #[test]
+    fn the_password_advice_belongs_only_to_a_rights_failure() {
+        for f in TunFail::ALL {
+            let text = f.human();
+            assert!(!text.is_empty(), "{f:?} без слов для человека");
+            let blames = BLAMES_RIGHTS.iter().find(|w| text.contains(**w));
+            assert_eq!(
+                blames.is_some(),
+                f == TunFail::NoRights,
+                "неудача {f:?} объясняется правами{}: «{text}»\n\
+                 Права называют ТОЛЬКО у TunFail::NoRights — там система прямо ответила «доступ \
+                 запрещён». В остальных случаях совет «введите пароль» уводит от настоящей причины: \
+                 ровно так владелец на Windows-ARM вводил пароль, пока в exe лежала библиотека не \
+                 той разрядности.",
+                blames.map(|w| format!(" (слово «{w}»)")).unwrap_or_default(),
+            );
+        }
+        // И наоборот: у настоящей нехватки прав совет обязан БЫТЬ — иначе человек
+        // не узнает, что делать, там, где мы точно знаем.
+        let rights = TunFail::NoRights.human();
+        assert!(rights.contains("админ") && rights.contains("пароль"), "«{rights}»");
+        // Каждый род неудачи говорит СВОЁ: одинаковые тексты — это тот же
+        // «один заготовленный ответ на всё», только записанный четырьмя строками.
+        for (i, a) in TunFail::ALL.iter().enumerate() {
+            for b in &TunFail::ALL[i + 1..] {
+                assert_ne!(a.human(), b.human(), "{a:?} и {b:?} объяснены одинаково");
+            }
+        }
+    }
+
+    /// Маршруты тоже не смеют винить права: до них доходят ПОСЛЕ удачного
+    /// `make_tun`, а он без прав администратора не отрабатывает вовсе.
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+    #[test]
+    fn a_failed_route_command_does_not_blame_rights_we_already_have() {
+        let text = super::ROUTES_FAILED;
+        for w in BLAMES_RIGHTS {
+            assert!(
+                !text.contains(w),
+                "настройка маршрутов объясняется словом «{w}»: «{text}»\n\
+                 Права к этому моменту уже доказаны: сетевой адаптер создан, а он без них не \
+                 создаётся. Причина отказа route/netsh/ip нам неизвестна — так и надо писать.",
+            );
+        }
+    }
+
+    /// А ЭТО — вход в ложь: место, где неизвестное становится «известным».
+    ///
+    /// Сторож на текст поймает переписанную фразу, но не поймает случая, когда
+    /// прежний текст оставили на месте, а в `NoRights` завернули посторонний
+    /// отказ. Ловится здесь: правами объявляется РОВНО «доступ запрещён».
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+    #[test]
+    fn only_a_permission_error_is_called_a_permission_error() {
+        use std::io::{Error as IoError, ErrorKind};
+        let io = |k: ErrorKind| tun::Error::Io(IoError::from(k));
+        assert_eq!(super::classify(&io(ErrorKind::PermissionDenied)), TunFail::NoRights);
+        assert_eq!(super::classify(&io(ErrorKind::NotFound)), TunFail::NoDevice);
+        // Всё остальное — НЕ права. Именно эти отказы и получал человек на
+        // Windows-ARM, а читал про пароль.
+        for k in [ErrorKind::AddrInUse, ErrorKind::InvalidInput, ErrorKind::Other, ErrorKind::TimedOut] {
+            assert_eq!(super::classify(&io(k)), TunFail::Unknown, "{k:?} объявлен нехваткой прав");
+        }
+        assert_eq!(super::classify(&tun::Error::InvalidName), TunFail::Unknown);
+        assert_eq!(super::classify(&tun::Error::InvalidConfig), TunFail::Unknown);
+        assert_eq!(super::classify(&tun::Error::NotImplemented), TunFail::Unknown);
     }
 }
 

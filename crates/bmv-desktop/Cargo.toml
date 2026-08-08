@@ -28,3 +28,12 @@ tokio = { workspace = true }
 
 [target.'cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))'.dependencies]
 tun = { workspace = true }
+
+# Только ради ОДНОГО варианта ошибки: `wintun::Error::LibLoading` — «библиотеку
+# не удалось загрузить». Ровно так выглядела поломка на Windows-ARM (в exe лежала
+# x86_64-библиотека), и отличить её от нехватки прав можно только по этому
+# варианту: разбирать текст ошибки подстрокой у нас запрещено. Крейт и так уже в
+# дереве — приходит транзитивно из `tun` под Windows, и это НАШ форк
+# (vendor/wintun через [patch.crates-io]), так что версия одна и та же.
+[target.'cfg(target_os = "windows")'.dependencies]
+wintun = "0.3"
