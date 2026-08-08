@@ -33,6 +33,37 @@
   }
   .wrap { max-width: 33rem; margin: 0 auto; padding: 3.5rem 1.25rem 4rem; }
 
+  /* ── ПЛАВНОСТЬ ──
+     Резкое появление читается как рывок, поэтому блоки всплывают по очереди,
+     а не возникают все разом. Смещение маленькое (6px) и время короткое: это
+     должно чувствоваться, а не смотреться.
+     Подсказки внизу (про Windows, про iPhone) появляются ПОЗЖЕ, когда человек
+     переключил систему, — та же анимация играет и тогда, потому что скрытый
+     элемент её не проигрывает, а начинает с момента показа. */
+  @keyframes rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+  @keyframes fade { from { opacity: 0; } to { opacity: 1; } }
+
+  .wrap > * { animation: rise .42s cubic-bezier(.2, .7, .3, 1) both; }
+  .wrap > *:nth-child(2) { animation-delay: .05s; }
+  .wrap > *:nth-child(3) { animation-delay: .09s; }
+  .wrap > *:nth-child(4) { animation-delay: .12s; }
+  .wrap > *:nth-child(n + 5) { animation-delay: .15s; }
+
+  /* Смена системы: подпись и имя файла меняются мгновенно — без этого мигания
+     кнопка «дёргается» текстом. */
+  .primary.swap .txt { animation: fade .22s ease; }
+
+  /* Раскрытие блока про сервер: содержимое всплывает, а не выпрыгивает. */
+  details.server[open] > *:not(summary) { animation: rise .3s cubic-bezier(.2, .7, .3, 1) both; }
+
+  /* Кому движение мешает — тому его нет вовсе. */
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      animation-duration: .01ms !important; animation-delay: 0ms !important;
+      transition-duration: .01ms !important;
+    }
+  }
+
   /* ── шапка ── */
   .top { text-align: center; }
   .logo { width: 84px; height: 84px; margin: 0 auto 1.3rem; display: block; }
@@ -44,16 +75,20 @@
   .subline { color: var(--dim); font-size: .95rem; margin-top: .7rem; text-wrap: balance; }
 
   /* ── выбор системы ── */
+  /* Пять названий в одну строку на телефоне не помещались, и «Windows»
+     обрезалось многоточием — выбор, из которого не прочесть вариант.
+     Теперь они переносятся: на узком экране встают в два ряда целиком,
+     на широком остаются одной строкой. Ширину задаёт само слово. */
   .picker {
-    display: flex; gap: .3rem; margin: 2.2rem 0 .9rem;
+    display: flex; flex-wrap: wrap; gap: .3rem; margin: 2.2rem 0 .9rem;
     background: var(--card); border: 1px solid var(--line);
     border-radius: 13px; padding: .3rem;
   }
   .picker button {
-    flex: 1 1 0; min-width: 0; background: none; border: 1px solid transparent;
-    border-radius: 10px; padding: .5rem .15rem; cursor: pointer;
+    flex: 1 1 auto; background: none; border: 1px solid transparent;
+    border-radius: 10px; padding: .5rem .55rem; cursor: pointer;
     color: var(--dim); font: inherit; font-size: .82rem; font-weight: 600;
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap;
     transition: color .12s ease, background .12s ease;
   }
   .picker button:hover { color: var(--text); }
@@ -117,27 +152,55 @@
     margin-top: 1rem; background: var(--card);
     border: 1px solid var(--line); border-radius: 13px; padding: .9rem 1.05rem;
   }
-  details.server summary { cursor: pointer; list-style: none; font-size: .92rem; }
+  /* Раскрытие было обозначено значком «▸» прямо в тексте — мелко и похоже на
+     типографику, а не на то, что можно нажать. Теперь строка устроена как
+     карточка хоста в самом приложении: подпись слева, шеврон справа, поворот
+     при раскрытии. Один и тот же приём в приложении и на сайте — человеку не
+     нужно догадываться дважды. */
+  details.server summary {
+    display: flex; align-items: center; gap: .9rem;
+    cursor: pointer; list-style: none; font-size: .95rem; font-weight: 620;
+    padding: .1rem 0;
+  }
   details.server summary::-webkit-details-marker { display: none; }
-  details.server summary::before { content: "▸ "; color: var(--blue); }
-  details.server[open] summary::before { content: "▾ "; }
-  details.server summary .why { display: block; color: var(--dim); font-size: .84rem; padding-left: 1.1rem; }
+  details.server summary .why {
+    display: block; color: var(--dim); font-size: .84rem; font-weight: 400; margin-top: .1rem;
+  }
+  details.server summary .chev {
+    width: 20px; height: 20px; flex: none; margin-left: auto; color: var(--blue);
+    transition: transform .24s cubic-bezier(.2, .7, .3, 1), color .15s ease;
+  }
+  details.server[open] summary .chev { transform: rotate(90deg); }
+  details.server summary:hover { color: var(--mint); }
+  details.server summary:hover .chev { color: var(--mint); }
+  details.server summary:focus-visible { outline: 2px solid var(--mint); outline-offset: 4px; border-radius: 8px; }
 
   .cmd { margin-top: .9rem; }
-  .cmd-top { display: flex; align-items: center; gap: .5rem; margin-bottom: .5rem; }
-  .cmd-top span { color: var(--dim); font-size: .82rem; }
-  .cmd-top button {
-    margin-left: auto; background: var(--tile); color: var(--text);
-    border: 1px solid var(--line-in); border-radius: 8px;
-    padding: .26rem .6rem; font: inherit; font-size: .78rem; cursor: pointer;
-  }
-  .cmd-top button:hover { border-color: var(--mint); color: var(--mint); }
-  .cmd pre {
+  .cmd-label { color: var(--dim); font-size: .82rem; margin-bottom: .45rem; }
+
+  /* Кнопка живёт В САМОМ блоке, как это принято у команд: она относится к
+     тексту под ней, и отдельной строкой над блоком это было неочевидно.
+     Заливка у кнопки непрозрачная — строка длинная и прокручивается вбок,
+     текст не должен проступать из-под неё. */
+  .cmd-box { position: relative; }
+  .cmd-box pre {
     overflow-x: auto; margin: 0; background: var(--float);
-    border: 1px solid var(--line-in); border-radius: 9px; padding: .7rem .8rem;
+    border: 1px solid var(--line-in); border-radius: 9px;
+    padding: .7rem .8rem; padding-right: 7rem;
     font-family: ui-monospace, Menlo, Consolas, monospace;
     font-size: .76rem; line-height: 1.55;
   }
+  .cmd-box button {
+    position: absolute; top: .45rem; right: .45rem;
+    background: var(--tile); color: var(--text);
+    border: 1px solid var(--line-in); border-radius: 8px;
+    padding: .26rem .6rem; font: inherit; font-size: .78rem; cursor: pointer;
+    transition: border-color .15s ease, color .15s ease, transform .12s ease;
+  }
+  .cmd-box button:hover { border-color: var(--mint); color: var(--mint); }
+  .cmd-box button:active { transform: scale(.95); }
+  .cmd-box button:focus-visible { outline: 2px solid var(--mint); outline-offset: 2px; }
+  .cmd-box button.done { border-color: var(--mint); color: var(--mint); }
   .cmd .hint { color: var(--dim); font-size: .8rem; margin-top: .55rem; }
   .cmd .hint code {
     font-family: ui-monospace, Menlo, monospace; font-size: .92em;
@@ -246,14 +309,20 @@
 
   <h2>Пустить других через себя</h2>
   <details class="server">
-    <summary>Поставить на сервер<span class="why">Одна команда — и вы работаете чьим-то VPN круглосуточно</span></summary>
+    <summary>
+      <span>Поставить на сервер<span class="why">Одна команда — и вы работаете чьим-то VPN круглосуточно</span></span>
+      <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6"
+           stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M9 5l7 7-7 7"/>
+      </svg>
+    </summary>
 
     <div class="cmd">
-      <div class="cmd-top">
-        <span>Скопируйте в терминал сервера</span>
-        <button type="button" id="copy">Скопировать</button>
-      </div>
+      <p class="cmd-label">Скопируйте в терминал сервера</p>
+      <div class="cmd-box">
+        <button type="button" id="copy" aria-label="Скопировать команду">Скопировать</button>
       <pre id="cmdText">curl -fsSL https://github.com/mister-PARADISE/bemyvpn/releases/latest/download/bemyvpn-linux-$(uname -m | sed s/aarch64/arm64/)-terminal -o bemyvpn &amp;&amp; chmod +x bemyvpn &amp;&amp; sudo ./bemyvpn install &amp;&amp; sudo bemyvpn</pre>
+      </div>
       <p class="hint">
         Команда сама подставит нужную сборку, скачает её и поставит в систему —
         дальше достаточно набрать <code>bemyvpn</code> из любой папки. Откроется
@@ -351,6 +420,13 @@
     btn.href = BASE + b[1];
     label.textContent = "Скачать для " + os.name;
     file.textContent = b[1];
+
+    // Короткое проявление при смене системы. Перезапуск анимации требует
+    // «дёрнуть» вёрстку между снятием и постановкой класса — иначе браузер
+    // не заметит, что её нужно начать заново.
+    btn.classList.remove("swap");
+    void btn.offsetWidth;
+    btn.classList.add("swap");
   }
 
   var g = guess(); cur = g[0]; curBuild = g[1]; sure = g[2];
@@ -379,7 +455,11 @@
     var btn = this;
     navigator.clipboard.writeText(document.getElementById("cmdText").textContent).then(function () {
       btn.textContent = "Скопировано";
-      setTimeout(function () { btn.textContent = "Скопировать"; }, 1600);
+      btn.classList.add("done");
+      setTimeout(function () {
+        btn.textContent = "Скопировать";
+        btn.classList.remove("done");
+      }, 1600);
     });
   });
 </script>
