@@ -1308,7 +1308,12 @@ mod wintun_live {
     fn wintun_loads() {
         match super::make_tun(&bmv_tunnel::TunParams::guest()) {
             Ok((_dev, name)) => eprintln!("wintun OK: adapter '{name}' created"),
-            Err(e) => panic!("wintun FAILED: {e}"),
+            // {e:?}, а не {e}: у `TunFail` намеренно НЕТ Display. Слова к
+            // признаку подбирает `human()` — по-русски и для человека, а сюда
+            // они не годятся: кириллица в консоли Windows-раннера роняет шаг.
+            // В журнал прогона нужен сам признак — `DriverLoad` говорит о
+            // причине больше, чем любая фраза.
+            Err(e) => panic!("wintun FAILED: {e:?}"),
         }
     }
 }
