@@ -1421,10 +1421,12 @@ async fn ws_conn(socket: WebSocket, state: Db, ip: IpAddr, _guard: WsConnGuard) 
 // и страница обязана ехать вместе с ним, а не отдельным «не забыть». Заодно на
 // пути запроса нет ни файловой системы, ни её ошибок.
 
-/// Исходная страница. `include_str!` — путь считается от этого файла.
-const PAGE_HTML: &str = include_str!("../../../site/index.html");
-/// Та же страница в gzip: ≈19 КБ → ≈5 КБ. Готовит `build.rs` при сборке —
-/// содержимое известно заранее, жать его на каждый запрос незачем.
+/// Страница, какой её видит посетитель: `site/index.html` без пояснений,
+/// отступов и пустых строк. Ужимает `build.rs` при сборке — в репозитории
+/// исходник остаётся читаемым, а в бинарь едет сухая копия.
+const PAGE_HTML: &str = include_str!(concat!(env!("OUT_DIR"), "/index.html"));
+/// Та же страница в gzip. Готовит `build.rs` при сборке — содержимое известно
+/// заранее, жать его на каждый запрос незачем.
 const PAGE_GZ: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/index.html.gz"));
 /// ETag посчитан на сборке (SHA-256 содержимого). У сжатого варианта он ДРУГОЙ:
 /// это разные тела, и посредник, который их не различит, отдаст gzip тому, кто
@@ -3092,6 +3094,247 @@ mod tests {
             // И страница после работы протокола тоже никуда не делась.
             let (head2, _) = http(addr, "/", "").await;
             assert!(head2.starts_with("HTTP/1.1 200 "), "после работы протокола страница отвалилась");
+        }
+    }
+
+    // ── КАТЕГОРИЯ У: УЖАТИЕ СТРАНИЦЫ ──────────────────────────────────────────
+    //
+    // В репозитории `site/index.html` лежит с пояснениями — они объясняют, почему
+    // страница устроена так, и нужны тому, кто её правит. В бинарь `build.rs`
+    // кладёт сухую копию: без пояснений, отступов и пустых строк.
+    //
+    // Ужатие, которое что-то потеряло, СТРАНИЦУ НЕ ЛОМАЕТ ГРОМКО. Она отдаётся,
+    // отвечает 200, весит меньше — и просто не работает: скрипт не находит
+    // элемент, команда не копируется, абзац склеился в одно слово. Поэтому
+    // сверяем не размер, а существо: что нашли по чему ищет скрипт, что имена
+    // файлов выпуска целы, что команда для сервера совпала дословно и что весь
+    // видимый человеку текст на месте.
+    mod page_squeeze {
+        use super::*;
+
+        /// Исходник с пояснениями — то, с чем сверяемся. `PAGE_HTML` рядом —
+        /// то, что реально уезжает в браузер.
+        const PAGE_SRC: &str = include_str!("../../../site/index.html");
+
+        /// Видимый человеку текст: без пояснений, стилей, скрипта и разметки,
+        /// пробелы схлопнуты. Ровно то, что останется на экране.
+        ///
+        /// Схлопывание пробелов здесь НЕ поблажка: в разметке перенос строки и
+        /// есть пробел, а вот склеенные слова (`Подробнее»и`) схлопывание не
+        /// прячет — они так и останутся одним словом и разойдутся с исходником.
+        fn visible(html: &str) -> String {
+            let mut s = html.to_string();
+            for (open, close) in [("<!--", "-->"), ("<style", "</style>"), ("<script", "</script>")]
+            {
+                while let Some(i) = s.find(open) {
+                    let end = s[i..].find(close).map_or(s.len(), |j| i + j + close.len());
+                    s.replace_range(i..end, " ");
+                }
+            }
+            let mut text = String::new();
+            let mut in_tag = false;
+            for ch in s.chars() {
+                match ch {
+                    '<' => in_tag = true,
+                    // Тег — тоже граница слов, иначе `<b>это</b>вот` слиплось бы
+                    // в проверке, а на экране нет.
+                    '>' => {
+                        in_tag = false;
+                        text.push(' ');
+                    }
+                    c if !in_tag => text.push(c),
+                    _ => {}
+                }
+            }
+            text.split_whitespace().collect::<Vec<_>>().join(" ")
+        }
+
+        /// Команда для сервера — то, что лежит между `<pre>` и `</pre>`.
+        fn server_command(html: &str) -> &str {
+            const OPEN: &str = "<pre id=\"cmdText\">";
+            let start = html.find(OPEN).expect("на странице нет команды для сервера") + OPEN.len();
+            let end = start + html[start..].find("</pre>").expect("команда не закрыта");
+            &html[start..end]
+        }
+
+        /// Значения атрибута `name="…"` по всему файлу.
+        fn attrs(html: &str, name: &str) -> Vec<String> {
+            let key = format!("{name}=\"");
+            html.match_indices(&key)
+                .filter_map(|(i, _)| {
+                    let v = &html[i + key.len()..];
+                    Some(v[..v.find('"')?].to_string())
+                })
+                .collect()
+        }
+
+        /// Скрипт ищет элементы по именам. Пропало имя — страница отдаётся, но
+        /// не работает: система не определяется, кнопка никуда не ведёт.
+        #[test]
+        fn every_hook_the_script_looks_for_survived() {
+            for hook in [
+                // `document.getElementById(…)`
+                "id=\"main\"",
+                "id=\"mainLabel\"",
+                "id=\"mainFile\"",
+                "id=\"warn\"",
+                "id=\"iosNote\"",
+                "id=\"intelNote\"",
+                "id=\"copy\"",
+                "id=\"cmdText\"",
+                // `document.querySelector("h1 .typed")` и каретка рядом с ним
+                "class=\"typed\"",
+                "class=\"caret\"",
+                // `document.querySelectorAll(".picker button")` и `b.dataset.os`
+                "class=\"picker\"",
+                "data-os=\"mac\"",
+                "data-os=\"win\"",
+                "data-os=\"linux\"",
+                "data-os=\"android\"",
+                "data-os=\"ios\"",
+                // классы, которые скрипт ставит и снимает, — их обязаны знать стили
+                ".primary.swap",
+                ".primary.off",
+                "h1.typing .caret",
+                ".cmd-box button.done",
+                "aria-selected=\"true\"",
+                // ключевые кадры: имя в правиле обязано найти имя в @keyframes
+                "@keyframes rise",
+                "@keyframes fade",
+                "@keyframes caretBlink",
+            ] {
+                assert!(
+                    PAGE_SRC.contains(hook),
+                    "в ИСХОДНИКЕ нет `{hook}` — устарел сам список, а не ужатие",
+                );
+                assert!(
+                    PAGE_HTML.contains(hook),
+                    "ужатие потеряло `{hook}` — страница откроется, но работать не будет",
+                );
+            }
+        }
+
+        /// Все имена, по которым что-то ищется, — целиком: идентификаторы SVG,
+        /// классы, переменные цвета. Список не пишем руками: берём из исходника.
+        #[test]
+        fn no_id_class_or_variable_was_renamed() {
+            let mut names: Vec<String> = attrs(PAGE_SRC, "id");
+            for c in attrs(PAGE_SRC, "class") {
+                names.extend(c.split_whitespace().map(str::to_string));
+            }
+            // Переменные цвета: `--имя:` — объявление. `--` внутри `<!-- -->`
+            // двоеточием не заканчивается и сюда не попадает.
+            for (i, _) in PAGE_SRC.match_indices("--") {
+                let tail = &PAGE_SRC[i + 2..];
+                let end = tail
+                    .find(|c: char| !c.is_ascii_alphanumeric() && c != '-')
+                    .unwrap_or(tail.len());
+                if end > 0 && tail[end..].starts_with(':') {
+                    names.push(format!("--{}", &tail[..end]));
+                }
+            }
+            names.sort();
+            names.dedup();
+            assert!(names.len() > 30, "разбор имён сломался: нашлось {}", names.len());
+            for n in &names {
+                assert!(
+                    PAGE_HTML.contains(n.as_str()),
+                    "имя `{n}` не пережило ужатия — переименовывать классы и идентификаторы нельзя",
+                );
+            }
+        }
+
+        /// Имена файлов выпуска и адрес GitHub. ЛОВУШКА: наивное удаление
+        /// пояснений после `//` съело бы половину адреса `"https://github.com/…"`
+        /// и оставило незакрытую строку — скрипт не запустился бы вовсе.
+        #[test]
+        fn release_files_and_the_github_address_are_whole() {
+            const BASE: &str = "https://github.com/mister-PARADISE/bemyvpn/releases/latest/download/";
+            assert!(
+                PAGE_HTML.contains(&format!("var BASE = \"{BASE}\";")),
+                "адрес выпусков в скрипте порезан — это та самая ловушка с `//`",
+            );
+            for file in [
+                "bemyvpn-macos-arm64.dmg",
+                "bemyvpn-windows-x86_64.exe",
+                "bemyvpn-windows-arm64.exe",
+                "bemyvpn-linux-x86_64.AppImage",
+                "bemyvpn-linux-arm64.AppImage",
+                "bemyvpn-android-arm64.apk",
+                "bemyvpn-linux-x86_64-terminal",
+                "bemyvpn-linux-arm64-terminal",
+                "bemyvpn-macos-arm64-terminal",
+                "bemyvpn-windows-x86_64-terminal.exe",
+                "bemyvpn-windows-arm64-terminal.exe",
+            ] {
+                assert!(PAGE_SRC.contains(file), "в исходнике нет `{file}` — устарел список");
+                assert!(PAGE_HTML.contains(file), "ужатие потеряло имя файла `{file}`");
+            }
+            // Столько же адресов, сколько было: ни одного не проглотили целиком.
+            assert_eq!(
+                PAGE_HTML.matches("https://github.com/").count(),
+                PAGE_SRC.matches("https://github.com/").count(),
+                "адресов на странице стало не столько, сколько было",
+            );
+        }
+
+        /// ДОКАЗАТЕЛЬСТВО ЛОВУШКИ С `//`: в скрипте не осталось строки с нечётным
+        /// числом кавычек. Порезанный адрес дал бы ровно её — незакрытую строку,
+        /// на которой браузер бросает разбор всего скрипта.
+        #[test]
+        fn no_string_in_the_script_was_left_unclosed() {
+            let js = &PAGE_HTML[PAGE_HTML.find("<script>").expect("на странице нет скрипта")..];
+            let js = &js[..js.find("</script>").expect("скрипт не закрыт")];
+            for line in js.lines() {
+                assert_eq!(
+                    line.matches('"').count() % 2,
+                    0,
+                    "в скрипте осталась незакрытая строка — ужатие съело кавычку:\n{line}",
+                );
+            }
+        }
+
+        /// Команда для сервера — ДОСЛОВНО. Человек копирует её в терминал: и
+        /// `&amp;&amp;`, и `$(uname -m | sed …)` держатся на пробелах, любое
+        /// схлопывание внутри `<pre>` ломает то, что он вставит.
+        #[test]
+        fn the_server_command_is_copied_word_for_word() {
+            let want = server_command(PAGE_SRC);
+            let got = server_command(PAGE_HTML);
+            assert_eq!(want, got, "команда для сервера разошлась с исходником");
+            assert!(got.contains("&amp;&amp;"), "из команды пропало `&&`");
+            assert!(
+                got.contains("$(uname -m | sed s/aarch64/arm64/)"),
+                "разбор разрядности в команде испорчен",
+            );
+        }
+
+        /// Весь видимый человеку текст на месте. Пояснения писались для нас и в
+        /// сеть не едут, а вот ни одного слова со страницы пропасть не должно.
+        #[test]
+        fn every_word_a_person_sees_survived() {
+            let want = visible(PAGE_SRC);
+            let got = visible(PAGE_HTML);
+            assert!(want.contains("VPN от людей — для людей"), "разбор текста сломался");
+            assert!(
+                !want.contains("Без этой строки телефон верстает"),
+                "пояснение попало в видимый текст — разбор считает комментарии текстом",
+            );
+            assert_eq!(want, got, "видимый текст страницы изменился при ужатии");
+        }
+
+        /// И только теперь — размер. Он последний: ужатие, которое похудело, но
+        /// потеряло поведение, к этому месту уже не дойдёт.
+        #[test]
+        fn the_squeezed_page_is_noticeably_lighter() {
+            let (was, now) = (PAGE_SRC.len(), PAGE_HTML.len());
+            assert!(now < was, "ужатая страница не легче исходной: {now} против {was}");
+            let saved = (was - now) * 100 / was;
+            assert!(
+                saved >= 25,
+                "ужатие сэкономило всего {saved}% ({was} → {now}) — похоже, оно перестало работать",
+            );
+            println!("страница: {was} → {now} байт (−{saved}%), в gzip {} байт", PAGE_GZ.len());
         }
     }
 
