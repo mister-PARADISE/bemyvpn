@@ -179,15 +179,6 @@ public class Win32 {
     // topmost: MinimizeAll does not touch it, SetForegroundWindow does not beat
     // it, and every shot came out as a picture of that wizard. HWND_TOPMOST does.
     [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int w, int ht, uint flags);
-    // Sweeping foreign full-screen windows off the desktop. The ARM runner boots
-    // straight into the Windows out-of-box wizard ("Choose privacy settings"),
-    // which is topmost, has no minimise box, and survives both MinimizeAll and
-    // HWND_TOPMOST on our own window - every frame came out a picture of it.
-    // SW_HIDE takes any window, wizard or not.
-    public delegate bool EnumProc(IntPtr h, IntPtr p);
-    [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc cb, IntPtr p);
-    [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
-    [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
 }
 '@
 
@@ -296,29 +287,7 @@ public class Win32 {
     # включена»: проверка узнаёт открытую вкладку по мятой заливке ячейки, а у
     # работающей раздачи ячейка становится «Стоп» и красится КРАСНЫМ — то есть
     # верный кадр она объявила бы поломкой.
-    # Hide every visible top-level window of ANOTHER process that covers most of
-    # the screen. Ours is spared by pid, so the sweep cannot hide the app itself.
-    function Clear-Desktop([int]$keepPid) {
-        $sw = [Windows.Forms.Screen]::PrimaryScreen.Bounds
-        $cb = [Win32+EnumProc] {
-            param($wh, $lp)
-            if (-not [Win32]::IsWindowVisible($wh)) { return $true }
-            $pid2 = 0
-            [void][Win32]::GetWindowThreadProcessId($wh, [ref]$pid2)
-            if ($pid2 -eq $keepPid) { return $true }
-            $r = New-Object Win32+RECT
-            [void][Win32]::GetWindowRect($wh, [ref]$r)
-            if (($r.Right - $r.Left) -ge $sw.Width * 0.6 -and ($r.Bottom - $r.Top) -ge $sw.Height * 0.6) {
-                Write-Host "hiding a full-screen window of pid $pid2"
-                [void][Win32]::ShowWindow($wh, 0)   # SW_HIDE
-            }
-            return $true
-        }
-        [void][Win32]::EnumWindows($cb, [IntPtr]::Zero)
-    }
-
     function Shoot([int]$tab, [string]$name, [bool]$judge = $true) {
-        Clear-Desktop $script:owner
         [void][Win32]::SetForegroundWindow($script:h)
         # Park the cursor off the bar: it can land in the frame, and holding it
         # over a cell would mean measuring the hovered cell instead of the open one.
@@ -346,7 +315,7 @@ public class Win32 {
 
     # The shots and the width sweep are INDEPENDENT answers to two different
     # questions, so a failure of the first must not swallow the second: the shots
-    # depend on a desktop we do not own (see Clear-Desktop), the measurement does
+    # depend on a desktop we do not own (see $strict at the top), the measurement does
     # not. The error is kept and rethrown after the sweep has printed its table.
     $shotError = $null
     try {
