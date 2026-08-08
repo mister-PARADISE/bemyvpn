@@ -166,6 +166,11 @@ public class Win32 {
     // overstates the width of the window by ~15 px and would make any measurement
     // of "how wide is our window" wrong by that much.
     [DllImport("dwmapi.dll")] public static extern int DwmGetWindowAttribute(IntPtr h, int attr, out RECT r, int size);
+    // Our window must sit ABOVE everything. On the ARM runner the Windows
+    // out-of-box wizard ("Choose privacy settings") owns the whole screen and is
+    // topmost: MinimizeAll does not touch it, SetForegroundWindow does not beat
+    // it, and every shot came out as a picture of that wizard. HWND_TOPMOST does.
+    [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int w, int ht, uint flags);
 }
 '@
 
@@ -176,38 +181,41 @@ public class Win32 {
     (New-Object -ComObject Shell.Application).MinimizeAll()
     Start-Sleep -Seconds 1
 
+    # Wait for a window a human could see. A HANDLE IS NOT A WINDOW YET: femtovg
+    # creates the winit window FIRST and only then discovers that OpenGL is
+    # missing, so the dying process owns a real handle for a moment - with a 0x0
+    # rect, because the window was never mapped. Grabbing that one produced a
+    # zero-sized bitmap and failed the job. Size is the honest test.
+    # Returns the handle plus the pid that owns it (not always the pid we started).
+    function Wait-Window([int]$startedId) {
+        for ($i = 0; $i -lt 60; $i++) {
+            $live = @(Get-Process -Name 'bemyvpn-gui' -ErrorAction SilentlyContinue)
+            foreach ($p in $live) {
+                $p.Refresh()
+                $cand = $p.MainWindowHandle
+                if ($cand -eq [IntPtr]::Zero) { continue }
+                $probe = New-Object Win32+RECT
+                [void][Win32]::GetWindowRect($cand, [ref]$probe)
+                if (($probe.Right - $probe.Left) -lt 100 -or ($probe.Bottom - $probe.Top) -lt 100) { continue }
+                # Say out loud WHICH path was exercised, so a future run cannot
+                # quietly stop testing the fallback: a different pid means the GPU
+                # path failed and the app restarted itself on the software
+                # rasteriser, which is what this runner has to do.
+                $how = if ($p.Id -eq $startedId) { 'GPU path (OpenGL found)' } else { 'software rasteriser after self-restart' }
+                Write-Host "window handle: $cand, pid $($p.Id) (started $startedId) - $how"
+                return @($cand, $p.Id)
+            }
+            # No process left and no window: nobody is going to draw anything.
+            if ($live.Count -eq 0) { throw 'GUI exited and never opened a window' }
+            Start-Sleep -Seconds 1
+        }
+        throw 'no window appeared within 60 s'
+    }
+
     $env:BEMYVPN_CONFIG = "$tmp\gui.toml"
     $started = Start-Bg $gui @() 'gui' $false
-    $h = [IntPtr]::Zero
-    $owner = 0
-    for ($i = 0; $i -lt 60; $i++) {
-        $live = @(Get-Process -Name 'bemyvpn-gui' -ErrorAction SilentlyContinue)
-        foreach ($p in $live) {
-            $p.Refresh()
-            $cand = $p.MainWindowHandle
-            if ($cand -eq [IntPtr]::Zero) { continue }
-            # A HANDLE IS NOT A WINDOW YET. femtovg creates the winit window FIRST
-            # and only then discovers that OpenGL is missing, so the dying process
-            # owns a real handle for a moment - with a 0x0 rect, because the window
-            # was never mapped. Grabbing that one produced a zero-sized bitmap and
-            # failed the job. Size is the honest test of "a window a human sees".
-            $probe = New-Object Win32+RECT
-            [void][Win32]::GetWindowRect($cand, [ref]$probe)
-            if (($probe.Right - $probe.Left) -lt 100 -or ($probe.Bottom - $probe.Top) -lt 100) { continue }
-            $h = $cand; $owner = $p.Id; break
-        }
-        if ($h -ne [IntPtr]::Zero) { break }
-        # No process left and no window: nobody is going to draw anything.
-        if ($live.Count -eq 0) { throw 'GUI exited and never opened a window' }
-        Start-Sleep -Seconds 1
-    }
-    if ($h -eq [IntPtr]::Zero) { throw 'no window appeared within 60 s' }
-    # Say out loud WHICH path was exercised, so a future run cannot quietly stop
-    # testing the fallback: a different pid means the GPU path failed and the app
-    # restarted itself on the software rasteriser, which is what this runner has
-    # to do. The same pid would mean it found working OpenGL.
-    $how = if ($owner -eq $started.Id) { 'GPU path (OpenGL found)' } else { 'software rasteriser after self-restart' }
-    Write-Host "window handle: $h, pid $owner (started $($started.Id)) - $how"
+    $found = Wait-Window $started.Id
+    $h = $found[0]; $owner = $found[1]
 
     Add-Type -AssemblyName System.Drawing
     Add-Type -AssemblyName System.Windows.Forms
@@ -222,7 +230,9 @@ public class Win32 {
     $wr = New-Object Win32+RECT
     [void][Win32]::GetWindowRect($h, [ref]$wr)
     $ww = $wr.Right - $wr.Left; $wh = $wr.Bottom - $wr.Top
-    [void][Win32]::MoveWindow($h, [int](($sb.Width - $ww) / 2), [int](($sb.Height - $wh) / 2), $ww, $wh, $true)
+    # HWND_TOPMOST (-1) вместе с переносом: SWP_SHOWWINDOW = 0x0040.
+    [void][Win32]::SetWindowPos($h, [IntPtr](-1), [int](($sb.Width - $ww) / 2),
+        [int](($sb.Height - $wh) / 2), $ww, $wh, 0x0040)
 
     # The catalog reaches the window with the first snapshot (6 s budget in
     # bmv-signal); painting on a GPU-less runner takes its own time.
@@ -316,6 +326,50 @@ public class Win32 {
         (Join-Path $out 'windows-vpn.png'),
         (Join-Path $out 'windows-host.png'),
         (Join-Path $out 'windows-server.png')) + $rect) | Out-Null
+
+    # ── THE SAME WINDOW AT FOUR SCREEN SCALES ────────────────────────────────
+    #
+    # "Too wide on Windows" has to be answered for the scales people actually
+    # run, not just for the runner's 100%. The width of the layout is 400 POINTS;
+    # in pixels it must grow with the scale (600 at 150%), and in points it must
+    # stay 400 at every one of them. Anything else means we hand the OS pixels
+    # where it expects points, or scale twice - and the window really is wider
+    # than designed on scaled screens.
+    #
+    # SLINT_SCALE_FACTOR is Slint's own override (i-slint-backend-winit,
+    # winitwindowadapter.rs: the value replaces winit_window.scale_factor() AND
+    # converts the logical sizes in the window attributes), so the app builds its
+    # window exactly as it would on a monitor with that scale.
+    #
+    # HEIGHT IS NOT JUDGED HERE, on purpose. It is computed from the screen
+    # height, and the screen stays a 100% one under this override - so the height
+    # comes out scaled by sf and off-screen at 200%. The honest height check is a
+    # pure-function one and lives in the tests of main.rs.
+    Stop-Process -Name 'bemyvpn-gui' -Force -ErrorAction SilentlyContinue
+    Start-Sleep -Seconds 2
+    $wrong = @()
+    $n = 0
+    foreach ($sf in 1.0, 1.25, 1.5, 2.0) {
+        $n++
+        $env:SLINT_SCALE_FACTOR = $sf.ToString($inv)
+        $p2 = Start-Bg $gui @() "dpi$n" $false
+        $f2 = Wait-Window $p2.Id
+        Start-Sleep -Seconds 4
+        $c2 = New-Object Win32+RECT
+        [void][Win32]::GetClientRect($f2[0], [ref]$c2)
+        $osdpi = [Win32]::GetDpiForWindow($f2[0]) / 96.0
+        $wpt = $c2.Right / $sf
+        Write-Host ("SCALE {0}: client {1}x{2} px = {3} pt wide (OS scale {4})" -f
+            (Fmt $sf), $c2.Right, $c2.Bottom, (Fmt $wpt), (Fmt $osdpi))
+        if ([Math]::Abs($wpt - 400.0) -gt 1.0) {
+            $wrong += ("scale {0}: {1} pt instead of 400" -f (Fmt $sf), (Fmt $wpt))
+        }
+        Stop-Process -Name 'bemyvpn-gui' -Force -ErrorAction SilentlyContinue
+        Start-Sleep -Seconds 2
+    }
+    $env:SLINT_SCALE_FACTOR = $null
+    if ($wrong.Count -gt 0) { throw ("window width is not 400 pt everywhere: " + ($wrong -join '; ')) }
+    Write-Host 'OK: 400 pt wide at 100%, 125%, 150% and 200%'
 }
 finally {
     foreach ($p in $procs) { if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue } }
