@@ -67,7 +67,30 @@
   /* ── шапка ── */
   .top { text-align: center; }
   .logo { width: 84px; height: 84px; margin: 0 auto 1.3rem; display: block; }
-  h1 { font-size: 2.1rem; font-weight: 700; letter-spacing: -.028em; margin-bottom: .5rem; }
+  /* ── НАЗВАНИЕ НАБИРАЕТСЯ ──
+     Буквы появляются по одной, как будто их печатают, а потом каретка просто
+     мигает. Набор ОДИН РАЗ при открытии: зациклить его значило бы каждые
+     несколько секунд стирать у человека название продукта.
+     Во время набора каретка НЕ мигает — она мигает только когда печать
+     закончилась. Так ведёт себя настоящий терминал, и без этого набор выглядит
+     дёрганым.
+     Полное название лежит в разметке, а не собирается скриптом: без скрипта и
+     для чтения с экрана оно должно быть на месте. Скрипт лишь прячет буквы и
+     показывает обратно. */
+  h1 {
+    font-size: 2.1rem; font-weight: 800; letter-spacing: -.028em; margin-bottom: .5rem;
+  }
+  /* Каретка — БРУСОК во всю клетку, как в консоли Linux, а не тонкая палочка
+     из текстовых полей. И мигает она так же: ровными вспышками через шаг, без
+     плавного затухания — потому и `steps(1)`. */
+  .caret {
+    display: inline-block; width: .5em; height: .95em; margin-left: .07em;
+    background: var(--mint); vertical-align: -.11em; border-radius: 1px;
+    animation: caretBlink 1.15s steps(1) infinite;
+  }
+  /* Пока печатают — каретка горит ровно: мигает она только в покое. */
+  h1.typing .caret { animation: none; }
+  @keyframes caretBlink { 0%, 49% { opacity: 1 } 50%, 100% { opacity: 0 } }
   .tagline {
     font-size: 1.2rem; text-wrap: balance; max-width: 22rem; margin: 0 auto; line-height: 1.4;
   }
@@ -75,27 +98,42 @@
   .subline { color: var(--dim); font-size: .95rem; margin-top: .7rem; text-wrap: balance; }
 
   /* ── выбор системы ── */
-  /* Пять названий в одну строку на телефоне не помещались, и «Windows»
-     обрезалось многоточием — выбор, из которого не прочесть вариант.
-     Теперь они переносятся: на узком экране встают в два ряда целиком,
-     на широком остаются одной строкой. Ширину задаёт само слово. */
+  /* Капельки, как «Недавние» в приложении: каждая по размеру своего слова.
+     Общей подложки нет — она делала из пяти кнопок один брусок и заставляла
+     их тянуться по строке; перенесённый вниз «iPhone» растягивался во всю
+     ширину и переставал быть капелькой. Теперь ряд просто переносится, а
+     каждая остаётся собой. Ряды выровнены по центру, чтобы перенос выглядел
+     нарочно, а не как остаток. */
   .picker {
-    display: flex; flex-wrap: wrap; gap: .3rem; margin: 2.2rem 0 .9rem;
-    background: var(--card); border: 1px solid var(--line);
-    border-radius: 13px; padding: .3rem;
+    display: flex; flex-wrap: wrap; justify-content: center;
+    gap: .4rem; margin: 2rem 0 1.1rem;
+  }
+  /* РЯДЫ ДЕЛИМ ПОРОВНУ И ОБА ПО ЦЕНТРУ.
+     Обычный перенос набивает первый ряд под завязку и роняет вниз остаток —
+     выходит 4 + 1, и одинокая капелька выглядит забытой. Сетка из трёх столбцов
+     делила поровну, но второй ряд прижимался влево: третий столбец оставался
+     пустым и всё равно занимал место.
+     Поэтому не сетка, а невидимый разрыв после третьей капельки: он переносит
+     строку, а выравнивание по центру достаётся обоим рядам само. */
+  .picker .brk { display: none; }
+  @media (max-width: 31rem) {
+    .picker .brk { display: block; flex: 0 0 100%; height: 0; }
   }
   .picker button {
-    flex: 1 1 auto; background: none; border: 1px solid transparent;
-    border-radius: 10px; padding: .5rem .55rem; cursor: pointer;
-    color: var(--dim); font: inherit; font-size: .82rem; font-weight: 600;
-    white-space: nowrap;
-    transition: color .12s ease, background .12s ease;
+    display: inline-flex; align-items: center; gap: .4rem;
+    flex: 0 0 auto; cursor: pointer; white-space: nowrap;
+    background: var(--card); border: 1px solid var(--line); border-radius: 999px;
+    padding: .45rem .8rem; color: var(--dim);
+    font: inherit; font-size: .84rem; font-weight: 600;
+    transition: color .14s ease, background .14s ease, border-color .14s ease;
   }
-  .picker button:hover { color: var(--text); }
+  .picker button svg { width: 15px; height: 15px; flex: none; opacity: .9; }
+  .picker button:hover { color: var(--text); border-color: var(--line-in); }
+  /* Выбранное — мятой, ровно как выбранная плитка в приложении. */
   .picker button[aria-selected="true"] {
-    background: var(--float); border-color: var(--line-in); color: var(--text);
+    background: #16342F; border-color: var(--mint); color: var(--mint);
   }
-  .picker button:focus-visible { outline: 2px solid var(--mint); outline-offset: 1px; }
+  .picker button:focus-visible { outline: 2px solid var(--mint); outline-offset: 2px; }
 
   /* ── кнопка ──
      Имя файла живёт ВНУТРИ неё. Отдельной плашкой оно было непонятно к чему
@@ -259,17 +297,27 @@
         <circle cx="63" cy="50" r="19" fill="none" stroke="url(#gG)" stroke-width="11"/>
       </g>
     </svg>
-    <h1>BeMyVPN</h1>
+    <h1><span class="typed">BeMyVPN</span><span class="caret" aria-hidden="true"></span></h1>
     <p class="tagline"><em>VPN от людей — для людей</em>.</p>
     <p class="subline">Не серверы компании, а живые люди по всему миру, которые пускают других через свой интернет. Бесплатно, без подписок и учётных записей.</p>
   </div>
 
   <div class="picker" role="tablist" aria-label="Выберите систему">
-    <button role="tab" data-os="mac">macOS</button>
-    <button role="tab" data-os="win">Windows</button>
-    <button role="tab" data-os="linux">Linux</button>
-    <button role="tab" data-os="android">Android</button>
-    <button role="tab" data-os="ios">iPhone</button>
+    <!-- Знаки систем — силуэтами, заливкой: так их узнают с одного взгляда, а
+         линия на 15 точках превращается в кашу. Показывать знак системы рядом
+         с файлом для неё — обычное дело для страницы загрузок: он говорит, ЧТО
+         скачается, а не рекламирует чужую марку. -->
+    <button role="tab" data-os="mac">
+      <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M17.05 12.54c-.02-2.3 1.88-3.4 1.96-3.46-1.07-1.56-2.73-1.78-3.32-1.8-1.41-.14-2.76.83-3.48.83-.72 0-1.83-.81-3.01-.79-1.55.02-2.98.9-3.78 2.29-1.61 2.79-.41 6.92 1.16 9.19.77 1.11 1.69 2.35 2.89 2.31 1.16-.05 1.6-.75 3-.75s1.79.75 3.02.72c1.25-.02 2.04-1.13 2.8-2.24.88-1.28 1.25-2.52 1.27-2.59-.03-.01-2.43-.93-2.45-3.71z"/><path d="M14.9 5.68c.64-.78 1.07-1.86.95-2.93-.92.04-2.03.61-2.69 1.38-.59.69-1.11 1.79-.97 2.84 1.02.08 2.07-.52 2.71-1.29z"/></svg>macOS</button>
+    <button role="tab" data-os="win">
+      <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 4.6l7.8-1.06v7.5H3zM12.1 3.36L21 2.15v8.89h-8.9zM3 12.34h7.8v7.5L3 18.78zM12.1 12.34H21v8.89l-8.9-1.21z"/></svg>Windows</button>
+    <button role="tab" data-os="linux">
+      <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M12 1.8c-2.9 0-4.6 2.3-4.6 5.5 0 1.5-.5 2.3-1.1 3.3-.7 1.2-1.6 2.5-1.6 4.5 0 3.9 3.2 7.1 7.3 7.1s7.3-3.2 7.3-7.1c0-2-.9-3.3-1.6-4.5-.6-1-1.1-1.8-1.1-3.3 0-3.2-1.7-5.5-4.6-5.5zm0 9.6c2.1 0 3.6 2.1 3.6 4.5S14.1 20 12 20s-3.6-1.7-3.6-4.1 1.5-4.5 3.6-4.5z"/><path d="M11 7.2h2l-1 1.7zM8.4 20.4l-2.1 1.7 2.7.6zM15.6 20.4l2.1 1.7-2.7.6z"/></svg>Linux</button>
+    <span class="brk" aria-hidden="true"></span>
+    <button role="tab" data-os="android">
+      <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M6.1 9.6h11.8V17a1.9 1.9 0 0 1-1.9 1.9H8a1.9 1.9 0 0 1-1.9-1.9zM6.3 8.4a5.85 5.85 0 0 1 11.4 0zm3.3-2.5a.8.8 0 1 0 0-1.6.8.8 0 0 0 0 1.6zm4.8 0a.8.8 0 1 0 0-1.6.8.8 0 0 0 0 1.6z"/><path d="M7.7 2.3l1.5 2.5-.9.5-1.5-2.5zM16.3 2.3l.9.5-1.5 2.5-.9-.5zM3.6 10.4a1.3 1.3 0 0 1 1.3 1.3v3.6a1.3 1.3 0 0 1-2.6 0v-3.6a1.3 1.3 0 0 1 1.3-1.3zM20.4 10.4a1.3 1.3 0 0 1 1.3 1.3v3.6a1.3 1.3 0 0 1-2.6 0v-3.6a1.3 1.3 0 0 1 1.3-1.3zM8.6 19.4a1.3 1.3 0 0 1 1.3 1.3v1.1a1.3 1.3 0 0 1-2.6 0v-1.1a1.3 1.3 0 0 1 1.3-1.3zM15.4 19.4a1.3 1.3 0 0 1 1.3 1.3v1.1a1.3 1.3 0 0 1-2.6 0v-1.1a1.3 1.3 0 0 1 1.3-1.3z"/></svg>Android</button>
+    <button role="tab" data-os="ios">
+      <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M7.6 1.8h8.8a2 2 0 0 1 2 2v16.4a2 2 0 0 1-2 2H7.6a2 2 0 0 1-2-2V3.8a2 2 0 0 1 2-2zm.1 3.6v13.2h8.6V5.4z"/><path d="M10.1 3.1h3.8v.9h-3.8z"/></svg>iPhone</button>
   </div>
 
   <a class="primary" id="main" href="#">
@@ -347,6 +395,40 @@
 </div>
 
 <script>
+  // НАБОР НАЗВАНИЯ — так, как печатал бы человек, а не машина.
+  // Сначала пара секунд пустой строки с мигающей кареткой: страница уже
+  // открыта, и печать начинается ПРИ человеке, а не до него.
+  // Ритм задан не случаем, а САМИМ НАЗВАНИЕМ: «Be» — пауза, «My» — пауза
+  // подольше, «VPN». Так слово читается тремя словами, а не одной кашей из
+  // восьми букв. Мелкая случайность поверх этого оставлена, чтобы шаг между
+  // буквами не был метрономом, но переспорить паузы она не может.
+  // Кому движение мешает, тому набора нет вовсе: название просто стоит.
+  (function () {
+    var el = document.querySelector("h1 .typed");
+    var h1 = document.querySelector("h1");
+    if (!el || !h1) return;
+    if (window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+
+    var full = el.textContent, i = 0;
+    el.textContent = "";
+
+    setTimeout(function () {
+      h1.classList.add("typing");
+      (function step() {
+        el.textContent = full.slice(0, ++i);
+        if (i >= full.length) {
+          setTimeout(function () { h1.classList.remove("typing"); }, 420);
+          return;
+        }
+        // Числа — длина слова: 2 = после «Be», 4 = после «My».
+        var HOLD = { 2: 430, 4: 700 };
+        var pause = 150 + Math.random() * 120;
+        if (HOLD[i]) pause += HOLD[i] + Math.random() * 180;
+        else if (Math.random() < 0.12) pause += 170 + Math.random() * 190;
+        setTimeout(step, pause);
+      })();
+    }, 1900 + Math.random() * 700);
+  })();
   // ССЫЛКИ НЕ ЗАВИСЯТ ОТ ВЫПУСКА. GitHub держит постоянный адрес
   // /releases/latest/download/<имя файла> — он всегда ведёт на свежий выпуск.
   // Поэтому сайту не нужно ни обращаться к их API, ни пересобираться после
