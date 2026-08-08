@@ -639,8 +639,16 @@ struct HostCard: View {
                             // Коробка значка ФИКСИРОВАННОЙ ширины (`protoBox`) —
                             // ровно ради этого столбца: у SF Symbols ширина своя
                             // у каждого знака, и имена начинались с разных мест.
+                            //
+                            // ЦВЕТ — СИНИЙ «КРОМОЧНЫЙ», а не тихий серый и не
+                            // мята. Приглушённым значок читался с трудом; мята
+                            // у нас значит СОСТОЯНИЕ («работает, выбрано, можно
+                            // нажать»), а протокол — свойство хоста: мятный
+                            // значок у офлайн-хоста звал бы нажать. Синий как
+                            // раз про устройство вещей — им же нарисованы кромки.
                             Image(systemName: protectionIcon(host.protection))
-                                .foregroundColor(Theme.dim).font(.system(size: 12, weight: .semibold))
+                                .foregroundColor(Theme.outline)
+                                .font(.system(size: 12, weight: .semibold))
                                 .frame(width: protoBox)
                             Text(host.name.isEmpty ? host.id : host.name)
                                 .foregroundColor(Theme.fg).font(.system(size: 16, weight: .semibold))
