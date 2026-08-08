@@ -639,8 +639,16 @@ struct HostCard: View {
                             // Коробка значка ФИКСИРОВАННОЙ ширины (`protoBox`) —
                             // ровно ради этого столбца: у SF Symbols ширина своя
                             // у каждого знака, и имена начинались с разных мест.
+                            //
+                            // ЦВЕТ — СИНИЙ «КРОМОЧНЫЙ», а не тихий серый и не
+                            // мята. Приглушённым значок читался с трудом; мята
+                            // у нас значит СОСТОЯНИЕ («работает, выбрано, можно
+                            // нажать»), а протокол — свойство хоста: мятный
+                            // значок у офлайн-хоста звал бы нажать. Синий как
+                            // раз про устройство вещей — им же нарисованы кромки.
                             Image(systemName: protectionIcon(host.protection))
-                                .foregroundColor(Theme.dim).font(.system(size: 12, weight: .semibold))
+                                .foregroundColor(Theme.outline)
+                                .font(.system(size: 12, weight: .semibold))
                                 .frame(width: protoBox)
                             Text(host.name.isEmpty ? host.id : host.name)
                                 .foregroundColor(Theme.fg).font(.system(size: 16, weight: .semibold))
@@ -1005,8 +1013,11 @@ struct HostTab: View {
                     HeroCircle(icon: "wifi.router.fill", tint: tint, pulsing: app.starting)
                     Text(statusTitle).foregroundColor(Theme.fg).font(.system(size: 21, weight: .heavy))
                         .multilineTextAlignment(.center).lineLimit(1).minimumScaleFactor(0.7)
+                    // Не «для друзей»: публичный хост берут из общего списка
+                    // чужие люди. И не «выходная точка» — так эту работу
+                    // называем мы, а не тот, кто ею пользуется.
                     Text(app.starting ? "Пробиваю канал наружу…"
-                         : (app.hostError ?? "Станьте выходной точкой для друзей"))
+                         : (app.hostError ?? "Станьте чьим-то VPN"))
                         .foregroundColor(app.hostError != nil && !app.starting ? Theme.red : Theme.dim)
                         .font(.system(size: 13)).multilineTextAlignment(.center)
                 }.transition(.identity)
@@ -1017,7 +1028,14 @@ struct HostTab: View {
     private var scrollBody: some View {
         ScrollView(showsIndicators: false) {
             VStack(alignment: .leading, spacing: 14) {
-                Text("Раздайте свой интернет: \(Platform.device) станет выходной точкой для гостей.")
+                // ЧТО ЗДЕСЬ ПРОИСХОДИТ НА САМОМ ДЕЛЕ. Стояло «Раздайте свой
+                // интернет: … станет выходной точкой для гостей» — и это
+                // описывало не тот продукт. У гостя интернет ЕСТЬ; ему закрыли
+                // доступ, и он просит не мегабайтов, а чужую страну на выходе.
+                // Дословно совпадает с окном и Android (сторож —
+                // crates/bmv-common/tests/host_copy_matches_everywhere.rs);
+                // отличается только название устройства.
+                Text("Через ваш канал выйдет в сеть тот, кому закрыли доступ. Для него \(Platform.device) станет выходом в интернет — сайты увидят вашу страну, а не его.")
                     .foregroundColor(Theme.dim).font(.system(size: 13))
 
                 sectionLabel("Имя хоста (видно в каталоге)")

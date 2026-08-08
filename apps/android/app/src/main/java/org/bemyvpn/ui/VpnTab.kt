@@ -634,7 +634,13 @@ fun HostCard(app: AppState, host: Host, reveal: suspend (LayoutCoordinates) -> U
                 // имени — как ему и положено. weight(1f, fill = false) на имени
                 // и есть та самая уступка ширины.
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
-                    Icon(protoIcon(host.protection), null, Modifier.size(14.dp), tint = Theme.dim)
+                    // ЦВЕТ — СИНИЙ «КРОМОЧНЫЙ», а не тихий серый и не мята.
+                    // Приглушённым значок читался с трудом; мята у нас значит
+                    // СОСТОЯНИЕ («работает, выбрано, можно нажать»), а протокол —
+                    // свойство хоста: мятный значок у офлайн-хоста звал бы
+                    // нажать. Синий как раз про устройство вещей — им же
+                    // нарисованы кромки.
+                    Icon(protoIcon(host.protection), null, Modifier.size(14.dp), tint = Theme.outline)
                     Text(
                         host.name.ifEmpty { host.id }, color = Theme.fg,
                         modifier = Modifier.weight(1f, fill = false),
@@ -653,15 +659,17 @@ fun HostCard(app: AppState, host: Host, reveal: suspend (LayoutCoordinates) -> U
                 // многоточие не доходило. Адрес виден в раскрытой карточке, там
                 // под него отдельная плитка. Счётчик гостей есть ВСЕГДА — это и
                 // делает подпись непустой при любых данных.
-                run {
-                    val cc = org.bemyvpn.GeoFlags.countryOf(host.ip)
-                    val parts = buildList {
-                        if (cc != null) add(cc)
-                        // Потолок хост может и не объявить (0) — дробь «1/0» врёт.
-                        add(if (host.max > 0) "гостей ${host.guests}/${host.max}" else "гостей ${host.guests}")
-                    }
-                    Text(parts.joinToString(" · "), color = Theme.dim, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                }
+                //
+                // КОДА СТРАНЫ ТУТ БОЛЬШЕ НЕТ. Он стоял первым («NL · гостей
+                // 0/32») и повторял флаг, который лежит слева на плашке в
+                // сантиметре от него: одна и та же страна дважды в одной
+                // строке. Флаг остаётся, место уходит счётчику. Полный код виден
+                // в раскрытой карточке, в плитке «СТРАНА».
+                Text(
+                    // Потолок хост может и не объявить (0) — дробь «1/0» врёт.
+                    if (host.max > 0) "гостей ${host.guests}/${host.max}" else "гостей ${host.guests}",
+                    color = Theme.dim, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                )
                 CapacityBar(host)
             }
             if (host.hasPassword) Icon(Icons.Filled.Lock, null, Modifier.size(15.dp), tint = Theme.dim)
