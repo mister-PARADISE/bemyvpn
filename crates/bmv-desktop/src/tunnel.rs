@@ -129,6 +129,12 @@ pub async fn run_candidates<F>(
     let eng = Arc::new(BmvEngine::from_config(cfg));
 
     let total = cands.len();
+    // ПОЧЕМУ НЕ ВЫШЛО У ПОСЛЕДНЕГО, кого пробовали. Ядро объясняет отказ словами
+    // для человека («Не задан адрес сервера», «У этого хоста нет рабочего
+    // адреса», «Хост не отвечает»), а здесь стояло `if let Ok(Ok(...))` — то
+    // есть объяснение выбрасывалось, и на всё подряд шла одна заготовка. Та же
+    // болезнь, что была у `make_tun`, только не выдумывающая причину, а молчащая.
+    let mut why: Option<String> = None;
     for (i, (host, pw, proto)) in cands.into_iter().enumerate() {
         on_state(State::Connecting(host.clone()));
         let pw_opt = (!pw.is_empty()).then_some(pw.clone());
@@ -150,12 +156,23 @@ pub async fn run_candidates<F>(
             }
             r = &mut est_fut => r,
         };
-        if let Ok(Ok((peer, link))) = est {
-            run_tunnel(&host, peer, link, eng.peer_check(), ipv6, &on_state, &stop).await;
-            return;
+        match est {
+            Ok(Ok((peer, link))) => {
+                run_tunnel(&host, peer, link, eng.peer_check(), ipv6, &on_state, &stop).await;
+                return;
+            }
+            // Отказ ОБЪЯСНЁН — объяснение и есть то, что должен прочесть человек.
+            Ok(Err(e)) => why = Some(e.to_string()),
+            // Не уложились в поводок: про этого кандидата сказать нечего, и
+            // прежнее объяснение (от другого хоста) сюда не годится.
+            Err(_) => why = None,
         }
     }
-    on_state(State::Failed("Не удалось подключиться к хосту. Попробуйте ещё раз или выберите другой.".into()));
+    // Причины нет — так и говорим, не называя её. Два следующих шага человека от
+    // этого не зависят, поэтому они и остаются в тексте.
+    on_state(State::Failed(why.unwrap_or_else(|| {
+        "Не удалось подключиться к хосту. Попробуйте ещё раз или выберите другой.".to_string()
+    })));
 }
 
 async fn run_tunnel<F>(

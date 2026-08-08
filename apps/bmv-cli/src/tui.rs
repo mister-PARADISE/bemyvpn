@@ -1061,7 +1061,13 @@ fn start_host(engine: &EngineSlot, app: &Shared, host_engine: &HostEngine, host_
                     hcfg.host.id = c;
                     hcfg.host.code_sig = s;
                 }
-                _ => {
+                // Отказ объяснён сервером — показываем его слова, а не свою
+                // заготовку про связь (см. тот же разбор в окне).
+                Err(e) => {
+                    app2.lock().unwrap().host = HostMode::Failed(e.to_string());
+                    return;
+                }
+                Ok(_) => {
                     app2.lock().unwrap().host = HostMode::Failed("Сервер не выдал код сети. Проверьте связь и попробуйте ещё раз.".into());
                     return;
                 }

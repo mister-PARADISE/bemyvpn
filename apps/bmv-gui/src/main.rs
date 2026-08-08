@@ -1617,7 +1617,13 @@ fn wire_host(
             if id.is_empty() || sig.is_empty() {
                 match BmvEngine::from_config(base.clone()).host_new_code().await {
                     Ok((c, s)) if !c.is_empty() && !s.is_empty() => { id = c; sig = s; store::save_host_creds(&id, &sig); }
-                    _ => return set_host_err(&weak, "Сервер не выдал код сети. Проверьте связь и попробуйте ещё раз.".into()),
+                    // Сервер ОБЪЯСНИЛ отказ (нет связи, отклонён запрос, свой
+                    // текст координатора) — его слова человек и читает. Здесь
+                    // стоял общий `_`, и объяснение выбрасывалось: «проверьте
+                    // связь» уходило и тому, у кого просто не задан адрес сервера.
+                    Err(e) => return set_host_err(&weak, e.to_string()),
+                    // Ответ пришёл, а кодом его не назовёшь — почему, мы не знаем.
+                    Ok(_) => return set_host_err(&weak, "Сервер не выдал код сети. Проверьте связь и попробуйте ещё раз.".into()),
                 }
             }
             let mut eng = Arc::new(BmvEngine::from_config(build(&id, &sig)));
