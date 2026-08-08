@@ -84,7 +84,11 @@ try {
 
     # 1. Local coordinator, address spoofing relay, two hosts.
     "[host]`npublic = true`nmax_guests = 8" | Set-Content -Path "$tmp\host.toml" -Encoding utf8
-    'coordinators = ["http://127.0.0.1:3330"]' | Set-Content -Path "$tmp\gui.toml" -Encoding utf8
+    # The GUI goes through the relay too, not straight to 3330. Announcing from
+    # 127.0.0.1 is refused by the coordinator (private address, 422), so a GUI
+    # pointed at the bare port could never share at all - and the "start sharing"
+    # shot below would show a failure that belongs to the test rig, not to the app.
+    'coordinators = ["http://127.0.0.1:3331"]' | Set-Content -Path "$tmp\gui.toml" -Encoding utf8
 
     Start-Bg $cli @('server', '--bind', '127.0.0.1:3330') 'coord' | Out-Null
     Start-Bg 'python' @('tools\ci-xff-relay.py', '3330', '3331:8.8.8.8', '3332:77.88.55.88') 'relay' | Out-Null
@@ -157,6 +161,11 @@ public class Win32 {
     [DllImport("user32.dll")] public static extern uint GetDpiForWindow(IntPtr h);
     [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
     [DllImport("user32.dll")] public static extern void mouse_event(uint f, int dx, int dy, uint d, IntPtr e);
+    // DWMWA_EXTENDED_FRAME_BOUNDS (9): what a person actually SEES. GetWindowRect
+    // on Windows 10/11 adds the INVISIBLE resize border (~7 px a side), so it
+    // overstates the width of the window by ~15 px and would make any measurement
+    // of "how wide is our window" wrong by that much.
+    [DllImport("dwmapi.dll")] public static extern int DwmGetWindowAttribute(IntPtr h, int attr, out RECT r, int size);
 }
 '@
 
@@ -231,7 +240,34 @@ public class Win32 {
         $dpi.ToString([Globalization.CultureInfo]::InvariantCulture))
     Write-Host "client area: $($cr.Right)x$($cr.Bottom) at $($org.X),$($org.Y), scale $dpi"
 
-    function Shoot([int]$tab, [string]$name) {
+    # HOW WIDE IS THIS WINDOW, REALLY. The complaint "too wide on Windows" has to
+    # be answered by a number, not by a feeling, and by a number from THIS machine:
+    # the layout asks for 400 logical points, but only the client area is ours -
+    # the title bar and the border belong to the OS, and the invisible resize
+    # border is another ~7 px a side that GetWindowRect counts and the eye does not.
+    # All three are printed side by side, in pixels and in logical points.
+    $fr = New-Object Win32+RECT
+    [void][Win32]::DwmGetWindowAttribute($h, 9, [ref]$fr, 16)
+    [void][Win32]::GetWindowRect($h, [ref]$wr)
+    $inv = [Globalization.CultureInfo]::InvariantCulture
+    function Fmt([double]$v) { return $v.ToString('0.0', $inv) }
+    Write-Host ("MEASURE client {0}x{1} px = {2}x{3} pt" -f $cr.Right, $cr.Bottom,
+        (Fmt ($cr.Right / $dpi)), (Fmt ($cr.Bottom / $dpi)))
+    Write-Host ("MEASURE visible frame {0}x{1} px = {2}x{3} pt (border {4} pt a side, title {5} pt)" -f
+        ($fr.Right - $fr.Left), ($fr.Bottom - $fr.Top),
+        (Fmt (($fr.Right - $fr.Left) / $dpi)), (Fmt (($fr.Bottom - $fr.Top) / $dpi)),
+        (Fmt ((($fr.Right - $fr.Left) - $cr.Right) / 2 / $dpi)),
+        (Fmt ((($fr.Bottom - $fr.Top) - $cr.Bottom) / $dpi)))
+    Write-Host ("MEASURE GetWindowRect {0}x{1} px (counts the invisible resize border)" -f
+        ($wr.Right - $wr.Left), ($wr.Bottom - $wr.Top))
+    Write-Host ("MEASURE desktop {0}x{1} px = {2}x{3} pt at scale {4}" -f $sb.Width, $sb.Height,
+        (Fmt ($sb.Width / $dpi)), (Fmt ($sb.Height / $dpi)), (Fmt $dpi))
+
+    # $judge = $false: снять кадр и НЕ судить его. Нужно ровно для «раздача
+    # включена»: проверка узнаёт открытую вкладку по мятой заливке ячейки, а у
+    # работающей раздачи ячейка становится «Стоп» и красится КРАСНЫМ — то есть
+    # верный кадр она объявила бы поломкой.
+    function Shoot([int]$tab, [string]$name, [bool]$judge = $true) {
         # Park the cursor off the bar: it can land in the frame, and holding it
         # over a cell would mean measuring the hovered cell instead of the open one.
         [void][Win32]::SetCursorPos(4, 4)
@@ -241,7 +277,7 @@ public class Win32 {
         $g = [Drawing.Graphics]::FromImage($bmp)
         $g.CopyFromScreen($sb.X, $sb.Y, 0, 0, $bmp.Size)
         $g.Dispose(); $bmp.Save($path, [Drawing.Imaging.ImageFormat]::Png); $bmp.Dispose()
-        Invoke-Check (@('check', $path) + $script:rect + @("$tab")) | Out-Null
+        if ($judge) { Invoke-Check (@('check', $path) + $script:rect + @("$tab")) | Out-Null }
     }
 
     function Open-Tab([int]$tab) {
@@ -259,6 +295,20 @@ public class Win32 {
     Shoot 0 'vpn'
     Open-Tab 1
     Shoot 1 'host'
+
+    # ACTUALLY START SHARING, from the window, the way a person does it.
+    # Everything up to here only proves the app draws. The complaint was that
+    # sharing does not work on Windows-ARM, and sharing is the one thing no shot
+    # ever exercised: the cell of the OPEN tab is not navigation any more but the
+    # switch itself ("Share"), so clicking it a second time is the button.
+    #
+    # No automatic verdict on purpose: whether the panel says "Sharing" with a
+    # code or shows a red error is read off the picture. An assertion here would
+    # have to know why a runner behind NAT failed, and it does not.
+    Open-Tab 1
+    Start-Sleep -Seconds 6
+    Shoot 1 'host-sharing' $false
+
     Open-Tab 2
     Shoot 2 'server'
 
