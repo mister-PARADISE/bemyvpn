@@ -80,6 +80,10 @@ The installer picks the right binary for your system, puts it on your `PATH` and
 verifies that it starts. The second command installs a systemd unit, starts it, and
 returns immediately.
 
+> 🐳 **Already running Docker?** Even shorter — `packaging/docker` →
+> `docker compose up -d`. Runs unprivileged, config survives container recreation.
+> See [packaging/docker/README.md](packaging/docker/README.md).
+
 **Your host survives logging out, losing SSH and rebooting.** Nothing to configure:
 the name is taken from the machine's hostname, and the guest limit is derived from
 available RAM. Check it the usual way:

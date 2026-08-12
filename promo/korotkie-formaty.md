@@ -134,7 +134,7 @@
 > and QUIC-style header protection on the nonce so there's no monotonic counter on
 > the wire.
 >
-> Apache-2.0, Rust, ~32k lines. Would especially value review of
+> Apache-2.0, Rust, ~27k lines of our own code. Would especially value review of
 > `crates/bmv-protocol/src/noise.rs`.
 
 ---
