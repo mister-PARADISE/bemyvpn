@@ -1,0 +1,82 @@
+name: Pages
+
+# ЗЕРКАЛО СТРАНИЦЫ СКАЧИВАНИЯ.
+#
+# Основную страницу отдаёт САМ КООРДИНАТОР: `site/index.html` вшита в его бинарь
+# (`server/coordinator/build.rs`) и уезжает посетителю подсушенной. Это удобно —
+# один домен и для каталога, и для загрузки, — но это же и единственная точка
+# отказа: домен координатора закроют, и человек разом лишится и списка хостов,
+# И САМОЙ ВОЗМОЖНОСТИ СКАЧАТЬ ПРИЛОЖЕНИЕ. То есть даже сменить координатор в
+# настройках он уже не сможет: приложения у него нет.
+#
+# Поэтому та же страница публикуется вторым, независимым адресом на GitHub Pages.
+# Он живёт на инфраструктуре github.io, которую не закрыть отдельно от GitHub,
+# а сами файлы выпусков и так лежат на github.com — новых зависимостей не
+# появляется, только запасная дверь к тем же дверям.
+#
+# Страница для этого ГОДИТСЯ БЕЗ ПРАВОК: в ней нет ни одного обращения к
+# координатору (ни fetch, ни XHR), все ссылки на скачивание — абсолютные на
+# github.com/…/releases/latest/download/…. Проверяется тестом ниже.
+#
+# ⚠️ ОДНА РУЧНАЯ НАСТРОЙКА, БЕЗ НЕЁ ПРОГОН УПАДЁТ:
+#     Settings → Pages → Build and deployment → Source: **GitHub Actions**
+# После этого адрес зеркала: https://mister-paradise.github.io/bemyvpn/
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'site/**'
+      - '.github/workflows/pages.yml'
+  workflow_dispatch: {}
+
+# Ровно то, что нужно публикации, и ни правом больше.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Публикация одна за раз. Отменять НЕЛЬЗЯ (`cancel-in-progress: false`): прерванный
+# деплой Pages оставляет адрес отдающим половину.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Зеркало обязано быть самодостаточным. Если в странице однажды заведётся
+      # обращение к координатору, зеркало станет бесполезным ИМЕННО ТОГДА, когда
+      # оно нужно, — при закрытом домене. Ловим это здесь, а не в проде.
+      - name: Страница не зависит от координатора
+        run: |
+          if grep -nE 'fetch\(|XMLHttpRequest|EventSource|WebSocket' site/index.html; then
+            echo "::error::страница обращается к сети — зеркало не переживёт блокировку координатора"
+            exit 1
+          fi
+          if ! grep -q 'github.com/mister-PARADISE/bemyvpn/releases' site/index.html; then
+            echo "::error::в странице нет ссылок на выпуски — качать будет нечего"
+            exit 1
+          fi
+          echo "страница самодостаточна ✅"
+
+      - name: Собрать каталог публикации
+        run: |
+          mkdir -p _site
+          cp site/index.html _site/index.html
+          # 404 отдаём той же страницей: человек, пришедший по устаревшей ссылке,
+          # попадает на скачивание, а не в тупик.
+          cp site/index.html _site/404.html
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+      - id: deploy
+        uses: actions/deploy-pages@v4
