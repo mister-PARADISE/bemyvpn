@@ -1,0 +1,15 @@
+{
+ "missing": [],
+ "version": [],
+ "breaks": [],
+ "dupes": [],
+ "overlap": [],
+ "unparsed": [],
+ "tags_replace": [
+  "data/minecraft/tags/worldgen/biome/has_structure/desert_pyramid.json: ['t_and_t-fabric-neoforge-1.13.9.jar'] перетирает тег целиком (replace:true), также пишут ['WilderWild-4.2.4-mc1.21.11.jar', 't_and_t-fabric-neoforge-1.13.9.jar']",
+  "data/minecraft/tags/worldgen/biome/has_structure/pillager_outpost.json: ['t_and_t-fabric-neoforge-1.13.9.jar'] перетирает тег целиком (replace:true), также пишут ['WilderWild-4.2.4-mc1.21.11.jar', 't_and_t-fabric-neoforge-1.13.9.jar']",
+  "data/minecraft/tags/worldgen/biome/has_structure/village_plains.json: ['t_and_t-fabric-neoforge-1.13.9.jar'] перетирает тег целиком (replace:true), также пишут ['WilderWild-4.2.4-mc1.21.11.jar', 't_and_t-fabric-neoforge-1.13.9.jar']",
+  "data/minecraft/tags/worldgen/biome/has_structure/village_savanna.json: ['t_and_t-fabric-neoforge-1.13.9.jar'] перетирает тег целиком (replace:true), также пишут ['WilderWild-4.2.4-mc1.21.11.jar', 't_and_t-fabric-neoforge-1.13.9.jar']",
+  "data/minecraft/tags/worldgen/biome/has_structure/village_snowy.json: ['t_and_t-fabric-neoforge-1.13.9.jar'] перетирает тег целиком (replace:true), также пишут ['WilderWild-4.2.4-mc1.21.11.jar', 't_and_t-fabric-neoforge-1.13.9.jar']"
+ ]
+}

@@ -5,6 +5,11 @@
  "base_modpack": "Fabulously Optimized 12.2.2",
  "categories": [
   {
+   "key": "foundation",
+   "chip": "фундамент",
+   "title": "Фундамент: то, на чём стоит всё остальное"
+  },
+  {
    "key": "sound",
    "chip": "звук",
    "title": "Звук: то, что делает мир объёмным"
@@ -342,6 +347,66 @@
    "dl": 176
   }
  ],
+ "pack": {
+  "name": "Слои погружения",
+  "version": "1.0.0",
+  "files": 223,
+  "mods": 203,
+  "resourcepacks": 16,
+  "shaders": 4,
+  "download_mb": 767,
+  "libs": [
+   "Architectury API",
+   "Balm",
+   "Cardinal Components API",
+   "CICADA",
+   "Collective",
+   "CreativeCore",
+   "Cristel Lib",
+   "EMF Compat: Core",
+   "Fabric API",
+   "FrozenLib",
+   "Fzzy Config",
+   "GlitchCore",
+   "JamLib",
+   "Lithostitched",
+   "MidnightLib",
+   "MRU",
+   "OtterLib",
+   "oωo (owo-lib)",
+   "Puzzles Lib",
+   "Resourceful Lib",
+   "StrawberryLib",
+   "SWAY API",
+   "Thermoo"
+  ]
+ },
+ "excluded_from_pack": {
+  "terralith": "напрямую несовместим с Geophilic без патча Terraphilic, а Geophilic легче и не тянет игру в фэнтези. Хочешь Terralith — снимай Geophilic.",
+  "natural-temperature": "переписывает раскладку биомов глобально и спорит с Tectonic по логике размещения. Отдельная сборка, не добавка.",
+  "roadweaver": "автор прямо заявляет несовместимость с Tectonic V3, а другого Tectonic под 1.21.11 нет. Дороги закрыты модом The Roads More Travelled.",
+  "ct-overhaul-village": "оверхол деревень должен быть один, выбраны Towns and Towers — они дают ещё аванпосты и корабли.",
+  "tough-as-nails": "вторая система температуры поверх Frostiful и Scorchful — две шкалы считали бы одно и то же по разным формулам.",
+  "modernarch": "базовый текстурный пак ставится один, выбран Patrix 32x — он легче по VRAM при связке с Voxy и шейдером.",
+  "spbr": "то же: конфликтует с базовым паком за карты LabPBR.",
+  "rainbows-foliage": "перекрывается с Better Leaves на листве, Better Leaves даёт объём и побеждает по умолчанию.",
+  "angels-weather": "пересекается с Gentler Weather Sounds по звуку погоды и с Particle Rain по частицам.",
+  "hyper-realistic-sky": "требует мод Celestial, а он остановился на 1.21.1 — под твою версию пак работать не будет. Небо в сборке закрыто модом Even Better Moon and Sun.",
+  "unnamed-desert": "проверка jar-файлов показала прямой конфликт: мод подменяет data/minecraft/worldgen/biome/desert.json целиком, ровно тот же файл целиком подменяет Geophilic. Кто загрузится последним — тот и победит, второй мод молча исчезнет из пустыни. Оставлен Geophilic: он трогает все биомы согласованно.",
+  "thfa": "требует базовый пак Torturable Healthbars, которого в сборке нет.",
+  "physex_reborn": "физика воды сильно меняет игру и заметно грузит машину — ставится осознанно и отдельно.",
+  "wavify": "волны должны рисовать либо мод, либо шейдер. В сборке шейдер, значит волны за ним.",
+  "elis-immersive-navigation": "ориентирование без F3 — сильное изменение привычек, ставится отдельно по желанию.",
+  "mobs-love-darkness": "меняет логику спавна: интересно, но лучше добавлять в уже обжитый мир осознанно.",
+  "esf": "звуковые вариации мобов требуют возни с property-файлами ресурспака.",
+  "clangor": "звуки ударов пересекаются с Enhanced Audio, нужен ручной баланс.",
+  "biome-strongholds": "перемещает крепости — рискованно поверх уже выбранного набора worldgen.",
+  "shippy-ships": "корабли — отдельная игра внутри игры, не в тему этой сборки.",
+  "noweatherskip": "запрет пропуска дождя сном раздражает больше, чем добавляет.",
+  "countereds-terrain-slabs": "плиты в рельефе спорят с формой, которую задаёт Tectonic.",
+  "animal-garden-bull-shark": "одиночный агрессивный моб выбивается из ванильного тона остальной живности.",
+  "badoptimizations": "оптимизация базово закрыта Fabulously Optimized, лишний слой мixin-ов без нужды."
+ },
  "mods": [
   {
    "slug": "not-enough-animations",
@@ -359,7 +424,8 @@
    "client_only": true,
    "server_needed": false,
    "dl": 80746320,
-   "updated": "2026-06-18"
+   "updated": "2026-06-18",
+   "in_pack": true
   },
   {
    "slug": "veinminer",
@@ -378,7 +444,8 @@
    "client_only": false,
    "server_needed": true,
    "dl": 73637959,
-   "updated": "2026-08-13"
+   "updated": "2026-08-13",
+   "in_pack": true
   },
   {
    "slug": "sound-physics-remastered",
@@ -396,7 +463,8 @@
    "client_only": true,
    "server_needed": false,
    "dl": 49700938,
-   "updated": "2026-06-18"
+   "updated": "2026-06-18",
+   "in_pack": true
   },
   {
    "slug": "tectonic",
@@ -415,7 +483,8 @@
    "client_only": false,
    "server_needed": true,
    "dl": 15506066,
-   "updated": "2026-07-06"
+   "updated": "2026-07-06",
+   "in_pack": true
   },
   {
    "slug": "farmers-delight-refabricated",
@@ -434,7 +503,8 @@
    "client_only": false,
    "server_needed": true,
    "dl": 14586824,
-   "updated": "2026-08-18"
+   "updated": "2026-08-18",
+   "in_pack": true
   },
   {
    "slug": "subtle-effects",
@@ -453,7 +523,8 @@
    "client_only": true,
    "server_needed": false,
    "dl": 10021574,
-   "updated": "2026-06-17"
+   "updated": "2026-06-17",
+   "in_pack": true
   },
   {
    "slug": "spawn-animations",
@@ -471,7 +542,8 @@
    "client_only": false,
    "server_needed": true,
    "dl": 6666277,
-   "updated": "2026-06-24"
+   "updated": "2026-06-24",
+   "in_pack": true
   },
   {
    "slug": "macaws-furniture",
@@ -490,7 +562,8 @@
    "client_only": false,
    "server_needed": true,
    "dl": 6420184,
-   "updated": "2026-06-20"
+   "updated": "2026-06-20",
+   "in_pack": true
   },
   {
    "slug": "structurify",
@@ -509,26 +582,116 @@
    "client_only": false,
    "server_needed": true,
    "dl": 2803426,
-   "updated": "2026-08-13"
+   "updated": "2026-08-13",
+   "in_pack": true
   },
   {
-   "slug": "sodium-lod-fixer",
-   "title": "Sodium LOD Fixer",
+   "slug": "voxy",
+   "title": "voxy",
    "ptype": "mod",
-   "category": "performance",
+   "category": "foundation",
    "tier": "must",
-   "desc": "Патчит OcclusionCuller в Sodium — тот кусок кода, который решает, какие чанки вообще отправлять на отрисовку. При включённом LOD-моде (Voxy, Distant Horizons, Bobby, Nvidium) этот однопоточный цикл захлёбывается и даёт просадки FPS и рывки кадра, а мод убирает узкое место. Визуально не меняет ничего.",
-   "why": "У тебя Sodium из Fabulously Optimized плюс Voxy сверху — это ровно та связка, под которую мод и написан. Без него вся твоя дальность прорисовки обходится заметно дороже, чем должна.",
-   "warning": "Лезет во внутренности Sodium, поэтому жёстко привязан к его версии: сборка под 1.21.11 от апреля 2026, а Sodium с тех пор обновлялся. Если после апдейта Sodium игра начнёт падать на старте — снимай этот мод первым. Проект крошечный (11к загрузок, поддерживает только 1.21.11), так что запасного плана у него нет.",
+   "desc": "LOD-движок: подгружает упрощённую геометрию далеко за пределами обычной дальности прорисовки, храня её в собственном кэше. Работает поверх Sodium и не требует пересборки мира.",
+   "why": "Это то, ради чего вся сборка и затевалась: горизонт, который видно. Без него моды на рельеф показывают красоту, до которой ты не досмотришь.",
+   "warning": "",
    "tags": [
-    "клиент",
-    "под Voxy",
-    "FPS"
+    "фундамент"
    ],
    "client_only": true,
    "server_needed": false,
-   "dl": 11447,
-   "updated": "2026-04-27"
+   "dl": 0,
+   "updated": "2026-05-25",
+   "in_pack": true
+  },
+  {
+   "slug": "first-person-model",
+   "title": "First-person Model",
+   "ptype": "mod",
+   "category": "foundation",
+   "tier": "must",
+   "desc": "Показывает модель персонажа от первого лица: видно собственные ноги, руки и тело, тень отбрасывается правильно.",
+   "why": "Базовый слой телесности, с которого начинается ощущение присутствия в мире, а не парения камеры.",
+   "warning": "",
+   "tags": [
+    "фундамент"
+   ],
+   "client_only": true,
+   "server_needed": false,
+   "dl": 0,
+   "updated": "2026-06-21",
+   "in_pack": true
+  },
+  {
+   "slug": "ambientsounds",
+   "title": "AmbientSounds",
+   "ptype": "mod",
+   "category": "foundation",
+   "tier": "must",
+   "desc": "Многослойный движок окружающего звука: пещеры, лес, ветер, вода, погода звучат по-разному в зависимости от того, где ты стоишь и что вокруг.",
+   "why": "Тот самый мод на атмосферные звуки пещер, только он закрывает не только пещеры, а весь мир.",
+   "warning": "",
+   "tags": [
+    "фундамент"
+   ],
+   "client_only": true,
+   "server_needed": false,
+   "dl": 0,
+   "updated": "2026-02-11",
+   "in_pack": true
+  },
+  {
+   "slug": "presence-footsteps",
+   "title": "Presence Footsteps",
+   "ptype": "mod",
+   "category": "foundation",
+   "tier": "must",
+   "desc": "Заменяет ванильные шаги на набор звуков по материалам: трава, гравий, доски, снег, вода, броня. Учитывает скорость и то, бежишь ты или крадёшься.",
+   "why": "Звук, который слышишь чаще всех остальных. Один из самых заметных слоёв погружения на единицу веса.",
+   "warning": "",
+   "tags": [
+    "фундамент"
+   ],
+   "client_only": true,
+   "server_needed": false,
+   "dl": 0,
+   "updated": "2026-06-23",
+   "in_pack": true
+  },
+  {
+   "slug": "fallingtree",
+   "title": "FallingTree",
+   "ptype": "mod",
+   "category": "foundation",
+   "tier": "must",
+   "desc": "Дерево рубится целиком с одного блока, с учётом прочности инструмента и настраиваемым пределом размера. Работает и с модовыми деревьями.",
+   "why": "Ровно то удобство, которое ты уже выбрал: убирает рутину, не давая при этом ничего бесплатно.",
+   "warning": "",
+   "tags": [
+    "фундамент"
+   ],
+   "client_only": false,
+   "server_needed": true,
+   "dl": 0,
+   "updated": "2026-02-04",
+   "in_pack": true
+  },
+  {
+   "slug": "do-a-barrel-roll",
+   "title": "Do a Barrel Roll",
+   "ptype": "mod",
+   "category": "foundation",
+   "tier": "must",
+   "desc": "Полёт на элитрах становится настоящим управлением: крен, тангаж, рыскание, камера кренится вместе с телом, есть инерция и настраиваемая чувствительность.",
+   "why": "Твой мод на эффектные полёты. В сборке он на месте — вместе с библиотекой CICADA, которая ему нужна.",
+   "warning": "",
+   "tags": [
+    "фундамент"
+   ],
+   "client_only": false,
+   "server_needed": false,
+   "dl": 0,
+   "updated": "2025-12-16",
+   "in_pack": true
   },
   {
    "slug": "fresh-animations",
@@ -547,7 +710,8 @@
    "client_only": true,
    "server_needed": false,
    "dl": 43873673,
-   "updated": "2026-04-01"
+   "updated": "2026-04-01",
+   "in_pack": true
   },
   {
    "slug": "carry-on",
@@ -566,7 +730,8 @@
    "client_only": false,
    "server_needed": true,
    "dl": 23929567,
-   "updated": "2026-08-02"
+   "updated": "2026-08-02",
+   "in_pack": true
   },
   {
    "slug": "geophilic",
@@ -585,7 +750,8 @@
    "client_only": false,
    "server_needed": true,
    "dl": 9745470,
-   "updated": "2026-06-16"
+   "updated": "2026-06-16",
+   "in_pack": true
   },
   {
    "slug": "structory",
@@ -603,7 +769,8 @@
    "client_only": false,
    "server_needed": true,
    "dl": 7648953,
-   "updated": "2026-07-08"
+   "updated": "2026-07-08",
+   "in_pack": true
   },
   {
    "slug": "coolrain",
@@ -621,7 +788,8 @@
    "client_only": true,
    "server_needed": false,
    "dl": 7000212,
-   "updated": "2026-06-20"
+   "updated": "2026-06-20",
+   "in_pack": true
   },
   {
    "slug": "better-clouds",
@@ -640,7 +808,8 @@
    "client_only": true,
    "server_needed": false,
    "dl": 4967524,
-   "updated": "2026-08-11"
+   "updated": "2026-08-11",
+   "in_pack": true
   },
   {
    "slug": "boids",
@@ -659,7 +828,8 @@
    "client_only": false,
    "server_needed": true,
    "dl": 3304927,
-   "updated": "2026-07-18"
+   "updated": "2026-07-18",
+   "in_pack": true
   },
   {
    "slug": "patrix-32x",
@@ -678,13 +848,14 @@
    "client_only": true,
    "server_needed": false,
    "dl": 2568549,
-   "updated": "2026-08-02"
+   "updated": "2026-08-02",
+   "in_pack": true
   },
   {
    "slug": "voxy-worldgen",
    "title": "Voxy WorldGen",
    "ptype": "mod",
-   "category": "performance",
+   "category": "foundation",
    "tier": "must",
    "desc": "Фоново генерирует чанки вокруг тебя и сразу скармливает их Voxy, чтобы дальний план заполнялся без ручной пробежки по карте. Скорость генерации и размер очереди настраиваются в config/voxyworldgenv2.json. Есть интеграция с Tellus и поддержка серверной стороны.",
    "why": "Voxy рисует только то, что уже сгенерировано, поэтому в свежем мире горизонт долго остаётся дырявым — этот мод и превращает Voxy в то, ради чего ты его ставил. Панорама на десятки чанков появляется сама, пока ты занимаешься своими делами.",
@@ -697,7 +868,28 @@
    "client_only": false,
    "server_needed": true,
    "dl": 695529,
-   "updated": "2026-08-03"
+   "updated": "2026-08-03",
+   "in_pack": true
+  },
+  {
+   "slug": "sodium-lod-fixer",
+   "title": "Sodium LOD Fixer",
+   "ptype": "mod",
+   "category": "foundation",
+   "tier": "must",
+   "desc": "Патчит OcclusionCuller в Sodium — тот кусок кода, который решает, какие чанки вообще отправлять на отрисовку. При включённом LOD-моде (Voxy, Distant Horizons, Bobby, Nvidium) этот однопоточный цикл захлёбывается и даёт просадки FPS и рывки кадра, а мод убирает узкое место. Визуально не меняет ничего.",
+   "why": "У тебя Sodium из Fabulously Optimized плюс Voxy сверху — это ровно та связка, под которую мод и написан. Без него вся твоя дальность прорисовки обходится заметно дороже, чем должна.",
+   "warning": "Лезет во внутренности Sodium, поэтому жёстко привязан к его версии: сборка под 1.21.11 от апреля 2026, а Sodium с тех пор обновлялся. Если после апдейта Sodium игра начнёт падать на старте — снимай этот мод первым. Проект крошечный (11к загрузок, поддерживает только 1.21.11), так что запасного плана у него нет.",
+   "tags": [
+    "клиент",
+    "под Voxy",
+    "FPS"
+   ],
+   "client_only": true,
+   "server_needed": false,
+   "dl": 11447,
+   "updated": "2026-04-27",
+   "in_pack": true
   },
   {
    "slug": "dynamiccrosshair",
@@ -715,7 +907,8 @@
    "client_only": true,
    "server_needed": false,
    "dl": 19799136,
-   "updated": "2026-06-20"
+   "updated": "2026-06-20",
+   "in_pack": true
   },
   {
    "slug": "particle-rain",
@@ -734,7 +927,8 @@
    "client_only": true,
    "server_needed": false,
    "dl": 19080052,
-   "updated": "2026-05-08"
+   "updated": "2026-05-08",
+   "in_pack": true
   },
   {
    "slug": "better-leaves",
@@ -753,7 +947,8 @@
    "client_only": true,
    "server_needed": false,
    "dl": 18598473,
-   "updated": "2026-01-31"
+   "updated": "2026-01-31",
+   "in_pack": true
   },
   {
    "slug": "rsls",
@@ -772,7 +967,8 @@
    "client_only": true,
    "server_needed": false,
    "dl": 2801703,
-   "updated": "2026-07-16"
+   "updated": "2026-07-16",
+   "in_pack": true
   },
   {
    "slug": "birds-boids-addon",
@@ -791,7 +987,8 @@
    "client_only": false,
    "server_needed": true,
    "dl": 1184407,
-   "updated": "2026-03-29"
+   "updated": "2026-03-29",
+   "in_pack": true
   },
   {
    "slug": "fwa",
@@ -809,7 +1006,8 @@
    "client_only": true,
    "server_needed": false,
    "dl": 979482,
-   "updated": "2026-07-19"
+   "updated": "2026-07-19",
+   "in_pack": true
   },
   {
    "slug": "complementary-reimagined",
@@ -828,7 +1026,8 @@
    "client_only": true,
    "server_needed": false,
    "dl": 62092215,
-   "updated": "2026-05-21"
+   "updated": "2026-05-21",
+   "in_pack": true
   },
   {
    "slug": "photon-shader",
@@ -847,7 +1046,128 @@
    "client_only": true,
    "server_needed": false,
    "dl": 24625941,
-   "updated": "2026-04-14"
+   "updated": "2026-04-14",
+   "in_pack": true
+  },
+  {
+   "slug": "3dskinlayers",
+   "title": "3D Skin Layers",
+   "ptype": "mod",
+   "category": "animation",
+   "tier": "must",
+   "desc": "Превращает второй слой скина (куртку, рукава, штанины, шапку) из плоской наклейки в настоящую объёмную геометрию на модели игрока. Работает и на тебе, и на других игроках, и на своей модели в первом лице. Автор — tr7zw, тот же, кто делает First-person Model, так что связка гарантированно рабочая.",
+   "why": "Ты смотришь на собственные руки через мод «тело от первого лица» — и они у тебя сейчас плоские картонки. Этот мод даёт рукаву реальную толщину, и тело перестаёт читаться как спрайт.",
+   "warning": "Эффект зависит от скина: если во втором слое пусто, видимой разницы не будет. С ETF/EMF и Fresh Animations конфликтов нет.",
+   "tags": [
+    "первое лицо",
+    "модель игрока",
+    "tr7zw"
+   ],
+   "client_only": true,
+   "server_needed": false,
+   "dl": 70899257,
+   "updated": "",
+   "in_pack": true
+  },
+  {
+   "slug": "make_bubbles_pop",
+   "title": "Make Bubbles Pop",
+   "ptype": "mod",
+   "category": "visual-fx",
+   "tier": "must",
+   "desc": "Переписывает поведение пузырьков под водой: они больше не висят на месте и не гаснут в толще, а всплывают к поверхности и там лопаются. Пузыри добавляются ещё и при открытии сундуков и бочек и при движении существ под водой. Считается на клиенте, серверу знать о моде не надо.",
+   "why": "Ванильные пузыри — самая заметная фальшь в момент погружения: ты ныряешь, и вокруг висят статичные квадратики. Это чинится ровно здесь и стоит почти нуля по производительности.",
+   "warning": "Нужен Fabric API. Cloth Config и Mod Menu — опционально, только ради настроек. С Sodium/Iris конфликтов нет.",
+   "tags": [
+    "вода",
+    "пузыри",
+    "клиент"
+   ],
+   "client_only": true,
+   "server_needed": false,
+   "dl": 12578098,
+   "updated": "",
+   "in_pack": true
+  },
+  {
+   "slug": "punchy-fpa",
+   "title": "Punchy!",
+   "ptype": "mod",
+   "category": "animation",
+   "tier": "must",
+   "desc": "Добавляет анимации первого лица там, где в ваниле рука просто дёргается: вспашка мотыгой, стрижка ножницами, розжиг кресалом, набор ведром, питьё, пробуждение в кровати. Плюс делает руки видимыми — предметы держатся кистью, а не левитируют перед лицом. Обновляется постоянно, последняя сборка под 1.21.11 от 14.08.2026.",
+   "why": "Это ровно та дыра, которую Not Enough Animations не закрывает: NEA переносит анимации в третье лицо, а от первого лица у тебя по-прежнему ваниль. Punchy закрывает «взаимодействие с предметами руками».",
+   "warning": "Прямой конкурент Hold My Items — ставить строго что-то одно (Hold My Items под 1.21.11 висит в бете с декабря 2025, Punchy живее). С First-person Model и Not Enough Animations совместим (подтверждено списком совместимости 3D Armor), но проверь настройку «vanilla hands» в First-person Model, чтобы не было двух пар рук.",
+   "tags": [
+    "первое лицо",
+    "руки",
+    "анимации"
+   ],
+   "client_only": true,
+   "server_needed": false,
+   "dl": 3619208,
+   "updated": "",
+   "in_pack": true
+  },
+  {
+   "slug": "sooty-chimneys",
+   "title": "Sooty Chimneys",
+   "ptype": "mod",
+   "category": "build-deco",
+   "tier": "must",
+   "desc": "Добавляет дымоходы из кирпича, булыжника, глиняного кирпича, каменного кирпича, железа, меди и терракоты — они пускают дым. Со временем труба зарастает сажей, счищается топором (иногда падает чёрный краситель). Дым сносит ветром: сильнее в дождь и грозу, тише ночью, и этот же ветер начинает влиять на дым от костров. Красным камнем или рукой поток дыма можно перекрыть, а поставленные друг на друга трубы дают сигнальный столб дыма.",
+   "why": "Дом с трубой, из которой идёт дым, — первое, что отличает жильё от коробки с кроватью. Плюс сажа даёт настоящий бытовой ритуал: раз в какое-то время лезешь чистить трубу.",
+   "warning": "Требует Forge Config API Port — он уже стоит в Fabulously Optimized. Дым — это частицы: десяток труб в одном кадре заметен и на FPS, и визуально.",
+   "tags": [
+    "дымоход",
+    "сажа",
+    "ветер"
+   ],
+   "client_only": false,
+   "server_needed": true,
+   "dl": 617449,
+   "updated": "",
+   "in_pack": false
+  },
+  {
+   "slug": "grassier-grass",
+   "title": "Grassier Grass",
+   "ptype": "mod",
+   "category": "visual-fx",
+   "tier": "must",
+   "desc": "Рисует на блоках травы настоящие отдельные травинки и прогоняет по ним собственный шейдер ветра с накатывающими порывами — поле наклоняется и идёт волнами, а не стоит статичной картинкой. Плотность, высота и сила ветра крутятся прямо в меню Sodium. Автор отдельно показывает работу под Iris, скриншоты сняты на Photon.",
+   "why": "Из всего, что можно добавить в кадр, это самая заметная разница «до/после» на любом открытом плане — ровно то покачивание травы под ногами, которого у тебя сейчас нет ни от одного мода в сборке.",
+   "warning": "Требует Fabric API и Sodium — оба уже есть. Накладывается на Vervada's enhanced plants: 3D-модели высокой травы плюс новые травинки на блоках дают переизбыток геометрии, посмотри в поле и срежь плотность, если станет кашей. На равнинах и в джунглях заметно грузит GPU.",
+   "tags": [
+    "трава",
+    "ветер",
+    "sodium"
+   ],
+   "client_only": true,
+   "server_needed": false,
+   "dl": 193746,
+   "updated": "",
+   "in_pack": true
+  },
+  {
+   "slug": "thief",
+   "title": "Thief",
+   "ptype": "mod",
+   "category": "mobs",
+   "tier": "must",
+   "desc": "Кража в деревне перестаёт быть бесплатной. Мод вешает на действия игрока внутри деревни три уровня преступления: лёгкое (сломать посевы, сноп сена, фонарь, костёр), среднее (сундук, бочка, рабочий блок, кровать, убийство скотины, сон в чужой кровати) и тяжёлое (колокол). Репутация падает у всех жителей, которые это ВИДЕЛИ — работает система свидетелей, а не глобальный флаг. За среднее и тяжёлое железный голем нападает, если сам застал тебя за этим.",
+   "why": "Это ровно та дыра, которую ничем в сборке не закрыть: деревня наконец помнит, кто ты для неё. И у тебя уже стоят Guard Villagers — мод их поддерживает напрямую, стражники начинают реагировать вместе с големом.",
+   "warning": "Жители тупые по задумке автора: если ты сам поставил блок внутри деревни, а потом сломал — это всё равно засчитается как кража. Если планируешь строить прямо в деревне, лезь в конфиг и снимай нужные блоки со списка. Зона действия — только «защищённые» структуры, по умолчанию деревни.",
+   "tags": [
+    "репутация",
+    "деревня",
+    "свидетели"
+   ],
+   "client_only": false,
+   "server_needed": true,
+   "dl": 72703,
+   "updated": "",
+   "in_pack": false
   },
   {
    "slug": "spyglass-astronomy",
@@ -866,7 +1186,8 @@
    "client_only": true,
    "server_needed": false,
    "dl": 2507329,
-   "updated": "2026-08-15"
+   "updated": "2026-08-15",
+   "in_pack": true
   },
   {
    "slug": "frostiful",
@@ -885,7 +1206,8 @@
    "client_only": false,
    "server_needed": true,
    "dl": 4287218,
-   "updated": "2026-08-14"
+   "updated": "2026-08-14",
+   "in_pack": true
   },
   {
    "slug": "just-colored-lighting",
@@ -904,7 +1226,8 @@
    "client_only": true,
    "server_needed": false,
    "dl": 546970,
-   "updated": "2026-07-14"
+   "updated": "2026-07-14",
+   "in_pack": false
   },
   {
    "slug": "macaws-windows",
@@ -923,7 +1246,8 @@
    "client_only": false,
    "server_needed": true,
    "dl": 10291708,
-   "updated": "2026-06-20"
+   "updated": "2026-06-20",
+   "in_pack": true
   },
   {
    "slug": "animal_feeding_trough",
@@ -942,7 +1266,8 @@
    "client_only": false,
    "server_needed": true,
    "dl": 7656356,
-   "updated": "2026-07-10"
+   "updated": "2026-07-10",
+   "in_pack": true
   },
   {
    "slug": "scorchful",
@@ -961,7 +1286,8 @@
    "client_only": false,
    "server_needed": true,
    "dl": 223745,
-   "updated": "2026-07-09"
+   "updated": "2026-07-09",
+   "in_pack": true
   },
   {
    "slug": "terralith",
@@ -980,7 +1306,8 @@
    "client_only": false,
    "server_needed": true,
    "dl": 21498472,
-   "updated": "2026-07-08"
+   "updated": "2026-07-08",
+   "in_pack": false
   },
   {
    "slug": "makeup-ultra-fast-shaders",
@@ -999,7 +1326,8 @@
    "client_only": true,
    "server_needed": false,
    "dl": 11779404,
-   "updated": "2026-08-14"
+   "updated": "2026-08-14",
+   "in_pack": true
   },
   {
    "slug": "structory-towers",
@@ -1017,7 +1345,8 @@
    "client_only": false,
    "server_needed": true,
    "dl": 8027718,
-   "updated": "2026-07-08"
+   "updated": "2026-07-08",
+   "in_pack": true
   },
   {
    "slug": "niftycarts",
@@ -1036,7 +1365,8 @@
    "client_only": false,
    "server_needed": true,
    "dl": 4468700,
-   "updated": "2026-03-09"
+   "updated": "2026-03-09",
+   "in_pack": true
   },
   {
    "slug": "totally-lit",
@@ -1055,7 +1385,8 @@
    "client_only": false,
    "server_needed": true,
    "dl": 580106,
-   "updated": "2026-06-13"
+   "updated": "2026-06-13",
+   "in_pack": true
   },
   {
    "slug": "catenary",
@@ -1073,7 +1404,8 @@
    "client_only": false,
    "server_needed": true,
    "dl": 66686,
-   "updated": "2025-12-14"
+   "updated": "2025-12-14",
+   "in_pack": true
   },
   {
    "slug": "comforts",
@@ -1091,7 +1423,8 @@
    "client_only": false,
    "server_needed": true,
    "dl": 21186132,
-   "updated": "2026-06-22"
+   "updated": "2026-06-22",
+   "in_pack": true
   },
   {
    "slug": "explorify",
@@ -1109,7 +1442,8 @@
    "client_only": false,
    "server_needed": true,
    "dl": 8595335,
-   "updated": "2026-05-13"
+   "updated": "2026-05-13",
+   "in_pack": true
   },
   {
    "slug": "cameraoverhaul",
@@ -1127,7 +1461,8 @@
    "client_only": true,
    "server_needed": false,
    "dl": 5694858,
-   "updated": "2026-05-25"
+   "updated": "2026-05-25",
+   "in_pack": true
   },
   {
    "slug": "immersive-paintings",
@@ -1146,7 +1481,8 @@
    "client_only": false,
    "server_needed": true,
    "dl": 4758724,
-   "updated": "2026-07-13"
+   "updated": "2026-07-13",
+   "in_pack": true
   },
   {
    "slug": "particular-reforged",
@@ -1165,7 +1501,8 @@
    "client_only": true,
    "server_needed": false,
    "dl": 3821732,
-   "updated": "2026-08-16"
+   "updated": "2026-08-16",
+   "in_pack": true
   },
   {
    "slug": "fa-player-extension",
@@ -1183,7 +1520,8 @@
    "client_only": true,
    "server_needed": false,
    "dl": 3293335,
-   "updated": "2026-06-14"
+   "updated": "2026-06-14",
+   "in_pack": true
   },
   {
    "slug": "freelook",
@@ -1202,7 +1540,8 @@
    "client_only": true,
    "server_needed": false,
    "dl": 2282174,
-   "updated": "2026-06-20"
+   "updated": "2026-06-20",
+   "in_pack": true
   },
   {
    "slug": "horseman",
@@ -1221,7 +1560,8 @@
    "client_only": false,
    "server_needed": true,
    "dl": 1755671,
-   "updated": "2026-07-29"
+   "updated": "2026-07-29",
+   "in_pack": true
   },
   {
    "slug": "gentler-weather-sounds",
@@ -1239,7 +1579,8 @@
    "client_only": true,
    "server_needed": false,
    "dl": 1382444,
-   "updated": "2026-02-23"
+   "updated": "2026-02-23",
+   "in_pack": true
   },
   {
    "slug": "wilder-wild",
@@ -1258,7 +1599,8 @@
    "client_only": false,
    "server_needed": true,
    "dl": 1099184,
-   "updated": "2026-06-25"
+   "updated": "2026-06-25",
+   "in_pack": true
   },
   {
    "slug": "stormies-spiders",
@@ -1276,7 +1618,8 @@
    "client_only": false,
    "server_needed": true,
    "dl": 138804,
-   "updated": "2026-06-30"
+   "updated": "2026-06-30",
+   "in_pack": true
   },
   {
    "slug": "complementary-unbound",
@@ -1295,7 +1638,8 @@
    "client_only": true,
    "server_needed": false,
    "dl": 40428420,
-   "updated": "2026-05-21"
+   "updated": "2026-05-21",
+   "in_pack": true
   },
   {
    "slug": "towns-and-towers",
@@ -1313,7 +1657,8 @@
    "client_only": false,
    "server_needed": true,
    "dl": 16429772,
-   "updated": "2026-08-15"
+   "updated": "2026-08-15",
+   "in_pack": true
   },
   {
    "slug": "rightclickharvest",
@@ -1332,7 +1677,8 @@
    "client_only": false,
    "server_needed": true,
    "dl": 11458352,
-   "updated": "2026-06-16"
+   "updated": "2026-06-16",
+   "in_pack": true
   },
   {
    "slug": "dripsounds",
@@ -1350,7 +1696,8 @@
    "client_only": true,
    "server_needed": false,
    "dl": 7160103,
-   "updated": "2025-11-23"
+   "updated": "2025-11-23",
+   "in_pack": true
   },
   {
    "slug": "wakes",
@@ -1369,7 +1716,8 @@
    "client_only": true,
    "server_needed": false,
    "dl": 6290332,
-   "updated": "2026-08-10"
+   "updated": "2026-08-10",
+   "in_pack": true
   },
   {
    "slug": "detailed-animations",
@@ -1388,7 +1736,8 @@
    "client_only": true,
    "server_needed": false,
    "dl": 4713289,
-   "updated": "2026-05-26"
+   "updated": "2026-05-26",
+   "in_pack": false
   },
   {
    "slug": "this-rocks",
@@ -1406,7 +1755,8 @@
    "client_only": false,
    "server_needed": true,
    "dl": 1904774,
-   "updated": "2026-08-13"
+   "updated": "2026-08-13",
+   "in_pack": true
   },
   {
    "slug": "variants-and-ventures",
@@ -1424,7 +1774,8 @@
    "client_only": false,
    "server_needed": true,
    "dl": 1481489,
-   "updated": "2026-06-22"
+   "updated": "2026-06-22",
+   "in_pack": true
   },
   {
    "slug": "3d-plants",
@@ -1442,7 +1793,8 @@
    "client_only": true,
    "server_needed": false,
    "dl": 111578,
-   "updated": "2026-04-12"
+   "updated": "2026-04-12",
+   "in_pack": true
   },
   {
    "slug": "immersive-horse-riding",
@@ -1461,7 +1813,8 @@
    "client_only": false,
    "server_needed": true,
    "dl": 33833,
-   "updated": "2026-06-17"
+   "updated": "2026-06-17",
+   "in_pack": true
   },
   {
    "slug": "more-darkness",
@@ -1480,7 +1833,8 @@
    "client_only": true,
    "server_needed": false,
    "dl": 8473,
-   "updated": "2026-08-04"
+   "updated": "2026-08-04",
+   "in_pack": true
   },
   {
    "slug": "euphoria-patches",
@@ -1499,7 +1853,8 @@
    "client_only": true,
    "server_needed": false,
    "dl": 25181668,
-   "updated": "2026-05-31"
+   "updated": "2026-05-31",
+   "in_pack": true
   },
   {
    "slug": "ct-overhaul-village",
@@ -1517,7 +1872,8 @@
    "client_only": false,
    "server_needed": true,
    "dl": 9992305,
-   "updated": "2026-07-31"
+   "updated": "2026-07-31",
+   "in_pack": false
   },
   {
    "slug": "guard-villagers-(fabricquilt)",
@@ -1535,7 +1891,8 @@
    "client_only": false,
    "server_needed": true,
    "dl": 5019097,
-   "updated": "2026-06-18"
+   "updated": "2026-06-18",
+   "in_pack": true
   },
   {
    "slug": "vvi",
@@ -1553,7 +1910,8 @@
    "client_only": true,
    "server_needed": false,
    "dl": 2624597,
-   "updated": "2026-06-15"
+   "updated": "2026-06-15",
+   "in_pack": true
   },
   {
    "slug": "better-trees",
@@ -1571,7 +1929,8 @@
    "client_only": false,
    "server_needed": true,
    "dl": 680936,
-   "updated": "2026-07-07"
+   "updated": "2026-07-07",
+   "in_pack": true
   },
   {
    "slug": "sit!",
@@ -1590,7 +1949,8 @@
    "client_only": false,
    "server_needed": true,
    "dl": 370741,
-   "updated": "2026-06-28"
+   "updated": "2026-06-28",
+   "in_pack": true
   },
   {
    "slug": "angels-weather",
@@ -1609,7 +1969,8 @@
    "client_only": true,
    "server_needed": false,
    "dl": 243986,
-   "updated": "2026-03-22"
+   "updated": "2026-03-22",
+   "in_pack": false
   },
   {
    "slug": "not-enough-animations-emf-compat",
@@ -1627,7 +1988,8 @@
    "client_only": true,
    "server_needed": false,
    "dl": 186961,
-   "updated": "2026-08-01"
+   "updated": "2026-08-01",
+   "in_pack": true
   },
   {
    "slug": "puddles-floods",
@@ -1645,7 +2007,8 @@
    "client_only": true,
    "server_needed": false,
    "dl": 110114,
-   "updated": "2026-07-08"
+   "updated": "2026-07-08",
+   "in_pack": true
   },
   {
    "slug": "flashback",
@@ -1664,7 +2027,8 @@
    "client_only": true,
    "server_needed": false,
    "dl": 10095565,
-   "updated": "2026-08-16"
+   "updated": "2026-08-16",
+   "in_pack": true
   },
   {
    "slug": "crawl",
@@ -1682,7 +2046,8 @@
    "client_only": false,
    "server_needed": true,
    "dl": 7139480,
-   "updated": "2026-06-20"
+   "updated": "2026-06-20",
+   "in_pack": true
   },
   {
    "slug": "serene-seasons",
@@ -1701,7 +2066,8 @@
    "client_only": false,
    "server_needed": true,
    "dl": 6525508,
-   "updated": "2026-07-01"
+   "updated": "2026-07-01",
+   "in_pack": true
   },
   {
    "slug": "dungeons+",
@@ -1719,7 +2085,8 @@
    "client_only": false,
    "server_needed": true,
    "dl": 1556236,
-   "updated": "2026-06-23"
+   "updated": "2026-06-23",
+   "in_pack": true
   },
   {
    "slug": "spbr",
@@ -1738,7 +2105,8 @@
    "client_only": true,
    "server_needed": false,
    "dl": 752262,
-   "updated": "2026-06-19"
+   "updated": "2026-06-19",
+   "in_pack": false
   },
   {
    "slug": "immersivemusicmod",
@@ -1757,7 +2125,8 @@
    "client_only": true,
    "server_needed": false,
    "dl": 561266,
-   "updated": "2026-04-27"
+   "updated": "2026-04-27",
+   "in_pack": true
   },
   {
    "slug": "immersive-storms",
@@ -1776,7 +2145,8 @@
    "client_only": true,
    "server_needed": false,
    "dl": 117115,
-   "updated": "2026-07-11"
+   "updated": "2026-07-11",
+   "in_pack": true
   },
   {
    "slug": "amplified-nether",
@@ -1794,7 +2164,8 @@
    "client_only": false,
    "server_needed": true,
    "dl": 2132212,
-   "updated": "2026-07-13"
+   "updated": "2026-07-13",
+   "in_pack": true
   },
   {
    "slug": "fresh-animations-details",
@@ -1812,7 +2183,8 @@
    "client_only": true,
    "server_needed": false,
    "dl": 1505809,
-   "updated": "2026-04-27"
+   "updated": "2026-04-27",
+   "in_pack": true
   },
   {
    "slug": "dungeons-and-taverns-ocean-monument-overhaul",
@@ -1830,7 +2202,8 @@
    "client_only": false,
    "server_needed": true,
    "dl": 876209,
-   "updated": "2026-06-16"
+   "updated": "2026-06-16",
+   "in_pack": true
   },
   {
    "slug": "immersive-overlays",
@@ -1849,7 +2222,8 @@
    "client_only": true,
    "server_needed": false,
    "dl": 259537,
-   "updated": "2026-08-10"
+   "updated": "2026-08-10",
+   "in_pack": true
   },
   {
    "slug": "mc2-interactive-foliage",
@@ -1867,7 +2241,8 @@
    "client_only": true,
    "server_needed": false,
    "dl": 220796,
-   "updated": "2026-08-17"
+   "updated": "2026-08-17",
+   "in_pack": true
   },
   {
    "slug": "immersivethunder-reforged",
@@ -1885,7 +2260,8 @@
    "client_only": true,
    "server_needed": false,
    "dl": 21357,
-   "updated": "2026-05-27"
+   "updated": "2026-05-27",
+   "in_pack": true
   },
   {
    "slug": "fallingleaves",
@@ -1904,7 +2280,8 @@
    "client_only": true,
    "server_needed": false,
    "dl": 25416595,
-   "updated": "2026-06-01"
+   "updated": "2026-06-01",
+   "in_pack": true
   },
   {
    "slug": "unnamed-desert",
@@ -1922,7 +2299,8 @@
    "client_only": false,
    "server_needed": true,
    "dl": 1624200,
-   "updated": "2026-02-01"
+   "updated": "2026-02-01",
+   "in_pack": false
   },
   {
    "slug": "the-roads-more-travelled",
@@ -1940,7 +2318,8 @@
    "client_only": false,
    "server_needed": true,
    "dl": 150223,
-   "updated": "2026-05-31"
+   "updated": "2026-05-31",
+   "in_pack": true
   },
   {
    "slug": "improved-village-placement",
@@ -1959,26 +2338,868 @@
    "client_only": false,
    "server_needed": true,
    "dl": 2200305,
-   "updated": "2026-07-10"
+   "updated": "2026-07-10",
+   "in_pack": true
   },
   {
-   "slug": "even-better-moon-sun",
-   "title": "Even Better Moon and Sun",
+   "slug": "sound",
+   "title": "Sounds",
    "ptype": "mod",
-   "category": "world",
+   "category": "sound",
    "tier": "strong",
-   "desc": "Луна живёт по настоящему 29-дневному циклу со всеми восемью названными фазами, а солнце за игровой год гуляет по небу на ±23,5°: летом идёт высоко, зимой низко, и смещается плавно каждый тик. Плюс метеорные потоки и урожайная луна.",
-   "why": "У тебя есть сезоны (Serene Seasons) и More Darkness, который завязан именно на фазы луны, — но сам небесный календарь остался ванильным: восемь дней цикла и одинаковый рассвет круглый год. Это закрывает «время и календарь» на уровне неба и делает ночи под More Darkness по-настоящему непредсказуемыми.",
-   "warning": "Клиентский, двигает угол светил — шейдер может считать положение солнца сам, проверь на Complementary. Проект маленький (~1,6k загрузок), но живой, и на 1.21.11 у него уже полный набор функций.",
+   "desc": "Добавляет 170+ звуковых событий там, где в ваниле тишина или заглушка: натяжение тетивы, бросок эндер-жемчуга, привязывание лида, установка лодки и вагонетки, поедание торта, выпадение предмета из рук, отдельные звуки для групп блоков и предметов. Каждое событие включается и настраивается отдельно, звуки переопределяются ресурспаком. Прямой наследник заброшенных Auditory, ExtraSounds и QualitySounds.",
+   "why": "Это ровно тот слой «звуки конкретных вещей», который не закрывает ни Sound Physics (он про пространство), ни ambience-мод (он про фон) — тут озвучены действия.",
+   "warning": "В профиле «Sounds» указан как возможно уже стоящий ambience-мод — сначала загляни в список модов, это разные вещи: тут slug `sound`, автор imb11, и к пещерному эмбиенту он отношения не имеет. Требует M.R.U и YACL. Файл под 1.21.11 — 2.4.23 от 19.02.2026, помечен beta (у этого автора это норма). Часть событий чисто интерфейсная — отключи их в конфиге, если не хочешь GUI-звуков.",
    "tags": [
-    "луна",
-    "календарь",
-    "сезоны"
+    "интерактивные звуки",
+    "конфигурируемо",
+    "наследник Auditory"
    ],
    "client_only": true,
    "server_needed": false,
-   "dl": 1587,
-   "updated": "2026-07-24"
+   "dl": 16433146,
+   "updated": "",
+   "in_pack": false
+  },
+  {
+   "slug": "wavey-capes",
+   "title": "Wavey Capes",
+   "ptype": "mod",
+   "category": "animation",
+   "tier": "strong",
+   "desc": "Плащ перестаёт быть жёсткой доской за спиной и начинает вести себя как ткань: провисает, отстаёт при разгоне, колышется при беге и падении. Несколько режимов симуляции и настройка числа сегментов.",
+   "why": "В Fabulously Optimized уже стоит Cape Provider, то есть плащ у тебя есть — и он выглядит как приклеенный лист фанеры. Тот же автор, что и First-person Model, так что риск конфликта нулевой.",
+   "warning": "Имеет смысл только если ты действительно носишь плащ. На самого себя эффект виден в третьем лице и в записях Flashback.",
+   "tags": [
+    "плащ",
+    "ткань",
+    "tr7zw"
+   ],
+   "client_only": true,
+   "server_needed": false,
+   "dl": 16243615,
+   "updated": "",
+   "in_pack": true
+  },
+  {
+   "slug": "better-climbing",
+   "title": "Better Climbing",
+   "ptype": "mod",
+   "category": "qol",
+   "tier": "strong",
+   "desc": "Переделывает ощущение от лестниц и лиан: скорость подъёма нарастает за три секунды вместо фиксированной черепашьей, спуск ускоряется, если смотреть вниз, пропадает «удар» при заходе в шахту с лестницей, и ты больше не вязнешь, проходя сквозь лиану насквозь. Прыжок из лазательного блока тоже разрешён.",
+   "why": "Вертикальное перемещение — единственная часть движения, которая у тебя осталась полностью ванильной и деревянной. Это ровно то «удобство, которое ощущается естественно», как TreeCapitator.",
+   "warning": "Автор прямо пишет: не ставить на ванильные сервера с античитом — забанят. В одиночке проблем нет. Сборка под 1.21.11 — 5-fabric от 18.12.2025.",
+   "tags": [
+    "лестницы",
+    "движение",
+    "вертикаль"
+   ],
+   "client_only": true,
+   "server_needed": false,
+   "dl": 3131349,
+   "updated": "",
+   "in_pack": true
+  },
+  {
+   "slug": "complete-shield-fixes",
+   "title": "Shield Fixes",
+   "ptype": "mod",
+   "category": "sound",
+   "tier": "strong",
+   "desc": "Чинит два бага ванили. Первый (MC-105068): щит теперь звучит, когда по нему прилетает — удар, взрыв, стрела; и отдельный звук, когда щит выбили топором. Второй (MC-238293): поза блока наконец отображается корректно, с учётом задержки в 5 тиков.",
+   "why": "Отдача при блоке у тебя сейчас нулевая — по щиту бьют молча. Это самый дешёвый способ добавить тактильности в бой, ничего не меняя в балансе.",
+   "warning": "Только клиент, ничего не ломает. Никаких известных конфликтов с уже стоящим.",
+   "tags": [
+    "щит",
+    "звук удара",
+    "багфикс"
+   ],
+   "client_only": true,
+   "server_needed": false,
+   "dl": 2668801,
+   "updated": "",
+   "in_pack": false
+  },
+  {
+   "slug": "elytra-physics",
+   "title": "Elytra Physics",
+   "ptype": "mod",
+   "category": "animation",
+   "tier": "strong",
+   "desc": "Сложенная элитра на спине получает физику ткани, как у плаща: перестаёт торчать неподвижной пластиной, когда ты бежишь, прыгаешь или разворачиваешься. В полёте крылья остаются ванильными.",
+   "why": "Ты много летаешь (у тебя стоит Do a Barrel Roll), а значит элитра висит на спине почти всё время. Это парная вещь к Wavey Capes — обе делают снаряжение на теле похожим на материю, а не на геометрию.",
+   "warning": "Сборка под 1.21.11 — 2.5 от 21.12.2025, свежее не выходило (мод просто законченный). Если возьмёшь 3D Armor, отключи там 3D-элитру, иначе два мода будут спорить за одну модель.",
+   "tags": [
+    "элитра",
+    "ткань",
+    "физика"
+   ],
+   "client_only": true,
+   "server_needed": false,
+   "dl": 2554711,
+   "updated": "",
+   "in_pack": true
+  },
+  {
+   "slug": "theones-eating-animation-pack",
+   "title": "Theone's Eating Animation Pack",
+   "ptype": "resourcepack",
+   "category": "animation",
+   "tier": "strong",
+   "desc": "Ресурспак, а не мод: еда и напитки в руке действительно откусываются и убывают, пока ты жуёшь. Стейк уменьшается, бутылка пустеет, яблоко объедается до огрызка. Работает без модов, потому что использует встроенную в игру систему.",
+   "why": "Закрывает «взаимодействие с предметами руками» с той стороны, куда Punchy не лезет: ты видишь результат действия на самом предмете. Мод-оригинал Eating Animation под 1.21.11 мёртв, пак — его живая замена.",
+   "warning": "Пак 16x. Чтобы анимация работала, он должен лежать ВЫШЕ Patrix 32x — и тогда текстуры еды во время еды станут ванильными 16x, выбиваясь из общего разрешения. Посмотри вживую и реши, стоит ли оно того; на других предметах это никак не сказывается.",
+   "tags": [
+    "еда",
+    "анимация",
+    "ресурспак"
+   ],
+   "client_only": true,
+   "server_needed": false,
+   "dl": 2338175,
+   "updated": "",
+   "in_pack": true
+  },
+  {
+   "slug": "clickthrough+",
+   "title": "ClickThrough Plus",
+   "ptype": "mod",
+   "category": "qol",
+   "tier": "strong",
+   "desc": "Если на сундуке, бочке или шалкере висит табличка или рамка с предметом, правый клик по ним открывает сам контейнер, а не редактирует табличку. Редактировать надпись и крутить предмет в рамке по-прежнему можно — с шифтом. Полностью клиентский, на сервер ставить не нужно.",
+   "why": "Ровно та мелочь, из-за которой люди перестают подписывать хранилище: подписал — и больше не попадаешь по сундуку. С модом можно вешать таблички и рамки прямо на дверцы.",
+   "warning": "Клиентский, серверу не нужен. Для настройки автор рекомендует McQoy (необязательно) — без него работает на дефолтах. Функционально пересекается с Reach Behind: ставить что-то одно.",
+   "tags": [
+    "таблички",
+    "рамки",
+    "клиентский"
+   ],
+   "client_only": true,
+   "server_needed": false,
+   "dl": 1726019,
+   "updated": "",
+   "in_pack": false
+  },
+  {
+   "slug": "hang-glider",
+   "title": "Hang Glider",
+   "ptype": "mod",
+   "category": "transport",
+   "tier": "strong",
+   "desc": "Крафтится дельтаплан из палок и ткани: держишь в руках — планируешь, управляя наклоном. Никаких фейерверков и разгона, ты тратишь только ту высоту, с которой стартовал. Есть усиленный вариант, который держит дольше и планирует положе.",
+   "why": "Закрывает провал между «пешком» и «элитры только после дракона»: с гор можно улетать уже на первой неделе, и выглядит это правдоподобно, а не как реактивный ранец.",
+   "warning": "Требует Puzzles Lib, Fabric API и Forge Config API Port (последний уже в FO). Do a Barrel Roll крутит камеру на элитрах, на дельтаплане крена от него не будет.",
+   "tags": [
+    "полёт",
+    "планирование",
+    "раннее выживание"
+   ],
+   "client_only": false,
+   "server_needed": true,
+   "dl": 1258881,
+   "updated": "",
+   "in_pack": false
+  },
+  {
+   "slug": "stack-to-nearby-chests",
+   "title": "Stack to Nearby Chests",
+   "ptype": "mod",
+   "category": "qol",
+   "tier": "strong",
+   "desc": "Переносит из Terraria быстрый сброс и пополнение. Одна кнопка раскладывает содержимое инвентаря по ближайшим контейнерам — но только туда, где такой предмет уже лежит, так что чужого порядка не ломает. Вторая добирает стаки обратно из окрестных сундуков. Работает и по одному открытому контейнеру, и по всем в радиусе досягаемости; исключения (шалкеры, мешки) настраиваются.",
+   "why": "Вернулся с шахты — и разбор рюкзака перестал быть десятиминутным перекладыванием. Это ровно то «естественное удобство», за которое ты держишь TreeCapitator, а не автоматизация.",
+   "warning": "Чисто клиентский, на сервер ставить не надо. Меню настроек открывается сочетанием Left Ctrl + S + C, а не через Mod Menu — иначе решишь, что мод не работает.",
+   "tags": [
+    "хранение",
+    "сортировка",
+    "клиентский"
+   ],
+   "client_only": true,
+   "server_needed": false,
+   "dl": 1177825,
+   "updated": "",
+   "in_pack": false
+  },
+  {
+   "slug": "nether-portal-spread",
+   "title": "Nether Portal Spread",
+   "ptype": "mod",
+   "category": "world",
+   "tier": "strong",
+   "desc": "Каждый зажжённый портал начинает медленно заражать Верхний мир вокруг себя: блоки в настраиваемом радиусе постепенно заменяются адскими. При создании портала игроки рядом получают сообщение о «порочной энергии». Остановить распространение можно, поставив в радиусе портала 4 блока угля (количество и блок настраиваются). Позиции порталов сохраняются в отдельный файл, а не сканируются по всему миру.",
+   "why": "Прямое последствие твоих действий, которое видно глазами и требует реакции: ты пробил дыру в другое измерение — вокруг неё начала расползаться скверна. Отлично работает на атмосферу и добавляет ту самую «чуть более опасную» цену за удобство порталов.",
+   "warning": "Это реально портит ландшафт вокруг портала — если портал стоит впритык к базе, сначала выставь portalSpreadRadius в конфиге. В старом мире порталы регистрируются только когда ты пройдёшь через них туда-обратно или зажжёшь заново. Серверная сторона, с версии 4.4 совместим с Immersive Portals.",
+   "tags": [
+    "последствия",
+    "портал",
+    "скверна"
+   ],
+   "client_only": false,
+   "server_needed": true,
+   "dl": 663786,
+   "updated": "",
+   "in_pack": false
+  },
+  {
+   "slug": "seamless-sleep",
+   "title": "Seamless Sleep",
+   "ptype": "mod",
+   "category": "animation",
+   "tier": "strong",
+   "desc": "Пропуск ночи превращается из мгновенной склейки в анимированный переход: камера остаётся в мире, солнце и небо разгоняются, HUD убирается. Вся последовательность считается на клиенте, поэтому не рвётся при лагах и высоком пинге.",
+   "why": "Самый кинематографичный момент суток сейчас у тебя обрывается чёрным экраном. Это единственная дыра в киношности, которую не закрывают ни Camera Overhaul, ни Flashback.",
+   "warning": "Нужен и на клиенте, и на сервере. Хорошо ложится на More Darkness и Comforts, но если поставишь другой мод, меняющий экран сна, эффекты подерутся.",
+   "tags": [
+    "сон",
+    "переход",
+    "кинематографично"
+   ],
+   "client_only": false,
+   "server_needed": true,
+   "dl": 592667,
+   "updated": "",
+   "in_pack": true
+  },
+  {
+   "slug": "armor-3d",
+   "title": "3D Armor",
+   "ptype": "mod",
+   "category": "animation",
+   "tier": "strong",
+   "desc": "Рендерит надетую броню объёмной моделью вместо натянутой на скин текстуры: наплечники, наручи, поножи торчат из силуэта. Поддерживает красители, тримы и паки до 32x. Работает и на мобах в броне.",
+   "why": "У тебя стоит Patrix 32x и мод на тело от первого лица — броня остаётся единственной частью тела, которая выглядит нарисованной. Это самый заметный апгрейд ощущения «на мне надета железка».",
+   "warning": "Требует Entity Model Features 2.4+ (уже есть в Fabulously Optimized). Статус beta. В списке совместимости автора явно есть 3D Skin Layers, Punchy!, Not Enough Animations, First-person Model и Fresh Animations — но 3D-элитры и упряжь ломаются на Fresh Animations, отключи их в конфиге. Несовместим с ISMAH (он и так был отсеян). При толпе мобов в броне немного просаживает FPS.",
+   "tags": [
+    "броня",
+    "3d",
+    "EMF"
+   ],
+   "client_only": true,
+   "server_needed": false,
+   "dl": 484207,
+   "updated": "",
+   "in_pack": true
+  },
+  {
+   "slug": "head-in-the-clouds",
+   "title": "Head in the Clouds",
+   "ptype": "mod",
+   "category": "world",
+   "tier": "strong",
+   "desc": "Выше уровня облаков дождя и грозы нет — там всегда чистое небо и солнце. Клиентская часть убирает осадки визуально, серверная отключает и всю логику дождя на высоте: огонь на тебе не тушится, Riptide не работает, посевы не получают ускоренный рост.",
+   "why": "Это единственный способ сделать высоту не цифрой на F3, а состоянием: поднялся над облаками — вышел из непогоды. С дельтапланом и элитрами подъём превращается в осознанный манёвр.",
+   "warning": "Высоту облаков в конфиге приходится указывать вручную (сервер её не знает). У тебя стоит Better Clouds, который может рисовать облака не на ванильной высоте — сверь значение. Из-за особенностей рендера дождя, находясь сверху, ты не увидишь его под собой.",
+   "tags": [
+    "высота",
+    "погода",
+    "облака"
+   ],
+   "client_only": false,
+   "server_needed": false,
+   "dl": 408652,
+   "updated": "",
+   "in_pack": true
+  },
+  {
+   "slug": "better-smoke",
+   "title": "Better Smoke",
+   "ptype": "mod",
+   "category": "visual-fx",
+   "tier": "strong",
+   "desc": "Переписывает эмиттер дыма у костров: дым сносит ветром, сила ветра зависит от погоды, а чем больше костров рядом — тем выше и плотнее столб. У костров душ дым темнее и с синим отливом. Полностью клиентский и настраиваемый.",
+   "why": "Дым — единственная вертикаль, по которой издалека читается жилое место. С Voxy и большой дальностью прорисовки столбы над деревнями и твоей базой будет видно за километры.",
+   "warning": "Автор предупреждает, что на слабом железе обилие частиц может просадить FPS — плотность снижается в конфиге. Sooty Chimneys тоже гоняет дым костров по ветру, вместе брать не стоит.",
+   "tags": [
+    "дым",
+    "ветер",
+    "костры"
+   ],
+   "client_only": true,
+   "server_needed": false,
+   "dl": 345303,
+   "updated": "",
+   "in_pack": true
+  },
+  {
+   "slug": "lanterns-bow",
+   "title": "Lanterns Belong on Walls",
+   "ptype": "mod",
+   "category": "build-deco",
+   "tier": "strong",
+   "desc": "Позволяет вешать фонари на боковую грань блока, а не только ставить на пол или подвешивать под потолок. Реализовано через динамический block entity, поэтому фонари из других модов, наследующие ванильный LanternBlock, подхватываются автоматически.",
+   "why": "Ванильные ограничения заставляют городить костыли из заборов и цепей ради одного настенного фонаря. Свет вдоль дороги, у входа в шахту и на стене дома ставится ровно так, как ты и представлял, без строительных ухищрений.",
+   "warning": "Нужен и на клиенте, и на сервере. Фонари из модов, которые переопределяют getStateForPlacement, могут не поддерживаться. С Catenary и Swinging Lanterns прямого конфликта нет, но они трогают ту же нишу — посмотри, как выглядит связка.",
+   "tags": [
+    "фонари",
+    "стены",
+    "освещение"
+   ],
+   "client_only": false,
+   "server_needed": true,
+   "dl": 320260,
+   "updated": "",
+   "in_pack": true
+  },
+  {
+   "slug": "ripple",
+   "title": "Ripple",
+   "ptype": "mod",
+   "category": "visual-fx",
+   "tier": "strong",
+   "desc": "Заставляет уже существующие частицы реагировать на движение существ: пузыри, брызги, капли и струи воды, дым, пепел и светлячки разлетаются, когда рядом кто-то проплывает или пробегает. Новых частиц не добавляет вообще — только слой физики отклика.",
+   "why": "Частиц у тебя уже с избытком (Subtle Effects, Particular, Particle Rain), и все они висят в воздухе как декорация. Это единственный мод, который делает их частью сцены, а не наклейкой поверх неё.",
+   "warning": "Чисто клиентский, без зависимостей. Список поддерживаемых частиц зашит в мод — частицы из сторонних модов реагировать не будут.",
+   "tags": [
+    "частицы",
+    "физика",
+    "клиент"
+   ],
+   "client_only": true,
+   "server_needed": false,
+   "dl": 296329,
+   "updated": "",
+   "in_pack": true
+  },
+  {
+   "slug": "better-snow-coverage",
+   "title": "Better Snow Coverage",
+   "ptype": "mod",
+   "category": "visual-fx",
+   "tier": "strong",
+   "desc": "Чисто клиентский рендер: дорисовывает слой снега под блоками, вокруг которых снег есть, а под ними нет — заборы, ступени, плиты, цветы, ограды, ковры. Настоящие блоки при этом не ставятся, сервер не нужен.",
+   "why": "Frostiful, Serene Seasons и снежные биомы у тебя работают, но вокруг каждой постройки в снегу остаются проплешины голой земли — это самый заметный «пластиковый» шов зимнего кадра.",
+   "warning": "Требует Sodium, Fabric API и YACL — всё уже в сборке. Не путать с уже стоящим Snow Under Trees: тот генерирует реальные блоки снега при worldgen, этот только дорисовывает картинку у тебя на экране.",
+   "tags": [
+    "снег",
+    "зима",
+    "sodium"
+   ],
+   "client_only": true,
+   "server_needed": false,
+   "dl": 258525,
+   "updated": "",
+   "in_pack": true
+  },
+  {
+   "slug": "fancy-door-animations",
+   "title": "Fancy Door Animations - Hold My Doors",
+   "ptype": "mod",
+   "category": "animation",
+   "tier": "strong",
+   "desc": "Двери, люки и калитки перестают телепортироваться из закрытого состояния в открытое — они плавно проворачиваются на петлях. Чисто клиентский рендер, логика блока не трогается, редстоун работает как раньше.",
+   "why": "Дверь — то, что ты трогаешь руками сотни раз за игру, и каждый раз она щёлкает в другое положение за один тик. Мелочь, которая ломает физичность мира сильнее, чем кажется, пока не поставишь.",
+   "warning": "Актуальная сборка под 1.21.11 — 1.3.0 от 12.03.2026 (проект живой, обновляется под более новые версии). Ничего кроме внешнего вида не меняет.",
+   "tags": [
+    "двери",
+    "анимации",
+    "физичность"
+   ],
+   "client_only": true,
+   "server_needed": false,
+   "dl": 190977,
+   "updated": "",
+   "in_pack": false
+  },
+  {
+   "slug": "nocturnal-bats",
+   "title": "Nocturnal Bats",
+   "ptype": "mod",
+   "category": "mobs",
+   "tier": "strong",
+   "desc": "Меняет правила спавна летучих мышей: теперь они появляются не только глубоко в пещерах, но и на поверхности ночью, на любой высоте. Небесный свет больше не блокирует спавн полностью (он влияет слабее, чем свет от блоков), а список блоков, на которых мыши могут появиться, расширен до обычных поверхностных.",
+   "why": "У тебя есть Boids и Birds для дневного неба, а ночное остаётся пустым. Мыши, снующие над лесом в сумерках, — это ровно тот живой мир, который ты собираешь, только в тёмную смену.",
+   "warning": "Файл собран под 1.21.3, но автор пометил его совместимым с 1.21.11 — запрос к API отдаёт версию под 1.21.11 с загрузчиком fabric. Мод чисто серверный. Добавляет пассивных мобов в общий лимит спавна, при плотной застройке мод-структурами это лишние сущности.",
+   "tags": [
+    "ночь",
+    "летучие мыши",
+    "спавн"
+   ],
+   "client_only": false,
+   "server_needed": true,
+   "dl": 188296,
+   "updated": "",
+   "in_pack": true
+  },
+  {
+   "slug": "brewery",
+   "title": "Patbox's Brewery",
+   "ptype": "mod",
+   "category": "farm-food",
+   "tier": "strong",
+   "desc": "Настоящий цикл заготовок. Кидаешь ингредиенты в котёл с водой, стоящий над костром, мешаешь палкой, следишь за временем варки над котлом и разливаешь по бутылкам. Дальше напиток выдерживается в бочке, которую надо построить в мире из втулки, забора, ступеней и досок одного дерева — от срока выдержки зависит качество. Рецепты смотришь в крафтовой Книге пивовара, свои добавляются датапаком.",
+   "why": "Готовка на костре и погреб с бочками — самая «жилая» механика, которой в сборке нет: Farmer's Delight закрывает еду, но не напитки и не выдержку. Автор — Patbox, один из самых аккуратных разработчиков в Fabric-экосистеме.",
+   "warning": "Требует Polymer и работает серверсайдом: предметы показываются подменёнными ванильными моделями, а не своими текстурами. Автор прямо пишет, что по контенту мод далёк от завершённого — базовых напитков немного.",
+   "tags": [
+    "напитки",
+    "выдержка",
+    "котёл-над-костром"
+   ],
+   "client_only": false,
+   "server_needed": true,
+   "dl": 160987,
+   "updated": "",
+   "in_pack": false
+  },
+  {
+   "slug": "saplanting",
+   "title": "Saplanting",
+   "ptype": "mod",
+   "category": "world",
+   "tier": "strong",
+   "desc": "Выпавшие саженцы сами втыкаются в землю, если под ними подходящий блок. Поддерживаются деревья 2x2, саженцы из других модов подхватываются автоматически, через конфиг можно добавить и другие растения.",
+   "why": "У тебя стоит TreeCapitator — лес валится целиком и очень быстро, а восстанавливать его вручную никто не будет. С этим модом вырубка сама зарастает, и лес отвечает на твою деятельность вместо того, чтобы просто исчезать.",
+   "warning": "Саженцы будут прорастать и там, где не надо — на протоптанных тропах, у дома, рядом с грядками. Через конфиг отключаются конкретные растения и условия посадки. Описание проекта на Modrinth заброшенное (обрывки анонсов 1.19), но билд под 1.21.11 свежий, 97 подписчиков. Серверная сторона.",
+   "tags": [
+    "лес",
+    "восстановление",
+    "саженцы"
+   ],
+   "client_only": false,
+   "server_needed": true,
+   "dl": 123227,
+   "updated": "",
+   "in_pack": true
+  },
+  {
+   "slug": "indypets",
+   "title": "IndyPets - Independent Pets",
+   "ptype": "mod",
+   "category": "mobs",
+   "tier": "strong",
+   "desc": "Снимает с питомцев проклятие «сидеть или ходить за хозяином». Правым кликом кошка, собака или попугай переключается между «сидеть», «идти за мной» и «жить своей жизнью». Независимый питомец не телепортируется к тебе, а бродит вокруг точки, где ты его отпустил — у него появляется дом. Клавишей J или козьим рогом можно разом собрать всех своих.",
+   "why": "Собака, которая ходит по двору и лежит у костра, а не стоит истуканом в углу, — половина ощущения обжитого места. И при этом она никуда не убегает и не теряется.",
+   "warning": "Требует Cloth Config — уже есть в Fabulously Optimized. Переопределяет правый клик по питомцу; если конфликтует с другими модами на животных, есть отдельная клавиша взаимодействия (H).",
+   "tags": [
+    "питомцы",
+    "поведение",
+    "двор"
+   ],
+   "client_only": false,
+   "server_needed": true,
+   "dl": 92904,
+   "updated": "",
+   "in_pack": true
+  },
+  {
+   "slug": "enhanced-cats",
+   "title": "Enhanced Cats",
+   "ptype": "mod",
+   "category": "mobs",
+   "tier": "strong",
+   "desc": "Переписывает поведение кошек: настроение от довольной до подавленной с реальными последствиями (забыл про кошку — она злится, отказывается играть и в итоге впадает в депрессию), набор веса от сидячей жизни с замедлением, царапание деревянных блоков, потягивание, поза «батоном», мятие лапами, котята играют друг с другом. Всё разбирается по галочкам в конфиге через YACL.",
+   "why": "Домашнее животное с характером и претензиями к хозяину — самый сильный доступный способ оживить дом, и обновляется мод буквально сейчас (август 2026).",
+   "warning": "Тянет GeckoLib и подменяет модель кошки собственной — Fresh Animations и ETF/EMF на кошек, скорее всего, работать перестанут. Отдельные фичи выключаются в конфиге, а вот подмена модели — нет; ставь, если готов пожертвовать FA-кошками.",
+   "tags": [
+    "кошки",
+    "настроение",
+    "GeckoLib"
+   ],
+   "client_only": false,
+   "server_needed": true,
+   "dl": 64548,
+   "updated": "",
+   "in_pack": false
+  },
+  {
+   "slug": "environmental-water",
+   "title": "Environmental Water",
+   "ptype": "resourcepack",
+   "category": "resourcepack",
+   "tier": "strong",
+   "desc": "Делает цвет воды зависимым от биома: в пустыне она мутно-зелёная, в горной реке почти прозрачно-голубая, у грибного острова серо-розовая. Цвет подводного тумана подгоняется под поверхностный, так что смена биома видна и под водой. Большая часть палитры перенесена из Bedrock, для биомов после 1.16 цвета сделаны вручную.",
+   "why": "Вода — самая большая однотонная поверхность в игре, и сейчас она одинакова от джунглей до тайги. Polytone у тебя уже стоит в составе FO, так что пак заведётся без единого нового мода.",
+   "warning": "Требует Polytone (уже есть). ATMOSPHERICS тоже управляет туманом по биомам — если подводные цвета начнут спорить, отключи подводный туман в одном из двух. Patrix меняет текстуру воды, а не её оттенок, поэтому с ним пак уживается; следи за порядком паков.",
+   "tags": [
+    "вода",
+    "цвет",
+    "polytone"
+   ],
+   "client_only": true,
+   "server_needed": false,
+   "dl": 62259,
+   "updated": "",
+   "in_pack": false
+  },
+  {
+   "slug": "cliff-face",
+   "title": "Cliff Face",
+   "ptype": "mod",
+   "category": "world",
+   "tier": "strong",
+   "desc": "На крутых склонах вместо ванильной земли с травой генерируется голый камень — получаются настоящие скальные стены и обрывы. Реализовано через surface rules, а не через генерацию фич, поэтому по производительности почти бесплатно. Автор явно заявляет поддержку Terralith, Tectonic и Geophilic.",
+   "why": "У тебя Tectonic и This Rocks! подняли горы, но их бока остались земляными — именно это выдаёт «майнкрафтовость» рельефа на дальней прорисовке Voxy.",
+   "warning": "Работает только на новых чанках, уже сгенерированную местность не переделает. Код не менялся с октября 2024 — автор дописал поддержку версий вплоть до 1.21.11 в тот же файл, отдельной сборки под 1.21.11 нет.",
+   "tags": [
+    "горы",
+    "рельеф",
+    "скалы"
+   ],
+   "client_only": false,
+   "server_needed": true,
+   "dl": 48101,
+   "updated": "",
+   "in_pack": false
+  },
+  {
+   "slug": "new-sea-life",
+   "title": "Sea Life",
+   "ptype": "mod",
+   "category": "mobs",
+   "tier": "strong",
+   "desc": "Добавляет около сорока реальных видов рыб с привязкой к биомам: анчоус и сардина в холодных океанах, форель и щука в северных реках, сом и бовфин в болотах, скат манта и рыба-бабочка в тёплых водах, удильщик в тёмных глубинах. Плюс рыбные ловушки, инкубатор для разведения рыбы из вёдер и новая добыча при рыбалке — кости, окаменелости, пиратские находки.",
+   "why": "Под водой у тебя сейчас три вида рыб на весь мир, и никакой Boids этого не исправит — ему просто некого сбивать в косяки. Виды здесь настоящие, а не выдуманные, так что мод не тянет в фэнтези.",
+   "warning": "Требует Puzzles Lib и Forge Config API Port (второй уже стоит в составе FO). Boids заставляет косячить ванильных рыб — на новых видах это может не сработать, проверь. Автор Fuzs, обновляется регулярно.",
+   "tags": [
+    "океан",
+    "рыбы",
+    "живой мир"
+   ],
+   "client_only": false,
+   "server_needed": true,
+   "dl": 47704,
+   "updated": "",
+   "in_pack": false
+  },
+  {
+   "slug": "basicstorage",
+   "title": "Basic Storage",
+   "ptype": "mod",
+   "category": "qol",
+   "tier": "strong",
+   "desc": "Добавляет ящик (Crate): один блок под один тип предмета, но в огромном количестве и совсем без интерфейса — правый клик кладёт, левый достаёт, а на самом блоке нарисовано, что внутри и сколько. Ящики соединяются в сеть через Crate Station, и тогда одним шифт-кликом по станции разгружается весь инвентарь по нужным местам. Сломанный топором ящик уносится вместе с содержимым.",
+   "why": "Стена ящиков, где содержимое видно глазами, а не по наведению курсора, — это и есть хранение по-человечески вместо ряда одинаковых сундуков. Зависимостей нет, стиль строго ванильный.",
+   "warning": "Вместимость ящика по умолчанию неприлично большая (до миллиарда) — если хочешь, чтобы хранение оставалось задачей, уменьшай лимит в конфиге. Crate Station уже немного отдаёт «системой», её можно просто не крафтить.",
+   "tags": [
+    "ящики",
+    "массовое-хранение",
+    "без-GUI"
+   ],
+   "client_only": false,
+   "server_needed": true,
+   "dl": 42866,
+   "updated": "",
+   "in_pack": false
+  },
+  {
+   "slug": "cave-fog-stabilizer",
+   "title": "Cave Fog Stabilizer",
+   "ptype": "mod",
+   "category": "visual-fx",
+   "tier": "strong",
+   "desc": "С 1.21.11 в игре появился общий туман окружения, и под землёй его цвет меняется вместе со временем суток — в полдень пещера буквально светлеет изнутри. Мод отвязывает подземный туман от времени суток: на поверхности новый туман работает как задумано, а под землёй остаётся стабильно тёмным. Для модовых пещерных биомов со своим цветом тумана предусмотрена подмешиваемая яркость, чтобы цвет не пропадал.",
+   "why": "У тебя уже стоит More Darkness, но он не лечит главный ляп ванильного освещения — пещеру, которая днём выглядит светлее, чем ночью. Это точечная заплатка ровно на этот случай, почти бесплатная по ресурсам.",
+   "warning": "Клиентский, 42k загрузок, но всего 17 подписчиков. С Sodium включённая по умолчанию опция «Use Fog Occlusion» может выбивать дальние чанки в больших пещерах — если увидишь дыры вдали, отключи её в настройках Sodium. С Atmospherics и датапаками на environmental attributes автор заявляет совместимость.",
+   "tags": [
+    "пещеры",
+    "туман",
+    "темнота"
+   ],
+   "client_only": true,
+   "server_needed": false,
+   "dl": 42254,
+   "updated": "",
+   "in_pack": true
+  },
+  {
+   "slug": "customtimecycle",
+   "title": "Custom Time Cycle",
+   "ptype": "mod",
+   "category": "survival",
+   "tier": "strong",
+   "desc": "Позволяет задать отдельную длительность дня и ночи одной командой, не трогая скорость тика — мир не замедляется и не ускоряется, меняется только доля тёмного времени. Настройка хранится в мире и работает как на сервере, так и в одиночной игре.",
+   "why": "Ванильная ночь длится около семи минут — стать настоящей угрозой она просто не успевает. Растянув её вдвое-втрое, ты получаешь реальную причину строить укрытие, жечь костёр и планировать вылазки по свету.",
+   "warning": "Мод серверной стороны, клиенту не нужен. Длинная ночь — это больше мобов и больше нагрузки; проверь, как это ложится на твой мод усложнения мобов. С Serene Seasons тоже стоит свериться: сезоны сами влияют на длину светового дня.",
+   "tags": [
+    "длина ночи",
+    "команда",
+    "сервер"
+   ],
+   "client_only": false,
+   "server_needed": true,
+   "dl": 35312,
+   "updated": "",
+   "in_pack": false
+  },
+  {
+   "slug": "item-landing-sound",
+   "title": "Item Landing Sound",
+   "ptype": "mod",
+   "category": "sound",
+   "tier": "strong",
+   "desc": "Выпавший предмет при приземлении издаёт звук того блока, на который он упал: на камне — короткий каменный щелчок, на песке — глухой, на дереве — деревянный. Громкость крутится командой /itemlandingsound:volume от 0 до 2.",
+   "why": "Дроп в ваниле падает в абсолютной тишине — это одна из самых заметных дыр в звуковой картине, особенно когда TreeCapitator роняет тебе под ноги целое дерево брёвен.",
+   "warning": "Требует Fabric API. Последняя версия v1.0.2 от 19.12.2025 — с тех пор не трогали, но мод состоит из одного эффекта. На больших дроп-фармах становится шумно, тогда сбавь громкость командой.",
+   "tags": [
+    "дроп",
+    "звук по материалу",
+    "клиентский"
+   ],
+   "client_only": true,
+   "server_needed": false,
+   "dl": 31385,
+   "updated": "",
+   "in_pack": true
+  },
+  {
+   "slug": "soaring-phantoms",
+   "title": "Soaring Phantoms",
+   "ptype": "mod",
+   "category": "mobs",
+   "tier": "strong",
+   "desc": "Фантомы перестают зависеть от того, спал ты или нет. Вместо бессонницы они спавнятся ночью на большой высоте, и чем выше ты забрался над заданным уровнем Y, тем выше шанс. Мембрана фантома в руке полностью гасит спавн.",
+   "why": "Ванильная бессонница наказывает тебя за долгие вылазки и не имеет отношения к миру. Здесь она превращается в честную опасность высоты: летишь ночью высоко — за это платишь.",
+   "warning": "Требует Fzzy Config. Мод серверный (в одиночной игре ставится как обычно). У тебя уже стоит мод на усложнение мобов — тут пересечения нет, Soaring Phantoms трогает только правила спавна фантомов.",
+   "tags": [
+    "высота",
+    "фантомы",
+    "спавн"
+   ],
+   "client_only": false,
+   "server_needed": true,
+   "dl": 30646,
+   "updated": "",
+   "in_pack": false
+  },
+  {
+   "slug": "visiting-villagers",
+   "title": "Visiting Villagers",
+   "ptype": "mod",
+   "category": "mobs",
+   "tier": "strong",
+   "desc": "В деревни начинают приходить гости: на рассвете появляются приезжие жители (14 профессий плюс безработные) и дети, к закату уходят. Отдельно спавнятся специализированные странствующие торговцы, привязанные к биомам. Гостям не нужны кровати и рабочие блоки — они не встраиваются в деревенскую механику, только живут в ней днём.",
+   "why": "Сейчас деревня — статичная декорация с фиксированным составом. Здесь у неё появляется суточный ритм: утром людно, ночью пусто, и состав меняется день ото дня. Хорошо ложится на ChoiceTheorem's Overhauled Village и Guard Villagers.",
+   "warning": "Больше сущностей жителей = больше нагрузки, особенно в крупных деревнях поверх CTOV. В связке с Thief учти, что свидетелей твоих преступлений становится заметно больше. Обновлялся 14.04.2026, 58 подписчиков.",
+   "tags": [
+    "деревня",
+    "суточный цикл",
+    "торговцы"
+   ],
+   "client_only": false,
+   "server_needed": true,
+   "dl": 27106,
+   "updated": "",
+   "in_pack": false
+  },
+  {
+   "slug": "gorify",
+   "title": "Gorify",
+   "ptype": "mod",
+   "category": "visual-fx",
+   "tier": "strong",
+   "desc": "Кровь при получении и нанесении урона, кровотечения четырёх уровней в зависимости от оставшегося здоровья (останавливаются, когда отхилишься), отдельные длительные порезы от мечей и топоров, кровавые следы на земле с жизнью 60 секунд, пузыри при удушье и пыль с ударной волной при тяжёлом падении. Всё настраивается через /function fkgm:options.",
+   "why": "Единственный кандидат, который реально закрывает «ранения и их визуализацию»: ты видишь, насколько плохи твои дела, по телу и по следам, а не по полоске сердечек.",
+   "warning": "Формально датапак+мод, server_side required — в одиночной игре нормально, на чужой сервер не поставишь. Кровь рисуется частицами блока редстоуна: на Patrix 32x будет крупновато, посмотри и подкрути интенсивность. Добивания с фонтаном крови отключаются отдельно, если это перебор. Плюс лишние частицы поверх Subtle Effects и Particular — если fps просядет, режь настройками.",
+   "tags": [
+    "кровь",
+    "ранения",
+    "датапак"
+   ],
+   "client_only": false,
+   "server_needed": true,
+   "dl": 24493,
+   "updated": "",
+   "in_pack": false
+  },
+  {
+   "slug": "inferno",
+   "title": "Inferno",
+   "ptype": "mod",
+   "category": "survival",
+   "tier": "strong",
+   "desc": "Делает огонь последствием, а не декорацией: горящие брёвна превращаются в обугленные (дают уголь и горят вчетверо дольше), трава выгорает в выжженную землю, которая сама затягивается под дождём. Горящие мобы разносят пламя дальше, душевой огонь наносит двойной урон, факелом можно поджечь врага. Дым тем гуще, чем больше огня рядом.",
+   "why": "Лесной пожар перестаёт быть безобидным — это ровно то самое 'опаснее и сложнее', и при этом мир после пожара визуально помнит случившееся, а не откатывается к прежнему виду.",
+   "warning": "Нужна библиотека StrawberryLib. Кроме механик добавляет Shining Oak — огнеупорное дерево с железными и золотыми листьями; это самая сказочная часть мода, но она редкая и её можно просто не выращивать. Требуется на клиенте и на сервере.",
+   "tags": [
+    "пожары",
+    "выжженная земля",
+    "распространение огня"
+   ],
+   "client_only": false,
+   "server_needed": true,
+   "dl": 23208,
+   "updated": "",
+   "in_pack": false
+  },
+  {
+   "slug": "the-block-keeps-ticking",
+   "title": "The Block Keeps Ticking",
+   "ptype": "mod",
+   "category": "world",
+   "tier": "strong",
+   "desc": "Симулирует тики блоков в выгруженных чанках: когда ты возвращаешься, время там прошло по-настоящему. Растут пшеница, морковь, картошка, свёкла, тыквы, арбузы, адский нарост, какао, саженцы, каменные почки аметиста, ламинария, бамбук, тростник и кактус; догорают печи, костры и варочные стойки; гниёт листва; капают котлы; грязь под сталактитом превращается в глину. Чанки при этом НЕ держатся загруженными — состояние просто досчитывается по прошедшему времени.",
+   "why": "Без этого мир замирает ровно в тот момент, когда ты уходишь, и вся идея «живого мира» держится только на том, что ты стоишь рядом. Здесь лес, который ты посадил перед экспедицией, реально вырастает, пока тебя нет.",
+   "warning": "Переписанная версия Alive World / Presence Not Required. Есть более простой аналог TimeTick (только посевы и саженцы) — ставить строго что-то одно. При возвращении в давно брошенный регион будет разовый всплеск нагрузки на досчёт. Серверная сторона.",
+   "tags": [
+    "время",
+    "выгруженные чанки",
+    "рост"
+   ],
+   "client_only": false,
+   "server_needed": true,
+   "dl": 21934,
+   "updated": "",
+   "in_pack": false
+  },
+  {
+   "slug": "vanilla-outsider-better-dogs",
+   "title": "VO: Better Dogs",
+   "ptype": "mod",
+   "category": "mobs",
+   "tier": "strong",
+   "desc": "Переписывает ИИ волков: у каждого свой характер (агрессивный, миролюбивый, обычный), они не лезут в лаву и с обрывов, грамотнее держат дистанцию в бою и лучше следуют за хозяином. Работает через событийный планировщик, чтобы не грузить тик.",
+   "why": "Это точечное улучшение поведения, а не глобальный ребаланс сложности — значит не спорит с твоим модом на усложнение мобов. 13 релизов под 1.21.11, последний вышел буквально сегодня, автор явно живой.",
+   "warning": "Автор указывает несовместимость с Jade 26.2.11+ (Jade у тебя и так отсеян). Тянет библиотеку Dasik Library. С Fresh Animations по моделям волка не конфликтует, но второй поведенческий мод на волков ставить не надо.",
+   "tags": [
+    "волки",
+    "ИИ",
+    "характеры"
+   ],
+   "client_only": false,
+   "server_needed": true,
+   "dl": 21392,
+   "updated": "",
+   "in_pack": true
+  },
+  {
+   "slug": "fractal-lightning",
+   "title": "Fractal Lightning",
+   "ptype": "mod",
+   "category": "visual-fx",
+   "tier": "strong",
+   "desc": "Полностью заменяет ванильный рендер молнии: вместо пары прямых полос генерируется фрактальная ветвящаяся геометрия. Детализация подстраивается под расстояние до игрока, так что дальние разряды не жрут кадры.",
+   "why": "У тебя Immersive Storms и ImmersiveThunder: Reforged — гроза уже звучит и ощущается по-взрослому, но сама молния до сих пор выглядит как две ванильные палки. Это закрывает последний кусок грозы.",
+   "warning": "Одна релизная версия (1.0.1, декабрь 2025), 92 подписчика — мод крошечный, но ломаться в нём нечему, он трогает только рендер молнии. Сервер не обязателен.",
+   "tags": [
+    "молния",
+    "гроза",
+    "рендер"
+   ],
+   "client_only": true,
+   "server_needed": false,
+   "dl": 20233,
+   "updated": "",
+   "in_pack": true
+  },
+  {
+   "slug": "distant-thunders",
+   "title": "Distant thunders",
+   "ptype": "mod",
+   "category": "sound",
+   "tier": "strong",
+   "desc": "Гром больше не звучит одновременно со вспышкой: звук идёт до тебя со скоростью звука, задержка считается от реальной дистанции до удара молнии. Громкость и тембр тоже масштабируются по расстоянию — далёкие раскаты глухие и тихие.",
+   "why": "ImmersiveThunder: Reforged и Immersive Storms у тебя работают с самим раскатом, но не с задержкой. Этот мод добавляет ту паузу между вспышкой и звуком, по которой в реальности и понимаешь, далеко ли гроза.",
+   "warning": "Клиентский. Прямых конфликтов не заявлено, но с ImmersiveThunder оба вмешиваются в звук грома — если раскаты начнут двоиться, оставь что-то одно. Ресурспак Realistic Thunder делает то же самое, вместе не ставить.",
+   "tags": [
+    "гром",
+    "скорость звука",
+    "гроза"
+   ],
+   "client_only": true,
+   "server_needed": false,
+   "dl": 14658,
+   "updated": "",
+   "in_pack": false
+  },
+  {
+   "slug": "enchanted-fishing-line",
+   "title": "Enchanted Fishing Line",
+   "ptype": "mod",
+   "category": "visual-fx",
+   "tier": "strong",
+   "desc": "Леска удочки становится физически симулированной 3D-верёвкой: провисает, изгибается при движении рукой и корректно упирается в блоки вместо того, чтобы проходить сквозь них насквозь. Заявлено как 100% клиентское.",
+   "why": "Рыбалка — это долгие статичные минуты, когда прямо перед лицом висит одна-единственная деталь, и она в ванили выглядит как натянутая нитка из двух пикселей.",
+   "warning": "Свежий проект (июль 2026), 64 подписчика, зависимостей нет. Автор тот же, что у Punchy! — если когда-нибудь поставишь Punchy, проверь связку с твоим модом «тело от первого лица».",
+   "tags": [
+    "рыбалка",
+    "верёвка",
+    "первое лицо"
+   ],
+   "client_only": true,
+   "server_needed": false,
+   "dl": 12331,
+   "updated": "",
+   "in_pack": false
+  },
+  {
+   "slug": "tracks-mod",
+   "title": "Tracks",
+   "ptype": "mod",
+   "category": "world",
+   "tier": "strong",
+   "desc": "Каждый шаг по траве и по тропинке увеличивает скрытый счётчик износа блока. После нужного числа проходов трава сама становится тропинкой, а тропинка — утоптанной тропой, которую нельзя ни скрафтить, ни сделать мотыгой. По утоптанной тропе идёшь чуть быстрее.",
+   "why": "Твои маршруты между базой, шахтой и деревней протаптываются сами — мир начинает помнить, где ты ходишь. Это ровно та естественность удобства, за которую ты держишь TreeCapitator.",
+   "warning": "3.3 тыс. загрузок и одна версия под 1.21.11 — проект молодой. Меняет блоки, поэтому на мультиплеере нужен и на сервере. С RoadWeaver и The Roads More Travelled технически не конфликтует, но дороги будут появляться из двух источников сразу.",
+   "tags": [
+    "тропинки",
+    "износ блоков",
+    "живой мир"
+   ],
+   "client_only": false,
+   "server_needed": true,
+   "dl": 3317,
+   "updated": "",
+   "in_pack": false
+  },
+  {
+   "slug": "hear-the-wind",
+   "title": "Hear the Wind",
+   "ptype": "mod",
+   "category": "sound",
+   "tier": "strong",
+   "desc": "Клиентский мод, подмешивающий шум ветра при быстром движении по воздуху: длинное падение, полёт на элитрах, разгон в вагонетке, лодке или верхом на лошади. Громкость нарастает и спадает по скорости, пороги и контексты включаются по отдельности, есть опция заглушить ванильный свист элитр. Игровую логику не трогает вообще.",
+   "why": "Закрывает «ветер на высоте» шире, чем уже стоящий Falling Wind: тот срабатывает только на падении, а этот — на элитрах, верхом и в транспорте.",
+   "warning": "Пересекается с Falling Wind — ставь что-то одно, иначе при падении ветер зазвучит в два слоя. Проект молодой: 1316 загрузок, 9 подписчиков, но описание внятное и обновлён 25.07.2026.",
+   "tags": [
+    "ветер",
+    "элитры",
+    "замена Falling Wind"
+   ],
+   "client_only": true,
+   "server_needed": false,
+   "dl": 1316,
+   "updated": "",
+   "in_pack": true
+  },
+  {
+   "slug": "mobawareness",
+   "title": "MobAwareness",
+   "ptype": "mod",
+   "category": "mobs",
+   "tier": "strong",
+   "desc": "Мобы начинают реагировать на то, что ты делаешь, а не только на то, что ты в зоне видимости. Искусственный свет от твоих факелов и фонарей ночью притягивает монстров. Мобы слышат и идут проверять шум: копку блоков, установку блоков, прыжки, спринт, бой. Ночью они собираются вокруг базы, если ты внутри — получается настоящая осада.",
+   "why": "Ты уже поставил мод на усложнение мобов, но он усиливает их характеристики, а не их восприятие. Здесь мир реагирует именно на твоё поведение: шумная шахта и ярко освещённая база сами становятся приманкой, и прятаться приходится по-настоящему.",
+   "warning": "Серверная часть (client_side: unsupported) — в одиночке просто кидаешь в mods. Каждое поведение включается отдельно по типам мобов, дальности и шансу — обязательно пройдись по конфигу, иначе поверх уже стоящего мода на сложность ночь станет неиграбельной. 12 подписчиков, автор один, но обновлён 15.08.2026.",
+   "tags": [
+    "шум",
+    "свет",
+    "осада"
+   ],
+   "client_only": false,
+   "server_needed": true,
+   "dl": 1242,
+   "updated": "",
+   "in_pack": false
+  },
+  {
+   "slug": "you-must-have-the-rain",
+   "title": "You Must Have The Rain",
+   "ptype": "mod",
+   "category": "visual-fx",
+   "tier": "strong",
+   "desc": "Добавляет клиентские небесные явления: радуги после дождя, лунные радуги ночью, полярные сияния и переработанное ночное небо. Каждый эффект включается и настраивается отдельно.",
+   "why": "Радуга после ливня и сияние над снежными биомами в сборке не закрыты ничем, а по стилю это ровно твоё — эффектно, но не мультяшно.",
+   "warning": "1.1 тыс. загрузок и одна версия под 1.21.11 — свежий проект. Переработанное ночное небо перекрывается с ATMOSPHERICS и с ресурспаком Hyper Realistic Sky: оставь что-то одно, остальное отключи в конфиге мода.",
+   "tags": [
+    "радуга",
+    "полярное сияние",
+    "ночное небо"
+   ],
+   "client_only": true,
+   "server_needed": false,
+   "dl": 1098,
+   "updated": "",
+   "in_pack": false
   },
   {
    "slug": "betterdays",
@@ -1997,26 +3218,8 @@
    "client_only": false,
    "server_needed": true,
    "dl": 4303651,
-   "updated": "2026-06-27"
-  },
-  {
-   "slug": "immersive-winds",
-   "title": "Immersive Winds",
-   "ptype": "mod",
-   "category": "visual-fx",
-   "tier": "strong",
-   "desc": "Единый ветер на весь мир: у него есть направление и сила, и от него зависит всё сразу — дождь и снег летят под углом, трава и растения гнутся, фонари качаются, огонь наклоняется.",
-   "why": "Ветер у тебя сейчас — набор несвязанных эффектов: Falling Wind шумит, Swinging Lanterns качает, Interactive Foliage раздвигает траву под ногами. Никто не задаёт общее направление, поэтому мир не «дует» — он дёргается по частям. Недостающее звено — сам ветер как система, от которой всё остальное производно.",
-   "warning": "Пересекается сразу с тремя модами каталога: Particle Rain (свои частицы дождя и снега), Swinging Lanterns (качание фонарей) и частично Cool Rain. Оставь что-то одно, иначе получишь двойные частицы. Модули отключаются в конфиге.",
-   "tags": [
-    "ветер",
-    "погода",
-    "растительность"
-   ],
-   "client_only": false,
-   "server_needed": true,
-   "dl": 233400,
-   "updated": "2026-08-05"
+   "updated": "2026-06-27",
+   "in_pack": true
   },
   {
    "slug": "atmospherics",
@@ -2035,7 +3238,28 @@
    "client_only": true,
    "server_needed": false,
    "dl": 654117,
-   "updated": "2026-07-17"
+   "updated": "2026-07-17",
+   "in_pack": true
+  },
+  {
+   "slug": "immersive-winds",
+   "title": "Immersive Winds",
+   "ptype": "mod",
+   "category": "visual-fx",
+   "tier": "strong",
+   "desc": "Единый ветер на весь мир: у него есть направление и сила, и от него зависит всё сразу — дождь и снег летят под углом, трава и растения гнутся, фонари качаются, огонь наклоняется.",
+   "why": "Ветер у тебя сейчас — набор несвязанных эффектов: Falling Wind шумит, Swinging Lanterns качает, Interactive Foliage раздвигает траву под ногами. Никто не задаёт общее направление, поэтому мир не «дует» — он дёргается по частям. Недостающее звено — сам ветер как система, от которой всё остальное производно.",
+   "warning": "Пересекается сразу с тремя модами каталога: Particle Rain (свои частицы дождя и снега), Swinging Lanterns (качание фонарей) и частично Cool Rain. Оставь что-то одно, иначе получишь двойные частицы. Модули отключаются в конфиге.",
+   "tags": [
+    "ветер",
+    "погода",
+    "растительность"
+   ],
+   "client_only": false,
+   "server_needed": true,
+   "dl": 233400,
+   "updated": "2026-08-05",
+   "in_pack": true
   },
   {
    "slug": "beltborne-lanterns",
@@ -2054,7 +3278,28 @@
    "client_only": false,
    "server_needed": true,
    "dl": 204691,
-   "updated": "2026-03-15"
+   "updated": "2026-03-15",
+   "in_pack": true
+  },
+  {
+   "slug": "even-better-moon-sun",
+   "title": "Even Better Moon and Sun",
+   "ptype": "mod",
+   "category": "world",
+   "tier": "strong",
+   "desc": "Луна живёт по настоящему 29-дневному циклу со всеми восемью названными фазами, а солнце за игровой год гуляет по небу на ±23,5°: летом идёт высоко, зимой низко, и смещается плавно каждый тик. Плюс метеорные потоки и урожайная луна.",
+   "why": "У тебя есть сезоны (Serene Seasons) и More Darkness, который завязан именно на фазы луны, — но сам небесный календарь остался ванильным: восемь дней цикла и одинаковый рассвет круглый год. Это закрывает «время и календарь» на уровне неба и делает ночи под More Darkness по-настоящему непредсказуемыми.",
+   "warning": "Клиентский, двигает угол светил — шейдер может считать положение солнца сам, проверь на Complementary. Проект маленький (~1,6k загрузок), но живой, и на 1.21.11 у него уже полный набор функций.",
+   "tags": [
+    "луна",
+    "календарь",
+    "сезоны"
+   ],
+   "client_only": true,
+   "server_needed": false,
+   "dl": 1587,
+   "updated": "2026-07-24",
+   "in_pack": true
   },
   {
    "slug": "stracciatella-shaders",
@@ -2073,7 +3318,8 @@
    "client_only": true,
    "server_needed": false,
    "dl": 161079,
-   "updated": "2026-02-09"
+   "updated": "2026-02-09",
+   "in_pack": false
   },
   {
    "slug": "manure",
@@ -2092,7 +3338,8 @@
    "client_only": false,
    "server_needed": true,
    "dl": 94691,
-   "updated": "2026-06-18"
+   "updated": "2026-06-18",
+   "in_pack": true
   },
   {
    "slug": "macaws-paths-and-pavings",
@@ -2111,7 +3358,8 @@
    "client_only": false,
    "server_needed": true,
    "dl": 5019109,
-   "updated": "2026-06-20"
+   "updated": "2026-06-20",
+   "in_pack": true
   },
   {
    "slug": "badoptimizations",
@@ -2129,7 +3377,8 @@
    "client_only": true,
    "server_needed": false,
    "dl": 39113300,
-   "updated": "2026-06-16"
+   "updated": "2026-06-16",
+   "in_pack": false
   },
   {
    "slug": "diagonal-fences",
@@ -2148,7 +3397,8 @@
    "client_only": false,
    "server_needed": true,
    "dl": 10212554,
-   "updated": "2026-06-18"
+   "updated": "2026-06-18",
+   "in_pack": true
   },
   {
    "slug": "cook-your-food",
@@ -2166,7 +3416,8 @@
    "client_only": false,
    "server_needed": true,
    "dl": 186063,
-   "updated": "2026-08-13"
+   "updated": "2026-08-13",
+   "in_pack": true
   },
   {
    "slug": "noble",
@@ -2185,7 +3436,8 @@
    "client_only": true,
    "server_needed": false,
    "dl": 2073006,
-   "updated": "2026-07-22"
+   "updated": "2026-07-22",
+   "in_pack": false
   },
   {
    "slug": "displaycase",
@@ -2203,7 +3455,8 @@
    "client_only": false,
    "server_needed": true,
    "dl": 1154167,
-   "updated": "2026-08-10"
+   "updated": "2026-08-10",
+   "in_pack": true
   },
   {
    "slug": "bottled-air",
@@ -2221,7 +3474,8 @@
    "client_only": false,
    "server_needed": true,
    "dl": 163874,
-   "updated": "2026-06-18"
+   "updated": "2026-06-18",
+   "in_pack": true
   },
   {
    "slug": "fleeing-animals",
@@ -2239,7 +3493,8 @@
    "client_only": false,
    "server_needed": true,
    "dl": 36201,
-   "updated": "2026-07-31"
+   "updated": "2026-07-31",
+   "in_pack": true
   },
   {
    "slug": "a-good-place",
@@ -2257,7 +3512,8 @@
    "client_only": true,
    "server_needed": false,
    "dl": 2349762,
-   "updated": "2026-07-17"
+   "updated": "2026-07-17",
+   "in_pack": true
   },
   {
    "slug": "neutral-animals",
@@ -2275,7 +3531,8 @@
    "client_only": false,
    "server_needed": true,
    "dl": 352307,
-   "updated": "2026-03-27"
+   "updated": "2026-03-27",
+   "in_pack": true
   },
   {
    "slug": "visual-workbench",
@@ -2293,7 +3550,8 @@
    "client_only": false,
    "server_needed": true,
    "dl": 24236953,
-   "updated": "2026-06-21"
+   "updated": "2026-06-21",
+   "in_pack": true
   },
   {
    "slug": "enhanced-audio",
@@ -2311,7 +3569,8 @@
    "client_only": true,
    "server_needed": false,
    "dl": 2657078,
-   "updated": "2026-04-04"
+   "updated": "2026-04-04",
+   "in_pack": true
   },
   {
    "slug": "realistic-bees",
@@ -2329,7 +3588,8 @@
    "client_only": false,
    "server_needed": true,
    "dl": 1428396,
-   "updated": "2026-06-18"
+   "updated": "2026-06-18",
+   "in_pack": true
   },
   {
    "slug": "superb-steeds",
@@ -2347,7 +3607,8 @@
    "client_only": false,
    "server_needed": true,
    "dl": 1425961,
-   "updated": "2026-07-27"
+   "updated": "2026-07-27",
+   "in_pack": true
   },
   {
    "slug": "fresh-animations-spiders",
@@ -2366,7 +3627,8 @@
    "client_only": true,
    "server_needed": false,
    "dl": 1039635,
-   "updated": "2026-04-27"
+   "updated": "2026-04-27",
+   "in_pack": true
   },
   {
    "slug": "rainbows-foliage",
@@ -2384,7 +3646,8 @@
    "client_only": true,
    "server_needed": false,
    "dl": 125386,
-   "updated": "2026-08-01"
+   "updated": "2026-08-01",
+   "in_pack": false
   },
   {
    "slug": "cut-through",
@@ -2402,7 +3665,8 @@
    "client_only": true,
    "server_needed": false,
    "dl": 16331880,
-   "updated": "2026-06-17"
+   "updated": "2026-06-17",
+   "in_pack": true
   },
   {
    "slug": "fresh-skeleton-physics",
@@ -2421,7 +3685,8 @@
    "client_only": true,
    "server_needed": false,
    "dl": 1309923,
-   "updated": "2026-02-25"
+   "updated": "2026-02-25",
+   "in_pack": true
   },
   {
    "slug": "refined-torches",
@@ -2439,7 +3704,8 @@
    "client_only": true,
    "server_needed": false,
    "dl": 457245,
-   "updated": "2026-05-04"
+   "updated": "2026-05-04",
+   "in_pack": true
   },
   {
    "slug": "snow-imprints",
@@ -2458,7 +3724,8 @@
    "client_only": true,
    "server_needed": false,
    "dl": 320589,
-   "updated": "2026-07-18"
+   "updated": "2026-07-18",
+   "in_pack": true
   },
   {
    "slug": "unnamed-sea",
@@ -2476,7 +3743,8 @@
    "client_only": false,
    "server_needed": true,
    "dl": 254049,
-   "updated": "2026-02-01"
+   "updated": "2026-02-01",
+   "in_pack": true
   },
   {
    "slug": "shutupdeadentities",
@@ -2494,7 +3762,8 @@
    "client_only": true,
    "server_needed": false,
    "dl": 103043,
-   "updated": "2026-08-14"
+   "updated": "2026-08-14",
+   "in_pack": true
   },
   {
    "slug": "animal-garden-bull-shark",
@@ -2512,7 +3781,8 @@
    "client_only": false,
    "server_needed": true,
    "dl": 92518,
-   "updated": "2026-06-01"
+   "updated": "2026-06-01",
+   "in_pack": false
   },
   {
    "slug": "shulkerboxtooltip",
@@ -2530,7 +3800,8 @@
    "client_only": true,
    "server_needed": false,
    "dl": 34725160,
-   "updated": "2026-07-06"
+   "updated": "2026-07-06",
+   "in_pack": true
   },
   {
    "slug": "dungeons-and-taverns",
@@ -2548,7 +3819,8 @@
    "client_only": false,
    "server_needed": true,
    "dl": 20119964,
-   "updated": "2026-06-16"
+   "updated": "2026-06-16",
+   "in_pack": true
   },
   {
    "slug": "ambient-environment",
@@ -2567,7 +3839,8 @@
    "client_only": true,
    "server_needed": false,
    "dl": 8681538,
-   "updated": "2026-06-17"
+   "updated": "2026-06-17",
+   "in_pack": true
   },
   {
    "slug": "fresh-animations-objects",
@@ -2585,7 +3858,8 @@
    "client_only": true,
    "server_needed": false,
    "dl": 1316643,
-   "updated": "2026-06-23"
+   "updated": "2026-06-23",
+   "in_pack": true
   },
   {
    "slug": "skeleton-horse-spawn",
@@ -2603,7 +3877,8 @@
    "client_only": false,
    "server_needed": true,
    "dl": 973921,
-   "updated": "2026-06-18"
+   "updated": "2026-06-18",
+   "in_pack": true
   },
   {
    "slug": "countereds-terrain-slabs",
@@ -2622,7 +3897,8 @@
    "client_only": false,
    "server_needed": true,
    "dl": 331503,
-   "updated": "2026-07-31"
+   "updated": "2026-07-31",
+   "in_pack": false
   },
   {
    "slug": "rocking-boats",
@@ -2640,7 +3916,8 @@
    "client_only": true,
    "server_needed": false,
    "dl": 112417,
-   "updated": "2026-04-21"
+   "updated": "2026-04-21",
+   "in_pack": false
   },
   {
    "slug": "falling-wind",
@@ -2658,7 +3935,8 @@
    "client_only": true,
    "server_needed": false,
    "dl": 2978,
-   "updated": "2026-07-03"
+   "updated": "2026-07-03",
+   "in_pack": true
   },
   {
    "slug": "boat-item-view",
@@ -2676,7 +3954,8 @@
    "client_only": true,
    "server_needed": false,
    "dl": 12596065,
-   "updated": "2026-06-19"
+   "updated": "2026-06-19",
+   "in_pack": true
   },
   {
    "slug": "snow-under-trees-remastered",
@@ -2694,7 +3973,8 @@
    "client_only": false,
    "server_needed": true,
    "dl": 4155497,
-   "updated": "2026-03-24"
+   "updated": "2026-03-24",
+   "in_pack": true
   },
   {
    "slug": "hyper-realistic-sky",
@@ -2713,7 +3993,8 @@
    "client_only": true,
    "server_needed": false,
    "dl": 757335,
-   "updated": "2026-06-20"
+   "updated": "2026-06-20",
+   "in_pack": false
   },
   {
    "slug": "void-fog",
@@ -2732,7 +4013,8 @@
    "client_only": true,
    "server_needed": false,
    "dl": 177162,
-   "updated": "2026-08-14"
+   "updated": "2026-08-14",
+   "in_pack": true
   },
   {
    "slug": "netherportalfix",
@@ -2750,7 +4032,8 @@
    "client_only": false,
    "server_needed": true,
    "dl": 22343421,
-   "updated": "2026-06-16"
+   "updated": "2026-06-16",
+   "in_pack": true
   },
   {
    "slug": "swinging-lanterns",
@@ -2769,7 +4052,8 @@
    "client_only": true,
    "server_needed": false,
    "dl": 487758,
-   "updated": "2026-06-18"
+   "updated": "2026-06-18",
+   "in_pack": true
   },
   {
    "slug": "cold-breath",
@@ -2788,26 +4072,468 @@
    "client_only": true,
    "server_needed": false,
    "dl": 35130,
-   "updated": "2026-04-14"
+   "updated": "2026-04-14",
+   "in_pack": true
   },
   {
-   "slug": "player-death-corpses",
-   "title": "Player Corpses",
+   "slug": "bookshelf-inspector",
+   "title": "Bookshelf Inspector",
    "ptype": "mod",
-   "category": "survival",
+   "category": "qol",
    "tier": "nice",
-   "desc": "На месте гибели остаётся твоё тело с твоим скином и всем содержимым инвентаря. Не горит, не тонет, не деспавнится — за вещами надо вернуться туда, где ты умер.",
-   "why": "Смерть в каталоге не представлена никак: ты просто теряешь всё за пять минут где-то в лаве, и это обрывает историю, а не продолжает её. Мод превращает гибель в поход обратно — тело в снегу, риск умереть второй раз по дороге. Ровно тот тип естественного удобства, за который ты держишь TreeCapitator.",
-   "warning": "Смягчает наказание за смерть: если хочешь именно жёсткое выживание, включи таймер или плату за подъём тела. Знаменитый Corpse от henkelmax тебе не подойдёт — он только под Forge/NeoForge, этот же собран под Fabric.",
+   "desc": "Наводишься на резной книжный шкаф — и видишь, какая книга лежит в конкретной секции и как она называется. Обычные, зачарованные и написанные различаются между собой. То же работает с кафедрой.",
+   "why": "Домашняя библиотека перестаёт быть стеной, где ты гадаешь, в какой из шести ячеек лежит нужное зачарование. Единственная зависимость — Fabric API.",
+   "warning": "Ставить надо и на клиент, и на сервер. Не путай с форком Chiseled Bookshelf Visualizer: тому дополнительно нужны owo-lib и Anvian's Lib, а делает он то же самое.",
    "tags": [
-    "смерть",
-    "инвентарь",
-    "возвращение"
+    "библиотека",
+    "книжные-шкафы",
+    "подсказка"
    ],
    "client_only": false,
    "server_needed": true,
-   "dl": 57265,
-   "updated": "2026-07-12"
+   "dl": 1793012,
+   "updated": "",
+   "in_pack": false
+  },
+  {
+   "slug": "aitk",
+   "title": "Arrow In The Knee",
+   "ptype": "mod",
+   "category": "mobs",
+   "tier": "nice",
+   "desc": "Расширяет ванильную отрисовку торчащих стрел со всех игроков на всех живых существ. Стрелы раскидываются по частям модели той же логикой, что использует ваниль для игрока, никаких новых механик и баланса.",
+   "why": "Подстреленный зомби или корова реально ходят со стрелами в боку — бой перестаёт быть «попал и ничего не изменилось». Точечная деталь ровно в духе твоего запроса на последствия и живой мир.",
+   "warning": "Стрелы крепятся к частям модели, а у тебя Fresh Animations и EMF переопределяют модели мобов — посадка стрел может выглядеть чуть иначе, чем на скриншотах автора. Ставить и смотреть.",
+   "tags": [
+    "стрелы",
+    "бой",
+    "мобы"
+   ],
+   "client_only": true,
+   "server_needed": false,
+   "dl": 271786,
+   "updated": "",
+   "in_pack": false
+  },
+  {
+   "slug": "leadphysics",
+   "title": "LeadPhysics",
+   "ptype": "mod",
+   "category": "visual-fx",
+   "tier": "nice",
+   "desc": "Поводок перестаёт быть натянутой прямой линией и превращается в симулированную верёвку: провисает под своим весом, качается при ходьбе, может задевать блоки. Есть режимы 2D и 3D, регулировка жёсткости и коллизий. Логика ванильного поводка не трогается.",
+   "why": "Ты водишь скот и у тебя стоят Horseman, Immersive Horse Riding и NiftyCarts — верёвка в кадре появляется постоянно и выдаёт «это игра» одной прямой линией.",
+   "warning": "Одна сборка под 1.21.11 (1.0.0 от 29.04.2026), автор малоизвестный (84 подписчика). Чисто клиентский рендер — если что-то пойдёт не так, просто снимешь.",
+   "tags": [
+    "поводок",
+    "верёвка",
+    "физика"
+   ],
+   "client_only": true,
+   "server_needed": false,
+   "dl": 259643,
+   "updated": "",
+   "in_pack": false
+  },
+  {
+   "slug": "wdmgslt",
+   "title": "Why Does My Glass Sound Like That",
+   "ptype": "mod",
+   "category": "sound",
+   "tier": "nice",
+   "desc": "Убирает оглушительный звон битого стекла при добыче киркой с «Шёлковым касанием» — вместо него играет мягкий звук снятия целого блока. Клиентский, работает на любом сервере.",
+   "why": "Целое стекло физически не должно звучать как разбитое, и при твоей громкой звуковой сборке (Sound Physics + повышенный лимит источников) этот звук буквально бьёт по ушам при разборке теплицы или витражей.",
+   "warning": "",
+   "tags": [
+    "стекло",
+    "шёлковое касание",
+    "звуковой фикс"
+   ],
+   "client_only": true,
+   "server_needed": false,
+   "dl": 244471,
+   "updated": "",
+   "in_pack": false
+  },
+  {
+   "slug": "unwrecked-ships",
+   "title": "Unwrecked Ships",
+   "ptype": "mod",
+   "category": "structures",
+   "tier": "nice",
+   "desc": "Добавляет целые корабли — те же ванильные обломки, но собранные и на плаву, с парусами и фонарями. В расширенном варианте есть все сочетания дерева и цвета парусов, экипаж из жителей, пиллагеров или пиглинов и незерские корабли из адского дерева.",
+   "why": "Океан у тебя закрыт снизу (Ocean Monument Overhaul, Unnamed Sea), а поверхность пустая. Парус на горизонте — единственная вещь, ради которой имеет смысл плыть, а не лететь.",
+   "warning": "Это ещё один структурный мод поверх Towns and Towers, Structory и тех, что стоят у тебя без названия — следи за плотностью, при перегрузе ставь базовый вариант вместо Plus. Код не менялся с марта 2025, поддержка 1.21.11 проставлена автором в тот же файл.",
+   "tags": [
+    "океан",
+    "корабли",
+    "структуры"
+   ],
+   "client_only": false,
+   "server_needed": true,
+   "dl": 184780,
+   "updated": "",
+   "in_pack": false
+  },
+  {
+   "slug": "betterexpsounds",
+   "title": "Better Explosion Sounds",
+   "ptype": "resourcepack",
+   "category": "sound",
+   "tier": "nice",
+   "desc": "Ресурспак, заменяющий звуки взрывов — динамита, крипера, кристалла — на более низкие и объёмные, с раскатом вместо ванильного сухого хлопка.",
+   "why": "Ванильный взрыв звучит игрушечно и сильнее всего выбивается из твоего реалистичного звукового слоя; правка занимает секунду, эффект слышен сразу.",
+   "warning": "Описание у автора минимальное (174 тыс. загрузок при 17 подписчиках — пак старый и простой). Пересекается с Enhanced Audio, который тоже трогает взрывы: побеждает тот пак, что выше в списке, так что порядок задай сам.",
+   "tags": [
+    "взрывы",
+    "реалистичный звук",
+    "простая замена"
+   ],
+   "client_only": true,
+   "server_needed": false,
+   "dl": 174070,
+   "updated": "",
+   "in_pack": false
+  },
+  {
+   "slug": "tilt-break",
+   "title": "Tilt Break (Old Damage Tilting)",
+   "ptype": "mod",
+   "category": "animation",
+   "tier": "nice",
+   "desc": "Возвращает наклон камеры при получении урона в том виде, в каком он работал до 1.19.4 — с направлением. Камера кренится в сторону, откуда прилетело, а не просто дёргается на месте.",
+   "why": "Прямое попадание в «отдачу при ударе»: ты чувствуешь, откуда тебя бьют, до того как развернёшься. Camera Overhaul отвечает за наклоны от движения и не трогает урон, так что пересечения нет.",
+   "warning": "Последняя сборка 4.1fc от 02.01.2026 — мод маленький и законченный. Если тебя и так укачивает от Camera Overhaul, этот добавит тряски.",
+   "tags": [
+    "камера",
+    "урон",
+    "отдача"
+   ],
+   "client_only": true,
+   "server_needed": false,
+   "dl": 162715,
+   "updated": "",
+   "in_pack": false
+  },
+  {
+   "slug": "banner-bedsheets",
+   "title": "Banner Bedsheets",
+   "ptype": "mod",
+   "category": "build-deco",
+   "tier": "nice",
+   "desc": "Присел, приложил флаг к торцу кровати — и узор флага становится покрывалом. Приложишь с другого конца — рисунок ляжет в другую сторону. Снимается ломанием кровати. Сделано на display-энтити и ничего не считает каждый тик.",
+   "why": "Своё покрывало превращает кровать из предмета мебели в твою кровать, и наконец даёт применение баннерам, которые и так копятся в сундуке.",
+   "warning": "Автор сам рекомендует ставить датапак-версию, а не мод. При удалении покрывала остаются висеть энтити — сначала сломай кровати или прогони /function bannerbedsheets:removeall, иначе придётся чистить их вручную.",
+   "tags": [
+    "кровать",
+    "баннеры",
+    "спальня"
+   ],
+   "client_only": false,
+   "server_needed": true,
+   "dl": 128245,
+   "updated": "",
+   "in_pack": false
+  },
+  {
+   "slug": "notandvms-emissive-sculk",
+   "title": "notandvm's emissive sculk!",
+   "ptype": "resourcepack",
+   "category": "resourcepack",
+   "tier": "nice",
+   "desc": "Ресурспак добавляет эмиссивные слои всем скалк-блокам и предметам: скалк, сенсор и калиброванный сенсор, катализатор, шрикер, жилы, эхо-осколок, компас возвращения. Свечение рисуется поверх текстур и видно в полной темноте.",
+   "why": "Глубинная тьма — единственное место в игре с по-настоящему абсолютной темнотой, и там слабое свечение скалка становится единственным ориентиром. Это ровно тот контраст тьмы и тусклого света, ради которого туда и лезешь.",
+   "warning": "Требуется Continuity (есть в FO) или другой мод с поддержкой emissive-текстур. Пак делался под ванильные 16x-текстуры и ляжет поверх Patrix 32x — подними его выше Patrix в списке и проверь, не разъезжаются ли слои. Одна версия, январь 2026.",
+   "tags": [
+    "скалк",
+    "эмиссив",
+    "глубинная тьма"
+   ],
+   "client_only": true,
+   "server_needed": false,
+   "dl": 104163,
+   "updated": "",
+   "in_pack": false
+  },
+  {
+   "slug": "realistic-campfires",
+   "title": "Realistic Campfires",
+   "ptype": "mod",
+   "category": "survival",
+   "tier": "nice",
+   "desc": "Поставленный костёр по умолчанию не горит. Чтобы разжечь, нужно правым кликом вложить в него бревно, потом поджечь кремнём и огнивом, а дальше подкидывать топливо, иначе он потухнет.",
+   "why": "Totally Lit уже отвечает за выгорающие факелы, но костёр — база лагеря, и сейчас он вечный. Мод достраивает ту же логику: свет и тепло требуют ухода.",
+   "warning": "У автора есть парный Realistic Torches — с Totally Lit его брать не надо, они про одно и то же. В связке с Frostiful и Scorchful потухший ночью костёр становится реальной проблемой, так что зима ощутимо тяжелеет. Нужен на клиенте и сервере.",
+   "tags": [
+    "костры",
+    "топливо",
+    "усложнение"
+   ],
+   "client_only": false,
+   "server_needed": true,
+   "dl": 77243,
+   "updated": "",
+   "in_pack": false
+  },
+  {
+   "slug": "pretty-beaches",
+   "title": "Pretty Beaches",
+   "ptype": "mod",
+   "category": "qol",
+   "tier": "nice",
+   "desc": "Когда копаешь песок у воды, на месте блока сразу появляется источник воды, а не текущий поток, и вода заливает соседние ямы. Больше никаких висящих струй, которые тащат тебя течением, и уродливых котлованов на берегу после добычи песка.",
+   "why": "Это ровно то «естественное удобство» в духе TreeCapitator: ты не получаешь ничего сверх, мир просто перестаёт ломаться от того, что ты взял два блока песка.",
+   "warning": "Требует Balm. Мод создаёт воду из ничего — с Flowing Fluids или с PhysEx, где вода конечна, это прямое противоречие логике, вместе не ставь.",
+   "tags": [
+    "берег",
+    "вода",
+    "удобство"
+   ],
+   "client_only": false,
+   "server_needed": true,
+   "dl": 64040,
+   "updated": "",
+   "in_pack": false
+  },
+  {
+   "slug": "unlit-campfire",
+   "title": "Unlit Campfire",
+   "ptype": "mod",
+   "category": "survival",
+   "tier": "nice",
+   "desc": "Костры и душевые костры теперь ставятся потухшими. Чтобы разжечь, нужно кресало или другой источник огня — поджиг становится отдельным действием, а не свойством блока.",
+   "why": "Та же логика, что тебе нравится в Totally Lit: свет — это решение и ресурс, а не бесплатный побочный эффект установки блока. Заодно костёр можно ставить как декор, не поджигая себе руки и всё вокруг.",
+   "warning": "Нужен на клиенте и сервере, тянет Cloth Config (уже есть в Fabulously Optimized). Файл под 1.21.11 — от декабря 2025, проект живой. На раннем этапе это дополнительный расход железа и кремня на кресало.",
+   "tags": [
+    "костёр",
+    "кресало",
+    "реализм"
+   ],
+   "client_only": false,
+   "server_needed": true,
+   "dl": 51781,
+   "updated": "",
+   "in_pack": false
+  },
+  {
+   "slug": "wet-sand",
+   "title": "Wet sand",
+   "ptype": "mod",
+   "category": "world",
+   "tier": "nice",
+   "desc": "Песок и красный песок рядом с водой постепенно намокают — до трёх степеней влажности, из-за чего у берега сам собой появляется градиент от тёмного мокрого к сухому. Мокрый песок не падает под собственным весом и достаточно влажный, чтобы на нём рос тростник без воды рядом. Высушить обратно можно пустой бутылкой, по одной стадии за раз.",
+   "why": "Пляжи — одно из самых «плоских» мест в ванили, а у тебя стоят Wakes, Puddles & Floods и Particle Rain: вода в сборке уже живая, а берег под ней — нет. Здесь линия прибоя проявляется сама и меняется вместе с уровнем воды.",
+   "warning": "Под 1.21.11 идёт только beta-сборка 0.0.2-1.21.9 от октября 2025 (автор дальше ушёл в 26.x) — обкатай на копии мира. Мокрый песок — новые блоки, у Patrix 32x на них PBR-текстур не будет, будут ванильные. Порт на Forge/NeoForge автор не планирует.",
+   "tags": [
+    "пляж",
+    "вода",
+    "градиент"
+   ],
+   "client_only": false,
+   "server_needed": true,
+   "dl": 44753,
+   "updated": "",
+   "in_pack": false
+  },
+  {
+   "slug": "nemos-night-progression",
+   "title": "Nemo's Night Progression",
+   "ptype": "mod",
+   "category": "survival",
+   "tier": "nice",
+   "desc": "Сон перестаёт быть телепортом во времени: пропущенные часы реально симулируются — печи доплавляют содержимое, посевы и деревья подрастают ровно на столько, сколько ты проспал. Работает на стороне сервера, клиенту ставить не нужно.",
+   "why": "Если ты растягиваешь ночь через Custom Time Cycle, ванильный сон превращается в кнопку «стереть восемь часов из мира». Здесь ночь остаётся частью суток, даже когда ты её проспал.",
+   "warning": "Файл под 1.21.11 от декабря 2025, проект обновлялся в августе 2026, 49 подписчиков. Это заметное послабление: ферма и печи работают, пока ты спишь. Если ты хочешь, чтобы сон именно стоил тебе времени, мод работает против такой задумки.",
+   "tags": [
+    "сон",
+    "время",
+    "реализм"
+   ],
+   "client_only": false,
+   "server_needed": true,
+   "dl": 40967,
+   "updated": "",
+   "in_pack": false
+  },
+  {
+   "slug": "lectern-overhaul",
+   "title": "Lectern Overhaul",
+   "ptype": "mod",
+   "category": "build-deco",
+   "tier": "nice",
+   "desc": "Переделывает кафедру: если положить книгу с зажатым шифтом, стандартное окно чтения исчезает, а текст отображается прямо над кафедрой, с анимацией открытия и переворота страниц. Положишь книгу обычным способом — кафедра работает как в ванили.",
+   "why": "Диегетичная замена GUI: читаешь стоя у кафедры, а не в интерфейсе поверх экрана. Для кабинета, библиотеки или записок в доме разница ощутимая.",
+   "warning": "Распространяется и как мод, и как датапак; в варианте датапака обязательно включить приложенный ресурспак, иначе анимаций не будет. 36 тыс. загрузок — проект небольшой, обновлён в апреле 2026.",
+   "tags": [
+    "кафедра",
+    "чтение",
+    "без-GUI"
+   ],
+   "client_only": false,
+   "server_needed": true,
+   "dl": 36374,
+   "updated": "",
+   "in_pack": false
+  },
+  {
+   "slug": "tools-on-my-back",
+   "title": "Tools On My Back (TOMB)",
+   "ptype": "mod",
+   "category": "visual-fx",
+   "tier": "nice",
+   "desc": "Последний использованный инструмент вешается на спину игрока: кирка, топор, меч видны на модели, а не исчезают в инвентаре. Есть встроенный редактор позиции и углов для конкретных предметов и обмен профилями настроек.",
+   "why": "Снаряжение на теле — недостающий кусок телесности: сейчас у персонажа руки пустые в ту же секунду, когда ты переключил слот. Хорошо ложится на Flashback и третье лицо.",
+   "warning": "Аудитория небольшая (30 тыс. загрузок, 131 подписчик), хотя обновляется активно — сборка под 1.21.11 от 03.08.2026. Себя ты увидишь в основном в третьем лице и в записях; на других игроков в одиночке эффекта нет.",
+   "tags": [
+    "снаряжение",
+    "спина",
+    "третье лицо"
+   ],
+   "client_only": true,
+   "server_needed": false,
+   "dl": 30071,
+   "updated": "",
+   "in_pack": true
+  },
+  {
+   "slug": "angled-particles",
+   "title": "Angled Particles",
+   "ptype": "mod",
+   "category": "visual-fx",
+   "tier": "nice",
+   "desc": "Меняет то, как частицы и ники разворачиваются к камере: вместо ванильного «перпендикулярно направлению взгляда» они честно поворачиваются к точке камеры, как в Bedrock. Разница видна на любом крупном облаке частиц, оказавшемся сбоку от центра экрана.",
+   "why": "У тебя очень много партикл-модов — Subtle Effects, Particular, Particle Rain, Wakes, Falling Leaves, Puddles & Floods. Этот мод чинит перекос у всех них разом на уровне рендера, а не по одному.",
+   "warning": "Заодно меняет ориентацию ников — если привык к ванильному поведению табличек над мобами, глянь сначала. Зависимостей нет, одна версия от февраля 2026, 35 подписчиков.",
+   "tags": [
+    "частицы",
+    "рендер",
+    "bedrock"
+   ],
+   "client_only": true,
+   "server_needed": false,
+   "dl": 27136,
+   "updated": "",
+   "in_pack": false
+  },
+  {
+   "slug": "more-leaf-particles",
+   "title": "More Leaf Particles",
+   "ptype": "mod",
+   "category": "visual-fx",
+   "tier": "nice",
+   "desc": "Частица, изредка падающая с листвы, получает свою текстуру для каждого типа листьев: ель роняет хвою, берёза — берёзовые листья, азалия — листья и лепестки, у джунглей частица крупнее. Размер, гравитация, сила ветра и снос от источника настраиваются.",
+   "why": "Falling Leaves у тебя уже роняет листву, но одной ванильной текстурой — в еловом лесу с неба сыплются дубовые листья, и это видно.",
+   "warning": "Оба мода спавнят листву: вместе плотность может стать избыточной, тогда срежь частоту в Falling Leaves. Конфиг требует YACL и Mod Menu — оба есть в Fabulously Optimized.",
+   "tags": [
+    "листва",
+    "частицы",
+    "лес"
+   ],
+   "client_only": true,
+   "server_needed": false,
+   "dl": 18032,
+   "updated": "",
+   "in_pack": false
+  },
+  {
+   "slug": "realistic-farmland",
+   "title": "Realistic Farmland",
+   "ptype": "mod",
+   "category": "farm-food",
+   "tier": "nice",
+   "desc": "Грядка перестаёт быть вечно влажной от одного блока воды. Земля потребляет соседний источник воды, влага расходуется и растекается по соседним грядкам, перераспределяясь по площади. Полить можно ведром прямо на грядку или на растение, дождь тоже увлажняет. Без посаженного растения сверху грядка медленно пересыхает. Скорость роста самих культур мод не меняет.",
+   "why": "Единственная механика в ванили, где вода что-то значит, — это косметика. Здесь ферма начинает требовать нормального орошения и планировки, что укладывается в «сложнее и опаснее» без искусственных штрафов.",
+   "warning": "Последнее обновление 30.09.2025, версия называется 1.1+1.21.9, но 1.21.11 в поддерживаемых заявлена явно — мод просто не требовал правок. Клиентская часть опциональна и нужна только чтобы визуально видеть уровень влаги. С Serene Seasons и Farmer's Delight Refabricated прямых конфликтов не заявлено, но связку стоит проверить на тестовом мире.",
+   "tags": [
+    "орошение",
+    "влага",
+    "ферма"
+   ],
+   "client_only": false,
+   "server_needed": true,
+   "dl": 15607,
+   "updated": "",
+   "in_pack": false
+  },
+  {
+   "slug": "simple-structures-caves",
+   "title": "Simple Structures: Caves",
+   "ptype": "mod",
+   "category": "structures",
+   "tier": "nice",
+   "desc": "34 небольшие структуры внутри обычных пещер: укрытия, привалы, мини-подземелья, собранные из ванильных блоков. Заявлена интеграция с ванильными биомами, Terralith и Biomes O' Plenty. Версия 1.2 вышла 19 августа 2026.",
+   "why": "Все твои структурные моды — Structory, Towns and Towers, Dungeons and Taverns, Explorify — работают на поверхности. Пещеры остаются пустыми, а с More Darkness ты сидишь в них подолгу.",
+   "warning": "У тебя уже стоит неизвестный набор структурных модов, риск наложения есть всегда, хотя подземные структуры дерутся за место реже наземных. Старые версии 1.0 помечены alpha — ставь именно 1.2 (release).",
+   "tags": [
+    "пещеры",
+    "мини-подземелья",
+    "ванильный стиль"
+   ],
+   "client_only": false,
+   "server_needed": true,
+   "dl": 11476,
+   "updated": "",
+   "in_pack": false
+  },
+  {
+   "slug": "trample-everything",
+   "title": "Trample Everything",
+   "ptype": "mod",
+   "category": "world",
+   "tier": "nice",
+   "desc": "Расширяет ванильную механику вытаптывания посевов на всю растительность: цветы, высокая трава, папоротники, саженцы, мёртвые кусты, грибы, незеровые ростки и корни, стебли тыквы и арбуза, морские огурцы. По умолчанию вытоптанный блок выпадает предметом, а приседание вытаптывание отменяет. Снег, бамбуковые ростки, кувшинки, водоросли, тростник и сладкие ягоды по умолчанию не трогаются, но включаются в конфиге.",
+   "why": "Вторая половина той же идеи, что и Tracks: не только земля под ногами стирается, но и трава с цветами. Проход через луг оставляет за собой реальный след, а не восстанавливается за тобой сам.",
+   "warning": "В связке с Tracks эффект складывается — маршруты станут очень заметными, возможно захочешь поднять пороги. Приседание спасает грядки, но пару раз ты всё равно затопчешь свои посевы по невнимательности; вытаптывание посевов отключается отдельным флагом. Серверная сторона.",
+   "tags": [
+    "вытаптывание",
+    "растительность",
+    "следы"
+   ],
+   "client_only": false,
+   "server_needed": true,
+   "dl": 5245,
+   "updated": "",
+   "in_pack": false
+  },
+  {
+   "slug": "natural-sizes",
+   "title": "Natural Sizes",
+   "ptype": "mod",
+   "category": "mobs",
+   "tier": "nice",
+   "desc": "Каждый заспавненный моб получает слегка случайный размер в пределах настраиваемого диапазона. Никакого нового контента — только разброс масштаба, лимиты правятся в конфиге.",
+   "why": "Стадо коров, одинаковых до пикселя, — самая заметная компьютерность ванильного мира. Это дешёвый способ её сломать, и он не трогает ни модели, ни ИИ, значит безопасен рядом с Fresh Animations и Variants&Ventures.",
+   "warning": "Серверная часть, на клиенте не требуется. Работает через масштаб, поэтому с EMF и FA не спорит, но если поставишь мод, который сам задаёт размеры мобов, диапазон лучше сузить. Под 1.21.11 всего два файла, обновляется редко.",
+   "tags": [
+    "размеры мобов",
+    "разброс",
+    "серверный"
+   ],
+   "client_only": false,
+   "server_needed": true,
+   "dl": 4989,
+   "updated": "",
+   "in_pack": false
+  },
+  {
+   "slug": "better-campfires-3d-logs-cozy-crackle",
+   "title": "Better Campfires: 3D Logs + Cozy Crackle",
+   "ptype": "resourcepack",
+   "category": "sound",
+   "tier": "nice",
+   "desc": "Ресурспак: заменяет звук костра на плотное потрескивание вместо ванильного шипения, даёт 3D-модель поленьев с нормальными пропорциями, сажает готовящуюся еду прямо на брёвна вместо парения в воздухе и приглушает дым.",
+   "why": "Костёр — главный якорь лагеря, а в ваниле он звучит как утечка пара; вместе с Comforts и Totally Lit это заметно чинит атмосферу привала, и звук ловится Sound Physics как обычный источник.",
+   "warning": "Меняет ещё модель и текстуру костра, то есть конкурирует с Patrix 32x — реши осознанно, кто выше в списке паков, иначе получишь 16x-костёр посреди 32x-мира. Обновлялся один раз, 05.01.2026.",
+   "tags": [
+    "костёр",
+    "потрескивание",
+    "3D-модель"
+   ],
+   "client_only": true,
+   "server_needed": false,
+   "dl": 3563,
+   "updated": "",
+   "in_pack": false
   },
   {
    "slug": "mining_and_placing_animations",
@@ -2826,7 +4552,28 @@
    "client_only": true,
    "server_needed": false,
    "dl": 116204,
-   "updated": "2026-05-02"
+   "updated": "2026-05-02",
+   "in_pack": true
+  },
+  {
+   "slug": "player-death-corpses",
+   "title": "Player Corpses",
+   "ptype": "mod",
+   "category": "survival",
+   "tier": "nice",
+   "desc": "На месте гибели остаётся твоё тело с твоим скином и всем содержимым инвентаря. Не горит, не тонет, не деспавнится — за вещами надо вернуться туда, где ты умер.",
+   "why": "Смерть в каталоге не представлена никак: ты просто теряешь всё за пять минут где-то в лаве, и это обрывает историю, а не продолжает её. Мод превращает гибель в поход обратно — тело в снегу, риск умереть второй раз по дороге. Ровно тот тип естественного удобства, за который ты держишь TreeCapitator.",
+   "warning": "Смягчает наказание за смерть: если хочешь именно жёсткое выживание, включи таймер или плату за подъём тела. Знаменитый Corpse от henkelmax тебе не подойдёт — он только под Forge/NeoForge, этот же собран под Fabric.",
+   "tags": [
+    "смерть",
+    "инвентарь",
+    "возвращение"
+   ],
+   "client_only": false,
+   "server_needed": true,
+   "dl": 57265,
+   "updated": "2026-07-12",
+   "in_pack": true
   },
   {
    "slug": "realistic-wildlife",
@@ -2845,7 +4592,8 @@
    "client_only": false,
    "server_needed": true,
    "dl": 1285,
-   "updated": "2026-04-25"
+   "updated": "2026-04-25",
+   "in_pack": true
   },
   {
    "slug": "shippy-ships",
@@ -2864,7 +4612,8 @@
    "client_only": false,
    "server_needed": true,
    "dl": 44360,
-   "updated": "2026-08-06"
+   "updated": "2026-08-06",
+   "in_pack": false
   },
   {
    "slug": "glowing-torchflower",
@@ -2882,7 +4631,8 @@
    "client_only": false,
    "server_needed": true,
    "dl": 2548597,
-   "updated": "2026-08-16"
+   "updated": "2026-08-16",
+   "in_pack": true
   },
   {
    "slug": "tough-as-nails",
@@ -2901,7 +4651,8 @@
    "client_only": false,
    "server_needed": true,
    "dl": 1869538,
-   "updated": "2026-07-28"
+   "updated": "2026-07-28",
+   "in_pack": false
   },
   {
    "slug": "alpha-piscium",
@@ -2920,7 +4671,8 @@
    "client_only": true,
    "server_needed": false,
    "dl": 254612,
-   "updated": "2026-08-15"
+   "updated": "2026-08-15",
+   "in_pack": false
   },
   {
    "slug": "noweatherskip",
@@ -2938,7 +4690,8 @@
    "client_only": false,
    "server_needed": true,
    "dl": 19394,
-   "updated": "2026-06-22"
+   "updated": "2026-06-22",
+   "in_pack": false
   },
   {
    "slug": "biome-strongholds",
@@ -2957,7 +4710,8 @@
    "client_only": false,
    "server_needed": true,
    "dl": 24065,
-   "updated": "2026-07-17"
+   "updated": "2026-07-17",
+   "in_pack": false
   },
   {
    "slug": "clangor",
@@ -2976,7 +4730,8 @@
    "client_only": true,
    "server_needed": false,
    "dl": 10272,
-   "updated": "2026-07-07"
+   "updated": "2026-07-07",
+   "in_pack": false
   },
   {
    "slug": "esf",
@@ -2995,7 +4750,8 @@
    "client_only": true,
    "server_needed": false,
    "dl": 2459087,
-   "updated": "2026-05-07"
+   "updated": "2026-05-07",
+   "in_pack": false
   },
   {
    "slug": "modernarch",
@@ -3014,7 +4770,8 @@
    "client_only": true,
    "server_needed": false,
    "dl": 694830,
-   "updated": "2026-08-19"
+   "updated": "2026-08-19",
+   "in_pack": false
   },
   {
    "slug": "natural-temperature",
@@ -3033,7 +4790,8 @@
    "client_only": false,
    "server_needed": true,
    "dl": 65887,
-   "updated": "2026-08-16"
+   "updated": "2026-08-16",
+   "in_pack": false
   },
   {
    "slug": "roadweaver",
@@ -3052,7 +4810,8 @@
    "client_only": false,
    "server_needed": true,
    "dl": 572287,
-   "updated": "2026-08-02"
+   "updated": "2026-08-02",
+   "in_pack": false
   },
   {
    "slug": "thfa",
@@ -3071,7 +4830,8 @@
    "client_only": true,
    "server_needed": false,
    "dl": 75186,
-   "updated": "2026-06-25"
+   "updated": "2026-06-25",
+   "in_pack": false
   },
   {
    "slug": "voxy-fog-addon",
@@ -3090,7 +4850,8 @@
    "client_only": true,
    "server_needed": false,
    "dl": 10940,
-   "updated": "2026-03-30"
+   "updated": "2026-03-30",
+   "in_pack": true
   },
   {
    "slug": "wavify",
@@ -3109,7 +4870,168 @@
    "client_only": true,
    "server_needed": false,
    "dl": 43590,
-   "updated": "2026-08-14"
+   "updated": "2026-08-14",
+   "in_pack": false
+  },
+  {
+   "slug": "nicer-skies",
+   "title": "Nicer Skies",
+   "ptype": "mod",
+   "category": "visual-fx",
+   "tier": "situational",
+   "desc": "Клиентский мод рисует процедурное ночное небо: звёзды мерцают и слегка отличаются по цвету, а туманности генерируются в рантайме по сиду мира. Всё настраивается через Mod Menu — плотность, яркость, наличие туманностей.",
+   "why": "Ночное небо в ваниле — статичная сетка одинаковых белых точек. Мерцание и разброс по цвету дают тот эффект, ради которого имеет смысл просто постоять на холме и посмотреть вверх.",
+   "warning": "Из шейдеров работает ТОЛЬКО с Complementary Reimagined — под Photon и остальными эффекта не будет. Прямо пересекается с уже стоящим Hyper Realistic Sky: включай что-то одно. Туманности по умолчанию яркие и уводят картинку в космос — под реализм их надо приглушить в конфиге.",
+   "tags": [
+    "звёзды",
+    "ночное небо",
+    "мерцание"
+   ],
+   "client_only": true,
+   "server_needed": false,
+   "dl": 4288935,
+   "updated": "",
+   "in_pack": false
+  },
+  {
+   "slug": "natural-motion-blur",
+   "title": "Natural Motion Blur",
+   "ptype": "mod",
+   "category": "visual-fx",
+   "tier": "situational",
+   "desc": "Смазывание в движении, построенное не на дешёвом наложении кадров, а на скорости пикселей: есть режимы velocity-based, frame blending и гибрид, плюс привязка силы к текущему FPS и герцовке монитора. Настройка через /mb, сила по умолчанию 1.",
+   "why": "Единственное, что достраивает ощущение инерции движения на уровне глаза, а не тела: при резком развороте мир перестаёт «стробить» дискретными кадрами.",
+   "warning": "Complementary Reimagined/Unbound и Photon умеют motion blur сами — включать одновременно нельзя, получишь кашу; выбери, где его считать. Стоит кадров, и часть людей от motion blur укачивает. Ставь последним и проверяй отдельно от остальных изменений.",
+   "tags": [
+    "motion blur",
+    "инерция",
+    "шейдеры"
+   ],
+   "client_only": true,
+   "server_needed": false,
+   "dl": 833437,
+   "updated": "",
+   "in_pack": false
+  },
+  {
+   "slug": "flowing-fluids",
+   "title": "Flowing Fluids",
+   "ptype": "mod",
+   "category": "world",
+   "tier": "situational",
+   "desc": "Вода и лава становятся почти конечными и текут по настоящей физике: уровень падает, потоки стекают по рельефу и растекаются, источник можно вычерпать. Десятки настроек отдельно под производительность, поведение потока, геймплей и визуал.",
+   "why": "Это самое крупное изменение реализма, которое в сборке ещё не закрыто ничем: ландшафт начинает работать как ландшафт, а не как бесконечный резервуар. Прямо в тему запроса на более сложное выживание.",
+   "warning": "Ломает фундаментальные вещи — бесконечные источники воды, автофермы на воде, привычный водный клатч. Это дополнительная нагрузка на тик рядом с Voxy и мод-структурами. Ставь отдельно от остальных изменений и на новом мире, чтобы честно понять, нравится ли.",
+   "tags": [
+    "конечная вода",
+    "физика жидкостей",
+    "хардкор"
+   ],
+   "client_only": false,
+   "server_needed": true,
+   "dl": 192526,
+   "updated": "",
+   "in_pack": false
+  },
+  {
+   "slug": "realistic-rowing",
+   "title": "Realistic Rowing",
+   "ptype": "mod",
+   "category": "transport",
+   "tier": "situational",
+   "desc": "Разворачивает игрока в лодке спиной по ходу движения — как в настоящей гребной лодке — и подтягивает вёсла к кистям, чтобы они реально были в руках, а не висели рядом. Заодно правит посадку модели в лодке, в том числе с пассажирами и в лодке-сундуке.",
+   "why": "Единственное на Modrinth, что вообще работает с темой вёсел; для сплава по реке это даёт больше присутствия, чем любой звуковой патч.",
+   "warning": "Плыть спиной вперёд поначалу дезориентирует — многие включают только для неспешных сплавов. Возможен визуальный конфликт с твоим модом «тело от первого лица» и с Boat Item View. В мультиплеере игроки без мода увидят твою голову вывернутой (автор сам это описывает). Версия 1.1.2+1.21.11 от 11.12.2025.",
+   "tags": [
+    "лодка",
+    "вёсла",
+    "обзор назад"
+   ],
+   "client_only": true,
+   "server_needed": false,
+   "dl": 39022,
+   "updated": "",
+   "in_pack": false
+  },
+  {
+   "slug": "resonance-ambiance",
+   "title": "Resonance",
+   "ptype": "mod",
+   "category": "sound",
+   "tier": "situational",
+   "desc": "Ambience-мод другого устройства: вместо одного лупа на биом он смешивает базовый фоновый слой с точечными звуками по условиям — время суток, соседние блоки, погода, сезон (читает Serene Seasons). Дополнительно проигрывает разный гром в зависимости от расстояния до молнии.",
+   "why": "Если базовый ambience-мод кажется плоским — один и тот же луп на весь биом, — это прямая замена с привязкой к сезонам, а Serene Seasons у тебя уже стоит.",
+   "warning": "Прямой функциональный дубль твоего уже установленного ambience-мода — ставить строго ВМЕСТО него, не вместе, иначе фон наложится в два слоя. Гром по расстоянию пересекается с ImmersiveThunder: Reforged — одно из двух надо отключить. Статус beta (v0.1.1), последнее обновление 14.12.2025.",
+   "tags": [
+    "ambience",
+    "Serene Seasons",
+    "замена, не дополнение"
+   ],
+   "client_only": true,
+   "server_needed": false,
+   "dl": 34077,
+   "updated": "",
+   "in_pack": false
+  },
+  {
+   "slug": "ohmymeteors",
+   "title": "Oh My, Meteors!",
+   "ptype": "mod",
+   "category": "world",
+   "tier": "situational",
+   "desc": "Время от времени с неба падают метеориты: видимый след, удар, взрыв и кратер с ресурсами на месте падения. Частота, сила разрушений, содержимое кратера и привязка ко времени суток настраиваются — можно оставить только ночные падения и полностью отключить урон рельефу.",
+   "why": "Падающая звезда, которая реально куда-то падает и оставляет след, — редкий случай, когда ночное небо становится событием, а не фоном. Настройками мод ужимается до «раз в несколько ночей, без разрушений», и это уже чистая атмосфера.",
+   "warning": "Нужен на клиенте и сервере. Из коробки есть крафт лазера для отстрела метеоров и «милое» содержимое некоторых кратеров — выбивается из реализма, но отключается в конфиге. Взрывы по умолчанию рвут рельеф: с Tectonic, Terralith и мод-структурами разрушения лучше выключить сразу.",
+   "tags": [
+    "метеоры",
+    "ночь",
+    "событие"
+   ],
+   "client_only": false,
+   "server_needed": true,
+   "dl": 33996,
+   "updated": "",
+   "in_pack": false
+  },
+  {
+   "slug": "snow-accumulation",
+   "title": "Snow Accumulation",
+   "ptype": "mod",
+   "category": "world",
+   "tier": "situational",
+   "desc": "Во время снега или дождя в холодных биомах снежные слои растут поверх уже лежащих — до 16 слоёв по умолчанию (настраивается вплоть до высоты мира). Обрабатывается радиус вокруг игрока (по умолчанию 8 чанков), скорость накопления, число блоков на чанк и чанков за тик — всё это отдельные параметры для баланса нагрузки. Конфиг перечитывается на лету, без перезапуска.",
+   "why": "У тебя Frostiful, Serene Seasons, More Darkness и Snow Under Trees — зима есть, но она статична: один слой снега и всё. Здесь длинная метель реально заносит ландшафт и твои постройки, и зимовка становится событием.",
+   "warning": "12 подписчиков, конфиг в txt, описание на странице до сих пор про 1.12.2/Forge (билд под 1.21.11 Fabric свежий, март 2026). Снег заносит и тропинки, и стройку — это может конфликтовать по ощущениям с Tracks. Сначала проверь связку с Serene Seasons / Season Cache, которые сами управляют снегом и льдом; параметры blocksPerChunk и chunksPerTick держи низкими.",
+   "tags": [
+    "снег",
+    "метель",
+    "накопление"
+   ],
+   "client_only": false,
+   "server_needed": true,
+   "dl": 2776,
+   "updated": "",
+   "in_pack": false
+  },
+  {
+   "slug": "thinner-air",
+   "title": "Thinner Air",
+   "ptype": "mod",
+   "category": "survival",
+   "tier": "situational",
+   "desc": "Воздух перестаёт быть одинаковым везде: в глубоких пещерах и высоко в горах им тяжело дышать, в Незере он ядовит, в Энде его нет вообще. Спасают респиратор (чинится углём), баллоны с воздухом (перезаправляются в нормальной атмосфере), зелье свободного дыхания и Conduit Power. Огонь душ и светильники на нём очищают воздух вокруг.",
+   "why": "Это буквально разреженный воздух на высоте и духота в глубине — ниша, которую у тебя не закрывает ничего: Bottled Air про воду, Frostiful и Scorchful про температуру.",
+   "warning": "Всего 2,6 тыс. загрузок и 26 подписчиков — это продолжение заброшенного Thin Air от Fuzs, аудитория крошечная. Требует Trinkets Updated, довольно инвазивную систему слотов аксессуаров. И это четвёртый счётчик выживания поверх Tough As Nails, Frostiful и Scorchful — вместе может стать душно в прямом смысле, включай осознанно.",
+   "tags": [
+    "высота",
+    "дыхание",
+    "хардкор"
+   ],
+   "client_only": false,
+   "server_needed": true,
+   "dl": 2620,
+   "updated": "",
+   "in_pack": false
   },
   {
    "slug": "physex_reborn",
@@ -3128,7 +5050,8 @@
    "client_only": false,
    "server_needed": true,
    "dl": 35589,
-   "updated": "2026-08-17"
+   "updated": "2026-08-17",
+   "in_pack": false
   },
   {
    "slug": "elis-immersive-navigation",
@@ -3147,7 +5070,8 @@
    "client_only": false,
    "server_needed": true,
    "dl": 577,
-   "updated": "2025-12-26"
+   "updated": "2025-12-26",
+   "in_pack": false
   },
   {
    "slug": "mobs-love-darkness",
@@ -3166,7 +5090,8 @@
    "client_only": false,
    "server_needed": true,
    "dl": 481,
-   "updated": "2026-05-28"
+   "updated": "2026-05-28",
+   "in_pack": false
   }
  ]
 }
