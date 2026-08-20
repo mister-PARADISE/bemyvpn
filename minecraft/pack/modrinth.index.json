@@ -1311,21 +1311,6 @@
    "fileSize": 92635
   },
   {
-   "path": "mods/mining_and_placing_animations-fabric-2.0.0.jar",
-   "hashes": {
-    "sha1": "2078c527f98001705d5448fcb82df25b7352c29e",
-    "sha512": "115fc75a7c0766ee4428b8720f65133542490121258fc11d6d00a36ddbb661531ea2a014b10bb395b9552e0e5592e6fd6f2ca86fea971edc19c5609cf556f72d"
-   },
-   "env": {
-    "client": "required",
-    "server": "unsupported"
-   },
-   "downloads": [
-    "https://cdn.modrinth.com/data/LKVZxR8L/versions/8dnWB7n0/mining_and_placing_animations-fabric-2.0.0.jar"
-   ],
-   "fileSize": 153240
-  },
-  {
    "path": "mods/tectonic-3.0.19-fabric-1.21.11.jar",
    "hashes": {
     "sha1": "ab0ad94c096070d36a050ec2ad56f0525d280d8c",
@@ -1474,21 +1459,6 @@
     "https://cdn.modrinth.com/data/tPLE214j/versions/J9YqBuRw/betterdays-1.21.11-fabric-3.3.6.3-FABRIC.jar"
    ],
    "fileSize": 983288
-  },
-  {
-   "path": "mods/even-better-moon-sun-1.6.jar",
-   "hashes": {
-    "sha1": "a184ae2eb7cb3301793ecccc34517f49497f6066",
-    "sha512": "26f5cda3d853645a298016dc28d88c800d07206be62873b558c0c7b8bda02c262bbef9258e425e154faaaf0fe5fcd38a0853a4ebd584d218224949b119a80afe"
-   },
-   "env": {
-    "client": "required",
-    "server": "unsupported"
-   },
-   "downloads": [
-    "https://cdn.modrinth.com/data/IF84SmZ4/versions/ZcszMWJC/even-better-moon-sun-1.6.jar"
-   ],
-   "fileSize": 21512
   },
   {
    "path": "mods/spyglass_astronomy-1.0.20-mc1.21.11.jar",
@@ -2541,21 +2511,6 @@
    "fileSize": 28233
   },
   {
-   "path": "mods/bettersmoke-0.1.2+1.21.9-1.21.11.jar",
-   "hashes": {
-    "sha1": "d0abb998d86af93a25f62f0d70d4047e3a963f00",
-    "sha512": "67bbc8961ae017ced6be3d1664abedb671b92977b44dfe96cd0c4610d9ed15bf96dd7af82068e23b4f6020f2e7f05780d3a7bc10284fc5733e338f0508de1f6d"
-   },
-   "env": {
-    "client": "required",
-    "server": "unsupported"
-   },
-   "downloads": [
-    "https://cdn.modrinth.com/data/Effrh3ze/versions/5L5AGmzz/bettersmoke-0.1.2%2B1.21.9-1.21.11.jar"
-   ],
-   "fileSize": 237396
-  },
-  {
    "path": "mods/walllanterns-3.1.2.jar",
    "hashes": {
     "sha1": "1786e389d100fb70d5815887a9f3aa502a523271",
@@ -2676,21 +2631,6 @@
    "fileSize": 42920
   },
   {
-   "path": "mods/better-dogs-1.0.16+1.21.11.jar",
-   "hashes": {
-    "sha1": "9ce40e574042aa80ed504da09eeb7c949784cc70",
-    "sha512": "08d20e4db24d3683b94d3f744b57667f4473e9cf6bdbe330d8d9b874396bfe669ee3811d6a6fa3c75f3f96a86e4c3e51d5e4d544935bd627b4cdc7fc75f56d3e"
-   },
-   "env": {
-    "client": "required",
-    "server": "required"
-   },
-   "downloads": [
-    "https://cdn.modrinth.com/data/e7H8SUmG/versions/8qu2XkmE/better-dogs-1.0.16%2B1.21.11.jar"
-   ],
-   "fileSize": 333082
-  },
-  {
    "path": "mods/Fractal Lightning-1.0.1-MC1.21.11.jar",
    "hashes": {
     "sha1": "c69dd72087c60f675b9368da096c1ecc34341647",
@@ -2704,21 +2644,6 @@
     "https://cdn.modrinth.com/data/VWGDEfBo/versions/Ws35PjbH/Fractal%20Lightning-1.0.1-MC1.21.11.jar"
    ],
    "fileSize": 48631
-  },
-  {
-   "path": "mods/hear_the_wind-0.2.0+1.21.11-fabric.jar",
-   "hashes": {
-    "sha1": "8a597192593e2eda552eb6e777c6b0442d6821a6",
-    "sha512": "79fc5faa876821aa723d94cf1c613ccc06f0185d5e78fd38b1aa19c2f2d96523fcf9dae11ce109af92a79e071e842a66b22d1d61b71980aab29e0825cb4b2a3d"
-   },
-   "env": {
-    "client": "required",
-    "server": "unsupported"
-   },
-   "downloads": [
-    "https://cdn.modrinth.com/data/VXq8DhOP/versions/oo9E0LGc/hear_the_wind-0.2.0%2B1.21.11-fabric.jar"
-   ],
-   "fileSize": 965555
   },
   {
    "path": "mods/tools-on-my-back-1.1.0+1.21.11+fabric.jar",
@@ -2736,19 +2661,19 @@
    "fileSize": 106772
   },
   {
-   "path": "mods/punchy-2.7c-fabric-1.21.11.jar",
+   "path": "mods/punchy-2.7d-fabric-1.21.11.jar",
    "hashes": {
-    "sha1": "f9812e9f91f3bd9361438fafe9caa4d3c95ed84e",
-    "sha512": "b3c073aeb0d3e8da48c5c3c3f512079d9a47e0c72e58088ca02a952465650091e9b90557746a0e40a45744593834b2989d36d6310be86e5bf42bd912c09bf92c"
+    "sha1": "1d5c4102f0c55239a4244560f710a01979402400",
+    "sha512": "6f0c307f77ca073583e1dbeff0352805b3469de8fc8b0b982de5e1a49549df5f41042a297d54f0763b02176414e63fea181984e02dd5fcaaaefbc6f2f1ed93ba"
    },
    "env": {
     "client": "required",
     "server": "unsupported"
    },
    "downloads": [
-    "https://cdn.modrinth.com/data/8aoMKplv/versions/tbMH6nzS/punchy-2.7c-fabric-1.21.11.jar"
+    "https://cdn.modrinth.com/data/8aoMKplv/versions/fouItaP8/punchy-2.7d-fabric-1.21.11.jar"
    ],
-   "fileSize": 2211776
+   "fileSize": 2213240
   },
   {
    "path": "resourcepacks/Patrix_1.21.11_32x_basic.zip",
