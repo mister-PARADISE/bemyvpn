@@ -1,6 +1,6 @@
 # Слои погружения 1.0.0 — состав сборки (Minecraft 1.21.11, Fabric)
 # Формат: папка | файл | ссылка
-# Всего файлов: 223, скачается около 567 МБ
+# Всего файлов: 222, скачается около 565 МБ
 
 ## Из базового модпака Fabulously Optimized 12.2.2
 mods/animatica-0.6.1+1.21.5.jar | https://cdn.modrinth.com/data/PRN43VSY/versions/CVlwSVpU/animatica-0.6.1%2B1.21.5.jar
@@ -47,7 +47,6 @@ mods/sodium-extra-fabric-0.8.3+mc1.21.11.jar | https://cdn.modrinth.com/data/Ptj
 mods/sodium-fabric-0.8.12+mc1.21.11.jar | https://cdn.modrinth.com/data/AANobbMI/versions/NFkjnzWE/sodium-fabric-0.8.12%2Bmc1.21.11.jar
 mods/sodium-shadowy-path-blocks-fabric-6.0.0.jar | https://cdn.modrinth.com/data/EIa1eiMm/versions/LpF3DIUM/sodium-shadowy-path-blocks-fabric-6.0.0.jar
 mods/yet_another_config_lib_v3-3.8.2+1.21.11-fabric.jar | https://cdn.modrinth.com/data/1eAoo2KR/versions/pHWDw3Vc/yet_another_config_lib_v3-3.8.2%2B1.21.11-fabric.jar
-mods/zoomify-2.15.2+1.21.11.jar | https://cdn.modrinth.com/data/w7ThoJFB/versions/gI5KZI8V/zoomify-2.15.2%2B1.21.11.jar
 resourcepacks/Chat Reporting Helper.zip | https://cdn.modrinth.com/data/tN4E9NfV/versions/8MqRcuRv/Chat%20Reporting%20Helper.zip
 resourcepacks/SodiumTranslations.zip | https://cdn.modrinth.com/data/yfDziwn1/versions/3nrLzWin/SodiumTranslations.zip
 
@@ -93,7 +92,6 @@ mods/dungeons+-1.11.1.jar | https://cdn.modrinth.com/data/nHORcEHd/versions/QPE9
 mods/dungeons-and-taverns-ocean-monument-overhaul-v2.2.jar | https://cdn.modrinth.com/data/z6GJ3ycD/versions/mJJ8TcJi/dungeons-and-taverns-ocean-monument-overhaul-v2.2.jar
 mods/dungeons-and-taverns-v5.1.0.jar | https://cdn.modrinth.com/data/tpehi7ww/versions/rJ0Y6xDT/dungeons-and-taverns-v5.1.0.jar
 mods/echoes_of_the_end__structures NeoForge Fabric 1.21.11 -12.00.13.jar | https://cdn.modrinth.com/data/eVpstLY3/versions/cGCnM94P/echoes_of_the_end__structures%20NeoForge%20Fabric%201.21.11%20-12.00.13.jar
-mods/edf-remastered-5.0.2.jar | https://cdn.modrinth.com/data/HQsBdHGd/versions/5OYoqItD/edf-remastered-5.0.2.jar
 mods/elytra_physics-fabric-2.5_mc1.21.11.jar | https://cdn.modrinth.com/data/jfvCMH0K/versions/kpYpV2OH/elytra_physics-fabric-2.5_mc1.21.11.jar
 mods/emf_compat_core-1.1.2.jar | https://cdn.modrinth.com/data/hbGct5uU/versions/FAdUr0PG/emf_compat_core-1.1.2.jar
 mods/emf_compat_not_enough_animations_1.21.11_1.2.0.jar | https://cdn.modrinth.com/data/IGCrWfL7/versions/eyxLxOTw/emf_compat_not_enough_animations_1.21.11_1.2.0.jar
@@ -193,6 +191,7 @@ mods/timm-1.1.2-1.21.11.jar | https://cdn.modrinth.com/data/EgBj3Bnf/versions/VT
 mods/tools-on-my-back-1.1.0+1.21.11+fabric.jar | https://cdn.modrinth.com/data/rQou28Z1/versions/P5nsHfrT/tools-on-my-back-1.1.0%2B1.21.11%2Bfabric.jar
 mods/totally_lit-1.2.1+1.21.11.jar | https://cdn.modrinth.com/data/hbKDMT6l/versions/dz03XBT3/totally_lit-1.2.1%2B1.21.11.jar
 mods/trmt-0.5.1-1.21.11-fabric.jar | https://cdn.modrinth.com/data/74oZhrEe/versions/Nx1ojoWo/trmt-0.5.1-1.21.11-fabric.jar
+mods/tru.e-ending-1.1.4d.jar | https://cdn.modrinth.com/data/MCnBYP0b/versions/BWvn4Jtr/tru.e-ending-1.1.4d.jar
 mods/u_desert-2.0.3+mc1.21-1.21.11.jar | https://cdn.modrinth.com/data/ThFWvdF1/versions/Gw6acQkk/u_desert-2.0.3%2Bmc1.21-1.21.11.jar
 mods/u_sea-1.2.5+mc1.19-1.21.11.jar | https://cdn.modrinth.com/data/2a8fg8M6/versions/vEr4Tzbr/u_sea-1.2.5%2Bmc1.19-1.21.11.jar
 mods/variantsandventures-fabric-1.0.26+mc1.21.11.jar | https://cdn.modrinth.com/data/lNDRiXkY/versions/hflN6VbM/variantsandventures-fabric-1.0.26%2Bmc1.21.11.jar

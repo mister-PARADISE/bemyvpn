@@ -1,0 +1,74 @@
+Эти 70 файлов — чисто клиентские (рендер, звук, интерфейс, камера).
+На сервере они либо бесполезны, либо не запустятся. Скопируй папку mods из инстанса
+на сервер и удали из копии ровно эти файлы. Остальные 130 оставь.
+
+AmbientEnvironment-fabric-1.21.11-27.0.0.1.jar
+AmbientSounds_FABRIC_v6.3.5_mc1.21.11.jar
+animatica-0.6.1+1.21.5.jar
+atmospherics-2.6.6-mc-1.21.11.jar
+BadOptimizations-2.4.1-1.21.11.jar
+bbe-fabric-1.3.4+mc1.21.11.jar
+better-clouds-1.13.6+1.21.11-fabric.jar
+better-snow-coverage-0.4.2+mc1.21.11.jar
+BetterGrassify-1.8.6+fabric.1.21.11.jar
+bettermounthud-1.2.6.jar
+boatiview-fabric-0.0.8-1.21.11.jar
+CameraOverhaul-v2.1.1-fabric+mc[1.21.11].jar
+cave_fog_stabilizer-1.2.1+1.21.11-fabric.jar
+continuity-3.0.1-beta.1+1.21.11.jar
+cwb-fabric-3.0.0-build.14+mc1.21.11.jar
+Drip Sounds-0.5.2+1.21.10-Fabric.jar
+dynamic-fps-3.11.6+minecraft-1.21.11-fabric.jar
+elytra_physics-fabric-2.5_mc1.21.11.jar
+emf_compat_core-1.1.2.jar
+emf_compat_not_enough_animations_1.21.11_1.2.0.jar
+entity_model_features-3.2.4-1.21.11-fabric.jar
+entity_texture_features_1.21.11-fabric-7.1.jar
+EuphoriaPatcher-1.9.3-r5.8.1-fabric.jar
+fabrishot-1.16.4.jar
+fallingleaves-2.0.3+1.21.11.jar
+fallingwind-fabric-1.0.3+1.21.11.jar
+fastquit-3.1.3+mc1.21.11.jar
+Fractal Lightning-1.0.1-MC1.21.11.jar
+freelook-1.2.8.jar
+grassiergrass-fabric-1.4.5+mc1.21.11.jar
+head_in_the_clouds-fabric-2.2.0+1.21.11.jar
+ImmediatelyFast-Fabric-1.14.2+1.21.11.jar
+immersiveoverlays-1.5.3+1.21.11-fabric.jar
+iris-fabric-1.10.7+mc1.21.11.jar
+Item Landing Sound [CLIENT, v1.0.2, MC 1.21.11].jar
+Ixeris-4.4.1+1.21.11-fabric.jar
+lambdynamiclights-4.9.1+1.21.11.jar
+language-reload-1.7.6+1.21.11.jar
+main-menu-credits-1.2.0.jar
+make_bubbles_pop-0.3.2-fabric-mc1.21.9-1.21.10.jar
+modmenu-17.0.0.jar
+more_darkness-fabric-1.21.11-2.0.1+1.21.11.jar
+morechathistory-1.3.1.jar
+moreculling-fabric-1.21.11-1.6.2.jar
+optigui-2.3.0-beta.10+1.21.9.jar
+paginatedadvancements-2.8.0+1.21.11.jar
+particle_core-0.3.2+1.21.11.jar
+particlerain-4.0.0-beta.10+1.21.11-fabric.jar
+particular-1.21.11-Fabric-1.3.2.jar
+polytone-fabric-1.21.11-5.7.2.jar
+PresenceFootsteps-1.12.4+1.21.11.jar
+puzzle-fabric-2.3.0+1.21.11.jar
+reeses-sodium-options-fabric-2.0.3+mc1.21.11.jar
+Ripple-1.2.3-1.21.11.jar
+rrlsFabric-5.1.15+mc.1.21.11.jar
+rsls-1.1.15.jar
+shutupdeadentities-mc1.21.5+1.2.jar
+skyboxify-2.8+1.21.11-fabric.jar
+sodium-extra-fabric-0.8.3+mc1.21.11.jar
+sodium-fabric-0.8.12+mc1.21.11.jar
+sodium-lod-fixer-1.0.2.jar
+sodium-shadowy-path-blocks-fabric-6.0.0.jar
+softimprints-fabric-1.21.11-2.8.0.jar
+spyglass_astronomy-1.0.20-mc1.21.11.jar
+tools-on-my-back-1.1.0+1.21.11+fabric.jar
+veinminer-client-fabric-2.11.2+1.21.11.jar
+Void-Fog-2.13.2+1.21.11.jar
+voxy-0.2.16-beta+1.21.11.jar
+voxy-fog-addon-0.1.0.jar
+wakes-0.5.1+1.21.11.jar

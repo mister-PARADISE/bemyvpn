@@ -666,21 +666,6 @@
    "fileSize": 1126948
   },
   {
-   "path": "mods/zoomify-2.15.2+1.21.11.jar",
-   "hashes": {
-    "sha1": "e1f738a9026e9f087d96861935f994b010b8131a",
-    "sha512": "de9d6097445175f6ef3e93475136fd67d29fc14fd26a6f19e63714efa6cf0961af5d270a95b65c4099a38517c3f91815fe4a1aa21b0acd84230398be2a6e3e24"
-   },
-   "env": {
-    "client": "required",
-    "server": "required"
-   },
-   "downloads": [
-    "https://cdn.modrinth.com/data/w7ThoJFB/versions/gI5KZI8V/zoomify-2.15.2%2B1.21.11.jar"
-   ],
-   "fileSize": 873443
-  },
-  {
    "path": "resourcepacks/Chat Reporting Helper.zip",
    "hashes": {
     "sha1": "60ca7077929e580633da0701286034bb24851f17",
@@ -2286,19 +2271,19 @@
    "fileSize": 269181
   },
   {
-   "path": "mods/edf-remastered-5.0.2.jar",
+   "path": "mods/tru.e-ending-1.1.4d.jar",
    "hashes": {
-    "sha1": "01badac01410bca4624fed803d9c777a43162c3d",
-    "sha512": "4bb2774e373e9a6c744f9226c48a29e10a602a06a48bc739f6e703176833c75b7e35f4c5a59cf16a3c3598fed7800d782c93a19ff1be1cf628336e2fcc0e3bf4"
+    "sha1": "1758ded3a3644120b1423cdbaf3a3215140ba5ab",
+    "sha512": "fc1f69d77ec073ecafe5df9dbfff97fa633be42bdf4b5fb8325fe55a6219db9cdb48db0b73ae4b110c667e2fcc37c7c5721c377a2f165bbff56bc612daa37432"
    },
    "env": {
     "client": "required",
     "server": "required"
    },
    "downloads": [
-    "https://cdn.modrinth.com/data/HQsBdHGd/versions/5OYoqItD/edf-remastered-5.0.2.jar"
+    "https://cdn.modrinth.com/data/MCnBYP0b/versions/BWvn4Jtr/tru.e-ending-1.1.4d.jar"
    ],
-   "fileSize": 6841557
+   "fileSize": 5549831
   },
   {
    "path": "mods/ScalableLux-0.1.6+fabric.c25518a-all.jar",
