@@ -966,19 +966,19 @@
    "fileSize": 814415
   },
   {
-   "path": "mods/particlerain-4.0.0-beta.10+1.21.11-fabric.jar",
+   "path": "mods/particlerain-4.0.0-beta.11+1.21.11-fabric.jar",
    "hashes": {
-    "sha1": "2cdf97e6c42fe963f2128f280a36fdef38186b18",
-    "sha512": "1705a447056de5b08eac056035cf3f1ce3d466321c05279d30fc2a2a98a4e84db29ea6ca193743ffe309ce128167ba0c6a5ae3c99a6bb2e56dab8e22b7c01149"
+    "sha1": "2c9bfec86b8d5e52a61883f1ec62ec136e657f4a",
+    "sha512": "ef5bb56d73f3010fc82748412eb626d969b8efa9208f303f8d6bce018dc374dbbc06e87dfe90b0b62d78590a301b51d64b95386fe5dfa3dd68d86c7af294521d"
    },
    "env": {
     "client": "required",
     "server": "unsupported"
    },
    "downloads": [
-    "https://cdn.modrinth.com/data/nrikgvxm/versions/GqrSVERU/particlerain-4.0.0-beta.10%2B1.21.11-fabric.jar"
+    "https://cdn.modrinth.com/data/nrikgvxm/versions/7LBHIjGq/particlerain-4.0.0-beta.11%2B1.21.11-fabric.jar"
    ],
-   "fileSize": 608703
+   "fileSize": 621589
   },
   {
    "path": "mods/particular-1.21.11-Fabric-1.3.2.jar",
@@ -1221,19 +1221,19 @@
    "fileSize": 113225
   },
   {
-   "path": "mods/fwa+1.21.11-1.2.36.jar",
+   "path": "mods/fwa+1.21.11-1.2.37.jar",
    "hashes": {
-    "sha1": "026e4b55c1b9d3c9c47b9563e1a0c5ea7a73ef7f",
-    "sha512": "91b31df3dae8bab5bbcc466f2f2d2c0c2d4aaa0efb7fc5065832658d433815d3badadedeca65cc9ad6cd0216fb34cb7c9461d17ec268e294242070a805311518"
+    "sha1": "290b74d6cc30d4bcf1e3f0130d8f25a226ea60a2",
+    "sha512": "a78e5c732e7c124ac7318720f1c7a36735ce4006aaa1242e571b63e302d7c27b0b30687296531ba98b7fa5f14dbf8fb072e6a4b9504fb81bd23172d59e2469d0"
    },
    "env": {
     "client": "required",
     "server": "required"
    },
    "downloads": [
-    "https://cdn.modrinth.com/data/IAzUFvS6/versions/BPpHtyTw/fwa%2B1.21.11-1.2.36.jar"
+    "https://cdn.modrinth.com/data/IAzUFvS6/versions/j29TZhA7/fwa%2B1.21.11-1.2.37.jar"
    ],
-   "fileSize": 204749
+   "fileSize": 205218
   },
   {
    "path": "mods/CameraOverhaul-v2.1.1-fabric+mc[1.21.11].jar",
@@ -1446,19 +1446,19 @@
    "fileSize": 2318034
   },
   {
-   "path": "mods/structurify-fabric-2.0.33+mc1.21.11.jar",
+   "path": "mods/structurify-fabric-2.0.34+mc1.21.11.jar",
    "hashes": {
-    "sha1": "ae864f479c3cdeb4e76edd67a2045f3df5254922",
-    "sha512": "95c77382652d154d45a265319a15a9817f1a4e600c15d22674a24e2be0fda0bddc2ced3c5942bb031431b329ebf10d7e196fcbb90fa7a97ae0f0856fb153b985"
+    "sha1": "846484a1739df868dfe5bb476277384860ded7d2",
+    "sha512": "c8d3836bc7d82b8ef8a5516662818a623e530b2d80b90541f10ee96143f7b25899d775f65c2ebcbd7cbaa48c792501fdf3512e39ef22413babc498a87aadd029"
    },
    "env": {
     "client": "required",
     "server": "required"
    },
    "downloads": [
-    "https://cdn.modrinth.com/data/yz7AM2zx/versions/4dXJuvXu/structurify-fabric-2.0.33%2Bmc1.21.11.jar"
+    "https://cdn.modrinth.com/data/yz7AM2zx/versions/vdmzxGHh/structurify-fabric-2.0.34%2Bmc1.21.11.jar"
    ],
-   "fileSize": 489189
+   "fileSize": 493188
   },
   {
    "path": "mods/Structory_26.2_v1.3.7.jar",
@@ -2361,6 +2361,36 @@
    "fileSize": 21451
   },
   {
+   "path": "mods/forcecloseloadingscreen-2.3.4.jar",
+   "hashes": {
+    "sha1": "37d86edf9e5fd74168d98c9578926142280e3559",
+    "sha512": "bea54348d6141bb382db5525177f1b19b6a9b8bbe6f8cf2ee000752fa1558d740fe9d79290edf8c6ab49edd53b18337f765af0cd5b2a3635295b3a8e9c85755a"
+   },
+   "env": {
+    "client": "required",
+    "server": "unsupported"
+   },
+   "downloads": [
+    "https://cdn.modrinth.com/data/blWBX5n1/versions/6ZFi5jQ5/forcecloseloadingscreen-2.3.4.jar"
+   ],
+   "fileSize": 116793
+  },
+  {
+   "path": "mods/no-nether-portal-overlay-1.0.20.jar",
+   "hashes": {
+    "sha1": "c89de395879e888bceb6de4586caa9d6b99a6546",
+    "sha512": "e3c018f85b3e839730edc40dbc137209d840ff29b8a6f444128adf34160c8ee9150c57febd3aca76b873cf9cf6cb6f9ce7862b2ce8a22efa068559479d0fcbe4"
+   },
+   "env": {
+    "client": "required",
+    "server": "unsupported"
+   },
+   "downloads": [
+    "https://cdn.modrinth.com/data/IHmpzGtW/versions/AL7JV5qH/no-nether-portal-overlay-1.0.20.jar"
+   ],
+   "fileSize": 20063
+  },
+  {
    "path": "mods/distantthunders-mc1.21.11-fabric-1.1.0.jar",
    "hashes": {
     "sha1": "bb88dd25e0664f671f3fcc493a740eb64ca52d1a",
@@ -2571,19 +2601,19 @@
    "fileSize": 28233
   },
   {
-   "path": "mods/walllanterns-3.1.2.jar",
+   "path": "mods/walllanterns-3.1.3.jar",
    "hashes": {
-    "sha1": "1786e389d100fb70d5815887a9f3aa502a523271",
-    "sha512": "1ef628323265c7d60e10b351233c723c7438b72d98a5278709689e138a6af141a34808255aec4e0148a5f81f72c05049cdb07f1e0f92a6a0b3efc8285b222a71"
+    "sha1": "860668a08250b1a00daaa1c039d46e2fb4d7d544",
+    "sha512": "a5b6d409cb7b304698159ad2a48793b3a09d8a366fd869612045cabed8c144b9149db73d3046659b70be265ac8b2ed5f5864e34659032e1ed6c4a5107b7ee241"
    },
    "env": {
     "client": "required",
     "server": "required"
    },
    "downloads": [
-    "https://cdn.modrinth.com/data/V1CFwy2A/versions/axwHfU0o/walllanterns-3.1.2.jar"
+    "https://cdn.modrinth.com/data/V1CFwy2A/versions/7rsM2d2a/walllanterns-3.1.3.jar"
    ],
-   "fileSize": 49206
+   "fileSize": 49288
   },
   {
    "path": "mods/Ripple-1.2.3-1.21.11.jar",

@@ -1,6 +1,6 @@
 # Слои погружения 1.0.0 — состав сборки (Minecraft 1.21.11, Fabric)
 # Формат: папка | файл | ссылка
-# Всего файлов: 222, скачается около 565 МБ
+# Всего файлов: 224, скачается около 565 МБ
 
 ## Из базового модпака Fabulously Optimized 12.2.2
 mods/animatica-0.6.1+1.21.5.jar | https://cdn.modrinth.com/data/PRN43VSY/versions/CVlwSVpU/animatica-0.6.1%2B1.21.5.jar
@@ -105,10 +105,11 @@ mods/fallingwind-fabric-1.0.3+1.21.11.jar | https://cdn.modrinth.com/data/noBoAC
 mods/FarmersDelight-1.21.11-3.6.16+refabricated.jar | https://cdn.modrinth.com/data/7vxePowz/versions/z70iEKnH/FarmersDelight-1.21.11-3.6.16%2Brefabricated.jar
 mods/firstperson-fabric-2.7.2-mc1.21.11.jar | https://cdn.modrinth.com/data/H5XMjpHi/versions/EqDE0uC5/firstperson-fabric-2.7.2-mc1.21.11.jar
 mods/fleeinganimals-8.0.0.jar | https://cdn.modrinth.com/data/pz6Trz9Z/versions/CsLLPRUo/fleeinganimals-8.0.0.jar
+mods/forcecloseloadingscreen-2.3.4.jar | https://cdn.modrinth.com/data/blWBX5n1/versions/6ZFi5jQ5/forcecloseloadingscreen-2.3.4.jar
 mods/Fractal Lightning-1.0.1-MC1.21.11.jar | https://cdn.modrinth.com/data/VWGDEfBo/versions/Ws35PjbH/Fractal%20Lightning-1.0.1-MC1.21.11.jar
 mods/freelook-1.2.8.jar | https://cdn.modrinth.com/data/g4pR0Fmy/versions/elzgeThs/freelook-1.2.8.jar
 mods/FrozenLib-2.3-mc1.21.11.jar | https://cdn.modrinth.com/data/9KawNmQc/versions/qegZSYpO/FrozenLib-2.3-mc1.21.11.jar
-mods/fwa+1.21.11-1.2.36.jar | https://cdn.modrinth.com/data/IAzUFvS6/versions/BPpHtyTw/fwa%2B1.21.11-1.2.36.jar
+mods/fwa+1.21.11-1.2.37.jar | https://cdn.modrinth.com/data/IAzUFvS6/versions/j29TZhA7/fwa%2B1.21.11-1.2.37.jar
 mods/fzzy_config-0.7.6+1.21.11.jar | https://cdn.modrinth.com/data/hYykXjDp/versions/nSB6xGOS/fzzy_config-0.7.6%2B1.21.11.jar
 mods/Geophilic v3.6.mod.jar | https://cdn.modrinth.com/data/hl5OLM95/versions/jDzSPLta/Geophilic%20v3.6.mod.jar
 mods/GlitchCore-fabric-1.21.11-21.11.0.4.jar | https://cdn.modrinth.com/data/s3dmwKy5/versions/CO7NeLTt/GlitchCore-fabric-1.21.11-21.11.0.4.jar
@@ -142,13 +143,14 @@ mods/mru-1.0.26+edge+1.21.11-fabric.jar | https://cdn.modrinth.com/data/SNVQ2c0g
 mods/netherportalfix-fabric-1.21.11-21.11.2.jar | https://cdn.modrinth.com/data/nPZr02ET/versions/D79IUl9r/netherportalfix-fabric-1.21.11-21.11.2.jar
 mods/neutral-animals-1.2.18.jar | https://cdn.modrinth.com/data/w1AXlLHd/versions/jzmnUlzr/neutral-animals-1.2.18.jar
 mods/niftycarts-21.11.0.jar | https://cdn.modrinth.com/data/CXd6g9xp/versions/1fnYZ4ht/niftycarts-21.11.0.jar
+mods/no-nether-portal-overlay-1.0.20.jar | https://cdn.modrinth.com/data/IHmpzGtW/versions/AL7JV5qH/no-nether-portal-overlay-1.0.20.jar
 mods/nocturnal-bats-1.1.0+1.21.3.jar | https://cdn.modrinth.com/data/qu8ckNJQ/versions/ceWhOH7i/nocturnal-bats-1.1.0%2B1.21.3.jar
 mods/notenoughanimations-fabric-1.12.4-mc1.21.11.jar | https://cdn.modrinth.com/data/MPCX6s5C/versions/LU326iui/notenoughanimations-fabric-1.12.4-mc1.21.11.jar
 mods/Nullscape_1.21.x_v1.2.17.jar | https://cdn.modrinth.com/data/LPjGiSO4/versions/f87vU1jc/Nullscape_1.21.x_v1.2.17.jar
 mods/otterlib-0.2.2.1+1.21.11-fabric.jar | https://cdn.modrinth.com/data/zVVpzurY/versions/97STrMee/otterlib-0.2.2.1%2B1.21.11-fabric.jar
 mods/owo-lib-0.13.0+1.21.11.jar | https://cdn.modrinth.com/data/ccKDOlHs/versions/33Ei8Thm/owo-lib-0.13.0%2B1.21.11.jar
 mods/particle_core-0.3.2+1.21.11.jar | https://cdn.modrinth.com/data/RSeLon5O/versions/kIlv5noY/particle_core-0.3.2%2B1.21.11.jar
-mods/particlerain-4.0.0-beta.10+1.21.11-fabric.jar | https://cdn.modrinth.com/data/nrikgvxm/versions/GqrSVERU/particlerain-4.0.0-beta.10%2B1.21.11-fabric.jar
+mods/particlerain-4.0.0-beta.11+1.21.11-fabric.jar | https://cdn.modrinth.com/data/nrikgvxm/versions/7LBHIjGq/particlerain-4.0.0-beta.11%2B1.21.11-fabric.jar
 mods/particular-1.21.11-Fabric-1.3.2.jar | https://cdn.modrinth.com/data/pYFUU6cq/versions/L6A8meKZ/particular-1.21.11-Fabric-1.3.2.jar
 mods/player-death-corpses-3.6.jar | https://cdn.modrinth.com/data/jzoouHnf/versions/z4aCQAVz/player-death-corpses-3.6.jar
 mods/PresenceFootsteps-1.12.4+1.21.11.jar | https://cdn.modrinth.com/data/rcTfTZr3/versions/xjmToylJ/PresenceFootsteps-1.12.4%2B1.21.11.jar
@@ -179,7 +181,7 @@ mods/stormiespiders-fabric-1.21.11-3.3.0.jar | https://cdn.modrinth.com/data/3ds
 mods/strawberrylib-1.21.11-r4.jar | https://cdn.modrinth.com/data/9Ya7Yyre/versions/5XnDlrHT/strawberrylib-1.21.11-r4.jar
 mods/Structory_26.2_v1.3.7.jar | https://cdn.modrinth.com/data/aKCwCJlY/versions/TUbwu7eG/Structory_26.2_v1.3.7.jar
 mods/Structory_Towers_26.2_v1.0.17.jar | https://cdn.modrinth.com/data/j3FONRYr/versions/ziO4YIv1/Structory_Towers_26.2_v1.0.17.jar
-mods/structurify-fabric-2.0.33+mc1.21.11.jar | https://cdn.modrinth.com/data/yz7AM2zx/versions/4dXJuvXu/structurify-fabric-2.0.33%2Bmc1.21.11.jar
+mods/structurify-fabric-2.0.34+mc1.21.11.jar | https://cdn.modrinth.com/data/yz7AM2zx/versions/vdmzxGHh/structurify-fabric-2.0.34%2Bmc1.21.11.jar
 mods/SubtleEffects-fabric-1.21.11-1.14.0.jar | https://cdn.modrinth.com/data/4q8UOK1d/versions/5Uku820x/SubtleEffects-fabric-1.21.11-1.14.0.jar
 mods/superbsteeds-1.21.11-r1.jar | https://cdn.modrinth.com/data/UIZkbR3j/versions/x0S40DSH/superbsteeds-1.21.11-r1.jar
 mods/sway-2.4.3-fabric+1.21.11.jar | https://cdn.modrinth.com/data/Gj6Yce3v/versions/Q4Z5iaEL/sway-2.4.3-fabric%2B1.21.11.jar
@@ -204,7 +206,7 @@ mods/Voxy World Gen V2-1.21.11-2.2.4.jar | https://cdn.modrinth.com/data/xT0lnNE
 mods/voxy-0.2.16-beta+1.21.11.jar | https://cdn.modrinth.com/data/fxxUqruK/versions/H3w2nVdU/voxy-0.2.16-beta%2B1.21.11.jar
 mods/voxy-fog-addon-0.1.0.jar | https://cdn.modrinth.com/data/DAiYArk0/versions/friz7eII/voxy-fog-addon-0.1.0.jar
 mods/wakes-0.5.1+1.21.11.jar | https://cdn.modrinth.com/data/dlNu0RQY/versions/4zYKqDML/wakes-0.5.1%2B1.21.11.jar
-mods/walllanterns-3.1.2.jar | https://cdn.modrinth.com/data/V1CFwy2A/versions/axwHfU0o/walllanterns-3.1.2.jar
+mods/walllanterns-3.1.3.jar | https://cdn.modrinth.com/data/V1CFwy2A/versions/7rsM2d2a/walllanterns-3.1.3.jar
 mods/waveycapes-fabric-1.10.2-mc1.21.11.jar | https://cdn.modrinth.com/data/kYuIpRLv/versions/uaAD86JW/waveycapes-fabric-1.10.2-mc1.21.11.jar
 mods/WilderWild-4.2.4-mc1.21.11.jar | https://cdn.modrinth.com/data/AtHRJSUW/versions/clhFWeSY/WilderWild-4.2.4-mc1.21.11.jar
 resourcepacks/Angel's_Weather_v1.9.1.3hf.zip | https://cdn.modrinth.com/data/pQrAkcwB/versions/PaNyMebK/Angel%27s_Weather_v1.9.1.3hf.zip
