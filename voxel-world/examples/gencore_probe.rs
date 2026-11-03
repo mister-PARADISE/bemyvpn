@@ -8,6 +8,6 @@ fn main() {
         let cd = g.climate.sample_d(xx, zz, 0.0);
         let p = g.terrain.debug_parts(&cd, xx, zz);
         let sh = g.terrain.shape(&cd, xx, zz, 0.0);
-        println!("({dx},{dz}) final {:.2} base {:.2} mtn {:.2} mtn_pre {:.2} ridge {:.2} rdist {:.1} w {:.1} gate {:.2} e {:.3} c {:.3} reg {:?}", p[4], p[0], p[3], p[5], p[1], cd.river_dist, cd.river_width, cd.river_gate, cd.e.v, cd.c.v, sh.regions);
+        println!("steer {:?} ({dx},{dz}) final {:.2} base {:.2} mtn {:.2} mtn_pre {:.2} ridge {:.2} rdist {:.1} w {:.1} gate {:.2} e {:.3} c {:.3} reg {:?}", sh.steer, p[4], p[0], p[3], p[5], p[1], cd.river_dist, cd.river_width, cd.river_gate, cd.e.v, cd.c.v, sh.regions);
     }
 }

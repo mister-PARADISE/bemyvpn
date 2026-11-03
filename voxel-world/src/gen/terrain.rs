@@ -259,6 +259,8 @@ pub struct Shape {
     pub jaggedness: f32,
     /// Liquid surface (water, or lava in calderas) or `i32::MIN`.
     pub water_level: i32,
+    /// Gully steering gradient (debug).
+    pub steer: (f32, f32),
 }
 
 pub struct TerrainShaper {
@@ -417,6 +419,7 @@ impl TerrainShaper {
         let shape = lerp_d(hills01, ridge, s_mix);
         let vfac = smoothstep_d(-0.95, -0.35, cd.pv) * 0.65 + 0.35;
         let mut mountain = amp * shape * vfac;
+        let mut steer_dbg = (0.0, 0.0);
         // dendritic gullies on mountain flanks (strength ∝ local relief)
         if mountain.v > 12.0 {
             let ga = 0.65 * smoothstep(12.0, 60.0, mountain.v);
@@ -425,6 +428,10 @@ impl TerrainShaper {
             let k = amp.v * vfac.v * s_mix.v * 1.25;
             let gx = base.dx + amp.dx * shape.v * vfac.v + k * steer.dx;
             let gz = base.dz + amp.dz * shape.v * vfac.v + k * steer.dz;
+            steer_dbg = (gx, gz);
+            if std::env::var("GC_DEBUG").is_ok() {
+                eprintln!("base.d ({:.3},{:.3}) amp {:?} shape {:?} vfac {:?} s_mix {:?} steer {:?} e {:?} c {:?} pv {:?}", base.dx, base.dz, amp, shape, vfac, s_mix, steer, cd.e, cd.c, cd.pv);
+            }
             let g = self.gullies(x, z, (gx, gz), ga, fp);
             mountain = mountain + g;
         }
@@ -571,7 +578,7 @@ impl TerrainShaper {
         if water_level == i32::MIN && h.v < SEA {
             water_level = SEA_LEVEL;
         }
-        Shape { height: h, mountain: mountain.v, regions: reg, jaggedness: jag, water_level }
+        Shape { height: h, mountain: mountain.v, regions: reg, jaggedness: jag, water_level, steer: steer_dbg }
     }
 
     /// Slope-aligned gully noise ("erosion filter").
