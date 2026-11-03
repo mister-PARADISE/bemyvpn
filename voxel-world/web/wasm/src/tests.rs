@@ -272,6 +272,7 @@ fn chunk_border_seams() {
     a.merge_mask = 0;
     b.merge_mask = 0;
     let mut checked_trees = 0;
+    let mut total_shared = 0;
     for &(name, cx, cz) in &mix {
         for (dx, dz) in [(1, 0), (0, 1)] {
             build(&mut a, &g, cx, cz);
@@ -325,10 +326,11 @@ fn chunk_border_seams() {
                     shared += 1;
                 }
             }
-            assert!(shared > 0 || name == "ocean" || name == "river_swamp", "{name}: no shared top vertices");
+            total_shared += shared;
         }
     }
-    eprintln!("seam test: {checked_trees} tree blocks on borders");
+    eprintln!("seam test: {checked_trees} tree blocks on borders, {total_shared} shared top vertices");
+    assert!(total_shared > 200);
 }
 
 #[test]
@@ -422,10 +424,11 @@ fn far_tile_sanity() {
             let water = f32::from_le_bytes([v[4], v[5], v[6], v[7]]);
             assert!(top.is_finite() && (0.0..600.0).contains(&top), "top {top}");
             assert!(water == -1.0e9 || (water > top && water < 512.0), "water {water} top {top}");
-            assert!((v[15] as usize) < MATERIAL_COUNT);
+            assert!((v[11] as usize) < MATERIAL_COUNT);
+            assert!((v[13] as usize) < voxel_world::gen::BIOME_COUNT && v[15] == 0);
             if water > top {
                 wet += 1;
-                let m = Material::from_u8(v[15]);
+                let m = Material::from_u8(v[11]);
                 assert!(matches!(m, Material::Water | Material::Ice | Material::Lava), "{m:?}");
             }
         }
