@@ -60,6 +60,10 @@ const AQ_CELL: f64 = 56.0;
 const AQ_MAX_LEVEL: f32 = (SEA_LEVEL - 14) as f32;
 /// Aquifer presence threshold on a 2D simplex (≈ 45 % of cells hold water).
 const AQ_PRESENCE_T: f32 = 0.05;
+/// Septa are evaluated up to this far above `AQ_MAX_LEVEL` (where their taper has ended).
+const SEPTUM_RISE: f32 = 12.0;
+/// Minimum jitter of the aquifer sites inside their grid cell (see `aq_point`).
+const AQ_JITTER_MIN: f64 = 0.2;
 
 // ------------------------------------------------------------------ 3D simplex with gradient
 
@@ -281,6 +285,12 @@ pub struct CaveCarver {
 /// `cheese_gradient_scale`: E|∇n| ≈ 0.022/block for λ = 150, 3 octaves).
 const CHEESE_LAMBDA: f64 = 150.0;
 const CHEESE_SCALE: f32 = 1.0 / 0.022;
+/// Above this threshold the cheese fBm is not evaluated (see the fade in `parts`).
+const CHEESE_T_SKIP: f32 = 0.62;
+/// Fade (blocks) applied as the threshold approaches `CHEESE_T_SKIP`.
+const CHEESE_FADE: f32 = 12.0;
+/// Fade (blocks) of the shaft field outside the shaft districts.
+const SHAFT_FADE: f32 = 12.0;
 
 impl CaveCarver {
     pub fn new(seed: u64) -> Self {
@@ -359,11 +369,15 @@ impl CaveCarver {
         let d_t = d_ab.min(d_ac);
         let tunnels = (r * r - d_t) / (2.0 * r);
         // shafts: sub-vertical curves B = 0 ∧ C = 0, only in gated districts
+        // The gate fades the shaft field by −SHAFT_FADE·(1 − sg) (instead of shrinking the radius
+        // to a positive minimum and then jumping to −50 at sg = 0, which cut thin shafts off with
+        // a flat face along the gate contour). At sg → 0 the field is ≤ rs/2 − SHAFT_FADE < −8,
+        // so skipping the evaluation there is exact for the carve decision.
         let sg = smoothstep(0.25, 0.6, self.shaft_gate.n2(x * (1.0 / 400.0), z * (1.0 / 400.0)));
         let shafts = if sg > 0.0 {
-            let rs = (1.6 + 1.6 * smoothstep(-0.5, 0.6, rn)) * sg + 0.4;
+            let rs = 1.4 + 1.8 * smoothstep(-0.5, 0.6, rn);
             let d_bc = curve_dist2(b, gb, cc, gc);
-            (rs * rs - d_bc) / (2.0 * rs)
+            (rs * rs - d_bc) / (2.0 * rs) - SHAFT_FADE * (1.0 - sg)
         } else {
             -50.0
         };
@@ -376,9 +390,14 @@ impl CaveCarver {
         let mut t = 0.385 - 0.10 * region;
         t += 0.42 * (1.0 - smoothstep(10.0, 42.0, cover));
         t -= 0.035 * (1.0 - smoothstep(30.0, 110.0, yf)); // big halls deep down
-        if t < 0.62 {
+        // Skipping the (expensive) fBm above the cut-off T_SKIP must not change the carve
+        // decision: the fade term drives the field to ≤ (n_max − T_SKIP)·S − CHEESE_FADE < 0
+        // as t → T_SKIP (n_max ≈ 0.75 measured by `cheese_cutoff_is_continuous`), so caverns
+        // taper out instead of being sliced flat along the t = T_SKIP iso-surface.
+        if t < CHEESE_T_SKIP {
             let n = self.cheese.sample3(x, y * 1.6, z);
-            parts.cheese = ((n - t) * CHEESE_SCALE).min(12.0);
+            let fade = CHEESE_FADE * smoothstep(CHEESE_T_SKIP - 0.12, CHEESE_T_SKIP, t);
+            parts.cheese = ((n - t) * CHEESE_SCALE).min(12.0) - fade;
         }
 
         // ---- ravines -----------------------------------------------------------------------
@@ -395,7 +414,7 @@ impl CaveCarver {
         parts.penalty = base_pen + cover_pen;
 
         // ---- aquifer septa -----------------------------------------------------------------
-        if yf < AQ_MAX_LEVEL + 3.0 && f > -6.0 {
+        if yf < AQ_MAX_LEVEL + SEPTUM_RISE && f > -6.0 {
             let dist = self.aquifer_septum_dist(x, yf, z);
             if dist < 12.0 {
                 // septum along the bisector, 5–8 blocks thick, its faces wobbling
@@ -423,23 +442,26 @@ impl CaveCarver {
             return -(dh - 14.0) - 6.0;
         }
         let dvar = self.ravine_depth.n2(x * (1.0 / 300.0), z * (1.0 / 300.0));
-        let d_r = gate * (34.0 + 22.0 * dvar); // ravine depth below the surface
-        if d_r < 4.0 {
-            return -10.0;
-        }
+        // ravine depth below the surface (≥ 0.5 keeps u finite; the floor term then closes it)
+        let d_r = (gate * (34.0 + 22.0 * dvar)).max(0.5);
         let w_top = 2.2 + 4.3 * gate;
         let u = (depth / d_r).clamp(0.0, 1.0);
         let w = 1.6 + (w_top - 1.6) * (1.0 - u).powf(1.3);
         let rough = 1.3 * self.rough.n3(x * (1.0 / 14.0), yf as f64 * (1.0 / 9.0), z * (1.0 / 14.0));
         let floor = 2.5 * (depth - d_r).max(0.0);
+        // Gate fade: the slot closes continuously toward the gate contour (≤ w_top + 1.3 − 10 < 0
+        // for gate ≤ 0.05) instead of ending in a vertical wall where d_r crossed a threshold.
+        let fade = 10.0 * (1.0 - smoothstep(0.05, 0.4, gate));
         let _ = h;
-        w - dh + rough - floor
+        w - dh + rough - floor - fade
     }
 
-    /// Distance from (x, z) to the nearest Voronoi bisector between the owning aquifer cell and
-    /// any neighbouring cell whose water table differs, considering only heights `y` below the
-    /// higher of the two tables (+3). `f32::MAX` if there is none.
-    /// Bisector distance: `δ = (|p−c_k|² − |p−c₁|²) / (2|c_k−c₁|)` (exact for a Voronoi diagram).
+    /// Effective distance from (x, z) to the nearest Voronoi bisector between the owning aquifer
+    /// cell and any neighbouring cell whose water table differs. Bisector distance:
+    /// `δ = (|p−c_k|² − |p−c₁|²) / (2|c_k−c₁|)` (exact for a Voronoi diagram). Above the higher
+    /// of the two tables the septum is not needed; instead of switching it off at a fixed height
+    /// (a jump of up to ≈ 18 blocks in the field → flat-cut walls) the distance grows by
+    /// `1.2·(y − L_max − 1)₊`, so the wall tapers off over ≈ 10 blocks. `f32::MAX` if none.
     fn aquifer_septum_dist(&self, x: f64, y: f32, z: f64) -> f32 {
         let cx = (x / AQ_CELL).floor() as i32;
         let cz = (z / AQ_CELL).floor() as i32;
@@ -470,8 +492,8 @@ impl CaveCarver {
                 continue;
             }
             let lk = self.aq_level(ckx, ckz);
-            if (l1 - lk).abs() > 0.5 && y < l1.max(lk) + 3.0 {
-                out = dist;
+            if (l1 - lk).abs() > 0.5 {
+                out = out.min(dist + 1.2 * (y - l1.max(lk) - 1.0).max(0.0));
             }
         }
         out
@@ -480,8 +502,12 @@ impl CaveCarver {
     #[inline]
     fn aq_point(&self, cx: i32, cz: i32) -> (f64, f64) {
         let h = hash2(self.aq_seed, cx, cz);
-        let jx = 0.1 + 0.8 * hash_f01(h) as f64;
-        let jz = 0.1 + 0.8 * hash_f01(mix64(h)) as f64;
+        // Jitter in [a, 1 − a] with a = AQ_JITTER_MIN ≥ (√2 − 1)/(√2 + 1) ≈ 0.172 makes the 3×3
+        // search exact: the own site is within (1 − a)√2 ≤ 1 + a cells of any point of the cell,
+        // while every site outside the 3×3 block is farther than 1 + a. (With a = 0.1 the
+        // restricted "Voronoi" diagram had spurious borders on grid lines without septa.)
+        let jx = AQ_JITTER_MIN + (1.0 - 2.0 * AQ_JITTER_MIN) * hash_f01(h) as f64;
+        let jz = AQ_JITTER_MIN + (1.0 - 2.0 * AQ_JITTER_MIN) * hash_f01(mix64(h)) as f64;
         ((cx as f64 + jx) * AQ_CELL, (cz as f64 + jz) * AQ_CELL)
     }
 
@@ -501,7 +527,14 @@ impl CaveCarver {
         let v = 0.5 + 0.5 * self.aq_height.n2(px * (1.0 / 800.0), pz * (1.0 / 800.0));
         let lo = LAVA_LEVEL as f32 + 3.0;
         let l = lo + (AQ_MAX_LEVEL - lo) * v.clamp(0.0, 1.0).powf(1.3);
-        (l / 10.0).round() * 10.0 + 3.0
+        // 10-block steps 13, 23, …; capped so that the table never exceeds AQ_MAX_LEVEL (the old
+        // rounding produced 133 > AQ_MAX_LEVEL, a table `fill` silently clipped to 126).
+        let q = (l / 10.0).round() * 10.0 + 3.0;
+        if q > AQ_MAX_LEVEL {
+            q - 10.0
+        } else {
+            q
+        }
     }
 
     /// Local aquifer water table at (x, z) (`None` = dry cell).
@@ -523,15 +556,19 @@ impl CaveCarver {
     }
 
     /// What fills a carved voxel: lava at the bottom, water below the local aquifer table, air
-    /// elsewhere. (Caves under lakes/seas are sealed ≥ 6 blocks below the floor, so they need no
-    /// special fill; filling them with the lake's water would create unsupported water columns.)
+    /// elsewhere. The rule depends on (x, y, z) only through the aquifer cell, so every pool is
+    /// flat and two horizontally adjacent carved voxels of one cell never disagree. (An earlier
+    /// extra condition `y < H − 10` made sealed caves under sloping sea/lake beds alternate
+    /// between air and water from column to column; dry land is always ≥ 10 blocks above the
+    /// highest table, so the condition only ever mattered there.)
     pub fn fill(&self, x: i32, y: i32, z: i32, col: &ColumnInfo) -> CaveFill {
+        let _ = col;
         if y <= LAVA_LEVEL {
             return CaveFill::Lava;
         }
         if (y as f32) < AQ_MAX_LEVEL {
             if let Some(l) = self.water_table(x as f64 + 0.5, z as f64 + 0.5) {
-                if (y as f32) < l && (y as f32) < col.height - 10.0 {
+                if (y as f32) < l {
                     return CaveFill::Water;
                 }
             }
@@ -702,6 +739,190 @@ mod tests {
         );
         eprintln!("surface openings: {:.2}% of land columns", 100.0 * open_cols as f64 / land_cols as f64);
         assert!((0.06..=0.12).contains(&frac), "cave fraction {frac}");
+    }
+
+    /// The 3×3 neighbourhood search of the aquifer Voronoi diagram must agree with a 5×5
+    /// brute-force search everywhere (jitter bound, see `aq_point`).
+    #[test]
+    fn aquifer_voronoi_3x3_is_exact() {
+        let c = CaveCarver::new(11);
+        for i in 0..200_000u64 {
+            let x = rnd(i * 2) * 40_000.0 - 20_000.0;
+            let z = rnd(i * 2 + 1) * 40_000.0 - 20_000.0;
+            let (cx, cz) = ((x / AQ_CELL).floor() as i32, (z / AQ_CELL).floor() as i32);
+            let near = |r: i32| {
+                let mut best = (f64::MAX, 0, 0);
+                for dz in -r..=r {
+                    for dx in -r..=r {
+                        let (px, pz) = c.aq_point(cx + dx, cz + dz);
+                        let d2 = (px - x).powi(2) + (pz - z).powi(2);
+                        if d2 < best.0 {
+                            best = (d2, cx + dx, cz + dz);
+                        }
+                    }
+                }
+                (best.1, best.2)
+            };
+            assert_eq!(near(1), near(2), "3×3 search misses the nearest site at ({x}, {z})");
+        }
+    }
+
+    /// Aquifer tables are flat 10-block steps that never exceed `AQ_MAX_LEVEL`.
+    #[test]
+    fn aquifer_levels_bounded() {
+        let c = CaveCarver::new(4);
+        let mut wet = 0;
+        for i in 0..20_000i32 {
+            let l = c.aq_level(i % 211 - 105, i / 211 - 47);
+            if l > -1.0e3 {
+                wet += 1;
+                assert!(l <= AQ_MAX_LEVEL && l > LAVA_LEVEL as f32, "level {l}");
+                assert_eq!((l - 3.0) % 10.0, 0.0);
+            }
+        }
+        assert!(wet > 4000 && wet < 16_000, "{wet}");
+    }
+
+    /// No jumps of the field near its zero level: for random points and 0.5-block steps the
+    /// difference is bounded (the old cheese / ravine / shaft cut-offs jumped by up to 50).
+    #[test]
+    fn field_has_no_jumps_near_zero() {
+        let mut worst = 0.0f32;
+        for seed in [1u64, 2] {
+            let g = WorldGen::new(seed);
+            for i in 0..4000u64 {
+                let x = (rnd(i * 5 + seed) * 12000.0 - 6000.0).floor() + 0.5;
+                let z = (rnd(i * 5 + 1 + seed) * 12000.0 - 6000.0).floor() + 0.5;
+                let col = g.column(x, z);
+                for k in 0..40u64 {
+                    let y = 4.0 + rnd(i * 977 + k) * (col.height as f64 - 2.0).max(5.0);
+                    let a = g.caves.field(x, y, z, &col);
+                    for (dx, dy) in [(0.0, 0.5), (0.0, -0.5)] {
+                        let b = g.caves.field(x + dx, y + dy, z, &col);
+                        if a.max(b) > -3.0 {
+                            if (a - b).abs() > worst && (a - b).abs() > 7.0 {
+                                eprintln!(
+                                    "jump {a} → {b} at ({x}, {y:.2}→{:.2}, {z}) h {} wet {} {:?} / {:?}",
+                                    y + dy,
+                                    col.height,
+                                    col.water_level,
+                                    g.caves.parts(x, y, z, &col),
+                                    g.caves.parts(x, y + dy, z, &col)
+                                );
+                            }
+                            worst = worst.max((a - b).abs());
+                        }
+                    }
+                }
+            }
+        }
+        eprintln!("max |ΔF| per 0.5 block near the zero level: {worst:.2}");
+        assert!(worst < 7.0, "field jumps by {worst}");
+    }
+
+    /// Emulates the world builder (4×4×4 lattice, trilinear interpolation, wet guard) over
+    /// regions holding aquifers and counts liquid faces that touch air: a carved water voxel
+    /// next to a carved air voxel at the same height (an unsupported water wall), or carved
+    /// water directly above carved air.
+    #[test]
+    fn no_unsupported_cave_water() {
+        let (mut carved, mut water, mut side, mut over) = (0usize, 0usize, 0usize, 0usize);
+        for seed in [1u64, 7] {
+            let g = WorldGen::new(seed);
+            let mut regions = 0;
+            for i in 0..400u64 {
+                let x0 = ((rnd(i * 3 + seed * 77) * 16000.0 - 8000.0) / 4.0).floor() as i32 * 4;
+                let z0 = ((rnd(i * 3 + 1 + seed * 77) * 16000.0 - 8000.0) / 4.0).floor() as i32 * 4;
+                if g.caves.water_table(x0 as f64, z0 as f64).is_none() {
+                    continue;
+                }
+                regions += 1;
+                if regions > 12 {
+                    break;
+                }
+                const N: i32 = 40;
+                let nn = (N / 4 + 1) as usize;
+                let nodes: Vec<ColumnInfo> = (0..nn * nn)
+                    .map(|k| g.column((x0 + 4 * (k % nn) as i32) as f64 + 0.5, (z0 + 4 * (k / nn) as i32) as f64 + 0.5))
+                    .collect();
+                let nj = 34usize; // y up to 136
+                let vals: Vec<f32> = (0..nn * nn * nj)
+                    .map(|k| {
+                        let (n, j) = (k / nj, k % nj);
+                        let c = &nodes[n];
+                        g.cave_field(c.x, (4 * j) as f64 + 0.5, c.z, c)
+                    })
+                    .collect();
+                let cols: Vec<ColumnInfo> =
+                    (0..(N * N) as usize).map(|k| g.column((x0 + k as i32 % N) as f64 + 0.5, (z0 + k as i32 / N) as f64 + 0.5)).collect();
+                // kind: 0 rock, 1 air (terrain or cave), 2 water, 3 lava; cave flag separate
+                let ny = 4 * (nj - 1);
+                let mut kind = vec![0u8; (N * N) as usize * ny];
+                let mut cave = vec![false; (N * N) as usize * ny];
+                for lz in 0..N {
+                    for lx in 0..N {
+                        let col = &cols[(lz * N + lx) as usize];
+                        let (i, k) = ((lx / 4) as usize, (lz / 4) as usize);
+                        let (tx, tz) = ((lx % 4) as f32 / 4.0, (lz % 4) as f32 / 4.0);
+                        let wts = [(1.0 - tx) * (1.0 - tz), tx * (1.0 - tz), (1.0 - tx) * tz, tx * tz];
+                        let ids = [k * nn + i, k * nn + i + 1, (k + 1) * nn + i, (k + 1) * nn + i + 1];
+                        let top = (col.height - 0.5).ceil() as i32; // solid below
+                        let wet = col.water_level != i32::MIN && col.water_level as f32 > col.height;
+                        let guard = if wet { top - 6 } else { i32::MAX };
+                        for y in 0..ny as i32 {
+                            let at = ((lz * N + lx) as usize) * ny + y as usize;
+                            if y >= top {
+                                kind[at] = if y < col.water_level { 2 } else { 1 };
+                                continue;
+                            }
+                            let j = (y / 4) as usize;
+                            let fy = (y % 4) as f32 / 4.0;
+                            let f = |jj: usize| (0..4).map(|q| wts[q] * vals[ids[q] * nj + jj]).sum::<f32>();
+                            let v = f(j) + (f(j + 1) - f(j)) * fy;
+                            if v > 0.0 && y >= MIN_CARVE_Y && y < guard {
+                                cave[at] = true;
+                                carved += 1;
+                                kind[at] = match g.cave_fill(x0 + lx, y, z0 + lz, col) {
+                                    CaveFill::Air => 1,
+                                    CaveFill::Water => {
+                                        water += 1;
+                                        2
+                                    }
+                                    CaveFill::Lava => 3,
+                                };
+                            }
+                        }
+                    }
+                }
+                let at = |lx: i32, lz: i32, y: usize| ((lz * N + lx) as usize) * ny + y;
+                for lz in 0..N {
+                    for lx in 0..N {
+                        for y in 1..ny {
+                            let a = at(lx, lz, y);
+                            if !(cave[a] && kind[a] == 2) {
+                                continue;
+                            }
+                            if kind[at(lx, lz, y - 1)] == 1 {
+                                over += 1;
+                            }
+                            for (dx, dz) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                                let (bx, bz) = (lx + dx, lz + dz);
+                                if bx < 0 || bz < 0 || bx >= N || bz >= N {
+                                    continue;
+                                }
+                                if kind[at(bx, bz, y)] == 1 {
+                                    side += 1;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        eprintln!("carved {carved}, cave water {water}, water faces touching air: side {side}, over air {over}");
+        assert!(water > 2000, "test regions hold too little cave water ({water})");
+        assert!(side as f64 <= 1e-3 * water as f64, "{side} side faces");
+        assert_eq!(over, 0);
     }
 
     #[test]

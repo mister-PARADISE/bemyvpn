@@ -51,7 +51,7 @@
 use super::biome::{aridity, classify, BiomeInput, SnowLine, Strata};
 use super::climate::{lerp_d, river_distance, smoothstep_d, ClimateD, ClimateSampler, DEroded, DFbm, DRidged, FastSimplex, D2};
 use super::{ColumnInfo, SEA_LEVEL, WORLD_HEIGHT};
-use crate::math::{saturate, smoothstep};
+use crate::math::{lerp, saturate, smoothstep};
 use crate::noise::{derive_seed, hash2, hash_f01, mix64, salt, Fbm, Worley2};
 use crate::spline::{Spline, SplineValue};
 
@@ -384,11 +384,11 @@ const RIVER_WALL_G: f32 = 1.5e-3;
 /// Height of the plateau-country step (two tiers: 65 % + 35 %).
 const PLATEAU_HEIGHT: f32 = 46.0;
 
-/// Maximum slope of river valley / canyon walls (≈ 65°; steeper is left to the 3D band).
-const WALL_MAX: f32 = 2.2;
+/// Maximum slope of river valley / canyon walls (≈ 61°; steeper is left to the 3D band).
+const WALL_MAX: f32 = 1.8;
 
-/// Open plains: the offset spline is evaluated at this fixed pv (no ridge/valley relief).
-const PLAIN_PV: f32 = -0.3;
+/// Open plains: rise of the calm surface from the coast (SEA + 3.5) to far inland.
+const PLAIN_RISE: f32 = 7.0;
 /// Soft summit ceiling: `h' = C + A·ln(1 + (h − C)/A)` above C (slope factor 1/(1 + (h − C)/A),
 /// ≥ 0.2 for every reachable h: summits are compressed, never flattened into caps).
 const CEIL_START: f32 = 430.0;
@@ -402,6 +402,8 @@ const STACK_CELL: f64 = 64.0;
 const VOLCANO_CELL: f64 = 3600.0;
 const VOLCANO_P: f32 = 0.07;
 const HOODOO_CELL: f64 = 14.0;
+/// Fraction of hoodoo cells carrying a spire (art pass: 0.6 read as a rash of stripes).
+const HOODOO_P: f32 = 0.38;
 const DUNE_WAVELENGTH: f32 = 58.0;
 
 impl TerrainShaper {
@@ -543,12 +545,12 @@ impl TerrainShaper {
         }
     }
 
-    /// Open-plains weight `P = s(E*; 0.30, 0.56) · (1 − s(M; 0.04, 0.25)) · s(C; −0.06, 0.06) ·
-    /// (1 − s(χ; 0.06, 0.16))`, with the erosion boosted by 0.3 where the regional character χ is
+    /// Open-plains weight `P = s(E*; 0.22, 0.48) · (1 − s(M; 0.04, 0.25)) · s(C; −0.06, 0.06) ·
+    /// (1 − s(χ; 0.06, 0.16))`, with the erosion boosted by 0.35 where the regional character χ is
     /// low — big calm lowlands as the contrast to belts and plateau country (χ > 0.1).
     fn plain_weight(&self, cd: &ClimateD, chi: D2) -> D2 {
-        let e_eff = cd.e + smoothstep_d(-0.06, -0.24, chi) * 0.3;
-        smoothstep_d(0.30, 0.56, e_eff)
+        let e_eff = cd.e + smoothstep_d(-0.04, -0.22, chi) * 0.35;
+        smoothstep_d(0.22, 0.48, e_eff)
             * (1.0 - smoothstep_d(0.04, 0.25, cd.orogeny))
             * smoothstep_d(-0.06, 0.06, cd.c)
             * (1.0 - smoothstep_d(0.06, 0.16, chi))
@@ -591,21 +593,26 @@ impl TerrainShaper {
         let vfac = smoothstep_d(-0.95, -0.35, cd.pv) * 0.65 + 0.35;
         // Orogenic massif: broad dome over the belt core (land only).
         let massif = smoothstep_d(0.05, 0.9, cd.orogeny) * smoothstep_d(-0.12, 0.05, cd.c) * OROGENIC_UPLIFT;
-        let mut mountain = amp * shape * vfac + massif;
-        let mut steer_dbg = (0.0, 0.0);
-        // dendritic gullies on mountain flanks (strength ∝ local relief)
-        if mountain.v > 12.0 {
-            let ga = 0.65 * smoothstep(12.0, 60.0, mountain.v);
-            // Smooth steering proxy (see `DRidged::sample_with_steer`): regional slope + rounded
-            // main crests. Sharp crests / fast-turning gradients must not steer the gully phase.
-            let k = amp.v * vfac.v * s_mix.v * 1.25;
-            let gx = base.dx + k * steer.dx;
-            let gz = base.dz + k * steer.dz;
-            steer_dbg = (gx, gz);
-            let g = self.gullies(x, z, (gx, gz), ga, fp);
-            mountain = mountain + g;
-        }
+        let mountain = amp * shape * vfac + massif;
+        // Smooth steering proxy for the gully filter (see `DRidged::sample_with_steer`): regional
+        // slope + rounded main crests. Sharp crests must not steer the gully phase.
+        let ks = amp.v * vfac.v * s_mix.v * 1.25;
+        let (mut sgx, mut sgz) = (base.dx + ks * steer.dx, base.dz + ks * steer.dz);
         let mut h = base + mountain;
+
+        // --- open plains (DESIGN §2a anti-monotony): blend toward a calm, low surface (no
+        // ridge/valley relief, ±1.5-block swells) — lowland basins where rivers meander across
+        // genuinely flat floodplains, steppe and meadows.
+        let chi = if cd.c.v > -0.45 { self.character.sample(x, z, fp) } else { D2::ZERO };
+        let plain = if cd.c.v > -0.08 { self.plain_weight(cd, chi) } else { D2::ZERO };
+        if plain.v > 0.0 {
+            // low plains a few blocks above the (sea-level) rivers: 143.5 near the coast … 150.5
+            // far inland, so rivers wind through them in shallow, broad valleys
+            let flat = smoothstep_d(-0.05, 0.6, cd.c) * PLAIN_RISE + (SEA + 3.5) + self.swell.sample(x, z, fp) * 5.0;
+            h = lerp_d(h, flat, plain);
+            sgx = lerp(sgx, flat.dx, plain.v);
+            sgz = lerp(sgz, flat.dz, plain.v);
+        }
 
         // --- seafloor relief
         let sea_w = 1.0 - smoothstep(-0.26, -0.16, cd.c.v);
@@ -618,10 +625,10 @@ impl TerrainShaper {
         //     several km across bounded by escarpments ≈ 50 blocks wide (slope ≈ 1–1.7); rivers
         //     later cut canyons through them (lower envelope);
         //   χ < −0.1 → archipelago coasts: on the shelf the sea floor is pulled toward a skerry
-        //     field `SEA + 2 + 16(n_i − 0.12)` wherever n_i > 0.12 (λ 300) → rocky islets.
+        //     field `SEA + 2 + 16(n_i − 0.12)` wherever n_i > 0.12 (λ 300) → rocky islets;
+        //   low χ also widens the open plains (see `plain_weight`).
         let belt_free = 1.0 - smoothstep(0.1, 0.4, cd.orogeny.v);
         if belt_free > 0.0 && cd.c.v > -0.45 {
-            let chi = self.character.sample(x, z, fp);
             if chi.v > 0.1 && cd.c.v > 0.0 {
                 let wgt = smoothstep_d(0.1, 0.22, chi) * (belt_free * (1.0 - reg.swamp) * smoothstep(0.0, 0.12, cd.c.v));
                 let np = self.plateau.sample(x, z, fp);
@@ -639,11 +646,11 @@ impl TerrainShaper {
             }
         }
 
-        // --- fine roughness ±2–4 blocks (less on dunes/swamps/beaches)
+        // --- fine roughness ±2–4 blocks (less on plains/dunes/swamps/beaches)
         let rug = smoothstep(10.0, 120.0, amp.v);
         // flat beaches / shallows: no speckle islands at the waterline
         let shore = 0.25 + 0.75 * smoothstep(1.5, 9.0, (h.v - SEA).abs());
-        let rough_amp = (1.0 + 1.4 * rug) * (1.0 - 0.85 * reg.desert) * (1.0 - 0.7 * reg.swamp) * shore;
+        let rough_amp = (1.0 + 1.4 * rug) * (1.0 - 0.85 * reg.desert) * (1.0 - 0.7 * reg.swamp) * (1.0 - 0.75 * plain.v) * shore;
         h = h + self.rough.sample(x, z, fp) * rough_amp;
 
         // --- badlands: plateau mesas, then smooth terraces
@@ -699,6 +706,8 @@ impl TerrainShaper {
 
         // --- rivers: lower envelope with a U-channel + valley walls
         let gate = cd.river_gate;
+        // (gradient of the valley wall, weight with which it defines the surface)
+        let mut wall = (0.0f32, 0.0f32, 0.0f32);
         if gate > 0.0 && cd.c.v > -0.35 {
             let w = (cd.river_width * cd.river_width + 0.36 * (fp * fp) as f32).sqrt();
             // Distance coordinate across the valley: d = min(|n|/s, |n|/G), s = √(|∇n|² + f²).
@@ -711,16 +720,17 @@ impl TerrainShaper {
             let depth = 2.5 + 0.25 * w;
             let above = (h.v - SEA).max(0.0);
             let bank = SEA - 0.6 + (1.0 - gate) * above * 0.95;
-            let sigma = spline_d(&self.wall, &inp);
-            let kappa = 0.012 * (1.0 - saturate((cd.e.v + 1.0) * 0.5)) + 0.0015;
+            // plains: almost flat banks (σ → 0.03, no convexity) — broad floodplains
+            let sigma = lerp_d(spline_d(&self.wall, &inp), D2::c(0.03), plain);
+            // convexity κ: U-shaped troughs in the belts (gentle floor, walls steepening upward)
+            let kappa = (0.011 * (1.0 - saturate((cd.e.v + 1.0) * 0.5)) + 0.0015) * (1.0 - 0.9 * plain.v);
             let v = if d.v < w {
                 let r = d * (1.0 / w);
                 (1.0 - r.sq()) * (-depth) + bank
             } else {
                 // Wall V(u) = σu + κu² until its slope σ + 2κu reaches WALL_MAX at
-                // u* = (WALL_MAX − σ)/2κ, linear beyond (C¹). Without the cap, canyon walls in
-                // the orogeny belts (E* → −1: σ = 2.6, κ = 0.0135) reach slope > 4 within
-                // 60 blocks — 12-block single-column steps. Gradient: WALL_MAX·∇u + u*·∇σ.
+                // u* = (WALL_MAX − σ)/2κ, linear beyond (C¹). Gradient: WALL_MAX·∇u + u*·∇σ.
+                // (The straight upper wall gets spurs and couloirs from the gully filter below.)
                 let u = d - w;
                 let sig = sigma.minf(WALL_MAX);
                 let ustar = (WALL_MAX - sig.v) / (2.0 * kappa);
@@ -732,9 +742,30 @@ impl TerrainShaper {
             };
             let k = 6.0 + 10.0 * saturate((cd.e.v + 1.0) * 0.5);
             if v.v < h.v + k {
+                let ww = smoothstep(k, -k, v.v - h.v);
+                wall = (ww, v.dx, v.dz);
                 h = h.smin(v, k);
             }
             reg.channel = gate * (1.0 - smoothstep(w * 0.7, w * 1.15, d.v));
+        }
+
+        // --- dendritic gullies, couloirs and spurs on mountain flanks *and* valley walls (after
+        // the river envelope, steered by the wall where it defines the surface — no planar slabs).
+        // Their total relief Σaₖ ≈ 88·c·|g| is kept below 0.6× the height above the river level,
+        // so they fade out toward the valley floor instead of digging pits below it.
+        let mut steer_dbg = (0.0, 0.0);
+        let gully_gate = smoothstep(12.0, 60.0, mountain.v) * (1.0 - plain.v);
+        if gully_gate > 0.0 {
+            let gx = lerp(sgx, wall.1, wall.0);
+            let gz = lerp(sgz, wall.2, wall.0);
+            steer_dbg = (gx, gz);
+            let g0 = (gx * gx + gz * gz).sqrt().clamp(1e-3, 1.5);
+            let c0 = 0.65 * gully_gate;
+            let floor = saturate(0.6 * (h.v - SEA - 1.0) / (88.0 * g0 * c0));
+            let ga = c0 * floor * floor * (3.0 - 2.0 * floor);
+            if ga > 0.0 {
+                h = h + self.gullies(x, z, (gx, gz), ga, fp);
+            }
         }
 
         // --- inland lakes: flat water level, basin + containment sill (see `apply_lake`)
@@ -777,28 +808,48 @@ impl TerrainShaper {
             }
         }
 
-        // --- soft ceiling (world height 512)
-        if h.v > 466.0 {
-            let t = ((h.v - 466.0) / 30.0).tanh();
-            h = h.map(466.0 + 30.0 * t, 1.0 - t * t);
+        // --- sea stacks off cliffed coasts
+        let stack_w = smoothstep(-0.25, -0.55, cd.e_raw.v) * smoothstep(-0.26, -0.21, cd.c.v) * smoothstep(-0.13, -0.17, cd.c.v);
+        if stack_w > 0.05 && h.v < SEA + 4.0 && water_level <= SEA_LEVEL {
+            if let Some(st) = self.sea_stack(x, z, stack_w, fp) {
+                h = h.max(st);
+            }
+        }
+
+        // --- soft summit ceiling (logarithmic: compresses, never flattens; world height 512)
+        if h.v > CEIL_START {
+            let r = 1.0 + (h.v - CEIL_START) / CEIL_A;
+            h = h.map(CEIL_START + CEIL_A * r.ln(), 1.0 / r);
+        }
+        if h.v > 500.0 {
+            let t = ((h.v - 500.0) / 6.0).tanh();
+            h = h.map(500.0 + 6.0 * t, 1.0 - t * t);
         }
         h = h.maxf(6.0);
 
-        // --- jaggedness (3D detail band)
+        if water_level == i32::MIN && h.v < SEA {
+            water_level = SEA_LEVEL;
+        } else if water_level > SEA_LEVEL && reg.volcanic <= 0.5 && h.v >= water_level as f32 {
+            // hoodoo spire / soft ceiling raised the column above its lake level
+            water_level = i32::MIN;
+        }
+
+        // --- jaggedness (3D detail band) = crag noise + rock-shelter notches (see `density`)
         let slope = h.grad_len();
         let j_m = if mountain.v > 60.0 {
             let jg = smoothstep(-0.15, 0.30, self.jag.value(x, z, fp));
-            26.0 * smoothstep(60.0, 230.0, mountain.v) * (0.3 + 0.7 * jg)
+            11.0 * smoothstep(60.0, 230.0, mountain.v) * (0.3 + 0.7 * jg)
         } else {
             0.0
         };
-        let j_c = 14.0 * reg.cliff * smoothstep(SEA + 3.0, SEA + 12.0, h.v);
-        let j_s = 9.0 * smoothstep(1.2, 2.8, slope) * smoothstep(SEA + 2.0, SEA + 20.0, h.v);
+        let j_c = 12.0 * reg.cliff * smoothstep(SEA + 3.0, SEA + 12.0, h.v);
+        let j_s = 7.0 * smoothstep(1.2, 2.8, slope) * smoothstep(SEA + 2.0, SEA + 20.0, h.v);
         // no 3D detail on lake basins: an overhang hollow next to a water column would expose
         // a vertical water face
-        let tame = (1.0 - reg.badlands) * (1.0 - reg.desert) * (1.0 - 0.8 * reg.volcanic) * (1.0 - reg.swamp)
-            * if reg.lake > 0.0 || water_level > SEA_LEVEL { 0.0 } else { 1.0 };
-        let mut jag = j_m.max(j_c).max(j_s) * tame;
+        let lake_free = reg.lake <= 0.0 && water_level <= SEA_LEVEL;
+        let tame = (1.0 - reg.badlands) * (1.0 - reg.desert) * (1.0 - 0.8 * reg.volcanic) * (1.0 - reg.swamp) * if lake_free { 1.0 } else { 0.0 };
+        let j_notch = if lake_free && water_level == i32::MIN && reg.hoodoo < 0.05 { self.notch_reach(x, z, slope) } else { 0.0 };
+        let mut jag = j_m.max(j_c).max(j_s) * tame + j_notch;
         jag = jag.min(28.0).min((WORLD_HEIGHT as f32 - 3.0 - h.v).max(0.0));
         if h.v >= SEA {
             // A dry column's 3D band must stay above the sea: otherwise the overhang noise
@@ -809,14 +860,59 @@ impl TerrainShaper {
         if jag < 0.5 {
             jag = 0.0;
         }
-
-        if water_level == i32::MIN && h.v < SEA {
-            water_level = SEA_LEVEL;
-        } else if water_level > SEA_LEVEL && reg.volcanic <= 0.5 && h.v >= water_level as f32 {
-            // hoodoo spire / soft ceiling raised the column above its lake level
-            water_level = i32::MIN;
-        }
         Shape { height: h, mountain: mountain.v, regions: reg, jaggedness: jag, water_level, steer: steer_dbg }
+    }
+
+    /// Reach (blocks) of the rock-shelter notches of a column: `1.6·min(|∇H|, 4)·D(x, z)` with
+    /// the notch depth `D = 6·gate`, `gate = s(n(λ 85); −0.1, 0.4)·s(|∇H|; 0.8, 1.4)` — only steep
+    /// faces, in segments tens of blocks long. A pure function of (x, z, slope), recomputed
+    /// identically by `density`.
+    #[inline]
+    fn notch_reach(&self, x: f64, z: f64, slope: f32) -> f32 {
+        if slope <= 0.8 {
+            return 0.0;
+        }
+        const F: f64 = 1.0 / 85.0;
+        let g = smoothstep(-0.1, 0.4, self.notch_gate.n2d(x * F, z * F).0) * smoothstep(0.8, 1.4, slope);
+        NOTCH_REACH * slope.min(4.0) * NOTCH_D * g
+    }
+
+    /// Sea stack of the jittered 64-block grid near (x, z), if any: a superellipse pillar
+    /// `top·(1 − (r/R)⁴)^¼` standing on the shelf (vertical walls, rounded crown), R 4–9 blocks,
+    /// crown SEA + 7…30. Density ∝ stack weight (cliffed coasts only).
+    fn sea_stack(&self, x: f64, z: f64, w: f32, fp: f64) -> Option<D2> {
+        if fp > 6.0 {
+            return None;
+        }
+        let cx = (x / STACK_CELL).floor() as i32;
+        let cz = (z / STACK_CELL).floor() as i32;
+        let mut best: Option<D2> = None;
+        for dz in -1..=1 {
+            for dx in -1..=1 {
+                let id = self.stacks.cell_id(cx + dx, cz + dz);
+                if hash_f01(id) >= 0.55 * w {
+                    continue;
+                }
+                let (px, pz) = self.stacks.point_of(cx + dx, cz + dz);
+                let r = 4.0 + 5.0 * hash_f01(mix64(id ^ 3));
+                let (ddx, ddz) = ((x - px) as f32, (z - pz) as f32);
+                let d2 = ddx * ddx + ddz * ddz;
+                if d2 >= r * r {
+                    continue;
+                }
+                let foot = SEA - 14.0;
+                let top = SEA + 7.0 + 23.0 * hash_f01(mix64(id ^ 4)) * hash_f01(mix64(id ^ 5)).sqrt();
+                let dist = d2.sqrt().max(1e-3);
+                let u = dist / r;
+                let core = (1.0 - u * u * u * u).max(1e-4);
+                let v = foot + (top - foot) * core.powf(0.25);
+                let dv = (-(top - foot) * u * u * u * core.powf(-0.75) / r).max(-40.0);
+                if best.map_or(true, |b| v > b.v) {
+                    best = Some(D2::new(v, dv * ddx / dist, dv * ddz / dist));
+                }
+            }
+        }
+        best
     }
 
     /// Slope-aligned gully noise ("erosion filter").
@@ -1118,7 +1214,7 @@ impl TerrainShaper {
     /// Max over neighbouring hoodoo spires (superellipse domes), LOD-faded to their mean.
     fn hoodoo_spires(&self, x: f64, z: f64, fp: f64) -> D2 {
         // Expected spire volume per area: p·∫dome / cell² (dome ≈ 0.9·πr²·H).
-        const MEAN: f32 = 0.6 * 0.9 * std::f32::consts::PI * 16.0 * 22.0 / (14.0 * 14.0);
+        const MEAN: f32 = HOODOO_P * 0.9 * std::f32::consts::PI * 16.0 * 22.0 / (14.0 * 14.0);
         let fade = 1.0 - smoothstep(2.0, 6.0, fp as f32);
         if fade <= 0.0 {
             return D2::c(MEAN);
@@ -1129,7 +1225,7 @@ impl TerrainShaper {
         for dz in -1..=1 {
             for dx in -1..=1 {
                 let id = hash2(self.seed ^ 0x400D, cx + dx, cz + dz);
-                if hash_f01(id) >= 0.6 {
+                if hash_f01(id) >= HOODOO_P {
                     continue;
                 }
                 let (px, pz) = self.hoodoo.point_of(cx + dx, cz + dz);
@@ -1155,25 +1251,43 @@ impl TerrainShaper {
         best * fade + D2::c(MEAN * (1.0 - fade))
     }
 
-    /// 3D density (> 0 solid): `ρ = (H − y) + J·clamp(2.8·N₃(x, 1.4y, z) − bias)·(1 − u⁴)`,
-    /// u = |H − y|/J. Exactly `H − y` outside [H − J, H + J] (so the sign is exact there).
+    /// 3D density (> 0 solid):
+    /// `ρ = (H − y) + [A_n·clamp(2.8·N₃(x, 0.6y, z) − bias) − (A_s/1.6)·r(ℓ)]·(1 − u⁴)`, u = |H − y|/J.
+    /// * crags: N₃ is a 3-octave fBm (λ 72) sampled with y *stretched* (×0.6) → vertically
+    ///   jointed ribs, buttresses and towers instead of round blobs; above the surface it is biased
+    ///   downward (quadratically in the height above H) so overhangs stay attached;
+    /// * rock shelters: `r(ℓ)` is the recess profile of the bedding (`Strata::recess`, soft beds)
+    ///   and `A_s = notch_reach` = 1.6·|∇H|·D: subtracting |∇H|·D·r undercuts a steep face by
+    ///   ≈ D·r blocks horizontally (a face of slope g is g·s blocks above the face at horizontal
+    ///   depth s) → alcoves under hard ledges; thin fins holed from both sides become small arches.
+    /// `J = A_n + A_s` (capped); A_s is recomputed here from (x, z, slope), A_n = J − A_s.
+    /// Exactly `H − y` outside [H − J, H + J] (so the sign is exact there).
     pub fn density(&self, x: f64, y: f64, z: f64, col: &ColumnInfo) -> f32 {
         let base = col.height - y as f32;
         let j = col.jaggedness;
         if j <= 0.0 || base.abs() >= j {
             return base;
         }
-        let mut n = self.n3.sample3(x, y * 1.4, z) * 2.8;
         let u = base.abs() / j;
-        if base < 0.0 {
-            // Above the surface: bias downward (quadratically in the height above H) → shelves and
-            // overhangs stay attached to the slope; isolated floating blobs become rare.
-            n -= 0.35 * u + 0.45 * u * u;
+        let u2 = u * u;
+        let taper = 1.0 - u2 * u2;
+        let a_s = if col.water_level == i32::MIN { self.notch_reach(x, z, col.slope).min(j) } else { 0.0 };
+        let a_n = j - a_s;
+        let mut r = 0.0;
+        if a_n > 0.05 {
+            let mut n = self.n3.sample3(x, y * 0.6, z) * 2.8;
+            if base < 0.0 {
+                n -= 0.35 * u + 0.45 * u * u;
+            }
+            r += a_n * n.clamp(-1.0, 1.0);
+        }
+        if a_s > 0.0 {
+            let rec = self.strata.recess(y as f32 + self.strata.offset(x, z));
+            r -= a_s * (1.0 / NOTCH_REACH) * rec;
         }
         // Taper 1 − u⁴ → the detail vanishes at the band edges, so ρ is continuous there and
         // equals H − y exactly outside the band.
-        let u2 = u * u;
-        base + j * n.clamp(-1.0, 1.0) * (1.0 - u2 * u2)
+        base + r * taper
     }
 }
 
