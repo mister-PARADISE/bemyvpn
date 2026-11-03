@@ -174,7 +174,13 @@ impl<'a> Frame<'a> {
                     if lv.water[k] > lv.h[k] {
                         wat += 1.0;
                     } else {
-                        sum += Vec3::from_array(lv.albedo[k]);
+                        // Typical (vegetated) land colour: skip snow / bright rock outliers.
+                        let a = Vec3::from_array(lv.albedo[k]);
+                        if a.luminance() < 0.25 {
+                            sum += a;
+                        } else {
+                            sum += a * (0.25 / a.luminance());
+                        }
                     }
                 }
             }
@@ -291,8 +297,15 @@ impl<'a> Frame<'a> {
             let n = self.far.pattern.sample2_lod(x, z, fp);
             let eps = 0.015 + (fp / 6000.0) as f32 * 0.3;
             let land_w = smoothstep(self.far.threshold - eps, self.far.threshold + eps, n);
-            let tex = 0.8 + 0.4 * self.far.pattern.sample2_lod(z * 3.1, x * 3.1, fp);
-            let land = self.far.land * tex * e * (1.0 / PI);
+            // Fake relief: Lambert term of a normal from the pattern gradient (finite differences).
+            let hstep = 400.0f64.max(fp);
+            let gx = (self.far.pattern.sample2_lod(x + hstep, z, fp) - n) as f64 / hstep;
+            let gz = (self.far.pattern.sample2_lod(x, z + hstep, fp) - n) as f64 / hstep;
+            let nrm = Vec3::new((-gx * 2500.0) as f32, 1.0, (-gz * 2500.0) as f32).normalize();
+            let relief = (nrm.dot(self.sun).max(0.0) / self.sun.y.max(0.05)).min(1.6);
+            let tex = 0.75 + 0.5 * self.far.pattern.sample2_lod(z * 3.1, x * 3.1, fp);
+            let e_land = a.sun_illuminance(0.0) * (self.sun.y.max(0.0) * relief) + a.e_sky_up;
+            let land = self.far.land * tex * e_land * (0.85 / PI);
             let r = Vec3::new(d.x, -d.y, d.z);
             let cos = (-d.y).clamp(0.0, 1.0);
             let f = 0.02 + 0.98 * (1.0 - cos).powi(5);
