@@ -28,6 +28,18 @@ house, everything is crooked. I'm not asking for flat things, but improve it."
   non-mountain land contains at least one ≥ 16×16 area with height range ≤ 2.
 * Add a test/metric that measures both targets on seeds 1, 42, 2026 and report the numbers.
 
+**Render quality (user: "why is the quality so terrible?").** Required in the renderer:
+* Texture filtering by footprint: per-pixel texel footprint (distance × pixel angle / texel size)
+  selects a prefiltered level — 16×16 texels → 8×8 → 4×4 → 2×2 → material mean (box-filtered
+  averages, i.e. mipmapping of the procedural textures), with smooth blend between levels.
+  No moiré, no grain on distant terrain, forests or water.
+* Lighting in shadow: sky ambient from the sky model (hemisphere irradiance) + one bounce of
+  ground-reflected light (albedo × sun × cosine, approximated), soft AO; shaded sides must never go
+  near-black in daylight. Soft-ish sun shadow edges (small penumbra jitter on AA samples).
+* Ice/packed ice: smooth, subtle, light texture — no blue checkerboard.
+* AA: final shots use supersampling (≥ 4 rays per pixel on a rotated grid, more on high-contrast
+  pixels); the CLI must expose `--ssaa N` (N×N samples per pixel) for final renders.
+
 ## Conventions
 
 * 1 unit = 1 block = 1 m. **y is up.** World y ∈ [0, 512). `SEA_LEVEL = 140`: water fills y < 140.
