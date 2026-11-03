@@ -555,7 +555,10 @@ impl TerrainShaper {
         if let Some((cone, lava)) = self.volcano_cone(x, z) {
             let before = h;
             h = h.smax(cone, 28.0);
-            reg.volcanic = smoothstep(-10.0, 4.0, cone.v - before.v);
+            // biome edge = where the cone emerges from the terrain, roughened by low-frequency
+            // noise so the volcanic field is not a perfect disk
+            let wob = 26.0 * self.jag.value(x * 1.7, z * 1.7, fp);
+            reg.volcanic = smoothstep(-10.0, 4.0, cone.v - before.v + wob);
             if let Some(l) = lava {
                 if h.v < l as f32 - 0.5 {
                     water_level = l;

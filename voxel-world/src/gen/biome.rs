@@ -121,7 +121,7 @@ pub fn classify(b: &BiomeInput) -> Biome {
     if st < -0.12 && alt > 95.0 && b.mountain > 40.0 {
         return AlpineGrove;
     }
-    if alt > 85.0 && st > -0.12 && st < 0.5 && b.slope < 0.55 && c.humidity > -0.35 && b.mountain > 35.0 {
+    if alt > 85.0 && st > -0.12 && st < 0.32 && b.slope < 0.55 && c.humidity > -0.1 && b.mountain > 35.0 {
         return Meadow;
     }
 
@@ -255,7 +255,7 @@ impl SurfaceRules {
         // ---------- badlands / hoodoos: red sand on flats, banded terracotta
         if matches!(b, Biome::Badlands | Biome::Hoodoos) {
             if depth == 0 && slope < 0.75 && !(b == Biome::Hoodoos && below_surface < -3.0) {
-                return if self.patch(x, z) > 0.55 { Sand } else { RedSand };
+                return if self.patch(x, z) > 0.8 { Sand } else { RedSand };
             }
             if depth < 2 && slope < 0.5 {
                 return RedSand;
