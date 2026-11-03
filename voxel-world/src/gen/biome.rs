@@ -619,6 +619,44 @@ mod tests {
         assert!(matches!(m, Material::Stone | Material::Granite | Material::Andesite | Material::Calcite));
     }
 
+    /// Mesa cliffs and hoodoo spires expose a column's side down to its neighbour's top; those
+    /// blocks must be banded terracotta / red sand, never grey stone (previously the generic
+    /// "deeper than jaggedness + 10 → rock" cut-off made the lower part of every spire stone).
+    #[test]
+    fn badlands_faces_are_terracotta() {
+        let g = WorldGen::new(2026);
+        let (mut faces, mut stone) = (0usize, 0usize);
+        let mut cols = 0;
+        'outer: for j in 0..700 {
+            for i in 0..700 {
+                let x = -20000.0 + i as f64 * 57.1 + 0.5;
+                let z = -20000.0 + j as f64 * 57.1 + 0.5;
+                let c = g.column(x, z);
+                if !matches!(c.biome, Biome::Badlands | Biome::Hoodoos) {
+                    continue;
+                }
+                cols += 1;
+                for (ox, oz) in [(1.0, 0.0), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0)] {
+                    let n = g.column(x + ox, z + oz);
+                    let top = c.height.floor() as i32;
+                    for y in (n.height.floor() as i32 + 1)..=top {
+                        let m = g.surface_material(x.floor() as i32, y, z.floor() as i32, top - y, &c);
+                        faces += 1;
+                        if !matches!(m, Material::Terracotta | Material::RedSand | Material::Sand | Material::Snow) {
+                            stone += 1;
+                        }
+                    }
+                }
+                if cols > 4000 {
+                    break 'outer;
+                }
+            }
+        }
+        eprintln!("{cols} badlands columns, {faces} exposed side blocks, {stone} non-terracotta");
+        assert!(cols > 500 && faces > 1000);
+        assert!(stone * 1000 < faces, "{stone}/{faces} exposed badlands blocks are not terracotta");
+    }
+
     #[test]
     fn surface_rules_cost() {
         let g = WorldGen::new(1);

@@ -19,8 +19,21 @@
 //!   `W = Q_W(n_r)`, `pv = 1 − sabs(3·sabs(W) − 2)` (smooth folds). Because the river centre-lines
 //!   are the zero set `n_r = 0` and valleys are `pv → −1 ⇔ W → 0`, **rivers always run along valley
 //!   floors** and ridges (`pv = 1 ⇔ |W| = ⅔`) sit between neighbouring rivers — interfluves.
-//! * temperature `T = Q_T(fBm₃(λ4200))`, humidity `H = Q_H(fBm₃(λ3200))` on half-warped coords;
-//!   river gate `fBm₁(λ2600)` (≈70 % of valleys carry water, the rest are dry valleys).
+//! * temperature `T = Q_T(fBm₃(λ4200))`, base humidity `H₀ = Q_H(fBm₃(λ3200))` on half-warped
+//!   coords; river gate `fBm₁(λ2600)` (≈70 % of valleys carry water, the rest are dry valleys).
+//! * **orogeny** (DESIGN §2a, "mountains rarer but bigger"): `M = (1 − smoothstep(b₀, b₁, |b|))
+//!   · smoothstep(g₀, g₁, g)` — tubular neighbourhoods of the zero set of a λ 30 km field `b`
+//!   (crest lines of ranges), gated by a λ 16 km field `g` into ranges 10–20 km long. `M` lifts
+//!   the crust (`C += 0.28 M`) and squeezes the erosion: the *effective* erosion
+//!   `E* = lerp(0.35 + 0.65E, −0.55 + 0.45E, M)` (exported as `Climate::erosion`) lies in
+//!   [−0.3, 1] between ranges (plains, hills, plateaus) and [−1, −0.1] inside them.
+//! * **rain shadow** (DESIGN §2a): wind `w = curl ψ = (∂ψ/∂z, −∂ψ/∂x)/max(|∇ψ|, ε)` of a λ 36 km
+//!   pressure potential ψ — divergence-free, circulating around highs/lows. On a 256-block
+//!   lattice the streamline is traced *upwind* (`p ← p − 700·w(p)`, 8 Euler steps) and the
+//!   mountain mass `S = Σ e^{−k/6} M(pₖ)·land(pₖ) / Σ e^{−k/6}` and ocean fraction `O` are
+//!   accumulated (memoised per thread; C¹ smoothstep-bilinear interpolation between nodes).
+//!   Humidity `H = Q_H2(H₀ − 1.7 S + 0.45 M(1 − S) + 0.5 (O − ½))`: dry lee sides, wet windward
+//!   slopes (orographic lift), wet coasts facing the wind; `Q_H2` re-equalises to uniform.
 //!
 //! All octaves run on [`FastSimplex`] (branch-free 2D simplex with analytic gradient) with
 //! precomputed per-octave rotation×frequency matrices.
@@ -886,9 +899,9 @@ const Q_G: [f32; 25] = [
 
 // Effective humidity (rain shadow + orographic + maritime terms), before re-calibration.
 const Q_H2: [f32; 25] = [
-    -2.1700, -1.5510, -1.1910, -1.0061, -0.8843, -0.7692, -0.6695, -0.5695, -0.4671, -0.3635,
-    -0.2599, -0.1562, -0.0539, 0.0476, 0.1494, 0.2510, 0.3544, 0.4569, 0.5620, 0.6734,
-    0.7911, 0.9009, 1.0136, 1.1504, 1.4592,
+    -2.2216, -1.6122, -1.2339, -1.0243, -0.8975, -0.7793, -0.6785, -0.5796, -0.4759, -0.3731,
+    -0.2687, -0.1649, -0.0626, 0.0403, 0.1424, 0.2444, 0.3483, 0.4515, 0.5569, 0.6700,
+    0.7889, 0.9014, 1.0149, 1.1563, 1.4642,
 ];
 
 /// Target quantile function of continentalness (piecewise linear in p).
@@ -1430,6 +1443,9 @@ mod tests {
             for (f, fx1, fx0, fz1, fz0) in [
                 (a.c, px.c, mx.c, pz.c, mz.c),
                 (a.e, px.e, mx.e, pz.e, mz.e),
+                (a.e_raw, px.e_raw, mx.e_raw, pz.e_raw, mz.e_raw),
+                (a.orogeny, px.orogeny, mx.orogeny, pz.orogeny, mz.orogeny),
+                (a.h, px.h, mx.h, pz.h, mz.h),
                 (a.t, px.t, mx.t, pz.t, mz.t),
                 (a.river_n, px.river_n, mx.river_n, pz.river_n, mz.river_n),
             ] {
@@ -1442,7 +1458,7 @@ mod tests {
                 }
             }
         }
-        assert!(bad < 40, "{bad} gradient mismatches");
+        assert!(bad < 70, "{bad} gradient mismatches of 14000");
     }
 
     #[test]
