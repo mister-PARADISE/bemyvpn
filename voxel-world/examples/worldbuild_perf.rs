@@ -52,4 +52,9 @@ fn main() {
         );
         drop(w);
     }
+    let hwm = std::fs::read_to_string("/proc/self/status")
+        .ok()
+        .and_then(|s| s.lines().find(|l| l.starts_with("VmHWM")).map(|l| l.to_string()))
+        .unwrap_or_default();
+    println!("peak RSS: {hwm}");
 }

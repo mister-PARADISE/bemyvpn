@@ -1590,10 +1590,18 @@ fn plan_cutaway(s: &Scout) -> Vec<Candidate> {
                     face.push(c);
                 }
             }
+            // silhouette points: tops of the face columns and of an interior 9×9 lattice
+            let mut tops: Vec<[f64; 3]> = Vec::new();
+            for face in &faces {
+                for c in face {
+                    tops.push([c.x, (c.height + c.jaggedness * 0.5) as f64 + 1.0, c.z]);
+                }
+            }
             for j in 0..=8 {
                 for i in 0..=8 {
                     let c = s.gen.column((x0 + i * 22) as f64, (z0 + j * 22) as f64);
                     tmax = tmax.max(c.height + c.jaggedness * 0.5);
+                    tops.push([c.x, (c.height + c.jaggedness * 0.5) as f64 + 1.0, c.z]);
                 }
             }
             let min_y = ((tmin - 100.0).floor() as i32).max(8);
@@ -1629,16 +1637,15 @@ fn plan_cutaway(s: &Scout) -> Vec<Candidate> {
             let el = 35.0 * DEG;
             // azimuth from the box centre toward the camera corner; the camera looks back at it
             let az = (sx as f64).atan2(sz as f64);
-            let mut corners = Vec::new();
+            // frame the actual silhouette: bottom corners of the box + terrain top points
+            let mut corners = tops;
             for &xx in &[x0 as f64, x1 as f64] {
-                for &yy in &[min_y as f64, top as f64] {
-                    for &zz in &[z0 as f64, z1 as f64] {
-                        corners.push([xx, yy, zz]);
-                    }
+                for &zz in &[z0 as f64, z1 as f64] {
+                    corners.push([xx, min_y as f64, zz]);
                 }
             }
             let fov = 32.0;
-            let mut camera = frame_box(center, (az + PI).rem_euclid(2.0 * PI), -el, &corners, fov, 0.84);
+            let mut camera = frame_box(center, (az + PI).rem_euclid(2.0 * PI), -el, &corners, fov, 0.88);
             // never inside terrain (irrelevant in diorama mode, but keep the invariant)
             let floor = camera_floor(s.gen, camera.pos[0], camera.pos[2], 4.0) as f64 + 4.0;
             camera.pos[1] = camera.pos[1].max(floor);

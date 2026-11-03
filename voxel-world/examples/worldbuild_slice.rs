@@ -1,7 +1,7 @@
 //! world-build visual check: builds a small world and writes PNGs to target/agent-worldbuild/:
-//! * `s{seed}_top.png`      — top-down map of level 0 (top material, hill-shaded, water tinted),
+//! * `s{seed}_l{l0}_top.png`      — top-down map of level 0 (top material, hill-shaded, water tinted),
 //!                            framed by heightfield level 1 (to check continuity at the border);
-//! * `s{seed}_xy_{k}.png`   — vertical x–y cross-sections (one block = 2×2 px) coloured by
+//! * `s{seed}_l{l0}_xy_{k}.png`   — vertical x–y cross-sections (one block = 2×2 px) coloured by
 //!                            material: caves, strata, aquifers, water, trees, overhangs.
 //!
 //! usage: cargo run --release --example worldbuild_slice -- [seed] [cx cz] [l0]
@@ -75,7 +75,7 @@ fn main() {
         center_x: cx,
         center_z: cz,
         l0_size: l0,
-        hf_size: 512,
+        hf_size: l0.max(256),
         hf_levels: 2,
         cave_radius: l0 / 2,
         feature_radius: l0 / 2,
@@ -136,7 +136,7 @@ fn main() {
             }
         }
     }
-    let path = dir.join(format!("s{seed}_top.png"));
+    let path = dir.join(format!("s{seed}_l{l0}_top.png"));
     write_png_rgb8(&path, wpx, wpx, &img).unwrap();
     eprintln!("wrote {}", path.display());
 
@@ -167,7 +167,7 @@ fn main() {
                 }
             }
         }
-        let path = dir.join(format!("s{seed}_xy_{k}.png"));
+        let path = dir.join(format!("s{seed}_l{l0}_xy_{k}.png"));
         write_png_rgb8(&path, wpx, hpx, &img).unwrap();
         eprintln!("wrote {} (z = {z}, y {y0}..{y1})", path.display());
     }
