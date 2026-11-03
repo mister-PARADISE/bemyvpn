@@ -23,14 +23,26 @@
 //! neighbours: desert ↔ savanna ↔ jungle, plains ↔ forest ↔ dark forest, taiga ↔ old-growth
 //! taiga; the cold end is snow-free tundra/taiga (grass, podzol, moss, gravel).
 //!
-//! # Surface rules
-//! `material()` costs one integer hash plus at most two noise evaluations (a 2D simplex for patches
-//! at the top or the snow line above y 300, a 3D simplex for rock strata underground).
-use super::climate::FastSimplex;
-use super::terrain::Regions;
+//! Drylands are ordered by one scalar, the aridity `α = hot·dry` ([`aridity`]): savanna/steppe
+//! ring (α > 0.2) → desert (α ≳ 0.36) → red desert → badlands mesa country (α ≳ 0.65, low/mid
+//! erosion, λ 2.7 km selector) — badlands always sit inside deserts, never in green forest.
+//! Open plains (`Regions::plain`, flat high-erosion lowlands) are grassland/meadow/savanna, with
+//! forest only where very wet.
+//!
+//! # Surface rules (art pass: no per-block dithering anywhere)
+//! Every choice is a threshold of *smooth* fields, so materials form coherent patches with clean
+//! edges: a two-octave patch field (λ 44 + 13), a soil-depth field (λ 31), the bedding model
+//! [`Strata`] for all exposed rock (horizontal, gently folded beds; soft beds = dark shale /
+//! red mudstone that the terrain density undercuts into rock shelters), and for snow the
+//! band-limited macro surface of the column (see [`SurfaceRules`]'s `snow_cover`). Per-column
+//! values are memoised per thread, so a block costs a few hashes after the first one of its
+//! column.
+use super::climate::{ClimateSampler, FastSimplex};
+use super::terrain::{Regions, TerrainShaper};
 use super::{Biome, Climate, ColumnInfo, BEDROCK_TOP, SEA_LEVEL};
 use crate::materials::Material;
-use crate::noise::{derive_seed, hash2, hash3, salt, Simplex};
+use crate::math::smoothstep;
+use crate::noise::{derive_seed, hash3, hash_f01, mix64, salt, Simplex};
 
 const SEA: f32 = SEA_LEVEL as f32;
 
@@ -208,9 +220,29 @@ pub fn classify(b: &BiomeInput) -> Biome {
     if r.swamp > 0.5 && alt < 7.0 {
         return Swamp;
     }
+    // semi-arid ecotone around the deserts: dry grassland (savanna when hot, steppe otherwise)
+    if r.arid > 0.2 {
+        return if st > 0.25 { Savanna } else { Plains };
+    }
+    // open plains: grassland / meadows, forest only where very wet
+    let hu = c.humidity;
+    if r.plain > 0.5 {
+        if st < -0.2 {
+            return if hu > 0.6 { Taiga } else { Plains };
+        }
+        if st > 0.42 {
+            return if hu > 0.55 { Jungle } else if hu > -0.15 { Plains } else { Savanna };
+        }
+        return if hu > 0.62 {
+            Forest
+        } else if hu > 0.12 {
+            Meadow
+        } else {
+            Plains
+        };
+    }
 
     // ---------------- lowlands: Whittaker partition of (T_s, H), snow-free
-    let hu = c.humidity;
     if st < -0.2 {
         // boreal / tundra
         if hu > 0.45 {
@@ -244,14 +276,170 @@ pub fn classify(b: &BiomeInput) -> Biome {
 }
 
 // =====================================================================================
+// Geology: sedimentary bedding (shared with the terrain density)
+// =====================================================================================
+
+/// Thickness (blocks) of one lithology unit of the bedding.
+pub const BED_UNIT: f32 = 4.0;
+/// Thickness of one erosion unit: soft units weather back into notches (rock shelters).
+pub const NOTCH_UNIT: f32 = 8.0;
+/// Probability that an erosion unit is soft (recessive).
+const SOFT_P: f32 = 0.22;
+
+/// Aridity `α = smoothstep(0.2, 0.5, T)·smoothstep(−0.12, −0.7, H)` ∈ [0, 1] of the sea-level
+/// climate: one scalar orders the drylands (savanna/steppe ring → desert → red desert → badlands),
+/// so badlands are always nested inside deserts and never touch humid forest.
+#[inline]
+pub fn aridity(temperature: f32, humidity: f32) -> f32 {
+    smoothstep(0.20, 0.50, temperature) * smoothstep(-0.12, -0.70, humidity)
+}
+
+/// Layered rock. Bedding coordinate `ℓ(x, y, z) = y + D(x, z)` with
+/// `D = 34·n(λ 3.2 km) + 3.5·n(λ 260)` (broad folds → dips ≤ ≈ 4 %, gentle undulation), so beds
+/// are nearly horizontal, laterally continuous surfaces. Along ℓ:
+/// * lithology units of [`BED_UNIT`] blocks pick Stone / Andesite (/ Sandstone in arid climates)
+///   from a hash of the unit index — runs of equal units give geometric bed thicknesses; the
+///   thresholds shift with a lateral facies field (λ 900), so beds pinch out over hundreds of
+///   blocks (large, low-contrast patches instead of blobs);
+/// * erosion units of [`NOTCH_UNIT`] blocks are soft with probability 0.22: their recess profile
+///   `16 f²(1 − f)²` drives the terrain density (soft beds weather back under the hard bed above
+///   → rock shelters, ledges; thin fins holed from both sides → small arches) and their core is
+///   dark shale (Deepslate) / red mudstone (RedSandstone in arid climates).
+/// Granite appears only as rare thin vertical dikes and as deep plutons (cut-away views).
+#[derive(Clone, Copy, Debug)]
+pub struct Strata {
+    seed: u64,
+    fold: FastSimplex,
+    warp: FastSimplex,
+    facies: FastSimplex,
+    dike: FastSimplex,
+    dike_gate: FastSimplex,
+}
+
+impl Strata {
+    pub fn new(seed: u64) -> Self {
+        let s = derive_seed(seed, salt("geology.strata"));
+        Strata {
+            seed: s,
+            fold: FastSimplex::new(s ^ 1),
+            warp: FastSimplex::new(s ^ 2),
+            facies: FastSimplex::new(s ^ 3),
+            dike: FastSimplex::new(s ^ 4),
+            dike_gate: FastSimplex::new(s ^ 5),
+        }
+    }
+
+    /// Bedding offset `D(x, z)` (ℓ = y + D).
+    #[inline]
+    pub fn offset(&self, x: f64, z: f64) -> f32 {
+        const F1: f64 = 1.0 / 3200.0;
+        const F2: f64 = 1.0 / 260.0;
+        34.0 * self.fold.n2d(x * F1, z * F1).0 + 3.5 * self.warp.n2d(x * F2, z * F2).0
+    }
+
+    #[inline]
+    fn unit_hash(&self, k: i64, salt: u64) -> f32 {
+        hash_f01(mix64(self.seed ^ salt ^ (k as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)))
+    }
+
+    /// Recess strength ∈ [0, 1] at bedding coordinate ℓ: `16 f²(1 − f)²` across a soft erosion
+    /// unit (f = position inside the unit), 0 in hard units. C¹ in ℓ.
+    #[inline]
+    pub fn recess(&self, ell: f32) -> f32 {
+        let u = ell * (1.0 / NOTCH_UNIT);
+        let k = u.floor();
+        if self.unit_hash(k as i64, 0x50F7) >= SOFT_P {
+            return 0.0;
+        }
+        let f = u - k;
+        let b = f * (1.0 - f);
+        16.0 * b * b
+    }
+
+    /// Lateral facies field ≈ [−1, 1] (λ 900).
+    #[inline]
+    pub fn facies(&self, x: f64, z: f64) -> f32 {
+        const F: f64 = 1.0 / 900.0;
+        self.facies.n2d(x * F, z * F).0
+    }
+
+    /// Rare thin vertical granite dikes: the ≈ 4-block neighbourhood of the zero set of a λ 700
+    /// field, only where a λ 2.4 km gate is high (≈ 5 % of the area).
+    #[inline]
+    pub fn dike(&self, x: f64, z: f64) -> bool {
+        const G: f64 = 1.0 / 2400.0;
+        const F: f64 = 1.0 / 700.0;
+        if self.dike_gate.n2d(x * G, z * G).0 < 0.55 {
+            return false;
+        }
+        let (n, dx, dz) = self.dike.n2d(x * F, z * F);
+        let gl = (dx * dx + dz * dz).sqrt() * F as f32;
+        n.abs() < 2.0 * gl
+    }
+
+    /// Lithology at bedding coordinate ℓ given the facies value and the aridity.
+    #[inline]
+    pub fn lithology(&self, ell: f32, facies: f32, arid: f32) -> Material {
+        if self.recess(ell) > 0.3 {
+            return if arid > 0.45 { Material::RedSandstone } else { Material::Deepslate };
+        }
+        let k = (ell * (1.0 / BED_UNIT)).floor() as i64;
+        let u = self.unit_hash(k, 0x11B0);
+        let sand = 0.62 * smoothstep(0.15, 0.6, arid);
+        if u < sand {
+            return Material::Sandstone;
+        }
+        let andesite = 0.30 + 0.16 * facies;
+        if u < sand + (1.0 - sand) * andesite {
+            Material::Andesite
+        } else {
+            Material::Stone
+        }
+    }
+}
+
+// =====================================================================================
 // Surface rules
 // =====================================================================================
 
+/// Footprint of the band-limited "macro" surface used by the snow rules (wavelengths below
+/// ≈ 2·48 blocks removed: gullies, crags, roughness).
+const MACRO_FP: f64 = 48.0;
+
+/// Per-column geology/patch values (pure functions of (seed, x, z)), memoised per thread: the
+/// world builder asks for every block of a column in a row.
+#[derive(Clone, Copy)]
+struct ColGeo {
+    seed: u64,
+    x: i32,
+    z: i32,
+    valid: bool,
+    offset: f32,
+    facies: f32,
+    dike: bool,
+    patch: f32,
+    soil: f32,
+}
+
+thread_local! {
+    static GEO: std::cell::Cell<ColGeo> = const { std::cell::Cell::new(ColGeo {
+        seed: 0, x: 0, z: 0, valid: false, offset: 0.0, facies: 0.0, dike: false, patch: 0.0, soil: 0.0,
+    }) };
+    /// (seed, x bits, z bits) → (macro slope, height − macro height) of the last column asked.
+    static MACRO: std::cell::Cell<(u64, u64, u64, f32, f32)> = const { std::cell::Cell::new((u64::MAX, 0, 0, 0.0, 0.0)) };
+}
+
 pub struct SurfaceRules {
     pub seed: u64,
-    patch: Simplex,
-    strata: Simplex,
+    patch_a: FastSimplex,
+    patch_b: FastSimplex,
+    lobe: FastSimplex,
+    soil: FastSimplex,
+    strata: Strata,
+    pluton: Simplex,
     snow: SnowLine,
+    climate: ClimateSampler,
+    terrain: TerrainShaper,
 }
 
 #[inline]
@@ -261,11 +449,18 @@ fn bit(h: u64, shift: u32) -> f32 {
 
 impl SurfaceRules {
     pub fn new(seed: u64) -> Self {
+        let s = derive_seed(seed, salt("surface.patch"));
         SurfaceRules {
             seed,
-            patch: Simplex::new(derive_seed(seed, salt("surface.patch"))),
-            strata: Simplex::new(derive_seed(seed, salt("surface.strata"))),
+            patch_a: FastSimplex::new(s),
+            patch_b: FastSimplex::new(s ^ 0x77),
+            lobe: FastSimplex::new(s ^ 0x10BE),
+            soil: FastSimplex::new(s ^ 0x5011),
+            strata: Strata::new(seed),
+            pluton: Simplex::new(derive_seed(seed, salt("surface.strata"))),
             snow: SnowLine::new(seed),
+            climate: ClimateSampler::new(seed),
+            terrain: TerrainShaper::new(seed),
         }
     }
 
@@ -275,70 +470,116 @@ impl SurfaceRules {
         self.snow.at(col.x, col.z, col.climate.temperature)
     }
 
-    /// Patchiness field in [-1, 1] at ~14-block scale (one 2D simplex).
-    #[inline]
-    fn patch(&self, x: i32, z: i32) -> f32 {
-        self.patch.n2(x as f64 * 0.071, z as f64 * 0.071)
+    /// The bedding model (shared with the terrain density).
+    pub fn strata(&self) -> &Strata {
+        &self.strata
     }
 
-    /// Snow cover of an exposed block at world y (None below the snow line or where the slope
-    /// exceeds the altitude-dependent limit). Dithered ±3 blocks so the line is not a contour.
+    /// Per-column values: bedding offset, facies, dike flag, patch field, soil field.
     #[inline]
-    fn snow_cover(&self, y: i32, col: &ColumnInfo, jit: f32) -> Option<Material> {
-        if (y as f32) < SNOW_LINE_MIN - 4.0 {
+    fn geo(&self, x: i32, z: i32) -> ColGeo {
+        let g = GEO.with(|c| c.get());
+        if g.valid && g.x == x && g.z == z && g.seed == self.seed {
+            return g;
+        }
+        let (xf, zf) = (x as f64 + 0.5, z as f64 + 0.5);
+        // patch field: two octaves (λ 44 + λ 13) → coherent patches with fringed edges
+        let p = (0.8 * self.patch_a.n2d(xf * (1.0 / 44.0), zf * (1.0 / 44.0)).0
+            + 0.45 * self.patch_b.n2d(xf * (1.0 / 13.0), zf * (1.0 / 13.0)).0)
+            * (1.0 / 0.92);
+        let g = ColGeo {
+            seed: self.seed,
+            x,
+            z,
+            valid: true,
+            offset: self.strata.offset(xf, zf),
+            facies: self.strata.facies(xf, zf),
+            dike: self.strata.dike(xf, zf),
+            patch: p,
+            soil: self.soil.n2d(xf * (1.0 / 31.0), zf * (1.0 / 31.0)).0,
+        };
+        GEO.with(|c| c.set(g));
+        g
+    }
+
+    /// Band-limited ("macro") slope of the column and its height above the macro surface
+    /// (negative in gullies / couloirs, positive on spurs and crags). One extra band-limited
+    /// shape evaluation per column, memoised.
+    fn macro_relief(&self, col: &ColumnInfo) -> (f32, f32) {
+        let (kx, kz) = (col.x.to_bits(), col.z.to_bits());
+        let m = MACRO.with(|c| c.get());
+        if m.0 == self.seed && m.1 == kx && m.2 == kz {
+            return (m.3, m.4);
+        }
+        let cd = self.climate.sample_d(col.x, col.z, MACRO_FP);
+        let sh = self.terrain.shape(&cd, col.x, col.z, MACRO_FP);
+        let r = (sh.height.grad_len(), col.height - sh.height.v);
+        MACRO.with(|c| c.set((self.seed, kx, kz, r.0, r.1)));
+        r
+    }
+
+    /// Snow / glacier ice on an exposed top block — smooth fields only (no per-block noise):
+    /// * the edge lies `0…14·λ(x,z)` blocks above the snow line S (λ: two-octave lobe field,
+    ///   λ 150 + 47) → a clean, wavy edge, and never any snow below S (DESIGN §2a);
+    /// * fields: the band-limited macro slope must stay below `θ(r) + 0.75·hollow`, θ the
+    ///   altitude-dependent limit and `hollow = smoothstep(−0.5, −4, H − H_macro)` — snow streaks
+    ///   down couloirs and gullies of faces that are otherwise too steep;
+    /// * crags and spurs: the local slope must stay below `θ + 0.9 + 0.8·hollow`;
+    /// * above the glacier level, moderately steep icefalls (macro slope > 0.75) show packed ice
+    ///   in coherent patches.
+    fn snow_cover(&self, x: i32, y: i32, z: i32, col: &ColumnInfo) -> Option<Material> {
+        if (y as f32) < SNOW_LINE_MIN - 1.0 {
             return None;
         }
-        let rel = y as f32 + 0.5 - self.snow_line(col) + 6.0 * (jit - 0.5);
-        if rel < 0.0 || col.slope >= snow_slope_limit(rel) {
+        let (xf, zf) = (x as f64 + 0.5, z as f64 + 0.5);
+        let lobe = 0.5
+            + 0.5 * (0.7 * self.lobe.n2d(xf * (1.0 / 150.0), zf * (1.0 / 150.0)).0
+                + 0.3 * self.lobe.n2d(zf * (1.0 / 47.0) + 31.7, xf * (1.0 / 47.0) - 11.3).0);
+        let rel = y as f32 + 0.5 - self.snow_line(col) - 14.0 * lobe.clamp(0.0, 1.0);
+        if rel < 0.0 {
             return None;
         }
-        if rel > GLACIER_REL && (col.slope > 1.1 || jit < 0.3) {
+        let (sm, dev) = self.macro_relief(col);
+        let hollow = smoothstep(-0.5, -4.0, dev);
+        let limit = snow_slope_limit(rel) + 0.75 * hollow;
+        if sm >= limit || col.slope > limit + 0.9 + 0.8 * hollow {
+            return None;
+        }
+        if rel > GLACIER_REL && sm > 0.75 && self.geo(x, z).patch > 0.2 {
             return Some(Material::PackedIce);
         }
         Some(Material::Snow)
     }
 
-    /// Underground rock: deepslate below y≈64 (dithered), bedrock floor, strata lenses
-    /// (granite/andesite/calcite) from a squashed 3D simplex.
+    /// Rock below the soil: bedrock floor, deepslate under bedding level 60 (coherent: follows
+    /// the beds), deep granite plutons, rare granite dikes, otherwise the bedded lithology.
     #[inline]
-    fn rock(&self, x: i32, y: i32, z: i32, h: u64) -> Material {
+    fn rock(&self, x: i32, y: i32, z: i32, col: &ColumnInfo) -> Material {
         if y < BEDROCK_TOP {
             let p = (BEDROCK_TOP - y) as f32 / (BEDROCK_TOP as f32 + 1.0);
-            if y == 0 || bit(h, 0) < p {
+            if y == 0 || bit(hash3(self.seed, x, y, z), 0) < p {
                 return Material::Bedrock;
             }
         }
-        let deep = if y < 56 {
-            true
-        } else if y < 72 {
-            bit(h, 16) < (72 - y) as f32 / 16.0
-        } else {
-            false
-        };
-        let v = self.strata.n3(x as f64 * 0.021, y as f64 * 0.065, z as f64 * 0.021);
-        if deep {
-            if v > 0.62 {
+        let g = self.geo(x, z);
+        let ell = y as f32 + 0.5 + g.offset;
+        if y < 120 {
+            let v = self.pluton.n3(x as f64 * (1.0 / 110.0), y as f64 * (1.0 / 80.0), z as f64 * (1.0 / 110.0));
+            if v > 0.55 - 0.004 * (120 - y).min(60) as f32 {
                 return Material::Granite;
             }
+        }
+        if ell < 60.0 {
             return Material::Deepslate;
         }
-        if v > 0.52 {
-            if v > 0.78 {
-                return Material::Calcite;
-            }
-            Material::Granite
-        } else if (-0.84..-0.52).contains(&v) {
-            Material::Andesite
-        } else if v < -0.84 {
-            Material::Calcite
-        } else {
-            Material::Stone
+        if g.dike {
+            return Material::Granite;
         }
+        self.strata.lithology(ell, g.facies, aridity(col.climate.temperature, col.climate.humidity))
     }
 
     pub fn material(&self, x: i32, y: i32, z: i32, depth: i32, col: &ColumnInfo) -> Material {
         use Material::*;
-        let h = hash3(self.seed, x, y, z);
         let below_surface = col.height - y as f32;
         let b = col.biome;
         // Deep blocks, cave floors/walls far below the 2D surface band → rock. Badlands and
@@ -347,43 +588,55 @@ impl SurfaceRules {
         let cut = match b {
             Biome::Badlands | Biome::Hoodoos => 64.0,
             Biome::Volcanic => 28.0,
-            _ => col.jaggedness + 10.0 + 4.0 * bit(h, 32),
+            _ => col.jaggedness + 12.0,
         };
         if depth > 48 || below_surface > cut || y < BEDROCK_TOP {
-            return self.rock(x, y, z, h);
+            return self.rock(x, y, z, col);
         }
         let st = col.surface_temperature;
         let slope = col.slope;
         let underwater = y < col.water_level && b != Biome::Volcanic;
-        let jit = bit(h, 48);
-        let hc = hash2(self.seed ^ 0x51, x, z);
-        let dirt_depth = 3 + (hc & 1) as i32 + ((hc >> 1) & 1) as i32;
+        let g = self.geo(x, z);
+        let p = g.patch;
+        // soil thickness 2–5 from a smooth field (no per-column dithering on hillside steps)
+        let dirt_depth = 3 + ((g.soil + 0.75) * 1.6).floor().clamp(-1.0, 2.0) as i32;
 
         // ---------- snow: altitude-driven only (nothing below the local snow line), and only on
         // the open surface — not on cave floors or overhang ledges deep below the column top
         if depth == 0 && !underwater && below_surface <= col.jaggedness + 1.5 {
-            if let Some(m) = self.snow_cover(y, col, jit) {
+            if let Some(m) = self.snow_cover(x, y, z, col) {
                 return m;
             }
         }
 
-        // ---------- badlands / hoodoos: red sand on flats, banded terracotta
+        // ---------- badlands / hoodoos: red sand flats with pale drifts, banded terracotta with
+        // pale sandstone beds (caprock ledges) — fewer, larger orange masses
         if matches!(b, Biome::Badlands | Biome::Hoodoos) {
             if depth == 0 && slope < 0.75 && !(b == Biome::Hoodoos && below_surface < -3.0) {
-                return if self.patch(x, z) > 0.8 { Sand } else { RedSand };
+                return if p > 0.5 {
+                    Sand
+                } else if p < -0.62 {
+                    Terracotta
+                } else {
+                    RedSand
+                };
             }
             if depth < 2 && slope < 0.5 {
                 return RedSand;
             }
             if depth < 56 {
+                let ell = y as f32 + 0.5 + 0.35 * g.offset;
+                let k = (ell * (1.0 / 6.0)).floor() as i64;
+                if hash_f01(mix64(self.seed ^ 0xCA9 ^ (k as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15))) < 0.17 {
+                    return Sandstone;
+                }
                 return Terracotta;
             }
-            return self.rock(x, y, z, h);
+            return self.rock(x, y, z, col);
         }
         // ---------- volcanic: basalt with radial obsidian flows, ash (gravel)
         if b == Biome::Volcanic {
             if depth < 6 {
-                let p = self.patch(x, z);
                 if p > 0.45 && depth < 3 {
                     return Obsidian;
                 }
@@ -395,7 +648,7 @@ impl SurfaceRules {
                 }
                 return Basalt;
             }
-            return if depth < 20 { Basalt } else { self.rock(x, y, z, h) };
+            return if depth < 20 { Basalt } else { self.rock(x, y, z, col) };
         }
 
         // ---------- underwater floors (sea, rivers, lakes)
@@ -404,10 +657,9 @@ impl SurfaceRules {
             if depth >= 4 {
                 return match b {
                     Biome::Beach | Biome::WarmOcean if depth < 7 => Sandstone,
-                    _ => self.rock(x, y, z, h),
+                    _ => self.rock(x, y, z, col),
                 };
             }
-            let p = self.patch(x, z);
             return match b {
                 Biome::Swamp => {
                     if p > 0.2 {
@@ -454,80 +706,88 @@ impl SurfaceRules {
             };
         }
 
-        // ---------- steep rock faces (any biome without its own rock)
-        let steep = slope > 1.25 + 0.25 * jit;
+        // ---------- steep rock faces (any biome without its own rock); coherent threshold
+        let steep = slope > 1.2 + 0.2 * p;
+        // talus / scree: moderately steep rocky ground (the foot of cliffs, alpine slopes)
+        let rocky = col.height > SEA + 70.0 || col.jaggedness > 4.0;
+        let scree = rocky && slope > 0.8 && p > -0.15;
 
         match b {
             Biome::Beach | Biome::Desert | Biome::SnowyBeach => {
-                let sand = if b == Biome::Desert { 4 + (hc & 3) as i32 } else { 3 + (hc & 1) as i32 };
-                if depth < sand {
+                let sand = if b == Biome::Desert { 5 + ((g.soil + 1.0) * 1.5) as i32 } else { 3 + (g.soil > 0.0) as i32 };
+                if depth < sand && !(steep && b == Biome::Desert && depth > 0) {
+                    if depth == 0 && b == Biome::Desert {
+                        // red-desert ecotone toward the badlands: red sand patches grow with aridity
+                        let red = smoothstep(0.55, 0.72, aridity(col.climate.temperature, col.climate.humidity));
+                        if red > 0.0 && 0.5 + 0.5 * p < red {
+                            return RedSand;
+                        }
+                    }
                     return Sand;
                 }
                 if depth < sand + 8 {
                     return Sandstone;
                 }
-                return self.rock(x, y, z, h);
+                return self.rock(x, y, z, col);
             }
             Biome::StonyShore => {
-                if depth < 2 && self.patch(x, z) > 0.3 {
+                if depth < 2 && p > 0.3 {
                     return Gravel;
                 }
-                return self.rock(x, y, z, h);
+                return self.rock(x, y, z, col);
             }
             Biome::Glacier => {
                 // firn / glacier ice under the (snow-line-driven) surface
                 if depth == 0 {
-                    return if steep { self.rock(x, y, z, h) } else { PackedIce };
+                    return if steep { self.rock(x, y, z, col) } else { PackedIce };
                 }
-                if depth < 10 + (hc & 3) as i32 && !steep {
-                    return if self.patch(x, z) > 0.6 { Ice } else { PackedIce };
+                if depth < 9 + dirt_depth && !steep {
+                    return if p > 0.6 { Ice } else { PackedIce };
                 }
-                return self.rock(x, y, z, h);
+                return self.rock(x, y, z, col);
             }
             Biome::SnowyPeaks | Biome::SnowySlopes | Biome::SnowyPlains => {
                 // the top block was handled by `snow_cover`; a snowpack lies below it where
                 // the surface is snowy, otherwise bare rock / scree / alpine turf
-                let top_snow = self.snow_cover(y + depth, col, 0.5).is_some();
-                if top_snow && depth < 3 {
-                    return if b == Biome::SnowyPeaks && depth > 0 { PackedIce } else { Snow };
+                if depth > 0 && depth < 3 && self.snow_cover(x, y + depth, z, col).is_some() {
+                    return if b == Biome::SnowyPeaks { PackedIce } else { Snow };
                 }
-                if b == Biome::SnowyPlains && !steep && depth < dirt_depth {
-                    return if depth == 0 { if self.patch(x, z) > 0.2 { Gravel } else { Grass } } else { Dirt };
+                if b == Biome::SnowyPlains && !steep && slope < 0.5 && depth < dirt_depth {
+                    return if depth == 0 { if p > 0.3 { Gravel } else { Grass } } else { Dirt };
                 }
-                if depth < 2 && slope < 0.9 && self.patch(x, z) > 0.3 {
+                if depth < 2 && slope < 1.2 && p > -0.1 {
                     return Gravel;
                 }
-                return self.rock(x, y, z, h);
+                return self.rock(x, y, z, col);
             }
             Biome::StonyPeaks => {
-                if depth < 2 && slope < 0.8 && self.patch(x, z) > 0.35 {
+                if depth < 2 && slope < 1.15 && p > -0.2 {
                     return Gravel;
                 }
-                return self.rock(x, y, z, h);
+                return self.rock(x, y, z, col);
             }
             _ => {}
         }
 
         // ---------- vegetated / soil biomes
         if steep {
-            return self.rock(x, y, z, h);
+            return self.rock(x, y, z, col);
         }
         if depth >= dirt_depth {
-            return self.rock(x, y, z, h);
+            return self.rock(x, y, z, col);
         }
         if depth > 0 {
             return match b {
                 Biome::Swamp if depth < 2 => Mud,
                 Biome::River | Biome::FrozenRiver => Sand,
+                _ if scree && depth < 2 => Gravel,
                 _ => Dirt,
             };
         }
         // depth == 0: the exposed top block (never snow below the snow line)
-        // scree on moderately steep mountain ground
-        if slope > 0.95 && self.patch(x, z) > 0.25 {
+        if scree {
             return Gravel;
         }
-        let p = self.patch(x, z);
         match b {
             Biome::River | Biome::FrozenRiver => {
                 if p > 0.3 {
@@ -537,16 +797,16 @@ impl SurfaceRules {
                 }
             }
             Biome::Taiga | Biome::SnowyTaiga | Biome::AlpineGrove => {
-                if p > 0.25 {
+                if p > 0.3 {
                     Podzol
-                } else if p < -0.65 {
+                } else if p < -0.6 {
                     Moss
                 } else {
                     Grass
                 }
             }
             Biome::OldGrowthTaiga => {
-                if p > -0.1 {
+                if p > -0.05 {
                     Podzol
                 } else if p < -0.6 {
                     Moss
@@ -580,7 +840,7 @@ impl SurfaceRules {
                 }
             }
             Biome::Savanna => {
-                if p > 0.6 {
+                if p > 0.62 {
                     Dirt
                 } else {
                     Grass
@@ -588,17 +848,17 @@ impl SurfaceRules {
             }
             Biome::Plains | Biome::Meadow if st < -0.35 => {
                 // tundra: grass with gravel, moss and podzol patches — but no snow
-                if p > 0.55 {
+                if p > 0.6 {
                     Gravel
-                } else if p < -0.5 {
+                } else if p < -0.55 {
                     Moss
-                } else if p > 0.3 {
+                } else if p > 0.35 {
                     Podzol
                 } else {
                     Grass
                 }
             }
-            Biome::Meadow if slope > 0.6 && p > 0.4 => Gravel,
+            Biome::Meadow if slope > 0.6 && p > 0.45 => Gravel,
             _ => Grass,
         }
     }
@@ -617,7 +877,10 @@ mod tests {
         let m = g.surface_material(0, 20, 0, 100, &col);
         assert!(matches!(m, Material::Deepslate | Material::Granite));
         let m = g.surface_material(0, 100, 0, 60, &col);
-        assert!(matches!(m, Material::Stone | Material::Granite | Material::Andesite | Material::Calcite));
+        assert!(matches!(
+            m,
+            Material::Stone | Material::Granite | Material::Andesite | Material::Deepslate | Material::Sandstone | Material::RedSandstone
+        ));
     }
 
     /// Mesa cliffs and hoodoo spires expose a column's side down to its neighbour's top; those

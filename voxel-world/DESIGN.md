@@ -37,6 +37,9 @@ house, everything is crooked. I'm not asking for flat things, but improve it."
   ground-reflected light (albedo × sun × cosine, approximated), soft AO; shaded sides must never go
   near-black in daylight. Soft-ish sun shadow edges (small penumbra jitter on AA samples).
 * Ice/packed ice: smooth, subtle, light texture — no blue checkerboard.
+* **Sky banding bug** (seen in a 3840×2160 render: concentric rings across the whole sky): the
+  sky-view LUT must be sampled with bilinear filtering at sufficient resolution (or evaluated
+  analytically per pixel), plus blue-noise dither before 8-bit quantisation. Verify at 4K.
 * AA: final shots use supersampling (≥ 4 rays per pixel on a rotated grid, more on high-contrast
   pixels); the CLI must expose `--ssaa N` (N×N samples per pixel) for final renders.
 

@@ -544,8 +544,9 @@ impl DFbm {
 ///
 /// Musgrave's recurrence `sigᵢ = (1 − |nᵢ|)²·wᵢ`, `wᵢ₊₁ = clamp(g·sigᵢ, 0, 1)` produces C⁰ creases
 /// at every clamp boundary and at |nᵢ| = 0 of the detail octaves ("curtain folds" in a hillshade).
-/// Here the abs is a smooth abs `√(n² + ε²)` (ε ≈ 0.1: crests stay crisp at mountain scale but are C¹ over a few dozen
-/// blocks, so slope-steered detail does not flip across them)
+/// Here the abs is a smooth abs `√(n² + ε²)` (ε = 0.035 on the main octave, 0.07 on detail octaves:
+/// crisp arêtes that are still C¹ over a few blocks; slope-steered detail uses the separate,
+/// strongly rounded steering proxy so it does not flip across them)
 /// and the weight is the unclamped polynomial `wᵢ₊₁ = sigᵢ(1.6 − 0.6 sigᵢ) ∈ [0,1]` — detail still
 /// concentrates on crests, but the field is C¹ everywhere.
 #[derive(Clone, Debug)]
@@ -591,11 +592,14 @@ impl DRidged {
             }
             let (n, nx, nz) = o.eval(x, z);
             let nd = D2::new(n, nx, nz);
+            // art pass: crisp arêtes. ε 0.035 on the main octave rounds a crest over ≈ 2ε/|∇n| ≈ 50
+            // blocks (was ≈ 150 → domes); the steering proxy above stays smooth (ε 0.45), so the
+            // slope-steered gullies do not flip across the sharper crests.
             let eps = if k == 0 {
                 steer = (1.0 - sabs_d(nd, 0.45)).maxf(0.0).sq() * (1.6 * self.inv_norm);
-                0.10
+                0.035
             } else {
-                0.14
+                0.07
             };
             let sig = (1.0 - sabs_d(nd, eps)).maxf(0.0).sq() * weight;
             weight = sig * (1.6 - sig * 0.6);
