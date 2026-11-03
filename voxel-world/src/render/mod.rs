@@ -32,17 +32,53 @@ use shade::{Ctx, Frame};
 /// Base exposure calibrated so that a sunlit mid-albedo surface at noon maps to mid-tones.
 pub const BASE_EXPOSURE: f32 = 0.42;
 
-/// Sub-pixel offsets for the extra AA samples (8-rook pattern, centred, in pixel units).
-const AA_PATTERN: [(f32, f32); 8] = [
-    (-0.4375, -0.0625),
-    (-0.1875, -0.3125),
-    (0.0625, -0.4375),
-    (0.3125, -0.1875),
-    (0.4375, 0.0625),
-    (0.1875, 0.3125),
-    (-0.0625, 0.4375),
-    (-0.3125, 0.1875),
-];
+thread_local! {
+    /// Per-thread memo of pure per-vertex quantities (never changes results, only speed).
+    static CTX: std::cell::RefCell<Ctx> = std::cell::RefCell::new(Ctx::new());
+}
+
+/// Sub-pixel offset of AA sample `k` ≥ 1: a (0,2)-sequence (Hammersley base 2 × van der Corput
+/// scrambled) so that any prefix of 4, 8, 16 samples is well stratified.
+#[inline]
+fn aa_offset(k: u32) -> (f32, f32) {
+    let k = k - 1;
+    let n = 16.0;
+    let x = (k as f32 + 0.5) / n;
+    let y = ((k.reverse_bits() >> 28) as f32 + 0.5) / n;
+    // Cranley–Patterson rotation keeps the pixel centre (sample 0) away from the set.
+    ((x + 0.53).fract() - 0.5, (y + 0.29).fract() - 0.5)
+}
+
+/// Two-stage adaptive resolve of one pixel: `n` (4 or 8) stratified samples, then up to 16 when
+/// the samples themselves disagree strongly (sub-pixel geometry, sun glints, foliage).
+#[inline]
+fn resolve_pixel(frame: &Frame, x: usize, y: usize, c0: Vec3, n: usize, exposure: f32, ctx: &mut Ctx) -> Vec3 {
+    // Karis (tone-map aware) weights: bright outliers cannot dominate the average.
+    let wt = |c: Vec3| 1.0 / (1.0 + (c * exposure).luminance().max(0.0));
+    let w0 = wt(c0);
+    let mut acc = c0 * w0;
+    let mut wsum = w0;
+    let (mut lo, mut hi) = (post::tm_luma(c0 * exposure), post::tm_luma(c0 * exposure));
+    let order: [u32; 16] = [1, 9, 5, 13, 3, 11, 7, 15, 2, 10, 6, 14, 4, 12, 8, 16];
+    let mut taken = 0usize;
+    let mut target = n;
+    while taken < target {
+        let k = order[taken];
+        let (ox, oy) = aa_offset(k);
+        let c = sample(frame, x as f32 + 0.5 + ox, y as f32 + 0.5 + oy, k, ctx);
+        let l = post::tm_luma(c * exposure);
+        lo = lo.min(l);
+        hi = hi.max(l);
+        let ws = wt(c);
+        acc += c * ws;
+        wsum += ws;
+        taken += 1;
+        if taken == target && target < 16 && hi - lo > 0.18 {
+            target = 16;
+        }
+    }
+    acc / wsum
+}
 
 /// Statistics of the last render (for logs / benchmarks).
 #[derive(Clone, Copy, Debug, Default)]
@@ -73,12 +109,14 @@ pub fn render_with_stats(world: &World, cam: &Camera, sun: &Sun, settings: &Rend
     let t1 = std::time::Instant::now();
     let mut base = vec![Vec3::ZERO; w * h];
     base.par_chunks_mut(w * band).enumerate().for_each(|(ci, chunk)| {
-        let mut ctx = Ctx::new();
-        for (k, px) in chunk.iter_mut().enumerate() {
-            let y = ci * band + k / w;
-            let x = k % w;
-            *px = sample(&frame, x as f32 + 0.5, y as f32 + 0.5, 0, &mut ctx);
-        }
+        CTX.with(|cell| {
+            let ctx = &mut *cell.borrow_mut();
+            for (k, px) in chunk.iter_mut().enumerate() {
+                let y = ci * band + k / w;
+                let x = k % w;
+                *px = sample(&frame, x as f32 + 0.5, y as f32 + 0.5, 0, ctx);
+            }
+        })
     });
     st.pass1_s = t1.elapsed().as_secs_f64();
 
@@ -130,32 +168,17 @@ pub fn render_with_stats(world: &World, cam: &Camera, sun: &Sun, settings: &Rend
             .collect();
         extra_count = counts.iter().filter(|&&c| c > 0).count();
         out.par_chunks_mut(w * band).enumerate().for_each(|(ci, chunk)| {
-            let mut ctx = Ctx::new();
-            for (k, px) in chunk.iter_mut().enumerate() {
-                let y = ci * band + k / w;
-                let x = k % w;
-                let i = y * w + x;
-                let n = counts[i] as usize;
-                let c0 = base[i];
-                if n == 0 {
-                    *px = c0;
-                    continue;
+            CTX.with(|cell| {
+                let ctx = &mut *cell.borrow_mut();
+                for (k, px) in chunk.iter_mut().enumerate() {
+                    let y = ci * band + k / w;
+                    let x = k % w;
+                    let i = y * w + x;
+                    let n = counts[i] as usize;
+                    let c0 = base[i];
+                    *px = if n == 0 { c0 } else { resolve_pixel(&frame, x, y, c0, n, exposure, ctx) };
                 }
-                // Karis (tone-map aware) weighted resolve.
-                let wt = |c: Vec3| 1.0 / (1.0 + (c * exposure).luminance().max(0.0));
-                let w0 = wt(c0);
-                let mut acc = c0 * w0;
-                let mut wsum = w0;
-                let stride = 8 / n;
-                for s in 0..n {
-                    let (ox, oy) = AA_PATTERN[s * stride];
-                    let c = sample(&frame, x as f32 + 0.5 + ox, y as f32 + 0.5 + oy, (s + 1) as u32, &mut ctx);
-                    let ws = wt(c);
-                    acc += c * ws;
-                    wsum += ws;
-                }
-                *px = acc / wsum;
-            }
+            })
         });
     } else {
         out.copy_from_slice(&base);
