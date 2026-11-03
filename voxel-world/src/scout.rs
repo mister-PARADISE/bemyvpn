@@ -1542,7 +1542,9 @@ fn frame_box(center: [f64; 3], yaw: f64, pitch: f64, corners: &[[f64; 3]], fov: 
     cam
 }
 
-fn plan_cutaway(s: &Scout) -> Vec<Candidate> {
+/// `avoid`: category bits already featured by another shot (e.g. badlands of the drylands shot)
+/// — penalised so that the cut-away shows a different landscape.
+fn plan_cutaway(s: &Scout, avoid: u16) -> Vec<Candidate> {
     let g = &s.grid;
     let items: Vec<(f32, usize, ())> = (0..g.n * g.n)
         .filter(|&k| {
@@ -1555,9 +1557,11 @@ fn plan_cutaway(s: &Scout) -> Vec<Candidate> {
         })
         .map(|k| {
             let relief = s.max2[k] - s.min2[k];
+            let pen = |m: u16| if avoid & m != 0 { -0.6 } else { 0.4 };
             let s0 = crate::math::smoothstep(30.0, 100.0, relief)
-                + 0.4 * s.frac(cat::BADLANDS, k, 3)
+                + pen(cat::BADLANDS) * s.frac(cat::BADLANDS, k, 3)
                 + 0.3 * s.frac(cat::FOREST, k, 3)
+                + 0.3 * s.frac(cat::SNOW, k, 3)
                 + 0.2 * s.frac(cat::GRASS, k, 3);
             (s0, k, ())
         })
@@ -1604,34 +1608,43 @@ fn plan_cutaway(s: &Scout) -> Vec<Candidate> {
                     tops.push([c.x, (c.height + c.jaggedness * 0.5) as f64 + 1.0, c.z]);
                 }
             }
-            let min_y = ((tmin - 100.0).floor() as i32).max(8);
-            // cave area on each face (samples every 4 × 4 blocks)
-            let mut area = [0.0f32; 4];
-            let mut tot = [0.0f32; 4];
+            // cave samples on each face (every 4 × 4 blocks) down to the deepest candidate floor
+            let floors = [100.0f32, 70.0, 130.0].map(|d| ((tmin - d).floor() as i32).max(8));
+            let lowest = *floors.iter().min().unwrap();
+            let mut samples: [Vec<(i32, bool)>; 4] = Default::default();
             for (f, face) in faces.iter().enumerate() {
                 for c in face {
                     let top = c.height as i32 - 3;
-                    let mut y = min_y + 2;
+                    let mut y = lowest + 2;
                     while y < top {
-                        tot[f] += 1.0;
-                        if s.gen.cave_field(c.x, y as f64 + 0.5, c.z, c) > 0.0 {
-                            area[f] += 1.0;
-                        }
+                        samples[f].push((y, s.gen.cave_field(c.x, y as f64 + 0.5, c.z, c) > 0.0));
                         y += 4;
                     }
                 }
             }
-            // camera corner: faces seen from (sx, sz) are −x if sx<0 else +x, −z if sz<0 else +z
-            let mut best = (f32::NEG_INFINITY, -1.0f64, -1.0f64);
-            for (sx, sz) in [(-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
-                let fx = if sx < 0.0 { 0 } else { 1 };
-                let fz = if sz < 0.0 { 2 } else { 3 };
-                let frac = (area[fx] + area[fz]) / (tot[fx] + tot[fz]).max(1.0);
-                if frac > best.0 {
-                    best = (frac, sx, sz);
+            // choose the floor and the camera corner (faces seen from (sx, sz): −x if sx<0 else +x,
+            // −z if sz<0 else +z) that show the largest cave fraction on the visible faces
+            let mut best = (f32::NEG_INFINITY, floors[0], -1.0f64, -1.0f64, 0.0f32);
+            for (fi, &fl) in floors.iter().enumerate() {
+                for (sx, sz) in [(-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
+                    let fx = if sx < 0.0 { 0 } else { 1 };
+                    let fz = if sz < 0.0 { 2 } else { 3 };
+                    let (mut pos, mut tot) = (0.0f32, 0.0f32);
+                    for &(y, c) in samples[fx].iter().chain(samples[fz].iter()) {
+                        if y >= fl + 2 {
+                            tot += 1.0;
+                            pos += c as u8 as f32;
+                        }
+                    }
+                    let frac = pos / tot.max(1.0);
+                    let sc = frac - 0.004 * fi as f32;
+                    if sc > best.0 {
+                        best = (sc, fl, sx, sz, frac);
+                    }
                 }
             }
-            let (cave_frac, sx, sz) = best;
+            let (_, min_y, sx, sz, cave_frac) = best;
+            let any_cave = samples.iter().flatten().any(|&(y, c)| c && y >= min_y + 2);
             let top = tmax.ceil() as i32;
             let center = [cx as f64, (min_y as f64 + top as f64) * 0.5, cz as f64];
             let el = 35.0 * DEG;
@@ -1661,8 +1674,7 @@ fn plan_cutaway(s: &Scout) -> Vec<Candidate> {
                 cave_radius: 256,
                 feature_radius: 128,
             };
-            let any_cave = area.iter().any(|&a| a > 0.0);
-            let score = s0 + 2.0 * (cave_frac / 0.08).min(1.0) - if any_cave { 0.0 } else { 3.0 };
+            let score = s0 + 3.0 * (cave_frac / 0.15).min(1.0) - if any_cave { 0.0 } else { 3.0 };
             let title = format!("Разрез {0}×{0}: пещеры и пласты (y {1}–{2})", CUTAWAY_SIZE, min_y, top);
             let note = format!("cave fraction on visible faces {:.3}, relief {:.0}", cave_frac, tmax - tmin);
             Candidate {
@@ -1840,6 +1852,8 @@ pub fn plan_shots_detailed(gen: &WorldGen) -> Vec<PlannedShot> {
     let mut chosen: Vec<Option<(Candidate, bool)>> = vec![None; 8];
     // order: most constrained / most important first
     let order = [0usize, 4, 2, 1, 3, 5, 6, 7];
+    // land-cover classes already featured (drylands → the cut-away prefers another landscape)
+    let mut used_mask = 0u16;
     for &idx in &order {
         let cands = match idx {
             0 => plan_panorama(&s),
@@ -1854,7 +1868,7 @@ pub fn plan_shots_detailed(gen: &WorldGen) -> Vec<PlannedShot> {
                 plan_alpine(&s, &avoid)
             }
             5 => plan_forest(&s),
-            6 => plan_cutaway(&s),
+            6 => plan_cutaway(&s, used_mask),
             _ => plan_orbital(&s),
         };
         let pick = match select(&cands, &taken) {
@@ -1870,6 +1884,11 @@ pub fn plan_shots_detailed(gen: &WorldGen) -> Vec<PlannedShot> {
             }
         };
         taken.push([pick.0.camera.pos[0], pick.0.camera.pos[2]]);
+        if idx == 3 {
+            if let Some(k) = s.grid.nearest(pick.0.target[0], pick.0.target[1]) {
+                used_mask |= s.grid.mask[k] & cat::DRY;
+            }
+        }
         chosen[idx] = Some(pick);
     }
     chosen
