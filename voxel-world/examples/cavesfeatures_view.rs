@@ -77,7 +77,9 @@ fn caves_slices(g: &WorldGen, seed: u64) {
     let lat = Lattice { g };
     let mut carved = 0usize;
     let mut under = 0usize;
+    let mut leaks = 0usize;
     for (si, dzs) in zs.iter().enumerate() {
+        let mut state = vec![0u8; w * hgt];
         let z = cz + dzs + 0.5;
         let mut cache = std::collections::HashMap::new();
         for px in 0..w {
@@ -95,6 +97,7 @@ fn caves_slices(g: &WorldGen, seed: u64) {
                     if f > 0.0 {
                         carved += 1;
                         let fill = g.cave_fill(x.floor() as i32, y.floor() as i32, z.floor() as i32, &col);
+                        state[py * w + px] = 1 + fill as u8;
                         c = match fill {
                             CaveFill::Air => [18, 16, 20],
                             CaveFill::Water => [30, 70, 190],
@@ -113,12 +116,30 @@ fn caves_slices(g: &WorldGen, seed: u64) {
                         }
                     }
                 }
+                if !solid {
+                    state[py * w + px] = 9;
+                }
                 let row = si * (hgt + gap) + py;
                 let o = (row * w + px) * 3;
                 img[o..o + 3].copy_from_slice(&c);
             }
         }
+        for py in 0..hgt {
+            for px in 1..w {
+                let (a, b) = (state[py * w + px - 1], state[py * w + px]);
+                if (a == 2 && b == 1) || (a == 1 && b == 2) {
+                    leaks += 1;
+                    if leaks < 6 {
+                        let x = cx - 256.0 + px as f64;
+                        let y = (hgt - 1 - py) as f64 + 0.5;
+                        let z = cz + dzs + 0.5;
+                        eprintln!("leak at x={x} y={y} z={z}: wt(x-1)={:?} wt(x)={:?} wt(x+1)={:?}", g.caves.water_table(x - 0.5, z), g.caves.water_table(x + 0.5, z), g.caves.water_table(x + 1.5, z));
+                    }
+                }
+            }
+        }
     }
+    eprintln!("water/air side contacts inside caves: {leaks}");
     eprintln!("slice carve fraction {:.2}%", 100.0 * carved as f64 / under.max(1) as f64);
     let p = out_dir().join(format!("seed{seed}_cave_slices.png"));
     write_png_rgb8(&p, w as u32, total_h as u32, &img).unwrap();

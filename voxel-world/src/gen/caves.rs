@@ -396,12 +396,11 @@ impl CaveCarver {
 
         // ---- aquifer septa -----------------------------------------------------------------
         if yf < AQ_MAX_LEVEL + 3.0 && f > -6.0 {
-            let (l1, l2, dist) = self.aquifer_pair(x, z);
-            let lmax = l1.max(l2);
-            if (l1 - l2).abs() > 0.5 && yf < lmax + 3.0 {
-                // septum along the bisector, its position wobbling ±1.5 blocks
-                let wob = 1.5 * self.rough.n3(x * (1.0 / 23.0), yf as f64 * (1.0 / 17.0), z * (1.0 / 23.0));
-                let wall = 1.5 * (dist + wob - 2.5);
+            let dist = self.aquifer_septum_dist(x, yf, z);
+            if dist < 12.0 {
+                // septum along the bisector, 5–8 blocks thick, its faces wobbling
+                let wob = 0.75 + 0.75 * self.rough.n3(x * (1.0 / 23.0), yf as f64 * (1.0 / 17.0), z * (1.0 / 23.0));
+                let wall = 1.5 * (dist - 2.6 - wob);
                 f = f.min(wall);
             }
         }
@@ -437,29 +436,45 @@ impl CaveCarver {
         w - dh + rough - floor
     }
 
-    /// The two nearest aquifer cells around (x, z): (level₁, level₂, distance to their bisector).
-    /// Levels are `-1e4` for dry cells.
-    fn aquifer_pair(&self, x: f64, z: f64) -> (f32, f32, f32) {
+    /// Distance from (x, z) to the nearest Voronoi bisector between the owning aquifer cell and
+    /// any neighbouring cell whose water table differs, considering only heights `y` below the
+    /// higher of the two tables (+3). `f32::MAX` if there is none.
+    /// Bisector distance: `δ = (|p−c_k|² − |p−c₁|²) / (2|c_k−c₁|)` (exact for a Voronoi diagram).
+    fn aquifer_septum_dist(&self, x: f64, y: f32, z: f64) -> f32 {
         let cx = (x / AQ_CELL).floor() as i32;
         let cz = (z / AQ_CELL).floor() as i32;
-        let mut best = [(f64::MAX, 0.0f64, 0.0f64, 0i32, 0i32); 2];
+        let mut cells = [(0.0f64, 0.0f64, 0.0f64, 0i32, 0i32); 16];
+        let mut n = 0;
+        let mut best = 0usize;
         for dz in -1..=1 {
             for dx in -1..=1 {
                 let (px, pz) = self.aq_point(cx + dx, cz + dz);
                 let d2 = (px - x) * (px - x) + (pz - z) * (pz - z);
-                if d2 < best[0].0 {
-                    best[1] = best[0];
-                    best[0] = (d2, px, pz, cx + dx, cz + dz);
-                } else if d2 < best[1].0 {
-                    best[1] = (d2, px, pz, cx + dx, cz + dz);
+                cells[n] = (d2, px, pz, cx + dx, cz + dz);
+                if d2 < cells[best].0 {
+                    best = n;
                 }
+                n += 1;
             }
         }
-        let (d1, p1x, p1z, c1x, c1z) = best[0];
-        let (d2, p2x, p2z, c2x, c2z) = best[1];
-        let sep = ((p1x - p2x).powi(2) + (p1z - p2z).powi(2)).sqrt().max(1e-6);
-        let dist = ((d2 - d1) / (2.0 * sep)) as f32;
-        (self.aq_level(c1x, c1z), self.aq_level(c2x, c2z), dist)
+        let (d1, p1x, p1z, c1x, c1z) = cells[best];
+        let l1 = self.aq_level(c1x, c1z);
+        let mut out = f32::MAX;
+        for (k, &(dk, pkx, pkz, ckx, ckz)) in cells[..n].iter().enumerate() {
+            if k == best {
+                continue;
+            }
+            let sep = ((p1x - pkx).powi(2) + (p1z - pkz).powi(2)).sqrt().max(1e-6);
+            let dist = ((dk - d1) / (2.0 * sep)) as f32;
+            if dist >= out || dist > 14.0 {
+                continue;
+            }
+            let lk = self.aq_level(ckx, ckz);
+            if (l1 - lk).abs() > 0.5 && y < l1.max(lk) + 3.0 {
+                out = dist;
+            }
+        }
+        out
     }
 
     #[inline]
@@ -507,14 +522,12 @@ impl CaveCarver {
         (l > -1.0e3).then_some(l)
     }
 
-    /// What fills a carved voxel: lava at the bottom, water below the local aquifer table (or
-    /// under a water-covered column), air elsewhere.
+    /// What fills a carved voxel: lava at the bottom, water below the local aquifer table, air
+    /// elsewhere. (Caves under lakes/seas are sealed ≥ 6 blocks below the floor, so they need no
+    /// special fill; filling them with the lake's water would create unsupported water columns.)
     pub fn fill(&self, x: i32, y: i32, z: i32, col: &ColumnInfo) -> CaveFill {
         if y <= LAVA_LEVEL {
             return CaveFill::Lava;
-        }
-        if col.water_level != i32::MIN && col.water_level as f32 > col.height && y < col.water_level {
-            return CaveFill::Water;
         }
         if (y as f32) < AQ_MAX_LEVEL {
             if let Some(l) = self.water_table(x as f64 + 0.5, z as f64 + 0.5) {
