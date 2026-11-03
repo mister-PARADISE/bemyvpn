@@ -30,6 +30,7 @@ pub struct SynthTerrain {
     mesa: Fbm,
     forest: Fbm,
     climate: Fbm,
+    strata: crate::noise::Simplex,
     seed: u64,
 }
 
@@ -55,6 +56,7 @@ impl SynthTerrain {
             mesa: Fbm::new(s("mesa"), 2600.0, 3, 2.0, 0.5),
             forest: Fbm::new(s("forest"), 900.0, 4, 2.0, 0.5),
             climate: Fbm::new(s("climate"), 5000.0, 3, 2.0, 0.5),
+            strata: crate::noise::Simplex::new(s("strata")),
             seed,
         }
     }
@@ -208,6 +210,27 @@ impl SynthTerrain {
                 for y in a.max(0)..b.min(ymax) {
                     cells[y as usize] = m;
                 }
+            }
+            // Underground strata for the cut-away: deepslate below ~64 (dithered), granite /
+            // andesite / calcite blobs from 3D simplex noise.
+            let stone_top = (hi - d).max(3);
+            for y in 3..stone_top.min(ymax) {
+                let (xf, yf, zf) = (x as f64, y as f64, z as f64);
+                let n1 = self.strata.n3(xf / 21.0, yf / 13.0, zf / 21.0);
+                let n2 = self.strata.n3(xf / 17.0 + 50.0, yf / 17.0, zf / 17.0 - 30.0);
+                let dither = hash_f01(crate::noise::hash3(self.seed, x, y, z)) * 6.0;
+                let m = if (y as f32) < 58.0 + dither {
+                    Material::Deepslate
+                } else if n1 > 0.42 {
+                    Material::Granite
+                } else if n1 < -0.45 {
+                    Material::Andesite
+                } else if n2 > 0.62 {
+                    Material::Calcite
+                } else {
+                    Material::Stone
+                };
+                cells[y as usize] = m;
             }
             let (xf, zf) = (x as f64 + 0.5, z as f64 + 0.5);
             // Arch: torus of major radius 14 around (60, hA, 40) in the plane z = const.

@@ -62,6 +62,19 @@ pub struct Sample {
 pub struct FarGround {
     pub land: Vec3,
     pub water_frac: f32,
+    /// Continuation pattern for the planet surface beyond the clipmap.
+    pub pattern: crate::noise::Fbm,
+    pub threshold: f32,
+}
+
+impl FarGround {
+    fn new(land: Vec3, water_frac: f32) -> FarGround {
+        let pattern = crate::noise::Fbm::new(0xFA2_6E0, 7000.0, 6, 2.0, 0.5);
+        let mut v: Vec<f32> = (0..4096).map(|i| pattern.sample2((i % 64) as f64 * 3911.0, (i / 64) as f64 * 3779.0)).collect();
+        v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let q = (water_frac.clamp(0.02, 0.98) * 4095.0) as usize;
+        FarGround { land, water_frac, pattern, threshold: v[q] }
+    }
 }
 
 pub struct Frame<'a> {
@@ -166,9 +179,9 @@ impl<'a> Frame<'a> {
                 }
             }
             let land_n = (cnt - wat).max(1.0);
-            FarGround { land: sum / land_n, water_frac: if cnt > 0.0 { wat / cnt } else { 0.5 } }
+            FarGround::new(sum / land_n, if cnt > 0.0 { wat / cnt } else { 0.5 })
         } else {
-            FarGround { land: Vec3::new(0.12, 0.14, 0.08), water_frac: 0.5 }
+            FarGround::new(Vec3::new(0.12, 0.14, 0.08), 0.5)
         };
         Frame {
             world,
@@ -266,14 +279,25 @@ impl<'a> Frame<'a> {
         let Some(a) = &self.atm else { return studio_backdrop(d) };
         let inf = a.infinite(d);
         if a.hits_ground(d) {
-            // Distant planet surface (beyond the clipmap): land/ocean mix.
+            // Distant planet surface beyond the clipmap: a band-limited fBm land/sea pattern whose
+            // threshold is the empirical quantile matching the coarsest level's water fraction.
             let e = a.sun_illuminance(0.0) * self.sun.y.max(0.0) + a.e_sky_up;
-            let land = self.far.land * e * (1.0 / PI);
+            let mu = d.y as f64;
+            let r0 = a.r_cam;
+            let disc = r0 * r0 * (mu * mu - 1.0) + crate::render::atmosphere::RG * crate::render::atmosphere::RG;
+            let t = (-r0 * mu - disc.max(0.0).sqrt()).max(0.0);
+            let (x, z) = (self.cam[0] + d.x as f64 * t, self.cam[2] + d.z as f64 * t);
+            let fp = (t as f32 * self.pix_angle / (-d.y).max(0.01)) as f64;
+            let n = self.far.pattern.sample2_lod(x, z, fp);
+            let eps = 0.015 + (fp / 6000.0) as f32 * 0.3;
+            let land_w = smoothstep(self.far.threshold - eps, self.far.threshold + eps, n);
+            let tex = 0.8 + 0.4 * self.far.pattern.sample2_lod(z * 3.1, x * 3.1, fp);
+            let land = self.far.land * tex * e * (1.0 / PI);
             let r = Vec3::new(d.x, -d.y, d.z);
             let cos = (-d.y).clamp(0.0, 1.0);
             let f = 0.02 + 0.98 * (1.0 - cos).powi(5);
-            let sea = a.sky(r) * f + Vec3::new(0.004, 0.012, 0.02) * e.luminance() * (1.0 - f);
-            let g = land.lerp(sea, self.far.water_frac);
+            let sea = a.sky(r) * f + Vec3::new(0.004, 0.012, 0.03) * e.luminance() * (1.0 - f);
+            let g = sea.lerp(land, land_w);
             g * inf.t + inf.inscatter
         } else {
             let mut l = inf.inscatter;
@@ -500,6 +524,12 @@ impl<'a> Frame<'a> {
             Vec3::ONE
         };
         let mut albedo = tx.color(tint);
+        if matches!(mat, Material::Stone | Material::Deepslate | Material::Andesite | Material::Granite) {
+            if let Some(k) = ore_at(bx, by, bz) {
+                let o = self.tex.sample_ore(k, u, v, lod);
+                albedo = albedo * (1.0 - o.e) + o.a;
+            }
+        }
         if mat == Material::Terracotta {
             // Strata colour at the texel row's world height (bands of the frozen colormap).
             let row = if fk == FACE_SIDE { by as f32 + 1.0 - ((v * 16.0).floor() + 0.5) / 16.0 } else { by as f32 + 0.5 };
@@ -804,6 +834,29 @@ impl<'a> Frame<'a> {
         }
         l
     }
+}
+
+/// Ore veins: clustered point process — a 2×2×2 super-cell is a vein with probability p(y)
+/// (depth-dependent per ore), and 60 % of its blocks show the ore speckle overlay.
+#[inline]
+pub fn ore_at(bx: i32, by: i32, bz: i32) -> Option<usize> {
+    let hv = hash3(0x04E5, bx >> 1, by >> 1, bz >> 1);
+    let u = hash_f01(hv);
+    if u > 0.03 || hash_f01(hash3(0x04E6, bx, by, bz)) > 0.6 {
+        return None;
+    }
+    // (ore, max y, probability)
+    const T: [(usize, i32, f32); 6] = [(5, 22, 0.0012), (4, 64, 0.0028), (3, 72, 0.0045), (2, 165, 0.010), (1, 210, 0.019), (0, 400, 0.030)];
+    let mut acc = 0.0;
+    for &(k, ymax, p) in &T {
+        if by < ymax {
+            if u < acc + p {
+                return Some(k);
+            }
+            acc += p;
+        }
+    }
+    None
 }
 
 /// GGX/Trowbridge-Reitz specular BRDF (Smith G, Schlick F) — returns f_r (1/sr).

@@ -11,21 +11,28 @@
 //! * snow on shaded slopes (aspect = ∂H/∂z).
 //!
 //! **Fields** (wavelengths λ in blocks):
-//! * continentalness `C = Q_C(fBm₇(λ5200) ∘ W_c)` with `W_c` a 3-octave domain warp (λ2400, ±700).
-//! * erosion `E = Q_E(2·sabs(fBm₅(λ4800) ∘ W_c) − ½)`: low erosion (mountains) along the zero set
+//! * continentalness `C = Q_C(fBm₇(λ5200) ∘ W_c)` with `W_c` a 2-octave domain warp (λ3000, ±160;
+//!   kept below the fold-over limit |∇(warp)| < 1, stronger warps fold and print marbled swirls).
+//! * erosion `E = Q_E(2·sabs(fBm₄(λ4800) ∘ W_c) − ½)`: low erosion (mountains) along the zero set
 //!   of an fBm → long branching mountain belts (same warp, offset domain → decorrelated).
-//! * weirdness/river noise `n_r = fBm₄(λ1700) ∘ W_m ∘ W_c` where `W_m` is a meander warp (λ600, ±90).
-//!   `W = Q_W(n_r)`, `pv = 1 − |3|W| − 2|`. Because the river centre-lines are the zero set
-//!   `n_r = 0` and valleys are `pv → −1 ⇔ W → 0`, **rivers always run along valley floors** and
-//!   ridges (`pv = 1 ⇔ |W| = ⅔`) sit between neighbouring rivers — interfluves, as in nature.
-//! * temperature `T = Q_T(fBm₄(λ4200))`, humidity `H = Q_H(fBm₃(λ3200))` on half-warped coords.
+//! * weirdness/river noise `n_r = fBm₃(λ2100) ∘ W_m ∘ W_c` where `W_m` is a meander warp (λ700, ±45).
+//!   `W = Q_W(n_r)`, `pv = 1 − sabs(3·sabs(W) − 2)` (smooth folds). Because the river centre-lines
+//!   are the zero set `n_r = 0` and valleys are `pv → −1 ⇔ W → 0`, **rivers always run along valley
+//!   floors** and ridges (`pv = 1 ⇔ |W| = ⅔`) sit between neighbouring rivers — interfluves.
+//! * temperature `T = Q_T(fBm₃(λ4200))`, humidity `H = Q_H(fBm₃(λ3200))` on half-warped coords;
+//!   river gate `fBm₁(λ2600)` (≈70 % of valleys carry water, the rest are dry valleys).
+//!
+//! All octaves run on [`FastSimplex`] (branch-free 2D simplex with analytic gradient) with
+//! precomputed per-octave rotation×frequency matrices.
 //!
 //! **Calibration** (`Q_*`): raw fBm is bell shaped. Each `Q` is the monotone cubic Hermite
 //! interpolant (Fritsch–Carlson) through `(q_raw(pᵢ), target(pᵢ))`, where `q_raw(pᵢ)` are the
 //! empirical quantiles measured by the test `calibration_quantiles` (200 k samples × 3 seeds over
 //! 40×40 km, constants below) and `target` is the desired quantile function — i.e. empirical CDF
 //! equalisation followed by the inverse target CDF. `C`: 20 % deep ocean (< −0.45), 45 % ocean
-//! (< −0.18), 8 % coast band (−0.18…−0.05), rest inland. `E, W, H`: uniform on [−1, 1]; `T`: warm-skewed piecewise-linear target.
+//! (< −0.18), 8 % coast band (−0.18…−0.05), rest inland. `E, W, H`: uniform on [−1, 1];
+//! `T`: warm-skewed piecewise-linear target (≈15 % below −0.58). The monotone maps are resampled
+//! on a 257-node uniform table for O(1) evaluation.
 //!
 //! Domain warps carry their Jacobian `J = (I + A·∇f)·J_prev`, so the gradient of a warped field is
 //! `∇_p n(q(p)) = Jᵀ ∇_q n` — exact.

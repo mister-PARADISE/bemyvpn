@@ -14,6 +14,11 @@ use crate::materials::{srgb8, Material, MATERIAL_COUNT};
 use crate::math::{lerp, saturate, smoothstep, Vec3};
 use crate::noise::{hash3, hash_f01};
 
+/// Ore overlays (coal, iron, copper, gold, lapis, diamond), stored after the material textures.
+pub const ORE_COUNT: usize = 6;
+pub const ORE_COLORS: [(u8, u8, u8); ORE_COUNT] =
+    [(28, 28, 30), (216, 175, 147), (196, 110, 70), (250, 214, 60), (40, 70, 190), (90, 230, 220)];
+
 pub const FACE_TOP: usize = 0;
 pub const FACE_SIDE: usize = 1;
 pub const FACE_BOTTOM: usize = 2;
@@ -327,16 +332,36 @@ fn texel(m: Material, f: usize, x: i32, y: i32) -> Texel {
     }
 }
 
+/// Ore overlay texel: `a` = ore colour × coverage, `e` = coverage (blend weight).
+fn ore_texel(k: usize, x: i32, y: i32) -> Texel {
+    let g = Gen { seed: 0x0BE0 + k as u64 * 977 };
+    // A few blobs (Voronoi cells around hashed centres) of 1–3 texel radius.
+    let (d, id) = g.voronoi(x as f32 + 0.5, y as f32 + 0.5, 6, 3);
+    let r = 0.9 + 1.2 * g.h(id, 2, 4);
+    if d < r {
+        let (cr, cg, cb) = ORE_COLORS[k];
+        let shade = 0.75 + 0.45 * g.h(x, y, 5);
+        Texel { a: c8(cr, cg, cb) * shade, b: Vec3::ZERO, e: 1.0 }
+    } else {
+        Texel::default()
+    }
+}
+
 impl Textures {
     pub fn new() -> Textures {
-        let mut data = vec![Texel::default(); MATERIAL_COUNT * 3 * PER_TEX];
-        for mi in 0..MATERIAL_COUNT {
-            let m = Material::from_u8(mi as u8);
-            for f in 0..3 {
-                let base = (mi * 3 + f) * PER_TEX;
+        let ntex = MATERIAL_COUNT * 3 + ORE_COUNT;
+        let mut data = vec![Texel::default(); ntex * PER_TEX];
+        for ti in 0..ntex {
+            let (mi, f) = (ti / 3, ti % 3);
+            {
+                let base = ti * PER_TEX;
                 for y in 0..16 {
                     for x in 0..16 {
-                        data[base + y * 16 + x] = texel(m, f, x as i32, y as i32);
+                        data[base + y * 16 + x] = if mi < MATERIAL_COUNT {
+                            texel(Material::from_u8(mi as u8), f, x as i32, y as i32)
+                        } else {
+                            ore_texel(ti - MATERIAL_COUNT * 3, x as i32, y as i32)
+                        };
                     }
                 }
                 for lv in 1..5 {
@@ -381,6 +406,19 @@ impl Textures {
         let a = self.fetch(base, l0, u, v);
         let b = self.fetch(base, l0 + 1, u, v);
         a.lerp(b, w)
+    }
+
+    /// Ore overlay sample (a = colour × coverage, e = coverage).
+    #[inline]
+    pub fn sample_ore(&self, k: usize, u: f32, v: f32, lod: f32) -> Texel {
+        let base = (MATERIAL_COUNT * 3 + k) * PER_TEX;
+        let l = lod.clamp(0.0, 4.0);
+        let l0 = (l as usize).min(3);
+        let w = saturate(l - l0 as f32);
+        if lod <= 0.0 {
+            return self.fetch(base, 0, u, v);
+        }
+        self.fetch(base, l0, u, v).lerp(self.fetch(base, l0 + 1, u, v), w)
     }
 
     /// 1×1 average of a face texture.

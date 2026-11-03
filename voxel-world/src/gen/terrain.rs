@@ -14,9 +14,12 @@
 //!   (deep ocean 44 → shelf 124 → coast 128–160 → lowland 145–160 → inland 160–224) with an
 //!   erosion-controlled *sea-cliff step* at the coast; `A` is the mountain uplift (0 at the sea,
 //!   300 for E → −1 inland).
-//! * hills = derivative-damped ("eroded") fBm (gullies/spurs), ridges = Musgrave ridged
-//!   multifractal on the continental warp (curved ranges), blended by `s = smoothstep(−0.2, 0.6, pv)`;
-//!   `v(pv)` lowers valleys. Because `pv` is folded from the river noise, ridges run between rivers.
+//! * hills = derivative-damped ("eroded") fBm, ridges = smooth ridged multifractal on the
+//!   continental warp (curved ranges), blended by pv-peakness and uplift; `v(pv)` lowers valleys.
+//!   Because `pv` is folded from the river noise, ridges run between rivers.
+//! * **Gully filter** (dendritic drainage): 4 octaves of slope-aligned plane waves on a jittered
+//!   lattice, wave vector ⟂ a smooth steering gradient, amplitude ∝ local slope × wavelength,
+//!   each octave steered by the previous ones (see [`TerrainShaper::gullies`]).
 //! * **Rivers**: with `d = |n|/|∇n|` (distance to the zero set of the river noise) the valley is the
 //!   lower envelope `H = smin(H₀, V(d))`, `V(d) = bank − D(1 − d²/w²)` inside the channel and
 //!   `bank + σ(E)·u + κ(E)·u²`, `u = d − w`, outside: σ ≈ 0.05 (flood plains) … 2.5 (canyons).
