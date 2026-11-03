@@ -73,7 +73,7 @@ fn scenes(t: &SynthTerrain) -> Vec<SceneDef> {
         SceneDef {
             name: "diorama",
             center: (85, 70),
-            cam: [85.0 - 300.0, 420.0, 70.0 - 260.0],
+            cam: [85.0 - 330.0, 400.0, 70.0 - 300.0],
             yaw: 0.0,
             pitch: 0.0,
             fov: 40.0,
@@ -134,7 +134,7 @@ fn main() {
         let build_s = tb.elapsed().as_secs_f64();
         let mut cam = Camera { pos: sc.cam, yaw: sc.yaw, pitch: sc.pitch, fov_y_deg: sc.fov };
         if let ViewMode::Diorama { min_x, max_x, min_z, max_z, min_y } = sc.mode {
-            let c = [(min_x + max_x) as f64 * 0.5, (min_y as f64 + terrain.height(85.0, 70.0, 0.0).0) * 0.5 + 8.0, (min_z + max_z) as f64 * 0.5];
+            let c = [(min_x + max_x) as f64 * 0.5 + 25.0, (min_y as f64 + terrain.height(85.0, 70.0, 0.0).0) * 0.5 - 10.0, (min_z + max_z) as f64 * 0.5 - 25.0];
             cam = Camera::look_at(sc.cam, c, sc.fov);
         }
         let mut sun = Sun { azimuth_deg: sc.sun.0, elevation_deg: sc.sun.1 };

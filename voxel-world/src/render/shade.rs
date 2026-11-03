@@ -143,8 +143,8 @@ impl<'a> Frame<'a> {
         } else {
             Some(Atmosphere::new(cam.pos[1] - SEA, sun_dir, s.haze, s.max_distance as f64))
         };
-        let studio_sun = Vec3::new(1.0, 0.95, 0.88) * 8.5;
-        let studio_sh = sh_project(|d| studio_backdrop(d) * 0.9);
+        let studio_sun = Vec3::new(1.0, 0.94, 0.86) * 7.5;
+        let studio_sh = sh_project(|d| studio_backdrop(d) * 0.8);
         let (right, up, fwd) = cam.basis();
         let tan_y = (cam.fov_y_deg.to_radians() * 0.5).tan() as f32;
         let aspect = s.width as f32 / s.height as f32;
@@ -280,9 +280,43 @@ impl<'a> Frame<'a> {
         }
     }
 
+    /// Studio miss: backdrop gradient, plus a soft-edged sun shadow of the diorama block cast on
+    /// an infinite floor plane a little below the block (the backdrop's lower half).
+    fn studio_miss(&self, d: Vec3) -> Vec3 {
+        let bg = studio_backdrop(d);
+        let v = &self.scene.l0;
+        let floor_y = v.ymin as f64 - 0.18 * (v.top - v.ymin as f64).max(10.0);
+        if d.y >= -1e-4 || self.cam[1] <= floor_y {
+            return bg;
+        }
+        let t = (floor_y - self.cam[1]) / d.y as f64;
+        let p = [self.cam[0] + d.x as f64 * t, floor_y, self.cam[2] + d.z as f64 * t];
+        // Shadow: 5 rays over a widened sun disk → penumbra that grows with the gap.
+        let mut lit = 0.0;
+        for j in 0..5u32 {
+            let (t1, t2) = frame(self.sun);
+            let a = j as f32 * 2.399_963;
+            let r = if j == 0 { 0.0 } else { 0.035 };
+            let sd = (self.sun + t1 * (r * a.cos()) + t2 * (r * a.sin())).normalize();
+            let ray = Ray::new(p, d3(sd));
+            if v.trace(&ray, 0.0, INF, false).is_none() {
+                lit += 0.2;
+            }
+        }
+        // Contact darkening below the block footprint (distance to the box in xz).
+        let (x0, z0, x1, z1) = v.bounds();
+        let dx = (x0 - p[0]).max(p[0] - x1).max(0.0);
+        let dz = (z0 - p[2]).max(p[2] - z1).max(0.0);
+        let dist = (dx * dx + dz * dz).sqrt() as f32;
+        let gap = (v.ymin as f64 - floor_y) as f32;
+        let ao = 0.55 + 0.45 * smoothstep(0.0, 1.5 * gap, dist);
+        let fade = smoothstep(0.0, 0.5, -d.y);
+        bg * lerp(1.0, (0.5 + 0.5 * lit) * ao, fade)
+    }
+
     /// Radiance for rays that leave the world: sky + sun disk, or the far planet ground.
     pub fn miss(&self, d: Vec3, sun_disk: bool) -> Vec3 {
-        let Some(a) = &self.atm else { return studio_backdrop(d) };
+        let Some(a) = &self.atm else { return self.studio_miss(d) };
         let inf = a.infinite(d);
         if a.hits_ground(d) {
             // Distant planet surface beyond the clipmap: a band-limited fBm land/sea pattern whose
