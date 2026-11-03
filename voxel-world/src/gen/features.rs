@@ -886,16 +886,16 @@ impl Raster {
     }
     /// Layered cone with ring (tier) modulation and rotating 4-lobed whorls (see module docs).
     #[allow(clippy::too_many_arguments)]
-    fn cone(&mut self, cx: f32, cz: f32, y_bot: i32, y_top: i32, r_max: f32, period: f32, ring: f32, lobes: f32, phase: f32, m: Material) {
+    fn cone(&mut self, cx: f32, cz: f32, y_bot: i32, y_top: i32, r_max: f32, period: f32, ring: f32, lobes: f32, phase: f32, r_min: f32, m: Material) {
         let span = (y_top - y_bot).max(1) as f32;
         for y in y_bot..=y_top {
             let u = (y_top - y) as f32 / span;
             let tp = (y_top - y) as f32 / period + phase;
             let fr = tp - tp.floor();
             let tier = tp.floor() as i32;
-            let mut r = r_max * (0.12 + 0.88 * u.powf(0.9)) * (1.0 - ring * (1.0 - fr)) + 0.45;
+            let mut r = (r_max * (0.12 + 0.88 * u.powf(0.9)) * (1.0 - ring * (1.0 - fr)) + 0.45).max(r_min);
             if y == y_top {
-                r = r.min(0.9);
+                r = r.min(r_min.max(0.6));
             }
             let psi = hash_f01(hash2(self.seed ^ 0xC0E, tier, 7)) * std::f32::consts::TAU;
             let (spsi, cpsi) = psi.sin_cos();
@@ -913,7 +913,7 @@ impl Raster {
                     let cos4 = 8.0 * c2 * c2 - 8.0 * c2 + 1.0;
                     let sin4 = 4.0 * sn * c * (2.0 * c2 - 1.0);
                     let rr = r * (1.0 + lobes * (cos4 * cpsi - sin4 * spsi));
-                    if d <= rr + 0.45 * (self.h(x, y, z) - 0.5) * 2.0 {
+                    if d <= rr + 0.22 * (self.h(x, y, z) - 0.5) * 2.0 {
                         self.leaf(x, y, z, m);
                     }
                 }
@@ -1089,16 +1089,16 @@ fn build_shape(sp: Species, rng: &mut Rng, s: f32, biome: Biome, var: u64) -> Ra
             let h = if pine {
                 (((10.0 + rng.range(0.0, 5.0)) * s).round() as i32).max(5)
             } else {
-                (((7.5 + rng.range(0.0, 5.5)) * s).round() as i32).max(4)
+                (((8.0 + rng.range(0.0, 6.0)) * s).round() as i32).max(4)
             };
             let mut rs = Raster::new(5, -1, h + 4, var);
-            rs.trunk(0, 0, 1, 0, h, M::SpruceLog);
+            rs.trunk(0, 0, 1, 0, h - 1, M::SpruceLog);
             let (y_bot, r_max, ring, period) = if pine {
                 ((h as f32 * rng.range(0.55, 0.68)) as i32, rng.range(1.7, 2.3) * s.sqrt(), 0.3, rng.range(2.0, 2.6))
             } else {
-                (rng.int(1, 3).min(h / 3).max(1), rng.range(2.0, 3.1) * s.sqrt(), 0.48, rng.range(2.2, 3.0))
+                (rng.int(1, 3).min(h / 3).max(1), rng.range(2.3, 3.3) * s.sqrt(), 0.58, if rng.chance(0.5) { 2.0 } else { 3.0 })
             };
-            rs.cone(0.5, 0.5, y_bot, h, r_max, period, ring, 0.16, rng.f(), M::SpruceLeaves);
+            rs.cone(0.5, 0.5, y_bot, h, r_max, period, ring, 0.12, rng.f(), 0.5, M::SpruceLeaves);
             rs.leaf(0, h + 1, 0, M::SpruceLeaves);
             if pine {
                 // a few dead stubs on the bare bole
@@ -1113,7 +1113,7 @@ fn build_shape(sp: Species, rng: &mut Rng, s: f32, biome: Biome, var: u64) -> Ra
             let h = (((25.0 + rng.range(0.0, 10.0)) * s).round() as i32).max(16);
             let mut rs = Raster::new(8, -4, h + 4, var);
             rs.roots(2, 3, M::SpruceLog);
-            rs.trunk(0, 0, 2, 0, h - 1, M::SpruceLog);
+            rs.trunk(0, 0, 2, 0, h - 3, M::SpruceLog);
             for (dx, dz) in [(-1, 0), (-1, 1), (2, 0), (2, 1), (0, -1), (1, -1), (0, 2), (1, 2)] {
                 if rng.chance(0.45) {
                     rs.wood(dx, 0, dz, M::SpruceLog);
@@ -1125,8 +1125,8 @@ fn build_shape(sp: Species, rng: &mut Rng, s: f32, biome: Biome, var: u64) -> Ra
             }
             let y_bot = (h as f32 * rng.range(0.3, 0.45)) as i32;
             let r_max = rng.range(4.4, 6.0) * s.sqrt();
-            rs.cone(1.0, 1.0, y_bot, h, r_max, rng.range(3.0, 3.9), 0.52, 0.2, rng.f(), M::SpruceLeaves);
-            for y in h - 2..=h + 1 {
+            rs.cone(1.0, 1.0, y_bot, h, r_max, rng.range(3.0, 4.0), 0.55, 0.16, rng.f(), 1.05, M::SpruceLeaves);
+            for y in h - 1..=h + 1 {
                 rs.leaf(0, y, 0, M::SpruceLeaves);
             }
             rs
@@ -1214,7 +1214,7 @@ fn build_shape(sp: Species, rng: &mut Rng, s: f32, biome: Biome, var: u64) -> Ra
             }
             for (i, tp) in tops.iter().enumerate() {
                 let ty = tp[1].floor() as i32;
-                let r1 = rng.range(2.9, 3.8) * s.sqrt() * if i == 0 { 1.0 } else { 0.85 };
+                let r1 = rng.range(3.2, 4.2) * s.sqrt() * if i == 0 { 1.0 } else { 0.85 };
                 rs.disc(tp[0], tp[2], ty + 1, r1, 2.6, M::AcaciaLeaves, 0.35);
                 rs.disc(tp[0], tp[2], ty + 2, r1 * rng.range(0.5, 0.65), 2.4, M::AcaciaLeaves, 0.3);
             }
@@ -1270,12 +1270,12 @@ fn build_shape(sp: Species, rng: &mut Rng, s: f32, biome: Biome, var: u64) -> Ra
             rs
         }
         Species::Cactus => {
-            let h = rng.int(2, 5);
+            let h = rng.int(2, 6);
             let mut rs = Raster::new(3, -1, h + 2, var);
             for y in 0..h {
                 rs.wood(0, y, 0, M::Cactus);
             }
-            if h >= 4 && rng.chance(0.5) {
+            if h >= 4 && rng.chance(0.65) {
                 let dirs = [(1, 0), (-1, 0), (0, 1), (0, -1)];
                 let d0 = rng.int(0, 3) as usize;
                 let arms = if rng.chance(0.4) { 2 } else { 1 };
@@ -1368,7 +1368,8 @@ fn build_shape(sp: Species, rng: &mut Rng, s: f32, biome: Biome, var: u64) -> Ra
 fn spire(rs: &mut Raster, cx: f32, cz: f32, h: i32, r0: f32, lx: f32, lz: f32) {
     for y in -2..=h {
         let u = (y.max(0) as f32 / h as f32).min(1.0);
-        let mut r = r0 * (1.0 - u).powf(1.25) + 0.3;
+        // ≥ 0.72 keeps at least one voxel per level (a cell centre is within √2/2 of the axis)
+        let mut r = (r0 * (1.0 - u).powf(1.25) + 0.3).max(if y < h { 0.72 } else { 0.0 });
         if y <= 1 {
             r += 0.8 * (2 - y.max(-1)) as f32 * 0.5;
         }
@@ -1379,7 +1380,7 @@ fn spire(rs: &mut Raster, cx: f32, cz: f32, h: i32, r0: f32, lx: f32, lz: f32) {
             for x in bx - ri..=bx + ri {
                 let px = x as f32 + 0.5 - ox;
                 let pz = z as f32 + 0.5 - oz;
-                if px * px + pz * pz <= r * r + 0.3 * (rs.h(x, y, z) - 0.5) {
+                if px * px + pz * pz <= r * r + 0.3 * r * (rs.h(x, y, z) - 0.5) {
                     rs.solid(x, y, z, Material::PackedIce, y < 0);
                 }
             }
@@ -1392,7 +1393,7 @@ fn boulder(rng: &mut Rng, biome: Biome, var: u64) -> Raster {
     use Biome::*;
     use Material as M;
     let big = rng.chance(0.12);
-    let r = if big { rng.range(3.0, 4.3) } else { rng.range(1.3, 2.9) };
+    let r = if big { rng.range(3.0, 4.3) } else { rng.range(1.5, 2.9) };
     let ri = (r * 1.8).ceil() as i32 + 1;
     let mut rs = Raster::new(ri.min(7), -(r as i32) - 3, (r as i32) + 4, var);
     let (main, alt) = match biome {
@@ -1407,7 +1408,7 @@ fn boulder(rng: &mut Rng, biome: Biome, var: u64) -> Raster {
         SnowySlopes | SnowyPeaks | Glacier | SnowyPlains => Some(M::Snow),
         _ => None,
     };
-    let mut blobs = vec![[0.5, r * rng.range(0.05, 0.4) - 0.3, 0.5, r, r * rng.range(0.65, 0.9), r * rng.range(0.8, 1.2)]];
+    let mut blobs = vec![[0.5, r * rng.range(0.25, 0.55) - 0.5, 0.5, r, r * rng.range(0.65, 0.9), r * rng.range(0.8, 1.2)]];
     for _ in 0..rng.int(1, 2) {
         let a = rng.range(0.0, TAU);
         let d = r * rng.range(0.4, 0.8);
@@ -1441,7 +1442,7 @@ fn boulder(rng: &mut Rng, biome: Biome, var: u64) -> Raster {
             for x in -ri..=ri {
                 for y in (0..hi_y).rev() {
                     if rs.get(x, y, z) != 0 {
-                        if rs.h(x, y + 2000, z) < 0.8 {
+                        if rs.h(x, y + 2000, z) < if tm == M::Snow { 0.85 } else { 0.4 } {
                             rs.solid(x, y, z, tm, true);
                         }
                         break;

@@ -400,7 +400,8 @@ fn species_gallery() {
         let mut rows = Vec::new();
         for &sp in sps {
             let mut row = Vec::new();
-            for v in 0..4u64 {
+            let count = if sc > 6.5 { 7 } else { 4 };
+            for v in 0..count as u64 {
                 let b = match sp {
                     Species::Jungle | Species::MegaJungle | Species::Palm => Biome::Jungle,
                     Species::Acacia => Biome::Savanna,
