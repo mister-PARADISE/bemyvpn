@@ -91,6 +91,8 @@ fn scenes(t: &SynthTerrain) -> Vec<SceneDef> {
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let no_aa = args.iter().any(|a| a == "--no-aa");
+    // --cam=x,y,z,yaw_deg,pitch_deg[,sun_az,sun_el]   (y relative to the ground if prefixed by '+')
+    let cam_override: Option<Vec<String>> = args.iter().find_map(|a| a.strip_prefix("--cam=").map(|s| s.split(',').map(|x| x.to_string()).collect()));
     let args: Vec<&String> = args.iter().filter(|a| !a.starts_with("--")).collect();
     let which = args.first().map(|s| s.as_str()).unwrap_or("all").to_string();
     let w: u32 = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(1920);
@@ -113,7 +115,16 @@ fn main() {
             let c = [(min_x + max_x) as f64 * 0.5, (min_y as f64 + terrain.height(40.0, 70.0, 0.0).0) * 0.5, (min_z + max_z) as f64 * 0.5];
             cam = Camera::look_at(sc.cam, c, sc.fov);
         }
-        let sun = Sun { azimuth_deg: sc.sun.0, elevation_deg: sc.sun.1 };
+        let mut sun = Sun { azimuth_deg: sc.sun.0, elevation_deg: sc.sun.1 };
+        if let Some(c) = &cam_override {
+            let f = |i: usize| c[i].trim_start_matches('+').parse::<f64>().unwrap();
+            let (x, z) = (f(0), f(2));
+            let y = if c[1].starts_with('+') { terrain.height(x, z, 0.0).0 + f(1) } else { f(1) };
+            cam = Camera { pos: [x, y, z], yaw: f(3).to_radians(), pitch: f(4).to_radians(), fov_y_deg: sc.fov };
+            if c.len() >= 7 {
+                sun = Sun { azimuth_deg: f(5), elevation_deg: f(6) };
+            }
+        }
         let settings = RenderSettings { width: w, height: h, aa: !no_aa, exposure: sc.exposure, mode: sc.mode, haze: sc.haze, ..Default::default() };
         let tr = Instant::now();
         let (img, st) = render_with_stats(&world, &cam, &sun, &settings);
