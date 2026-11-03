@@ -863,14 +863,13 @@ mod tests {
                     assert!(d < 0.0);
                 }
             }
-            // Inside the band the density stays continuous in y.
-            // Inside the band the density is Lipschitz in y (|∂ρ/∂y| ≤ 1 + bias' + J·|∂N/∂y|).
+            // Inside the band ρ is Lipschitz in y: |∂ρ/∂y| ≤ 1 + 4 (taper) + 1.25 (bias) + J·|∂N/∂y|.
             let step = 2.0 * j as f64 / 40.0;
             let mut prev = g.density(x, c.height as f64 - j as f64, z, &c);
             for k in 1..=40 {
                 let y = c.height as f64 - j as f64 + step * k as f64;
                 let d = g.density(x, y, z, &c);
-                assert!((d - prev).abs() <= step as f32 * (2.5 + 0.25 * j) + 1e-3, "density jump {prev} → {d}");
+                assert!((d - prev).abs() <= step as f32 * (6.5 + 0.25 * j) + 1e-3, "density jump {prev} → {d} (j {j}, y {y}, h {})", c.height);
                 prev = d;
             }
         }
