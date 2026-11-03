@@ -775,8 +775,9 @@ impl TerrainShaper {
         if hash_f01(id) >= LAKE_P {
             return None;
         }
-        let jx = 0.25 + 0.5 * hash_f01(mix64(id ^ 1)) as f64;
-        let jz = 0.25 + 0.5 * hash_f01(mix64(id ^ 2)) as f64;
+        // centres in the middle 40 % of the cell: ≥ 1020 blocks apart > 2 × max reach (≈ 446)
+        let jx = 0.3 + 0.4 * hash_f01(mix64(id ^ 1)) as f64;
+        let jz = 0.3 + 0.4 * hash_f01(mix64(id ^ 2)) as f64;
         let r = 90.0 + (LAKE_R_MAX - 90.0) * hash_f01(mix64(id ^ 3)).powf(1.5);
         let depth = 5.0 + 0.045 * r;
         Some(((ix as f64 + jx) * LAKE_CELL, (iz as f64 + jz) * LAKE_CELL, r, depth))
@@ -844,8 +845,9 @@ impl TerrainShaper {
     ///
     /// With `ρ = |p − c|/R + 0.12·n(p)` (noise-perturbed normalised radius → irregular shores):
     /// * basin: `H₁ = H − D·max(0, 1 − ρ²)²` (islands survive where the terrain is high),
-    /// * sill: `H₂ = smax(H₁, L + 1.2 − 0.35·R·|ρ − 1|, 2)` — a tent function peaking 1.2 blocks
-    ///   above the level exactly on the rim ρ = 1,
+    /// * sill: `H₂ = smax(H₁, L + 1.2 − 0.35u − 0.02u², 2)`, `u = R·|ρ − 1|` — a tent peaking
+    ///   1.2 blocks above the level exactly on the rim ρ = 1 and below any terrain for u > 100
+    ///   (so the influence radius 1.12R + 110 cuts nothing off),
     /// * water where `ρ < 1 ∧ H₂ < L`.
     ///
     /// Containment theorem: on ρ = 1 we have `H₂ ≥ L + 1.2`, so the water set `{ρ < 1, H₂ < L}`
@@ -859,7 +861,8 @@ impl TerrainShaper {
                 let Some((cx, cz, r, depth)) = self.lake_candidate(ix + dx, iz + dz) else { continue };
                 let (ddx, ddz) = (x - cx, z - cz);
                 let d2 = ddx * ddx + ddz * ddz;
-                let reach = r as f64 * 1.25 + 8.0;
+                // beyond u = 100 blocks outside the rim the sill is < L − 230 < any terrain
+                let reach = r as f64 * 1.12 + 110.0;
                 if d2 >= reach * reach {
                     continue;
                 }
@@ -871,7 +874,8 @@ impl TerrainShaper {
                     let q = 1.0 - rho.sq();
                     *h = *h - q.sq() * depth;
                 }
-                let tent = (1.0 - sabs_tent(rho - 1.0) * (0.35 * r)) + level + 0.2;
+                let u = sabs_tent(rho - 1.0) * r; // blocks from the rim
+                let tent = (1.0 - u * 0.35 - u.sq() * 0.02) + level + 0.2;
                 if tent.v > h.v - 2.0 {
                     *h = h.smax(tent, 2.0);
                 }
