@@ -2079,17 +2079,17 @@ pub mod map {
             }
         });
         let mut canvas = Canvas { w: n, h: n, rgb };
-        // scout radius (dashed circle) + scale bar
-        let (ox, oz) = mp.to_px(0.0, 0.0);
-        let rr = SCOUT_RADIUS / mp.scale;
-        let segs = 180;
-        for q in 0..segs {
-            if q % 2 == 1 {
-                continue;
+        // scouted square (dashed outline) + scale bar
+        let (ax, az) = mp.to_px(-SCOUT_RADIUS, -SCOUT_RADIUS);
+        let (bx, bz) = mp.to_px(SCOUT_RADIUS, SCOUT_RADIUS);
+        let dash = 12.0;
+        for &(x0, z0, x1, z1) in &[(ax, az, bx, az), (bx, az, bx, bz), (bx, bz, ax, bz), (ax, bz, ax, az)] {
+            let len = (x1 - x0).hypot(z1 - z0);
+            let n = (len / dash).ceil() as i64;
+            for q in (0..n).step_by(2) {
+                let (t0, t1) = (q as f64 / n as f64, ((q + 1) as f64 / n as f64).min(1.0));
+                canvas.line(x0 + (x1 - x0) * t0, z0 + (z1 - z0) * t0, x0 + (x1 - x0) * t1, z0 + (z1 - z0) * t1, 1.2, [255, 255, 255], 0.5);
             }
-            let a0 = q as f64 / segs as f64 * 2.0 * PI;
-            let a1 = (q + 1) as f64 / segs as f64 * 2.0 * PI;
-            canvas.line(ox + rr * a0.sin(), oz + rr * a0.cos(), ox + rr * a1.sin(), oz + rr * a1.cos(), 1.2, [255, 255, 255], 0.5);
         }
         canvas.scale_bar(mp.scale);
         for p in shots {
@@ -2300,7 +2300,8 @@ mod tests {
         let n = 10;
         let sat = Sat::new(n, |k| (k % n) < 5);
         assert!((sat.frac(2, 5, 2) - 1.0).abs() < 1e-6);
-        assert!((sat.frac(5, 5, 1) - 2.0 / 3.0).abs() < 1e-6);
+        assert!((sat.frac(5, 5, 1) - 1.0 / 3.0).abs() < 1e-6); // columns 4,5,6 → only 4 true
+        assert!((sat.frac(4, 0, 1) - 2.0 / 3.0).abs() < 1e-6); // clipped window rows 0..=1
     }
 
     #[test]
