@@ -40,6 +40,20 @@ house, everything is crooked. I'm not asking for flat things, but improve it."
 * AA: final shots use supersampling (≥ 4 rays per pixel on a rotated grid, more on high-contrast
   pixels); the CLI must expose `--ssaa N` (N×N samples per pixel) for final renders.
 
+**Far terrain must not look like "blurry blankets" (user).** Beyond level 0 the heightfield
+levels currently show one flat averaged colour per cell with smooth shading. Required:
+* Larger exact-voxel radius for final shots: level 0 = 4096² (radius 2048) if build time/memory allow
+  (measure; target ≤ 60 s build, ≤ 6 GB).
+* Heightfield cells get procedural sub-cell detail at shading time: albedo variation from the same
+  material palettes (grass/rock/sand/snow patches by slope and altitude, coherent, low-frequency),
+  normal perturbation from band-limited noise matching the cell footprint (bump detail), slope-based
+  rock exposure on steep cells, sharper snow/rock/vegetation boundaries.
+* Forests at mid distance (levels 1–2) as individual tree silhouettes (cheap analytic cones/blobs
+  from the same point process, or at least a canopy height texture with per-tree bumps and
+  shadowing), not a smooth green sheet.
+* Haze must reveal distance, not erase it: tune aerial perspective so ranges at 5–15 km keep
+  readable contrast and detail; only the far horizon fades.
+
 ## Conventions
 
 * 1 unit = 1 block = 1 m. **y is up.** World y ∈ [0, 512). `SEA_LEVEL = 140`: water fills y < 140.
