@@ -315,7 +315,7 @@ pub struct TerrainShaper {
 }
 
 /// Inland lakes: cell size, candidate probability, max radius, rim probes.
-const LAKE_CELL: f64 = 1700.0;
+const LAKE_CELL: f64 = 1400.0;
 const LAKE_P: f32 = 0.55;
 const LAKE_R_MAX: f32 = 300.0;
 const LAKE_RIM_SAMPLES: usize = 12;
@@ -775,11 +775,11 @@ impl TerrainShaper {
         if hash_f01(id) >= LAKE_P {
             return None;
         }
-        // centres in the middle 40 % of the cell: ≥ 1020 blocks apart > 2 × max reach (≈ 446)
-        let jx = 0.3 + 0.4 * hash_f01(mix64(id ^ 1)) as f64;
-        let jz = 0.3 + 0.4 * hash_f01(mix64(id ^ 2)) as f64;
+        // centres in the middle third of the cell: ≥ 924 blocks apart > 2 × max reach (≈ 446)
+        let jx = 0.333 + 0.334 * hash_f01(mix64(id ^ 1)) as f64;
+        let jz = 0.333 + 0.334 * hash_f01(mix64(id ^ 2)) as f64;
         let r = 90.0 + (LAKE_R_MAX - 90.0) * hash_f01(mix64(id ^ 3)).powf(1.5);
-        let depth = 5.0 + 0.045 * r;
+        let depth = 7.0 + 0.07 * r;
         Some(((ix as f64 + jx) * LAKE_CELL, (iz as f64 + jz) * LAKE_CELL, r, depth))
     }
 
@@ -816,14 +816,18 @@ impl TerrainShaper {
         if self.volcano_cone(cx, cz).map_or(false, |(cone, _)| cone.v > centre - 60.0) {
             return Err("volcano");
         }
-        let (mut rim_lo, mut rim_hi) = (f32::MAX, f32::MIN);
-        for k in 0..LAKE_RIM_SAMPLES {
+        let mut rim = [0.0f32; LAKE_RIM_SAMPLES];
+        for (k, rh) in rim.iter_mut().enumerate() {
             let a = (k as f64 + 0.5) * std::f64::consts::TAU / LAKE_RIM_SAMPLES as f64;
-            let h = sample(cx + a.cos() * r as f64, cz + a.sin() * r as f64)?;
-            rim_lo = rim_lo.min(h);
-            rim_hi = rim_hi.max(h);
+            *rh = sample(cx + a.cos() * r as f64, cz + a.sin() * r as f64)?;
         }
-        let level = (rim_lo - 1.0).floor();
+        rim.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let (rim_lo, rim_hi) = (rim[0], rim[LAKE_RIM_SAMPLES - 1]);
+        // spill level: 3rd-lowest rim probe (two notches may be dammed by the sill)
+        let level = (rim[2] - 1.0).floor();
+        if level - rim_lo > 10.0 {
+            return Err("notch");
+        }
         if level < SEA + 2.0 || level > 440.0 {
             return Err("level");
         }
@@ -866,7 +870,8 @@ impl TerrainShaper {
     /// Inland lake basins (Worley-type cell process, ≤ 1 lake per 1.7 km cell).
     ///
     /// With `ρ = |p − c|/R + 0.12·n(p)` (noise-perturbed normalised radius → irregular shores):
-    /// * basin: `H₁ = H − D·max(0, 1 − ρ²)²` (islands survive where the terrain is high),
+    /// * basin: `H₁ = H − D·smoothstep(1, 0.45, ρ)` (flat floor; islands survive where the
+    ///   terrain is high),
     /// * sill: `H₂ = smax(H₁, L + 1.2 − 0.35u − 0.02u², 2)`, `u = R·|ρ − 1|` — a tent peaking
     ///   1.2 blocks above the level exactly on the rim ρ = 1 and below any terrain for u > 100
     ///   (so the influence radius 1.12R + 110 cuts nothing off),
@@ -893,8 +898,8 @@ impl TerrainShaper {
                 let n = self.dune_phase.sample(x * 1.7 + 911.0, z * 1.7 - 377.0, 0.0);
                 let rho = D2::new((dist / r as f64) as f32, (ddx / dist) as f32 / r, (ddz / dist) as f32 / r) + n * 0.12;
                 if rho.v < 1.0 {
-                    let q = 1.0 - rho.sq();
-                    *h = *h - q.sq() * depth;
+                    // flat-bottomed basin: full depth for ρ < 0.45, C¹ rise to the rim
+                    *h = *h - smoothstep_d(1.0, 0.45, rho) * depth;
                 }
                 let u = sabs_tent(rho - 1.0) * r; // blocks from the rim
                 let tent = (1.0 - u * 0.35 - u.sq() * 0.02) + level + 0.2;
