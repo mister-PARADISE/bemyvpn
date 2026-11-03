@@ -721,7 +721,7 @@ void main() {
     bump += cr.yz * (1.0 / 4.5) * 3.5 * wc;
     var -= 0.06 * v_leaf * (1.0 - wc);
   }
-  alb *= max(1.0 + var, 0.2);
+  alb *= max(1.0 + var, 0.2) * mix(1.0, 0.74, v_leaf);
   N = normalize(N + vec3(-bump.x, 0.0, -bump.y));
   float steep = 1.0 - smoothstep(0.6, 0.8, N.y);
   alb = mix(alb, vec3(0.19, 0.18, 0.17), steep * 0.45 * (1.0 - v_leaf));

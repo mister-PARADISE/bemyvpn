@@ -21,7 +21,7 @@ use crate::math::{lerp, saturate, smoothstep, Vec3};
 use crate::noise::{hash3, hash_f01, mix64, Simplex};
 use crate::render::atmosphere::{sh_irradiance, sh_project, Atmosphere};
 use crate::render::texture::{Textures, FACE_BOTTOM, FACE_SIDE, FACE_TOP};
-use crate::render::trace::{Hit, HitKind, Ray, Scene, INF};
+use crate::render::trace::{Hit, HitKind, Ray, Scene, EARTH_RADIUS, INF};
 use crate::render::types::{Camera, RenderSettings, Sun, ViewMode};
 use crate::world::World;
 use std::f32::consts::PI;
@@ -1065,4 +1065,71 @@ pub fn ggx_spec(n: Vec3, v: Vec3, l: Vec3, rough: f32, f0: f32) -> f32 {
     let vh = v.dot(hv).max(0.0);
     let f = f0 + (1.0 - f0) * (1.0 - vh).powi(5);
     dfn * g * f / (4.0 * nv * nl)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::gen::Biome;
+    use crate::render::types::{Camera, RenderSettings, Sun};
+    use crate::world::{BuildParams, HfCell, Span};
+
+    fn sea_world() -> World {
+        let p = BuildParams { center_x: 0, center_z: 0, l0_size: 32, hf_size: 32, hf_levels: 1, cave_radius: 0, feature_radius: 0 };
+        World::synthetic(
+            p,
+            |_, _| vec![Span::new(0, 120, Material::Sand), Span::new(120, 140, Material::Water)],
+            |_, _, _| HfCell { h: 120.0, water: 140.0, albedo: Vec3::splat(0.3), mat: Material::Sand, biome: Biome::Ocean },
+        )
+    }
+
+    /// Mirror reflection on the curved sea, done in the bent-ray (world) frame, must equal the
+    /// reflection of the straight ray about the tilted normal of the lowered sphere-like surface
+    /// y = 140 − κρ² (normal ∝ (2κq_x, 1, 2κq_z)) — the textbook construction.
+    #[test]
+    fn curved_reflection_matches_tilted_normal() {
+        let w = sea_world();
+        let cam = Camera { pos: [3.0, 260.0, -7.0], yaw: 0.0, pitch: 0.0, fov_y_deg: 60.0 };
+        let s = RenderSettings { width: 16, height: 16, ..Default::default() };
+        let mut f = Frame::new(&w, &cam, &Sun { azimuth_deg: 10.0, elevation_deg: 20.0 }, &s);
+        f.kappa = 1.0 / 400_000.0; // exaggerated: tilt ρ/R′ of several degrees
+        let mut worst = 0.0f64;
+        for k in 0..200 {
+            let a = k as f64 * 0.731;
+            let e = -0.02 - 0.3 * ((k * 37 % 100) as f64 / 100.0);
+            let d = [a.sin() * e.cos(), e.sin(), a.cos() * e.cos()];
+            let ray = f.ray(cam.pos, d);
+            // Hit the lowered sea: y(t) = 140 (bent-ray picture), smallest root.
+            let (qa, qb, qc) = (ray.k2, ray.d[1] + ray.k1, ray.o[1] - 140.0);
+            let t = (-qb - (qb * qb - 4.0 * qa * qc).sqrt()) / (2.0 * qa);
+            let p = ray.at(t);
+            let dv = Vec3::new(d[0] as f32, d[1] as f32, d[2] as f32);
+            let r = local_tangent(&ray, dv, t).reflect(Vec3::Y);
+            let (_, rs) = f.ray_with_tangent(p, r);
+            // Reference in the dropped (straight-ray) picture.
+            let (qx, qz) = (p[0] - cam.pos[0], p[2] - cam.pos[2]);
+            let n = Vec3::new((2.0 * f.kappa * qx) as f32, 1.0, (2.0 * f.kappa * qz) as f32).normalize();
+            let rr = dv.reflect(n);
+            let tilt = (2.0 * f.kappa * (qx * qx + qz * qz).sqrt()).atan();
+            let err = (rs.dot(rr).clamp(-1.0, 1.0) as f64).acos();
+            worst = worst.max(err / tilt.max(1e-9));
+        }
+        // First-order construction: error ≪ the tilt itself.
+        assert!(worst < 0.05, "reflection error {worst} × tilt");
+    }
+
+    /// The sun seen from a point ρ further toward it stands ρ/R higher (local frame).
+    #[test]
+    fn local_sun_elevation_follows_curvature() {
+        let w = sea_world();
+        let cam = Camera { pos: [0.0, 200.0, 0.0], yaw: 0.0, pitch: 0.0, fov_y_deg: 60.0 };
+        let s = RenderSettings { width: 16, height: 16, ..Default::default() };
+        let f = Frame::new(&w, &cam, &Sun { azimuth_deg: 0.0, elevation_deg: 3.0 }, &s);
+        for rho in [-30_000.0f64, 10_000.0, 30_000.0] {
+            let l = f.local_dir([0.0, 140.0, rho], f.sun);
+            let e = (l.y as f64).asin().to_degrees();
+            let expect = 3.0 + (rho / EARTH_RADIUS).to_degrees();
+            assert!((e - expect).abs() < 0.01, "ρ {rho}: {e} vs {expect}");
+        }
+    }
 }
