@@ -593,6 +593,109 @@ fn feature_map(g: &WorldGen, seed: u64) {
     eprintln!("wrote {}", p.display());
 }
 
+
+/// Isometric cut-away diorama: full voxels (terrain density on the column, caves by 4×4×4 lattice
+/// interpolation exactly like the world builder), cave fill, features on top.
+fn cutaway(g: &WorldGen, seed: u64, cx: i32, cz: i32, n: i32, tag: &str) {
+    let (x0, z0) = (cx - n / 2, cz - n / 2);
+    let cols: Vec<ColumnInfo> = (0..n * n).map(|i| g.column((x0 + i % n) as f64 + 0.5, (z0 + i / n) as f64 + 0.5)).collect();
+    let tops: Vec<i32> = cols.iter().map(|c| (c.height + c.jaggedness + 2.0) as i32).collect();
+    let ymax = *tops.iter().max().unwrap() + 36;
+    let ymin = (cols.iter().map(|c| c.height as i32).min().unwrap() - 110).max(0);
+    let mut vx = Vox::new(x0, ymin, z0, n, ymax - ymin, n);
+    // lattice
+    let lx0 = x0.div_euclid(4);
+    let lz0 = z0.div_euclid(4);
+    let ly0 = ymin.div_euclid(4);
+    let lnx = (x0 + n).div_euclid(4) - lx0 + 2;
+    let lnz = (z0 + n).div_euclid(4) - lz0 + 2;
+    let lny = ymax.div_euclid(4) - ly0 + 2;
+    let mut lat = vec![0.0f32; (lnx * lny * lnz) as usize];
+    for k in 0..lnz {
+        for i in 0..lnx {
+            let (wx, wz) = ((lx0 + i) as f64 * 4.0, (lz0 + k) as f64 * 4.0);
+            let col = g.column(wx, wz);
+            for j in 0..lny {
+                lat[((j * lnz + k) * lnx + i) as usize] = g.cave_field(wx, (ly0 + j) as f64 * 4.0, wz, &col);
+            }
+        }
+    }
+    let lf = |x: f64, y: f64, z: f64| -> f32 {
+        let (fx, fy, fz) = (x / 4.0 - lx0 as f64, y / 4.0 - ly0 as f64, z / 4.0 - lz0 as f64);
+        let (i, j, k) = (fx.floor() as i32, fy.floor() as i32, fz.floor() as i32);
+        let (tx, ty, tz) = ((fx - i as f64) as f32, (fy - j as f64) as f32, (fz - k as f64) as f32);
+        let at = |a: i32, b: i32, c: i32| lat[(((j + b) * lnz + (k + c)) * lnx + (i + a)) as usize];
+        let l = |a: f32, b: f32, t: f32| a + (b - a) * t;
+        let c00 = l(at(0, 0, 0), at(1, 0, 0), tx);
+        let c10 = l(at(0, 1, 0), at(1, 1, 0), tx);
+        let c01 = l(at(0, 0, 1), at(1, 0, 1), tx);
+        let c11 = l(at(0, 1, 1), at(1, 1, 1), tx);
+        l(l(c00, c10, ty), l(c01, c11, ty), tz)
+    };
+    let mut ground = vec![0i32; (n * n) as usize];
+    let mut stat = (0usize, 0usize, 0usize);
+    for k in 0..n {
+        for i in 0..n {
+            let c = &cols[(k * n + i) as usize];
+            let (wx, wz) = (x0 + i, z0 + k);
+            let mut top = ymin;
+            let mut solid = vec![false; (ymax - ymin) as usize];
+            for y in ymin..ymax {
+                let d = g.density(wx as f64 + 0.5, y as f64 + 0.5, wz as f64 + 0.5, c);
+                solid[(y - ymin) as usize] = d > 0.0;
+            }
+            // carve
+            let mut carved = vec![false; (ymax - ymin) as usize];
+            for y in ymin.max(1)..ymax {
+                if solid[(y - ymin) as usize] {
+                    stat.0 += 1;
+                    if lf(wx as f64 + 0.5, y as f64 + 0.5, wz as f64 + 0.5) > 0.0 {
+                        carved[(y - ymin) as usize] = true;
+                        stat.1 += 1;
+                    }
+                    if g.cave_field(wx as f64 + 0.5, y as f64 + 0.5, wz as f64 + 0.5, c) > 0.0 {
+                        stat.2 += 1;
+                    }
+                }
+            }
+            let mut depth = 0;
+            for y in (ymin..ymax).rev() {
+                let idx = (y - ymin) as usize;
+                if solid[idx] && !carved[idx] {
+                    if top == ymin {
+                        top = y;
+                    }
+                    vx.set(wx, y, wz, g.surface_material(wx, y, wz, depth, c));
+                    depth += 1;
+                } else {
+                    depth = 0;
+                    if carved[idx] {
+                        match g.cave_fill(wx, y, wz, c) {
+                            CaveFill::Water => vx.set(wx, y, wz, Material::Water),
+                            CaveFill::Lava => vx.set(wx, y, wz, Material::Lava),
+                            CaveFill::Air => {}
+                        }
+                    } else if c.water_level != i32::MIN && y < c.water_level && y > top.max(ymin) - 1 {
+                        vx.set(wx, y, wz, Material::Water);
+                    }
+                }
+            }
+            ground[(k * n + i) as usize] = top + 1;
+        }
+    }
+    eprintln!("cutaway {tag}: carved {:.2}% (lattice) vs {:.2}% (direct)", 100.0 * stat.1 as f64 / stat.0 as f64, 100.0 * stat.2 as f64 / stat.0 as f64);
+    let feats = g.features_in(x0, z0, x0 + n, z0 + n);
+    for f in &feats {
+        let gnd = ground[((f.root_z - z0) * n + (f.root_x - x0)) as usize];
+        vx.place(f, gnd);
+    }
+    let c = &cols[(n / 2 * n + n / 2) as usize];
+    let (w, h, img) = render_iso(&vx, 3.0, c.surface_temperature.clamp(-1.0, 1.0), c.climate.humidity);
+    let p = out_dir().join(format!("seed{seed}_cutaway_{tag}.png"));
+    write_png_rgb8(&p, w as u32, h as u32, &img).unwrap();
+    eprintln!("wrote {} (y {ymin}..{ymax}, {} features)", p.display(), feats.len());
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let mode = args.get(1).map(|s| s.as_str()).unwrap_or("all").to_string();
@@ -613,5 +716,11 @@ fn main() {
     }
     if mode == "features" || mode == "all" {
         feature_map(&g, seed);
+    }
+    if mode == "cutaway" || mode == "all" {
+        let (x, z) = find_spot(&g, 200.0, 260.0, (3000.0, -2000.0));
+        cutaway(&g, seed, x as i32, z as i32, 128, "hills");
+        let (x, z) = find_spot(&g, 300.0, 400.0, (-3000.0, 2000.0));
+        cutaway(&g, seed, x as i32, z as i32, 128, "mountain");
     }
 }

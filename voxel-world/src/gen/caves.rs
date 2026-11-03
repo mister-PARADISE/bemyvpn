@@ -353,7 +353,7 @@ impl CaveCarver {
         let (b, gb) = self.joint1.eval(x, y, z);
         let (cc, gc) = self.joint2.eval(x, y, z);
         let rn = self.radius_n.n3(x * (1.0 / 70.0), y * (1.0 / 45.0), z * (1.0 / 70.0));
-        let r = 2.3 + 2.7 * smoothstep(-0.55, 0.65, rn);
+        let r = 2.6 + 2.8 * smoothstep(-0.55, 0.65, rn);
         let d_ab = curve_dist2(a, ga, b, gb);
         let d_ac = curve_dist2(a, ga, cc, gc);
         let d_t = d_ab.min(d_ac);
@@ -373,7 +373,7 @@ impl CaveCarver {
         // ---- cheese caverns ----------------------------------------------------------------
         let region = self.cheese_region.n2(x * (1.0 / 1900.0), z * (1.0 / 1900.0));
         // Threshold: high near the surface, lower deep down, regional drift.
-        let mut t = 0.40 - 0.10 * region;
+        let mut t = 0.385 - 0.10 * region;
         t += 0.45 * (1.0 - smoothstep(12.0, 55.0, cover));
         t -= 0.035 * (1.0 - smoothstep(30.0, 110.0, yf)); // big halls deep down
         if t < 0.62 {
@@ -618,49 +618,81 @@ mod tests {
         }
     }
 
-    /// Cave volume fraction among underground blocks (y ∈ [4, H − 1]) on land, by lattice
-    /// interpolation exactly as the world builder samples it.
+    /// Cave volume fraction among underground blocks (y ∈ [4, H − 1]) on land, measured with the
+    /// 4×4×4 lattice + trilinear interpolation exactly as the world builder carves (the raw field
+    /// fraction is reported too; the lattice loses a little of the thinnest tunnels).
     #[test]
     fn cave_fraction_calibration() {
-        let mut tot = 0usize;
-        let mut carved = 0usize;
+        let (mut tot, mut carved, mut carved_direct) = (0usize, 0usize, 0usize);
         let mut by: [(usize, usize); 6] = [(0, 0); 6];
         let mut comp = [0usize; 4];
+        let (mut land_cols, mut open_cols) = (0usize, 0usize);
         for seed in [1u64, 2, 3] {
             let g = WorldGen::new(seed);
-            for i in 0..700u64 {
-                let x = (rnd(i * 2 + seed * 1000) * 16000.0 - 8000.0).floor() + 0.5;
-                let z = (rnd(i * 2 + 1 + seed * 1000) * 16000.0 - 8000.0).floor() + 0.5;
+            for i in 0..500u64 {
+                let lx = ((rnd(i * 2 + seed * 1000) * 16000.0 - 8000.0) / 4.0).floor();
+                let lz = ((rnd(i * 2 + 1 + seed * 1000) * 16000.0 - 8000.0) / 4.0).floor();
+                let corners: Vec<ColumnInfo> =
+                    (0..4).map(|k| g.column((lx + (k & 1) as f64) * 4.0, (lz + (k >> 1) as f64) * 4.0)).collect();
+                // one block column inside the lattice cell
+                let (ox, oz) = (1.5 + (i % 2) as f64, 1.5 + (i / 2 % 2) as f64);
+                let (x, z) = (lx * 4.0 + ox, lz * 4.0 + oz);
+                let (tx, tz) = ((ox / 4.0) as f32, (oz / 4.0) as f32);
                 let col = g.column(x, z);
-                if col.height < SEA_LEVEL as f32 + 2.0 {
+                if col.height < SEA_LEVEL as f32 + 2.0 || col.water_level != i32::MIN {
                     continue;
                 }
-                let top = col.height as i32 - 1;
-                let mut y = 4;
-                while y < top {
-                    let p = g.caves.parts(x, y as f64 + 0.5, z, &col);
-                    let f = p.total;
-                    if f > 0.0 {
-                        // attribute the carved block to the dominant component
-                        let v = [p.cheese, p.tunnels, p.shafts, p.ravine];
-                        let k = (0..4).fold(0, |b, i| if v[i] > v[b] { i } else { b });
-                        comp[k] += 1;
+                let top = (col.height - 0.5).floor() as i32;
+                let lat = |ly: i32| -> f32 {
+                    let v: Vec<f32> = (0..4)
+                        .map(|k| g.cave_field((lx + (k & 1) as f64) * 4.0, ly as f64 * 4.0, (lz + (k >> 1) as f64) * 4.0, &corners[k]))
+                        .collect();
+                    let a = v[0] + (v[1] - v[0]) * tx;
+                    let b = v[2] + (v[3] - v[2]) * tx;
+                    a + (b - a) * tz
+                };
+                let mut lo = lat(0);
+                let mut lo_y = 0;
+                let mut hi = lat(1);
+                land_cols += 1;
+                let mut opened = false;
+                for y in 4..=top {
+                    let yc = y as f32 + 0.5;
+                    while yc > (lo_y + 1) as f32 * 4.0 {
+                        lo_y += 1;
+                        lo = hi;
+                        hi = lat(lo_y + 1);
                     }
+                    let f = lo + (hi - lo) * (yc / 4.0 - lo_y as f32);
+                    let p = g.caves.parts(x, yc as f64, z, &col);
                     tot += 1;
                     let b = ((y / 64) as usize).min(5);
                     by[b].0 += 1;
+                    if p.total > 0.0 {
+                        carved_direct += 1;
+                    }
                     if f > 0.0 {
                         carved += 1;
                         by[b].1 += 1;
+                        let v = [p.cheese, p.tunnels, p.shafts, p.ravine];
+                        comp[(0..4).fold(0, |b, i| if v[i] > v[b] { i } else { b })] += 1;
+                        if y == top {
+                            opened = true;
+                        }
                     }
-                    y += 1;
                 }
+                open_cols += opened as usize;
             }
         }
         let frac = carved as f64 / tot as f64;
         let bands: Vec<String> =
             by.iter().enumerate().map(|(i, &(t, c))| format!("y{}..: {:.1}%", i * 64, 100.0 * c as f64 / t.max(1) as f64)).collect();
-        eprintln!("cave fraction {:.2}% ({carved}/{tot}); {}", 100.0 * frac, bands.join(", "));
+        eprintln!(
+            "cave fraction (lattice) {:.2}%, raw field {:.2}% ({tot} blocks); {}",
+            100.0 * frac,
+            100.0 * carved_direct as f64 / tot as f64,
+            bands.join(", ")
+        );
         eprintln!(
             "dominant component share of underground: cheese {:.2}% tunnels {:.2}% shafts {:.2}% ravine {:.2}%",
             100.0 * comp[0] as f64 / tot as f64,
@@ -668,6 +700,7 @@ mod tests {
             100.0 * comp[2] as f64 / tot as f64,
             100.0 * comp[3] as f64 / tot as f64
         );
+        eprintln!("surface openings: {:.2}% of land columns", 100.0 * open_cols as f64 / land_cols as f64);
         assert!((0.06..=0.12).contains(&frac), "cave fraction {frac}");
     }
 
