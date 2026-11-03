@@ -161,6 +161,29 @@ impl SynthTerrain {
     /// Like `spans`, with an optional precomputed tree grid.
     pub fn spans_with(&self, x: i32, z: i32, grid: Option<&TreeGrid>) -> Vec<Span> {
         let col = self.column(x as f64 + 0.5, z as f64 + 0.5, 0.0);
+        self.spans_col(x, z, &col, grid)
+    }
+
+    /// Biome label for a column (for tints/water colour only).
+    pub fn biome_of(&self, col: &SynthColumn, top: Material, cov: f32) -> Biome {
+        if col.h < SEA - 30.0 {
+            Biome::DeepOcean
+        } else if col.h < SEA {
+            Biome::Ocean
+        } else if col.mesa > 0.5 {
+            Biome::Badlands
+        } else if top == Material::Snow {
+            Biome::SnowyPeaks
+        } else if cov > 0.4 {
+            Biome::Forest
+        } else {
+            Biome::Plains
+        }
+    }
+
+    /// Spans of column (x, z) given its precomputed `SynthColumn`.
+    pub fn spans_col(&self, x: i32, z: i32, col: &SynthColumn, grid: Option<&TreeGrid>) -> Vec<Span> {
+        let col = *col;
         let hi = col.h.floor() as i32 + 1; // solid blocks y < hi
         let top = self.top_material(&col);
         let mut mats: Vec<(i32, i32, Material)> = Vec::with_capacity(8);
@@ -337,19 +360,7 @@ impl SynthTerrain {
             h += cov * 7.0;
         }
         let water = if col.h < SEA { SEA as f32 } else { f32::NEG_INFINITY };
-        let biome = if col.h < SEA - 30.0 {
-            Biome::DeepOcean
-        } else if col.h < SEA {
-            Biome::Ocean
-        } else if col.mesa > 0.5 {
-            Biome::Badlands
-        } else if top == Material::Snow {
-            Biome::SnowyPeaks
-        } else if cov > 0.4 {
-            Biome::Forest
-        } else {
-            Biome::Plains
-        };
+        let biome = self.biome_of(&col, top, cov);
         let _ = Vec3::ZERO;
         HfCell { h, water, albedo, mat: top, biome }
     }
@@ -406,9 +417,9 @@ pub fn synthetic_world(seed: u64, cx: i32, cz: i32, l0_size: u32, hf_size: u32, 
             let mut row = Level0Row::with_capacity(l0_size as usize);
             for i in 0..l0_size as i32 {
                 let (x, z) = (ox + i, oz + j);
-                let spans = terrain.spans_with(x, z, Some(&grid));
                 let col = terrain.column(x as f64 + 0.5, z as f64 + 0.5, 0.0);
-                let biome = terrain.hf_cell(1, x as f64 + 0.5, z as f64 + 0.5).biome;
+                let spans = terrain.spans_col(x, z, &col, Some(&grid));
+                let biome = terrain.biome_of(&col, terrain.top_material(&col), col.forest);
                 row.push_column(&spans, biome, col.temp, col.humid);
             }
             row

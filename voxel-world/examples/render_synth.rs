@@ -43,7 +43,7 @@ fn scenes(t: &SynthTerrain) -> Vec<SceneDef> {
         SceneDef {
             name: "sunset",
             center: (600, 0),
-            cam: [600.0, 175.0, 0.0],
+            cam: [600.0, ground(600.0, 0.0).max(140.0) + 28.0, 0.0],
             yaw: 95f64.to_radians(),
             pitch: (-4f64).to_radians(),
             fov: 55.0,
