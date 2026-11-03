@@ -1,5 +1,7 @@
 //! CPU ray-traced renderer. OWNER: render agent (keep the public signatures of `render` and
 //! `save_png`; add submodules freely: trace.rs, sky.rs, shade.rs, output.rs …).
+pub mod synth;
+pub mod trace;
 pub mod types;
 
 pub use types::*;
