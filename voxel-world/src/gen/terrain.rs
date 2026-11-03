@@ -222,6 +222,26 @@ fn terrace_d(h: D2, s: f32, delta: f32) -> D2 {
     h.map(h.v - s * mean_g, 1.0 - dmean)
 }
 
+/// sin/cos for |x| ≲ 10π: range reduction to [−π, π] + odd/even minimax polynomials
+/// (|error| < 2·10⁻⁴ — plenty for gully waves, ~4× cheaper than libm).
+#[inline(always)]
+fn fast_sin_cos(x: f32) -> (f32, f32) {
+    const INV_TAU: f32 = 1.0 / std::f32::consts::TAU;
+    let x = x - std::f32::consts::TAU * (x * INV_TAU).round();
+    // fold to [−π/2, π/2] for sin, keep the sign of cos
+    let (xs, csign) = if x > std::f32::consts::FRAC_PI_2 {
+        (std::f32::consts::PI - x, -1.0)
+    } else if x < -std::f32::consts::FRAC_PI_2 {
+        (-std::f32::consts::PI - x, -1.0)
+    } else {
+        (x, 1.0)
+    };
+    let x2 = xs * xs;
+    let sn = xs * (1.0 + x2 * (-0.166_666_57 + x2 * (0.008_332_557 + x2 * (-0.000_198_097_6))));
+    let cs = 1.0 + x2 * (-0.5 + x2 * (0.041_666_42 + x2 * (-0.001_388_397_1 + x2 * 0.000_024_390_04)));
+    (sn, cs * csign)
+}
+
 /// Mean of the dune profile (1 − |sin πt|)^1.5 over a period (numerically ≈ 0.2788).
 const DUNE_MEAN: f32 = 0.2788;
 
@@ -298,7 +318,7 @@ impl TerrainShaper {
             amp: amp_spline(),
             wall: wall_spline(),
             ridged: DRidged::new(s("terrain.ridged"), 1500.0, 5),
-            hills: DEroded::new(s("terrain.hills"), 900.0, 6, 0.5, 0.25),
+            hills: DEroded::new(s("terrain.hills"), 900.0, 5, 0.5, 0.25),
             rough: DFbm::new(s("terrain.rough"), 40.0, 2, 2.0, 0.5),
             jag: DFbm::new(s("terrain.jag"), 800.0, 2, 2.0, 0.5),
             select: DFbm::new(s("terrain.select"), 1100.0, 2, 2.0, 0.5),
@@ -380,8 +400,11 @@ impl TerrainShaper {
         let desert_all = hot * dry;
         let very_dry = smoothstep(-0.50, -0.64, hu);
         let badlands = desert_all * very_dry * smoothstep(0.50, 0.20, e);
-        let sel = self.select.value(x + 3100.0, z - 1700.0, fp);
-        let hoodoo = badlands * smoothstep(0.16, 0.30, sel);
+        let hoodoo = if badlands > 0.0 {
+            badlands * smoothstep(0.16, 0.30, self.select.value(x + 3100.0, z - 1700.0, fp))
+        } else {
+            0.0
+        };
         let swamp = smoothstep(0.30, 0.48, hu)
             * smoothstep(-0.20, 0.02, t)
             * smoothstep(-0.10, 0.30, e)
@@ -561,8 +584,12 @@ impl TerrainShaper {
 
         // --- jaggedness (3D detail band)
         let slope = h.grad_len();
-        let jg = smoothstep(-0.15, 0.30, self.jag.value(x, z, fp));
-        let j_m = 26.0 * smoothstep(60.0, 230.0, mountain.v) * (0.3 + 0.7 * jg);
+        let j_m = if mountain.v > 60.0 {
+            let jg = smoothstep(-0.15, 0.30, self.jag.value(x, z, fp));
+            26.0 * smoothstep(60.0, 230.0, mountain.v) * (0.3 + 0.7 * jg)
+        } else {
+            0.0
+        };
         let j_c = 14.0 * reg.cliff * smoothstep(SEA + 3.0, SEA + 12.0, h.v);
         let j_s = 9.0 * smoothstep(1.2, 2.8, slope) * smoothstep(SEA + 2.0, SEA + 20.0, h.v);
         let tame = (1.0 - reg.badlands) * (1.0 - reg.desert) * (1.0 - 0.8 * reg.volcanic) * (1.0 - reg.swamp);
@@ -580,7 +607,7 @@ impl TerrainShaper {
 
     /// Slope-aligned gully noise ("erosion filter").
     ///
-    /// For octave k (cell size Lₖ = 360·2⁻ᵏ) every cell of a jittered lattice carries a plane wave
+    /// For octave k (cell size Lₖ = 360·2⁻ᵏ, k = 0..3) every cell of a jittered lattice carries a plane wave
     /// `cos 2π((p − pⱼ)·t̂)/Lₖ` whose wave vector t = g⊥/√(|g|²+ε²) is *perpendicular* to the current
     /// terrain gradient g (regularised: ε = 0.35|g₀| keeps it from spinning where g → 0), so its crests run downhill (gullies and spurs). The waves are blended with the
     /// compact kernel `w = (1 − |p − pⱼ|²/(0.75Lₖ)²)³`, blended as Σwc/(Σw + w₀)
@@ -601,7 +628,7 @@ impl TerrainShaper {
         let mut out = D2::ZERO;
         let mut cell = 360.0f64;
         let mut taper = 1.0f32;
-        for oct in 0..5u64 {
+        for oct in 0..4u64 {
             let fade = if fp > 1.0 { saturate(((cell / fp - 2.0) * 0.5) as f32) } else { 1.0 };
             if fade <= 0.0 {
                 break;
@@ -635,7 +662,7 @@ impl TerrainShaper {
                     let q = 1.0 - d2;
                     let w = q * q * q;
                     let dw = -6.0 * q * q * (1.0 / (0.75 * 0.75)); // ∂w/∂pp = dw·pp
-                    let (sn, cs) = (TAU * (ppx * tx + ppz * tz)).sin_cos();
+                    let (sn, cs) = fast_sin_cos(TAU * (ppx * tx + ppz * tz));
                     sw += w;
                     swx += dw * ppx;
                     swz += dw * ppz;
@@ -812,6 +839,15 @@ mod tests {
             assert!((a - b).abs() < 1.6, "{a} {b}");
             let big = terrace_d(D2::c(h), 10.0, 200.0).v;
             assert!((big - (h - 10.0 * 0.4)).abs() < 0.3, "{big} vs {}", h - 4.0);
+        }
+    }
+
+    #[test]
+    fn fast_sin_cos_accuracy() {
+        for i in 0..100_000 {
+            let x = -40.0 + 80.0 * i as f32 / 100_000.0;
+            let (s, c) = fast_sin_cos(x);
+            assert!((s - x.sin()).abs() < 3e-4 && (c - x.cos()).abs() < 3e-4, "{x}: {s} {c}");
         }
     }
 
