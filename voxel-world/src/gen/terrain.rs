@@ -423,15 +423,12 @@ impl TerrainShaper {
         // dendritic gullies on mountain flanks (strength ∝ local relief)
         if mountain.v > 12.0 {
             let ga = 0.65 * smoothstep(12.0, 60.0, mountain.v);
-            // Smooth steering proxy (see `DRidged::sample_with_steer`): regional slope + uplift
-            // gradient + rounded main crests. Sharp crests must not steer the gully phase.
+            // Smooth steering proxy (see `DRidged::sample_with_steer`): regional slope + rounded
+            // main crests. Sharp crests / fast-turning gradients must not steer the gully phase.
             let k = amp.v * vfac.v * s_mix.v * 1.25;
-            let gx = base.dx + amp.dx * shape.v * vfac.v + k * steer.dx;
-            let gz = base.dz + amp.dz * shape.v * vfac.v + k * steer.dz;
+            let gx = base.dx + k * steer.dx;
+            let gz = base.dz + k * steer.dz;
             steer_dbg = (gx, gz);
-            if std::env::var("GC_DEBUG").is_ok() {
-                eprintln!("base.d ({:.3},{:.3}) amp {:?} shape {:?} vfac {:?} s_mix {:?} steer {:?} e {:?} c {:?} pv {:?}", base.dx, base.dz, amp, shape, vfac, s_mix, steer, cd.e, cd.c, cd.pv);
-            }
             let g = self.gullies(x, z, (gx, gz), ga, fp);
             mountain = mountain + g;
         }
@@ -586,7 +583,7 @@ impl TerrainShaper {
     /// For octave k (cell size Lₖ = 360·2⁻ᵏ) every cell of a jittered lattice carries a plane wave
     /// `cos 2π((p − pⱼ)·t̂)/Lₖ` whose wave vector t = g⊥/√(|g|²+ε²) is *perpendicular* to the current
     /// terrain gradient g (regularised: ε = 0.35|g₀| keeps it from spinning where g → 0), so its crests run downhill (gullies and spurs). The waves are blended with the
-    /// compact kernel `w = (1 − |p − pⱼ|²/Lₖ²)³` (normalised). The amplitude is
+    /// compact kernel `w = (1 − |p − pⱼ|²/(0.62Lₖ)²)³` (normalised). The amplitude is
     /// `aₖ = c·0.72ᵏ·|g₀|·Lₖ/2π`, i.e. octave k adds side slopes ≈ c·0.72ᵏ × the base slope (relief of a
     /// gully ∝ slope × width, as in nature; flat ground gets nothing). Each octave's derivative is
     /// added to g before the next octave → finer gullies bend into coarser ones (dendritic
@@ -623,17 +620,20 @@ impl TerrainShaper {
             for j in -1..=1 {
                 for i in -1..=1 {
                     let hh = hash2(seed, ix + i, iz + j);
-                    let jx = 0.25 + 0.5 * hash_f01(hh);
-                    let jz = 0.25 + 0.5 * hash_f01(mix64(hh));
+                    // points jittered in [0.33, 0.67]² of their cell; kernel radius R = 0.62 cell
+                    // (every position sees ≥ 1 point; the small lever arm |p − pⱼ| ≤ R keeps the
+                    // phase insensitive to slow rotations of the steering direction)
+                    let jx = 0.33 + 0.34 * hash_f01(hh);
+                    let jz = 0.33 + 0.34 * hash_f01(mix64(hh));
                     let ppx = fx - (i as f32 + jx);
                     let ppz = fz - (j as f32 + jz);
-                    let d2 = ppx * ppx + ppz * ppz;
+                    let d2 = (ppx * ppx + ppz * ppz) * (1.0 / (0.62 * 0.62));
                     if d2 >= 1.0 {
                         continue;
                     }
                     let q = 1.0 - d2;
                     let w = q * q * q;
-                    let dw = -6.0 * q * q; // ∂w/∂pp = dw·pp
+                    let dw = -6.0 * q * q * (1.0 / (0.62 * 0.62)); // ∂w/∂pp = dw·pp
                     let (sn, cs) = (TAU * (ppx * tx + ppz * tz)).sin_cos();
                     sw += w;
                     swx += dw * ppx;

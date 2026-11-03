@@ -324,8 +324,9 @@ impl<'a> Frame<'a> {
         t
     }
 
-    /// Classic voxel corner AO + ray-traced vertex sky visibility (+ emissive gather), bilinear.
-    fn voxel_ao(&self, bx: i32, by: i32, bz: i32, face: u8, p: [f64; 3], t: f64, ctx: &mut Ctx) -> (f32, Vec3) {
+    /// Ambient irradiance at a voxel face point: bilinear blend of ray-traced per-vertex
+    /// irradiance (near) or SH sky irradiance with a cover heuristic (far), times corner AO.
+    fn voxel_ambient(&self, bx: i32, by: i32, bz: i32, face: u8, p: [f64; 3], n: Vec3, t: f64, ctx: &mut Ctx) -> Vec3 {
         let axis = (face / 2) as usize;
         let pos = face % 2 == 0;
         let (a1, a2) = match axis {
@@ -347,9 +348,11 @@ impl<'a> Frame<'a> {
         let s1p = occ(1, 0);
         let s2m = occ(0, -1);
         let s2p = occ(0, 1);
+        let near = t < VIS_DIST;
+        let table: [f32; 4] = if near { [1.0, 0.86, 0.74, 0.62] } else { [1.0, 0.76, 0.58, 0.42] };
         let corner = |o1: i32, o2: i32, s1: u8, s2: u8| -> f32 {
             let k = if s1 == 1 && s2 == 1 { 3 } else { s1 + s2 + occ(o1, o2) };
-            [1.0, 0.76, 0.58, 0.42][k as usize]
+            table[k as usize]
         };
         let c00 = corner(-1, -1, s1m, s2m);
         let c10 = corner(1, -1, s1p, s2m);
@@ -358,45 +361,42 @@ impl<'a> Frame<'a> {
         let u = saturate((p[a1] - b[a1] as f64) as f32);
         let v = saturate((p[a2] - b[a2] as f64) as f32);
         let bil = |a: f32, b: f32, c: f32, d: f32| lerp(lerp(a, b, u), lerp(c, d, u), v);
-        let mut ao = bil(c00, c10, c01, c11);
-        let mut emit = Vec3::ZERO;
-        if t < VIS_DIST {
-            let fade = smoothstep(VIS_DIST as f32 * 0.7, VIS_DIST as f32, t as f32);
-            let mut vv = [0.0f32; 4];
-            let mut ee = [Vec3::ZERO; 4];
-            for (k, (o1, o2)) in [(0, 0), (1, 0), (0, 1), (1, 1)].iter().enumerate() {
-                let mut vtx = b;
-                if pos {
-                    vtx[axis] += 1;
-                }
-                vtx[a1] += o1;
-                vtx[a2] += o2;
-                let r = self.vertex_vis(vtx, face, ctx);
-                vv[k] = r[0];
-                ee[k] = Vec3::new(r[1], r[2], r[3]);
+        let ao = bil(c00, c10, c01, c11);
+        // Far model: SH sky irradiance with a cheap cover test (overhangs / canopy / cave mouths).
+        let far = || {
+            let mut k = 1.0f32;
+            let (fx, fz) = (front[0], front[2]);
+            if (self.world.l0.top(fx, fz) as i32) > front[1] + 2 {
+                k = if face == 2 { 0.35 } else { 0.6 };
             }
-            let vis = bil(vv[0], vv[1], vv[2], vv[3]);
-            let e0 = ee[0].lerp(ee[1], u);
-            let e1 = ee[2].lerp(ee[3], u);
-            emit = e0.lerp(e1, v) * (1.0 - fade);
-            ao *= lerp(vis, 1.0, fade);
-        } else {
-            // Far: cheap cover test (overhangs / canopy / cave mouths).
-            if axis != 1 || pos {
-                let top = self.world.l0.top(bx + if axis == 0 { if pos { 1 } else { -1 } } else { 0 }, bz + if axis == 2 { if pos { 1 } else { -1 } } else { 0 });
-                if (top as i32) > by + 2 && face != 2 {
-                    ao *= 0.75;
-                }
-            }
-            if face == 2 && (self.world.l0.top(bx, bz) as i32) > by + 2 {
-                ao *= 0.45;
-            }
+            self.sky_irradiance(n) * k
+        };
+        if !near {
+            return far() * ao;
         }
-        (ao, emit)
+        let fade = smoothstep(VIS_DIST as f32 * 0.75, VIS_DIST as f32, t as f32);
+        let mut ee = [Vec3::ZERO; 4];
+        for (k, (o1, o2)) in [(0, 0), (1, 0), (0, 1), (1, 1)].iter().enumerate() {
+            let mut vtx = b;
+            if pos {
+                vtx[axis] += 1;
+            }
+            vtx[a1] += o1;
+            vtx[a2] += o2;
+            let r = self.vertex_irradiance(vtx, face, ctx);
+            ee[k] = Vec3::new(r[0], r[1], r[2]);
+        }
+        let e = ee[0].lerp(ee[1], u).lerp(ee[2].lerp(ee[3], u), v);
+        let e = if fade > 0.0 { e.lerp(far(), fade) } else { e };
+        e * ao
     }
 
-    /// Sky visibility and emitted irradiance/π at a face vertex: [V, er, eg, eb].
-    fn vertex_vis(&self, v: [i32; 3], face: u8, ctx: &mut Ctx) -> [f32; 4] {
+    /// Ray-traced irradiance at a face vertex (12 cosine-distributed rays, Monte-Carlo estimate
+    /// E = π/K Σ L_i): escaped rays see the sky radiance, blocked rays see a one-bounce estimate
+    /// of the hit surface (albedo × sky/sun irradiance, judged by whether the hit block is exposed
+    /// at the top of its column), emitters (lava, crystal) contribute their radiance. Memoised per
+    /// thread (pure function of the vertex and face).
+    fn vertex_irradiance(&self, v: [i32; 3], face: u8, ctx: &mut Ctx) -> [f32; 4] {
         let key = (v[0] as u32 as u64) | ((v[1] as u32 as u64 & 0x3FF) << 32) | ((v[2] as u32 as u64 & 0x3_FFFF) << 42) | ((face as u64) << 60);
         let slot = (mix64(key) as usize) & (ctx.keys.len() - 1);
         if ctx.keys[slot] == key {
@@ -407,30 +407,43 @@ impl<'a> Frame<'a> {
         let rot = hash_f01(hash3(0xA0, v[0], v[1], v[2] ^ (face as i32) << 20)) * 2.0 * PI;
         let (sr, cr) = rot.sin_cos();
         let o = [v[0] as f64 + n.x as f64 * 0.03, v[1] as f64 + n.y as f64 * 0.03, v[2] as f64 + n.z as f64 * 0.03];
-        let mut vis = 0.0f32;
-        let mut emit = Vec3::ZERO;
+        let mut sum = Vec3::ZERO;
+        let e_sun = self.sun_irradiance(v[1] as f64);
+        let e_up = self.sky_irradiance(Vec3::Y);
         for dl in &self.ao_dirs {
             let (x, y) = (dl[0] * cr - dl[1] * sr, dl[0] * sr + dl[1] * cr);
             let d = t1 * x + t2 * y + n * dl[2];
             let ray = Ray::new(o, d3(d));
             match self.scene.l0.trace(&ray, 0.0, AO_LEN, false) {
-                None => vis += 1.0,
+                None => {
+                    sum += if d.y < -0.02 && !self.studio {
+                        // Escaped downward (over a cliff edge): distant sunlit ground.
+                        self.far.land * (e_sun * self.sun.y.max(0.0) + e_up) * (1.0 / PI)
+                    } else {
+                        self.sky_radiance(d)
+                    };
+                }
                 Some(h) => {
-                    if let HitKind::Voxel { mat, face: hf, .. } = h.kind {
+                    if let HitKind::Voxel { mat, face: hf, bx, by, bz } = h.kind {
                         let e = mat.emission();
                         if e != Vec3::ZERO {
                             let fk = if hf == 2 { FACE_TOP } else if hf == 3 { FACE_BOTTOM } else { FACE_SIDE };
-                            emit += e * self.tex.average(mat, fk).e;
+                            sum += e * self.tex.average(mat, fk).e;
                         } else {
-                            // Weak one-bounce fill from nearby surfaces (sky-lit, unknown albedo).
-                            vis += 0.08 * (h.t / AO_LEN) as f32;
+                            let alb = materials::far_albedo(mat, 0.3, 0.2, by as f32);
+                            let top = self.world.l0.top(bx, bz) as i32;
+                            let exposed = top - by <= 2 && hf != 3;
+                            let hn = v3(h.n);
+                            let ndl = hn.dot(self.sun).max(0.0);
+                            let e_hit = if exposed { e_up * 0.8 + e_sun * (ndl * 0.75) } else { e_up * 0.1 };
+                            sum += alb * e_hit * (1.0 / PI);
                         }
                     }
                 }
             }
         }
-        let inv = 1.0 / AO_RAYS as f32;
-        let r = [vis * inv, emit.x * inv, emit.y * inv, emit.z * inv];
+        let k = PI / AO_RAYS as f32;
+        let r = [sum.x * k, sum.y * k, sum.z * k, 0.0];
         ctx.keys[slot] = key;
         ctx.vals[slot] = r;
         r
@@ -495,11 +508,8 @@ impl<'a> Frame<'a> {
         // Per-block brightness jitter, faded out with distance.
         let jitter = 1.0 + 0.06 * (hash_f01(bh) * 2.0 - 1.0) * (1.0 - smoothstep(0.5, 4.0, fp * 4.0));
         albedo = albedo * jitter;
-        let mut emit = mat.emission() * tx.e;
-        let (ao, ao_emit) = self.voxel_ao(bx, by, bz, face, p, h.t, ctx);
-        if emit == Vec3::ZERO {
-            emit = albedo * ao_emit;
-        }
+        let emit = mat.emission() * tx.e;
+        let amb = self.voxel_ambient(bx, by, bz, face, p, n, h.t, ctx);
         let f0 = mat.specular_f0();
         let rough = match mat {
             Material::Ice | Material::PackedIce => 0.12,
@@ -507,14 +517,14 @@ impl<'a> Frame<'a> {
             _ => 0.45,
         };
         let translucent = mat.is_leaves();
-        let mut l = self.light(p, n, h.n, albedo, ao, d, f0, rough, underwater, translucent, jit, 1e-3);
+        let mut l = self.light(p, n, h.n, albedo, amb, d, f0, rough, underwater, translucent, jit, 1e-3);
         l += emit;
         l
     }
 
     /// Direct sun + sky ambient (+ glossy spec) for a surface point.
     #[allow(clippy::too_many_arguments)]
-    fn light(&self, p: [f64; 3], n: Vec3, ng: [f64; 3], albedo: Vec3, ao: f32, d: Vec3, f0: f32, rough: f32, underwater: Option<f64>, translucent: bool, jit: u32, eps: f64) -> Vec3 {
+    fn light(&self, p: [f64; 3], n: Vec3, ng: [f64; 3], albedo: Vec3, amb: Vec3, d: Vec3, f0: f32, rough: f32, underwater: Option<f64>, translucent: bool, jit: u32, eps: f64) -> Vec3 {
         let sd = self.sun_dir(jit);
         let ndl = n.dot(sd);
         let ngl = ng[0] * sd.x as f64 + ng[1] * sd.y as f64 + ng[2] * sd.z as f64;
@@ -543,7 +553,8 @@ impl<'a> Frame<'a> {
                 }
             }
         }
-        let mut e_sky = self.sky_irradiance(n) * ao;
+        let mut e_sky = amb;
+        let ao = (amb.luminance() / self.sky_irradiance(n).luminance().max(1e-4)).min(1.0);
         if let Some(w) = underwater {
             let depth = (w - p[1]).max(0.0) as f32;
             e_sky = e_sky * Vec3::new((-WATER_SIGMA[0] * depth).exp(), (-WATER_SIGMA[1] * depth).exp(), (-WATER_SIGMA[2] * depth).exp());
@@ -608,7 +619,8 @@ impl<'a> Frame<'a> {
         let ao = self.horizon_ao(v, h.p, n);
         let f0 = mat.specular_f0();
         let off = 0.02 * c + 0.002 * h.t;
-        let mut l = self.light(h.p, n, h.n, alb, ao, d, f0, 0.35, underwater, false, jit, off);
+        let amb = self.sky_irradiance(n) * ao;
+        let mut l = self.light(h.p, n, h.n, alb, amb, d, f0, 0.35, underwater, false, jit, off);
         l += mat.emission() * 0.8;
         l
     }
