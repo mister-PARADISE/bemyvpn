@@ -353,4 +353,4 @@ impl WorldGen {
 }
 
 /// Upper bound on any feature's horizontal radius (blocks).
-pub const MAX_FEATURE_RADIUS: i32 = 12;
+pub const MAX_FEATURE_RADIUS: i32 = 24;

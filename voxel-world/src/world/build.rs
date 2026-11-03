@@ -1338,16 +1338,21 @@ mod tests {
         let w0 = build_world(&gen, &p0);
         // replace_solid runs, recomputed independently from the bare terrain
         let (ox, oz) = (w0.l0.origin_x, w0.l0.origin_z);
-        let feats = gen.features_in(ox, oz, ox + 96, oz + 96);
+        let m = MAX_FEATURE_RADIUS;
+        let feats = gen.features_in(ox - m, oz - m, ox + 96 + m, oz + 96 + m);
         let mut repl: Vec<(i32, i32, i32, i32)> = Vec::new();
         let mut any_feature_blocks = 0usize;
         for f in &feats {
-            let s = w0.l0.spans(f.root_x, f.root_z);
-            let Some(top) = s.last() else { continue };
-            if !top.mat.is_opaque() {
-                continue;
-            }
-            let base = top.y1 as i32;
+            let base = if w0.l0.contains(f.root_x, f.root_z) {
+                let s = w0.l0.spans(f.root_x, f.root_z);
+                let Some(top) = s.last() else { continue };
+                if !top.mat.is_opaque() {
+                    continue;
+                }
+                top.y1 as i32
+            } else {
+                exact_root_y(&gen, f.root_x, f.root_z) as i32
+            };
             for c in &f.columns {
                 if c.replace_solid {
                     repl.push((f.root_x + c.dx as i32, f.root_z + c.dz as i32, base + c.y0 as i32, base + c.y1 as i32));
@@ -1375,34 +1380,49 @@ mod tests {
         assert!(any_feature_blocks > 0 || feats.is_empty());
     }
 
-    /// Level 1 just outside the voxel square continues level 0 without a systematic step.
+    /// Level 1 continues level 0 without a systematic step: the inner level-1 cells (box-filtered
+    /// voxels, unbiased surface ⌈H − ½⌉) agree in the mean with what the outer cells use
+    /// (`column_lod` at the same cell). Canopy is excluded (it is the features' statistical model).
     #[test]
     fn heightfield_continuity_at_level0_boundary() {
-        let gen = WorldGen::new(2026);
-        let (cx, cz) = land_centre(&gen);
-        let w = build_world(&gen, &params(cx, cz, 128, 0, 128, 128, 2));
-        let lv = &w.levels[0];
-        let (ox, oz) = (w.l0.origin_x, w.l0.origin_z);
-        // level-1 cells along the east edge: inside cell (ends at ox+128) vs outside cell
-        let mut step = 0.0f64;
-        let mut grad = 0.0f64;
-        let mut n = 0;
-        for zz in (oz..oz + 128).step_by(2) {
-            let (ci, cj) = lv.cell_of((ox + 127) as f64, zz as f64 + 0.5);
-            if !lv.in_range(ci + 2, cj) || ci < 1 {
-                continue;
+        for seed in [1u64, 2026] {
+            let gen = WorldGen::new(seed);
+            let (cx, cz) = land_centre(&gen);
+            let w = build_world(&gen, &params(cx, cz, 128, 0, 0, 128, 2));
+            let lv = &w.levels[0];
+            let (mut sum, mut sum2, mut n) = (0.0f64, 0.0f64, 0usize);
+            let (mut wet_mismatch, mut wet) = (0usize, 0usize);
+            for j in 0..lv.size as i32 {
+                for i in 0..lv.size as i32 {
+                    let (x, z) = (lv.origin_x + 2 * i, lv.origin_z + 2 * j);
+                    if !(w.l0.contains(x, z) && w.l0.contains(x + 1, z + 1)) {
+                        continue;
+                    }
+                    let q = lv.index(i, j);
+                    let col = gen.column_lod(x as f64 + 1.0, z as f64 + 1.0, 2.0);
+                    let lod_wet = col.water_level != i32::MIN && col.water_level as f32 > col.height;
+                    if lod_wet || lv.water[q] > lv.h[q] {
+                        wet += 1;
+                        if lod_wet != (lv.water[q] > lv.h[q]) {
+                            wet_mismatch += 1;
+                        } else {
+                            assert_eq!(lv.water[q], col.water_level as f32, "water surface mismatch at ({x},{z})");
+                        }
+                        continue;
+                    }
+                    let d = (lv.h[q] - col.height) as f64;
+                    sum += d;
+                    sum2 += d * d;
+                    n += 1;
+                }
             }
-            let hin = lv.h[lv.index(ci, cj)] as f64;
-            let hout = lv.h[lv.index(ci + 1, cj)] as f64;
-            let hout2 = lv.h[lv.index(ci + 2, cj)] as f64;
-            let hin2 = lv.h[lv.index(ci - 1, cj)] as f64;
-            // compare the boundary difference with the mean of the neighbouring differences
-            step += (hout - hin) - 0.5 * ((hout2 - hout) + (hin - hin2));
-            grad += ((hout2 - hout).abs() + (hin - hin2).abs()) * 0.5;
-            n += 1;
+            let mean = sum / n as f64;
+            let rms = (sum2 / n as f64).sqrt();
+            eprintln!("seed {seed}: voxel-cells − lod: mean {mean:.3}, rms {rms:.3} (n {n}); wet {wet}, wet mismatch {wet_mismatch}");
+            assert!(n > 1000);
+            assert!(mean.abs() < 0.25, "biased level-0/level-1 heights: {mean}");
+            assert!(rms < 2.0, "level-0/level-1 heights disagree: rms {rms}");
+            assert!(wet_mismatch * 10 <= wet.max(10), "{wet_mismatch}/{wet}");
         }
-        let (step, grad) = (step / n as f64, grad / n as f64);
-        eprintln!("boundary step {step:.3} (mean |grad| {grad:.3}, n {n})");
-        assert!(step.abs() < 0.75 + 0.5 * grad, "systematic step {step} at level-0 boundary (grad {grad})");
     }
 }

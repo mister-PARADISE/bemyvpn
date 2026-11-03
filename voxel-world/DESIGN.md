@@ -190,6 +190,34 @@ trees on plains, none on peaks. Respect `MAX_FEATURE_RADIUS = 12`.
 `canopy_lod(x,z,col,footprint)`: statistical expectation (coverage, mean canopy height, leaf
 material) of the same point process — for far LOD.
 
+### 5a. USER REQUIREMENTS — tree variety (reviewers: IMPLEMENT if missing, not optional)
+
+The user wants MUCH more tree variety, produced by a fast parametric generator ("one generator,
+endless variations"), not a handful of fixed templates:
+
+* **Tree genome.** Every tree = species template + continuous parameters drawn from its hash:
+  height (log-normal age classes: sapling / young / mature / old), trunk thickness (1, 2×2, 3×3, up
+  to 5×5 for giants), trunk lean and curvature (quadratic Bézier spine), branch count / angles /
+  lengths (3D line rasterisation), crown family (ellipsoid, stacked cones, umbrella, columnar,
+  multi-blob clusters, weeping curtain), crown asymmetry, leaf density / holes (hash dithering),
+  occasional dead branches, snags (dead standing trees), stumps and fallen logs (horizontal logs).
+  No two trees identical; species stay recognisable.
+* **Spruce biomes.** Taiga: mixed spruce sizes 8–25 with clusters and clearings. Old-growth taiga:
+  mega spruce (2×2, 30–45 tall) dominate, with occasional **colossal spruce (3×3, 50–70 tall)**.
+  Alpine grove: smaller, wind-swept (lean away from the local prevailing wind if available).
+* **Rare landmark giants** ("ancient trees"): a separate very sparse point process (grid cell
+  ≈ 200–300 blocks, low acceptance by biome) — roughly one per few hundred metres in forests,
+  rarer in open land: ancient oak with huge spreading branches (radius ≈ 16–24), giant sequoia-like
+  conifer (3×3–5×5 trunk, 60–90 tall, columnar crown), jungle emergent giant towering above the
+  canopy with an umbrella crown, baobab-like fat trunk in savanna, ancient weeping willow-like tree
+  by rivers/swamps, lone giant oak in a meadow. Buttress roots may use `replace_solid`. Normal
+  trees are suppressed inside a landmark's crown (deterministically: query the landmark grid), so
+  placement stays independent of the query rectangle.
+* `MAX_FEATURE_RADIUS` is now **24**. Rasterise analytically per column (intervals of ellipsoids /
+  cones, Bézier trunks, DDA branches), merge runs, no per-voxel allocations — tree generation must
+  stay cheap (giants are rare). Only existing `Material`s may be used (materials.rs is frozen).
+* `canopy_lod` must include the expected contribution of landmark giants and taller spruces.
+
 ## 6. World build (world-build, `world/build.rs`)
 
 `build_world(gen, params) -> World` (storage types in frozen `world/mod.rs`).
