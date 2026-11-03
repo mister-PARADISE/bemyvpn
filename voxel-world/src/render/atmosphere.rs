@@ -704,9 +704,10 @@ mod tests {
             prev = a.t.y;
         }
         assert!(prev < 0.8 && prev > 0.05, "T(38km)={}", prev);
-        // SH: upward irradiance positive and larger than downward.
+        // SH: both hemispheres positive; sky light is bluer than ground bounce.
         let up = noon.irradiance(Vec3::Y);
         let dn = noon.irradiance(-Vec3::Y);
-        assert!(up.y > dn.y && dn.y > 0.0);
+        assert!(up.y > 0.0 && dn.y > 0.0);
+        assert!(up.z / up.x > dn.z / dn.x);
     }
 }

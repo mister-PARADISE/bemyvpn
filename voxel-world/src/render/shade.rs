@@ -333,6 +333,19 @@ impl<'a> Frame<'a> {
             HitKind::Height { level, water } => {
                 if water {
                     let v = &self.scene.hf[level as usize];
+                    // Liquid cells whose top material is lava / ice are shaded as such.
+                    let (i, j, u, w) = v.locate(h.p[0], h.p[2]);
+                    let n1 = v.lv.size as i32 - 1;
+                    let (ci, cj) = ((if u < 0.5 { i } else { i + 1 }).clamp(0, n1), (if w < 0.5 { j } else { j + 1 }).clamp(0, n1));
+                    let mat = v.lv.mat[v.lv.index(ci, cj)];
+                    if matches!(mat, Material::Lava | Material::Ice | Material::PackedIce) {
+                        let alb = self.tex.average(mat, FACE_TOP);
+                        let n = Vec3::Y;
+                        let amb = self.sky_irradiance(n);
+                        let mut l = self.light(h.p, n, h.n, alb.color(Vec3::ONE), amb, d, mat.specular_f0(), 0.15, None, false, jit, 0.02);
+                        l += mat.emission() * alb.e;
+                        return l;
+                    }
                     let bed = v.terrain(h.p[0], h.p[2]);
                     return self.shade_water(h.p, d, h.t, fp, Some((level, bed)), h.p[1], depth, jit, ctx);
                 }

@@ -190,3 +190,67 @@ pub fn save_png(img: &Image, path: &std::path::Path) -> std::io::Result<()> {
     let rgb = post::to_srgb8(img);
     crate::imageio::write_png_rgb8(path, img.width, img.height, &rgb)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::render::synth::synthetic_world;
+
+    fn small_world() -> World {
+        synthetic_world(7, 30, 80, 128, 64, 2)
+    }
+
+    #[test]
+    fn render_is_deterministic_across_thread_counts() {
+        let w = small_world();
+        let cam = Camera { pos: [30.0, 260.0, 60.0], yaw: 0.6, pitch: -0.25, fov_y_deg: 60.0 };
+        let sun = Sun { azimuth_deg: 130.0, elevation_deg: 35.0 };
+        let s = RenderSettings { width: 96, height: 64, ..Default::default() };
+        let run = |threads: usize| {
+            let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap();
+            pool.install(|| render(&w, &cam, &sun, &s))
+        };
+        let a = run(1);
+        let b = run(4);
+        assert_eq!(a.pixels.len(), 96 * 64);
+        for (p, q) in a.pixels.iter().zip(b.pixels.iter()) {
+            assert!(p.is_finite());
+            assert_eq!(p.to_array().map(f32::to_bits), q.to_array().map(f32::to_bits));
+        }
+        // Well exposed: mean display luminance in a sane band.
+        let rgb = post::to_srgb8(&a);
+        let mean = rgb.iter().map(|&v| v as f64).sum::<f64>() / rgb.len() as f64;
+        assert!(mean > 40.0 && mean < 220.0, "mean {}", mean);
+    }
+
+    #[test]
+    fn diorama_and_cave_cameras_render_finite() {
+        let w = small_world();
+        let sun = Sun { azimuth_deg: 200.0, elevation_deg: 40.0 };
+        let mode = ViewMode::Diorama { min_x: 0, max_x: 60, min_z: 40, max_z: 100, min_y: 60 };
+        let cam = Camera::look_at([-120.0, 330.0, -60.0], [30.0, 150.0, 70.0], 40.0);
+        let s = RenderSettings { width: 64, height: 48, mode, ..Default::default() };
+        let img = render(&w, &cam, &sun, &s);
+        assert!(img.pixels.iter().all(|p| p.is_finite()));
+        // Camera buried inside rock / below spans / under water: no panic, finite output.
+        for y in [5.0, 100.0, 139.5, 600.0] {
+            let cam = Camera { pos: [31.3, y, 77.7], yaw: 2.0, pitch: 0.3, fov_y_deg: 70.0 };
+            let s = RenderSettings { width: 32, height: 24, ..Default::default() };
+            let img = render(&w, &cam, &sun, &s);
+            assert!(img.pixels.iter().all(|p| p.is_finite()));
+        }
+    }
+
+    #[test]
+    fn tonemap_monotone_and_bounded() {
+        let mut prev = -1.0;
+        for k in 0..200 {
+            let v = k as f32 * 0.05;
+            let t = post::tonemap(Vec3::splat(v));
+            assert!(t.x >= prev - 1e-6 && t.x <= 1.0);
+            prev = t.x;
+        }
+        assert!(post::tonemap(Vec3::splat(0.0)).x < 0.01);
+        assert!(post::tonemap(Vec3::splat(100.0)).x > 0.95);
+    }
+}
