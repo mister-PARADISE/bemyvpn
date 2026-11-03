@@ -21,7 +21,7 @@
 //! * a **mix field** (λ ≈ 95) that tilts species weights `wᵢ·exp(2 bᵢ m)` → birch stands inside
 //!   oak forests, pine patches inside spruce taiga …,
 //! * the **treeline** relative to the local snow line `S` (`r = H − S`): trees fade over
-//!   `r ∈ [−95, −30]`, shrink (`scale = 0.5 + 0.5·(1 − smoothstep(−160, −40, r))`), bushes go up
+//!   `r ∈ [−95, −30]`, shrink (`scale = 0.5 + 0.5·(1 − smoothstep(−110, −30, r))`), bushes go up
 //!   to `r ≈ −12`; mega trees need `scale > 0.8`; slope fades trees over `[0.45, 0.9]`.
 //!
 //! # Shapes (rasterised analytically into a local voxel grid, then run-length encoded)
@@ -424,8 +424,8 @@ impl FeaturePlacer {
             }
         }
         fp.e_clear = ec / n as f32;
-        for k in 0..4 {
-            fp.e_grove[k].1 = eg[k] / n as f32;
+        for (e, sum) in fp.e_grove.iter_mut().zip(eg) {
+            e.1 = sum / n as f32;
         }
         fp
     }
@@ -533,7 +533,7 @@ impl FeaturePlacer {
         let wm = if footprint > 0.0 { (((MIX_L / footprint) - 2.0) * 0.5).clamp(0.0, 1.0) as f32 } else { 1.0 };
         let mix = if wm > 0.0 { wm * self.mixn.n2(x / MIX_L - 7.7, z / MIX_L + 2.9) } else { 0.0 };
         let rel = col.height - self.snow.at(x, z, col.climate.temperature);
-        let scale = 0.5 + 0.5 * (1.0 - smoothstep(-160.0, -40.0, rel));
+        let scale = 0.5 + 0.5 * (1.0 - smoothstep(-110.0, -30.0, rel));
         Env { biome: col.biome, p, mix, rel, scale, slope: col.slope }
     }
 
@@ -659,6 +659,7 @@ impl FeaturePlacer {
         let mut sum_a = 0.0f32;
         let mut sum_ah = 0.0f32;
         let mut best = (0.0f32, Material::OakLeaves);
+        #[allow(clippy::needless_range_loop)]
         for l in 0..3 {
             if env.p[l] <= 0.0 {
                 continue;
@@ -870,6 +871,7 @@ impl Raster {
         }
     }
     /// Superellipse disc |x/r|^p + |z/r|^p ≤ 1 (dithered) at layer y, centre (cx, cz).
+    #[allow(clippy::too_many_arguments)]
     fn disc(&mut self, cx: f32, cz: f32, y: i32, r: f32, p: f32, m: Material, rough: f32) {
         let ri = (r + 1.0).ceil() as i32;
         let (bx, bz) = (cx.floor() as i32, cz.floor() as i32);
