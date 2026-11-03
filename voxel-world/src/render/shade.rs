@@ -656,13 +656,15 @@ impl<'a> Frame<'a> {
     /// slope variance of the removed octaves. Also returns the Laplacian estimate for caustics.
     #[inline]
     fn ripple_grad(&self, x: f64, z: f64, fp: f32) -> (f32, f32, f32) {
-        const L: [f32; 5] = [11.0, 4.7, 2.1, 0.95, 0.43];
+        const L: [f32; 5] = [13.0, 5.3, 2.3, 1.0, 0.45];
+        const A: [f32; 5] = [0.040, 0.042, 0.040, 0.034, 0.028];
         let mut gx = 0.0;
         let mut gz = 0.0;
         let mut var = 0.0;
         for (k, &lam) in L.iter().enumerate() {
-            let amp = 0.065 * lam;
-            let w = saturate((lam / fp.max(1e-4) - 2.0) * 0.5);
+            let amp = A[k] * lam;
+            // Octaves shorter than ~4 pixels are removed (their slope variance goes to roughness).
+            let w = saturate((lam / fp.max(1e-4) - 4.0) * 0.25);
             let slope = amp / lam;
             if w <= 0.0 {
                 var += slope * slope * 0.6;
@@ -782,8 +784,8 @@ impl<'a> Frame<'a> {
         // In-water single scattering toward the viewer (deep-water colour).
         let (te, _) = self.world.l0.climate_at(p[0].floor() as i32, p[2].floor() as i32);
         let wt = materials::water_tint(0.0, te);
-        let scat_col = Vec3::new(0.05, 0.22, 0.30).lerp(wt * 0.35, 0.35);
-        let scat = scat_col * (e_sun * (0.35 * self.sun.y.max(0.0)) + sky_up * 0.5) * (1.0 / (4.0 * PI));
+        let scat_col = Vec3::new(0.012, 0.075, 0.17).lerp(wt * 0.3, 0.3);
+        let scat = scat_col * (e_sun * (0.5 * self.sun.y.max(0.0)) + sky_up * 0.7) * (1.0 / (2.0 * PI));
         let trans = bed_l * att + scat * (Vec3::ONE - att);
         let mut l = refl * f + trans * (1.0 - f);
         // Sun glint (GGX, roughness widened by the sub-pixel ripple variance).

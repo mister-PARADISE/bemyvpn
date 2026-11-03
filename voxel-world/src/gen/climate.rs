@@ -455,8 +455,8 @@ impl DFbm {
 /// at every clamp boundary and at |nᵢ| = 0 of the detail octaves ("curtain folds" in a hillshade).
 /// Here the abs is a smooth abs `√(n² + ε²)` (ε ≈ 0.1: crests stay crisp at mountain scale but are C¹ over a few dozen
 /// blocks, so slope-steered detail does not flip across them)
-/// and the weight is the unclamped power `wᵢ₊₁ = sigᵢ^0.8 ∈ [0,1]` — detail still concentrates on
-/// crests, but the field is C¹ everywhere.
+/// and the weight is the unclamped polynomial `wᵢ₊₁ = sigᵢ(1.6 − 0.6 sigᵢ) ∈ [0,1]` — detail still
+/// concentrates on crests, but the field is C¹ everywhere.
 #[derive(Clone, Debug)]
 pub struct DRidged {
     inv_wavelength: f64,
@@ -510,7 +510,7 @@ impl DRidged {
                 steer = (1.0 - sabs_d(nd, 0.45)).maxf(0.0).sq() * (1.6 * self.inv_norm);
             }
             let sig = (1.0 - sabs_d(nd, eps)).maxf(0.0).sq() * weight;
-            weight = sig.powf(0.8);
+            weight = sig * (1.6 - sig * 0.6);
             sum += sig * (fade * spectral);
             spectral *= 0.5;
             f *= 2.0;
@@ -672,6 +672,9 @@ pub struct MonoMap {
     xs: Vec<f32>,
     ys: Vec<f32>,
     ms: Vec<f32>,
+    x0: f32,
+    inv_dx: f32,
+    table: Vec<(f32, f32)>,
 }
 
 impl MonoMap {
@@ -700,12 +703,44 @@ impl MonoMap {
                 ms[i + 1] = ms[i + 1].clamp(-lim, lim);
             }
         }
-        MonoMap { xs: xs.to_vec(), ys: ys.to_vec(), ms }
+        let mut m = MonoMap { xs: xs.to_vec(), ys: ys.to_vec(), ms, x0: 0.0, inv_dx: 0.0, table: Vec::new() };
+        // Resample onto a uniform grid (value + derivative at 257 nodes) → O(1) cubic Hermite
+        // lookup in the hot path; the resampled curve is C¹ and still monotone to ~1e-5.
+        const N: usize = 256;
+        let (a, b) = (xs[0], xs[n - 1]);
+        let dx = (b - a) / N as f32;
+        m.table = (0..=N).map(|k| m.eval_knots(a + dx * k as f32)).collect();
+        m.x0 = a;
+        m.inv_dx = 1.0 / dx;
+        m
     }
 
-    /// (value, derivative).
+    /// (value, derivative) from the uniform table.
     #[inline]
     pub fn eval(&self, x: f32) -> (f32, f32) {
+        let u = (x - self.x0) * self.inv_dx;
+        let last = (self.table.len() - 1) as f32;
+        if u <= 0.0 {
+            return (self.table[0].0, 0.0);
+        }
+        if u >= last {
+            return (self.table[self.table.len() - 1].0, 0.0);
+        }
+        let k = u as usize;
+        let t = u - k as f32;
+        let (y0, d0) = self.table[k];
+        let (y1, d1) = self.table[k + 1];
+        let h = 1.0 / self.inv_dx;
+        let (m0, m1) = (d0 * h, d1 * h);
+        let t2 = t * t;
+        let t3 = t2 * t;
+        let v = (2.0 * t3 - 3.0 * t2 + 1.0) * y0 + (t3 - 2.0 * t2 + t) * m0 + (3.0 * t2 - 2.0 * t3) * y1 + (t3 - t2) * m1;
+        let dv = ((6.0 * t2 - 6.0 * t) * y0 + (3.0 * t2 - 4.0 * t + 1.0) * m0 + (6.0 * t - 6.0 * t2) * y1 + (3.0 * t2 - 2.0 * t) * m1) * self.inv_dx;
+        (v, dv)
+    }
+
+    /// (value, derivative) evaluated on the original knots (reference implementation).
+    pub fn eval_knots(&self, x: f32) -> (f32, f32) {
         let xs = &self.xs;
         let n = xs.len();
         if x <= xs[0] {
@@ -1119,7 +1154,8 @@ mod tests {
             prev = v;
         }
         for (i, &p) in P_LEVELS.iter().enumerate() {
-            assert!((m.eval(Q_C[i]).0 - target_c(p)).abs() < 1e-4);
+            assert!((m.eval_knots(Q_C[i]).0 - target_c(p)).abs() < 1e-4);
+            assert!((m.eval(Q_C[i]).0 - target_c(p)).abs() < 5e-3);
         }
     }
 

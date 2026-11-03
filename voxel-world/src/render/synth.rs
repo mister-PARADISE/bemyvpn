@@ -17,7 +17,7 @@ use crate::gen::Biome;
 use crate::materials::{self, Material};
 use crate::math::{smoothstep, Vec3};
 use crate::noise::{derive_seed, hash2, hash_f01, salt, Fbm, Ridged};
-use crate::world::{BuildParams, HfCell, Span, World};
+use crate::world::{BuildParams, HeightLevel, HfCell, Level0, Level0Row, Span, World};
 
 const SEA: f64 = 140.0;
 
@@ -396,7 +396,30 @@ pub fn synthetic_world(seed: u64, cx: i32, cz: i32, l0_size: u32, hf_size: u32, 
         cave_radius: 256,
         feature_radius: l0_size / 2,
     };
+    use rayon::prelude::*;
     let (ox, oz) = params.l0_origin();
     let grid = TreeGrid::new(&terrain, ox, oz, ox + l0_size as i32, oz + l0_size as i32);
-    World::synthetic(params, |x, z| terrain.spans_with(x, z, Some(&grid)), |k, x, z| terrain.hf_cell(k, x, z))
+    // Level 0 assembled row by row so every column carries its own climate (biome tints).
+    let rows: Vec<Level0Row> = (0..l0_size as i32)
+        .into_par_iter()
+        .map(|j| {
+            let mut row = Level0Row::with_capacity(l0_size as usize);
+            for i in 0..l0_size as i32 {
+                let (x, z) = (ox + i, oz + j);
+                let spans = terrain.spans_with(x, z, Some(&grid));
+                let col = terrain.column(x as f64 + 0.5, z as f64 + 0.5, 0.0);
+                let biome = terrain.hf_cell(1, x as f64 + 0.5, z as f64 + 0.5).biome;
+                row.push_column(&spans, biome, col.temp, col.humid);
+            }
+            row
+        })
+        .collect();
+    let l0 = Level0::from_rows(ox, oz, l0_size, rows);
+    let levels = (1..=hf_levels)
+        .map(|k| {
+            let (lx, lz) = params.level_origin(k);
+            HeightLevel::from_fn(k, lx, lz, hf_size, |x, z| terrain.hf_cell(k, x, z))
+        })
+        .collect();
+    World { seed, params, l0, levels }
 }

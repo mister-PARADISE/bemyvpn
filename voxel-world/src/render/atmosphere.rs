@@ -46,7 +46,7 @@ pub struct Medium {
 impl Medium {
     pub fn new(haze: f32) -> Medium {
         let hz = haze.max(0.0) as f64;
-        Medium { mie_k: 4.0 * hz, fog_k: 3.0 * hz, fog_h: 450.0 }
+        Medium { mie_k: 3.0 * hz, fog_k: 2.2 * hz, fog_h: 400.0 }
     }
     /// (σ_s Rayleigh RGB, σ_s Mie, σ_t RGB) at altitude h.
     #[inline]
