@@ -48,8 +48,8 @@
 //!   gentle apron) joined with smooth-max, caldera `rim − D(1 − (d/r_c)⁴)` with a lava lake level.
 //! * 3D density `ρ = (H − y) + J·N₃(x, 1.4y, z)` with |N₃| ≤ 1 ⇒ sign(ρ) = sign(H − y) exactly
 //!   outside `[H − J, H + J]`; above the surface N₃ is biased downward to suppress floating blobs.
-use super::biome::{classify, BiomeInput, SnowLine};
-use super::climate::{lerp_d, river_distance, smoothstep_d, ClimateD, ClimateSampler, DEroded, DFbm, DRidged, D2};
+use super::biome::{aridity, classify, BiomeInput, SnowLine, Strata};
+use super::climate::{lerp_d, river_distance, smoothstep_d, ClimateD, ClimateSampler, DEroded, DFbm, DRidged, FastSimplex, D2};
 use super::{ColumnInfo, SEA_LEVEL, WORLD_HEIGHT};
 use crate::math::{saturate, smoothstep};
 use crate::noise::{derive_seed, hash2, hash_f01, mix64, salt, Fbm, Worley2};
@@ -166,7 +166,7 @@ fn offset_spline() -> Spline {
 
 /// Broad orogenic uplift (blocks) under the core of a mountain belt (`U·smoothstep(M)`): the
 /// elevated massif on which the ridged relief sits (valley floors of big ranges are high, too).
-const OROGENIC_UPLIFT: f32 = 130.0;
+const OROGENIC_UPLIFT: f32 = 85.0;
 
 /// Mountain amplitude A(C, E): uplift that multiplies the [0,1] mountain shape.
 fn amp_spline() -> Spline {
@@ -175,16 +175,16 @@ fn amp_spline() -> Spline {
         vec![
             (-0.16, 0.0.into()),
             (-0.03, cs(1, &[(-1.0, 70.0), (-0.5, 25.0), (0.0, 5.0), (1.0, 1.0)])),
-            (0.12, cs(1, &[(-1.0, 200.0), (-0.65, 140.0), (-0.3, 50.0), (0.0, 18.0), (0.5, 6.0), (1.0, 2.0)])),
-            (0.32, cs(1, &[(-1.0, 240.0), (-0.7, 205.0), (-0.4, 120.0), (-0.1, 40.0), (0.4, 12.0), (1.0, 4.0)])),
-            (0.65, cs(1, &[(-1.0, 250.0), (-0.7, 220.0), (-0.4, 140.0), (-0.1, 50.0), (0.4, 16.0), (1.0, 5.0)])),
+            (0.12, cs(1, &[(-1.0, 220.0), (-0.65, 155.0), (-0.3, 50.0), (0.0, 18.0), (0.5, 6.0), (1.0, 2.0)])),
+            (0.32, cs(1, &[(-1.0, 275.0), (-0.7, 232.0), (-0.4, 128.0), (-0.1, 40.0), (0.4, 12.0), (1.0, 4.0)])),
+            (0.65, cs(1, &[(-1.0, 295.0), (-0.7, 250.0), (-0.4, 148.0), (-0.1, 50.0), (0.4, 16.0), (1.0, 5.0)])),
         ],
     )
 }
 
 /// River valley wall slope σ(E) (rise per block) and convexity κ(E).
 fn wall_spline() -> Spline {
-    Spline::consts(1, &[(-1.0, 2.6), (-0.6, 1.5), (-0.25, 0.55), (0.1, 0.18), (0.5, 0.07), (1.0, 0.04)])
+    Spline::consts(1, &[(-1.0, 0.55), (-0.6, 0.5), (-0.25, 0.38), (0.1, 0.16), (0.5, 0.06), (1.0, 0.035)])
 }
 
 // =====================================================================================
@@ -289,6 +289,10 @@ pub struct Regions {
     pub lake: f32,
     /// Flat water level of that lake (world y; meaningful when `lake > 0`).
     pub lake_level: f32,
+    /// Aridity α = hot·dry ∈ [0, 1] (orders the drylands, see `biome::aridity`).
+    pub arid: f32,
+    /// Open-plains weight: flat high-erosion lowlands outside the belts and plateau country.
+    pub plain: f32,
 }
 
 /// Everything computed for a column (public for debug tools).
@@ -328,6 +332,13 @@ pub struct TerrainShaper {
     hoodoo: Worley2,
     volcano: Worley2,
     snow: SnowLine,
+    /// Gentle swells of the open plains (λ 1.3 km).
+    swell: DFbm,
+    /// Bedding model shared with the surface rules (differential-erosion notches).
+    strata: Strata,
+    /// Gate of the rock-shelter notches along cliffs (λ 85).
+    notch_gate: FastSimplex,
+    stacks: Worley2,
 }
 
 /// Inland lakes: cell size, candidate probability, max radius, rim probes.
@@ -376,6 +387,18 @@ const PLATEAU_HEIGHT: f32 = 46.0;
 /// Maximum slope of river valley / canyon walls (≈ 65°; steeper is left to the 3D band).
 const WALL_MAX: f32 = 2.2;
 
+/// Open plains: the offset spline is evaluated at this fixed pv (no ridge/valley relief).
+const PLAIN_PV: f32 = -0.3;
+/// Soft summit ceiling: `h' = C + A·ln(1 + (h − C)/A)` above C (slope factor 1/(1 + (h − C)/A),
+/// ≥ 0.2 for every reachable h: summits are compressed, never flattened into caps).
+const CEIL_START: f32 = 430.0;
+const CEIL_A: f32 = 45.0;
+/// Rock-shelter notches: max horizontal depth (blocks) and reach factor of the 3D band.
+const NOTCH_D: f32 = 6.0;
+const NOTCH_REACH: f32 = 1.6;
+/// Sea stacks: jittered grid on cliffed coasts.
+const STACK_CELL: f64 = 64.0;
+
 const VOLCANO_CELL: f64 = 3600.0;
 const VOLCANO_P: f32 = 0.07;
 const HOODOO_CELL: f64 = 14.0;
@@ -407,6 +430,10 @@ impl TerrainShaper {
             hoodoo: Worley2::new(s("terrain.hoodoo"), HOODOO_CELL, 0.75),
             volcano: Worley2::new(s("terrain.volcano"), VOLCANO_CELL, 0.7),
             snow: SnowLine::new(seed),
+            swell: DFbm::new(s("terrain.swell"), 1300.0, 2, 2.0, 0.4),
+            strata: Strata::new(seed),
+            notch_gate: FastSimplex::new(s("terrain.notch")),
+            stacks: Worley2::new(s("terrain.stacks"), STACK_CELL, 0.8),
         }
     }
 
@@ -474,13 +501,20 @@ impl TerrainShaper {
     /// Region weights from climate alone.
     pub fn regions(&self, cd: &ClimateD, x: f64, z: f64, fp: f64) -> Regions {
         let (t, hu, e, c) = (cd.t.v, cd.h.v, cd.e.v, cd.c.v);
-        let hot = smoothstep(0.30, 0.46, t);
-        let dry = smoothstep(-0.26, -0.40, hu);
-        let desert_all = hot * dry;
-        let very_dry = smoothstep(-0.50, -0.64, hu);
-        let badlands = desert_all * very_dry * smoothstep(0.50, 0.20, e);
+        // Drylands nested by one scalar, the aridity α: desert for α ≳ 0.36, badlands only in
+        // the arid core (α ≳ 0.65) where a λ 2.7 km "mesa country" selector and low/mid erosion
+        // agree → large coherent mesa regions always ringed by desert (red-sand ecotone) and a
+        // savanna/steppe band (α > 0.2, see `classify`), never dropped into green forest.
+        let arid = aridity(t, hu);
+        let desert_all = smoothstep(0.30, 0.42, arid);
+        let badlands = if arid > 0.58 {
+            let sel = self.select.value(x * 0.4 + 3100.0, z * 0.4 - 1700.0, fp * 0.4);
+            smoothstep(0.58, 0.70, arid) * smoothstep(-0.14, 0.04, sel) * smoothstep(0.66, 0.34, e)
+        } else {
+            0.0
+        };
         let hoodoo = if badlands > 0.0 {
-            badlands * smoothstep(0.16, 0.30, self.select.value(x + 3100.0, z - 1700.0, fp))
+            badlands * smoothstep(0.24, 0.36, self.select.value(x + 3100.0, z - 1700.0, fp))
         } else {
             0.0
         };
@@ -496,14 +530,28 @@ impl TerrainShaper {
         // cores of orogenic belts (low E* and the rain shadow make belts "hot-dry" by climate,
         // which would terrace whole mountain ranges and pile dunes on their flanks)
         let land = smoothstep(-0.16, -0.08, c) * (1.0 - smoothstep(0.2, 0.55, cd.orogeny.v));
+        let plain = if c > -0.08 { self.plain_weight(cd, self.character.sample(x, z, fp)).v } else { 0.0 };
         Regions {
             desert: desert_all * (1.0 - badlands) * land,
             badlands: badlands * land,
             hoodoo: hoodoo * land,
             swamp,
             cliff,
+            arid,
+            plain,
             ..Default::default()
         }
+    }
+
+    /// Open-plains weight `P = s(E*; 0.30, 0.56) · (1 − s(M; 0.04, 0.25)) · s(C; −0.06, 0.06) ·
+    /// (1 − s(χ; 0.06, 0.16))`, with the erosion boosted by 0.3 where the regional character χ is
+    /// low — big calm lowlands as the contrast to belts and plateau country (χ > 0.1).
+    fn plain_weight(&self, cd: &ClimateD, chi: D2) -> D2 {
+        let e_eff = cd.e + smoothstep_d(-0.06, -0.24, chi) * 0.3;
+        smoothstep_d(0.30, 0.56, e_eff)
+            * (1.0 - smoothstep_d(0.04, 0.25, cd.orogeny))
+            * smoothstep_d(-0.06, 0.06, cd.c)
+            * (1.0 - smoothstep_d(0.06, 0.16, chi))
     }
 
     /// The height construction (see module docs) *without* inland lakes (lakes need the climate
