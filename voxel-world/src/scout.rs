@@ -1163,45 +1163,77 @@ fn plan_coast(s: &Scout) -> Vec<Candidate> {
     let mut out: Vec<Candidate> = picks
         .par_iter()
         .map(|&(s0, k, _)| {
-            let (x, z) = g.pos(k);
-            let (x, z) = (x.floor() + 0.5, z.floor() + 0.5);
-            let y = (camera_floor(s.gen, x, z, 10.0) + 14.0).max(SEA + 24.0) as f64;
-            let vs = s.viewshed([x, y, z]);
-            let rule = |_| PitchRule::Horizon { sy: 0.2, min: -14.0 * DEG, max: -2.0 * DEG };
-            // per yaw: choose the sun side over the sea (glitter path)
-            let side_score = |yaw: f64, v: &ViewStats| -> (f32, f64) {
-                let mut best = (f32::NEG_INFINITY, 22.0);
-                for o in [22.0, -22.0] {
-                    let az = yaw + o * DEG;
-                    let glint = vs.column_fraction(az, v.pitch, vfov, cat::OCEAN);
-                    let blocked = vs.horizon_deg(az) > elev - 1.0;
-                    let sc = 1.2 * glint - if blocked { 1.5 } else { 0.0 };
-                    if sc > best.0 {
-                        best = (sc, o);
+            let (gx, gz) = g.pos(k);
+            // seaward unit normal: mean offset of the ocean nodes around k
+            let (i, j) = g.ij(k);
+            let (mut nx, mut nz) = (0.0f64, 0.0f64);
+            for dj in -3i64..=3 {
+                for di in -3i64..=3 {
+                    let (ii, jj) = (i as i64 + di, j as i64 + dj);
+                    if ii >= 0 && jj >= 0 && ii < g.n as i64 && jj < g.n as i64 && g.mask[jj as usize * g.n + ii as usize] & cat::OCEAN != 0 {
+                        nx += di as f64;
+                        nz += dj as f64;
                     }
                 }
-                best
-            };
-            let (yaw, st, vscore) = best_yaw(&vs, &yaws, vfov, rule, |y, v| {
-                landscape_score(v, 0.42)
-                    + 1.4 * (v.c(cat::OCEAN) / 0.3).min(1.0)
-                    + 1.2 * (v.c(cat::LAND) / 0.3).min(1.0)
-                    + side_score(y, v).0
-            });
-            let (_, off) = side_score(yaw, &st);
-            let sun = Sun { azimuth_deg: (yaw / DEG + off).rem_euclid(360.0), elevation_deg: elev };
-            let cliff = (s.max3[k] - SEA).max(0.0).round() as i32;
-            let shore = s.frac(cat::SHORE, k, 2);
-            let title = if cliff >= 35 {
-                format!("Закат над морскими утёсами ({} м)", cliff)
-            } else if shore > 0.2 {
-                "Закат на песчаном берегу".to_string()
-            } else {
-                "Закат на побережье".to_string()
-            };
-            let cam = cam_at(x, y, z, yaw, st.pitch, 60.0);
-            let note = format!("cliff {}, ocean {:.2}, land {:.2}", cliff, st.c(cat::OCEAN), st.c(cat::LAND));
-            normal_candidate(s0 + vscore, cam, sun, 1.1, 1.3, title, [x, z], note)
+            }
+            let nl = nx.hypot(nz).max(1e-9);
+            let (nx, nz) = (nx / nl, nz / nl);
+            // two stations: on the shore / cliff top, and 64 blocks out over the water
+            let mut stations = vec![(gx.floor() + 0.5, gz.floor() + 0.5, 14.0f32)];
+            let (ox, oz) = ((gx + 64.0 * nx).floor() + 0.5, (gz + 64.0 * nz).floor() + 0.5);
+            if is_wet(&s.gen.column(ox, oz)) {
+                stations.push((ox, oz, 10.0));
+            }
+            let mut best: Option<(f32, Candidate)> = None;
+            for (x, z, lift) in stations {
+                let y = (camera_floor(s.gen, x, z, 10.0) + lift).max(SEA + 20.0) as f64;
+                let vs = s.viewshed([x, y, z]);
+                let rule = |_| PitchRule::Horizon { sy: 0.2, min: -14.0 * DEG, max: -2.0 * DEG };
+                // per yaw: choose the sun side over the sea (glitter path)
+                let side_score = |yaw: f64, v: &ViewStats| -> (f32, f64) {
+                    let mut best = (f32::NEG_INFINITY, 22.0);
+                    for o in [22.0, -22.0] {
+                        let az = yaw + o * DEG;
+                        let glint = vs.column_fraction(az, v.pitch, vfov, cat::OCEAN);
+                        let blocked = vs.horizon_deg(az) > elev - 1.0;
+                        let sc = 1.2 * glint - if blocked { 1.5 } else { 0.0 };
+                        if sc > best.0 {
+                            best = (sc, o);
+                        }
+                    }
+                    best
+                };
+                let (yaw, st, vscore) = best_yaw(&vs, &yaws, vfov, rule, |y, v| {
+                    landscape_score(v, 0.42)
+                        + 1.4 * (v.c(cat::OCEAN) / 0.3).min(1.0)
+                        + 1.2 * (v.c(cat::LAND) / 0.3).min(1.0)
+                        + side_score(y, v).0
+                });
+                let (_, off) = side_score(yaw, &st);
+                let sun = Sun { azimuth_deg: (yaw / DEG + off).rem_euclid(360.0), elevation_deg: elev };
+                let cliff = (s.max3[k] - SEA).max(0.0).round() as i32;
+                let shore = s.frac(cat::SHORE, k, 2);
+                let title = if cliff >= 35 {
+                    format!("Закат над морскими утёсами ({} м)", cliff)
+                } else if shore > 0.2 {
+                    "Закат на песчаном берегу".to_string()
+                } else {
+                    "Закат на побережье".to_string()
+                };
+                let cam = cam_at(x, y, z, yaw, st.pitch, 60.0);
+                let note = format!(
+                    "cliff {}, ocean {:.2}, land {:.2}, {}",
+                    cliff,
+                    st.c(cat::OCEAN),
+                    st.c(cat::LAND),
+                    if lift < 12.0 { "offshore" } else { "shore" }
+                );
+                let c = normal_candidate(s0 + vscore, cam, sun, 1.1, 1.3, title, [gx, gz], note);
+                if best.as_ref().map_or(true, |b| c.score > b.0) {
+                    best = Some((c.score, c));
+                }
+            }
+            best.unwrap().1
         })
         .collect();
     out.sort_by(|a, b| b.score.total_cmp(&a.score));
