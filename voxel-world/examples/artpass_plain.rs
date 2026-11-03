@@ -19,7 +19,7 @@ fn main() {
             let cd = g.climate.sample_d(x, z, 0.0);
             let r = g.terrain.regions(&cd, x, z, 0.0);
             es.push(cd.e.v);
-            let _ = &mut chis;
+            chis.push(g.terrain.character_at(x, z));
             if r.plain > 0.5 {
                 p5 += 1;
             }
@@ -33,7 +33,7 @@ fn main() {
                         hi = hi.max(h);
                     }
                 }
-                if hi - lo > 24.0 && rel_hist[5] + rel_hist[4] < 40 {
+                if hi - lo > 24.0 && rel_hist[5] + rel_hist[4] < 0 {
                     let cd = g.climate.sample_d(x, z, 0.0);
                     eprintln!("  ({x:.0},{z:.0}) relief {:.0} h {:.0} biome {:?} river_dist {:.0} gate {:.2} desert {:.2} bad {:.2} lake {:.2} swamp {:.2}", hi - lo, c.height, c.biome, cd.river_dist, cd.river_gate, r.desert, r.badlands, r.lake, r.swamp);
                 }
@@ -43,6 +43,9 @@ fn main() {
         }
     }
     es.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    chis.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let q = |v: &Vec<f32>, p: f64| v[((v.len() - 1) as f64 * p) as usize];
+    eprintln!("chi on land: p10 {:.2} p25 {:.2} p40 {:.2} p50 {:.2} p60 {:.2} p75 {:.2} p90 {:.2}", q(&chis, 0.1), q(&chis, 0.25), q(&chis, 0.4), q(&chis, 0.5), q(&chis, 0.6), q(&chis, 0.75), q(&chis, 0.9));
     eprintln!("land {land}: plain>0.5 {:.1}%, >0.9 {:.1}%; relief hist in plains (<3,<6,<12,<24,<48,>48): {:?}", 100.0 * p5 as f64 / land as f64, 100.0 * p9 as f64 / land as f64, rel_hist);
     eprintln!("E* quantiles on land: p25 {:.2} p50 {:.2} p75 {:.2}", es[es.len() / 4], es[es.len() / 2], es[es.len() * 3 / 4]);
 }

@@ -783,11 +783,14 @@ mod tests {
         assert!(wet > 4000 && wet < 16_000, "{wet}");
     }
 
-    /// No jumps of the field near its zero level: for random points and 0.5-block steps the
-    /// difference is bounded (the old cheese / ravine / shaft cut-offs jumped by up to 50).
+    /// No jumps of the field near its zero level. For random points and 0.5-block vertical and
+    /// horizontal steps with a large difference, the step is bisected down to 1/128 block: a
+    /// continuous (if steep) field shrinks the difference proportionally, a cut-off does not.
+    /// (The old cheese / ravine / shaft / septum cut-offs jumped by up to 18–50 blocks.)
     #[test]
     fn field_has_no_jumps_near_zero() {
-        let mut worst = 0.0f32;
+        let mut steep = 0;
+        let mut worst_fine = 0.0f32;
         for seed in [1u64, 2] {
             let g = WorldGen::new(seed);
             for i in 0..4000u64 {
@@ -796,28 +799,34 @@ mod tests {
                 let col = g.column(x, z);
                 for k in 0..40u64 {
                     let y = 4.0 + rnd(i * 977 + k) * (col.height as f64 - 2.0).max(5.0);
-                    let a = g.caves.field(x, y, z, &col);
-                    for (dx, dy) in [(0.0, 0.5), (0.0, -0.5)] {
-                        let b = g.caves.field(x + dx, y + dy, z, &col);
-                        if a.max(b) > -3.0 {
-                            if (a - b).abs() > worst && (a - b).abs() > 7.0 {
-                                eprintln!(
-                                    "jump {a} → {b} at ({x}, {y:.2}→{:.2}, {z}) h {} wet {} {:?} / {:?}",
-                                    y + dy,
-                                    col.height,
-                                    col.water_level,
-                                    g.caves.parts(x, y, z, &col),
-                                    g.caves.parts(x, y + dy, z, &col)
-                                );
+                    for (dx, dy, dz) in [(0.0, 0.5, 0.0), (0.5, 0.0, 0.0), (0.0, 0.0, 0.5)] {
+                        let f = |t: f64| g.caves.field(x + dx * t, y + dy * t, z + dz * t, &col);
+                        let (a, b) = (f(0.0), f(1.0));
+                        if a.max(b) <= -3.0 || (a - b).abs() < 4.0 {
+                            continue;
+                        }
+                        steep += 1;
+                        // bisect toward the steepest sub-interval
+                        let (mut lo, mut hi) = (0.0f64, 1.0f64);
+                        for _ in 0..6 {
+                            let mid = 0.5 * (lo + hi);
+                            if (f(mid) - f(lo)).abs() >= (f(hi) - f(mid)).abs() {
+                                hi = mid;
+                            } else {
+                                lo = mid;
                             }
-                            worst = worst.max((a - b).abs());
+                        }
+                        let d = (f(hi) - f(lo)).abs();
+                        if d > worst_fine {
+                            worst_fine = d;
+                            eprintln!("steep step {a:.2} → {b:.2} at ({x}, {y:.2}, {z}) dir ({dx},{dy},{dz}): 1/128-block step {d:.3}");
                         }
                     }
                 }
             }
         }
-        eprintln!("max |ΔF| per 0.5 block near the zero level: {worst:.2}");
-        assert!(worst < 7.0, "field jumps by {worst}");
+        eprintln!("{steep} steep 0.5-block steps; worst difference over 1/128 block: {worst_fine:.3}");
+        assert!(worst_fine < 1.0, "field discontinuity: jump {worst_fine} over 1/128 block");
     }
 
     /// Emulates the world builder (4×4×4 lattice, trilinear interpolation, wet guard) over

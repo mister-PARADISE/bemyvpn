@@ -21,8 +21,10 @@
 //!   orogeny belt `M` (see `climate.rs`), on which the ridged relief (amplitude from the
 //!   effective erosion E*, itself squeezed low inside belts) sits → few, large ranges
 //!   (≈ 10 % of land above SEA+150, main peaks 430–496, ranges 10–20 km long).
-//! * **Regional character** (§2a anti-monotony): a λ 8 km selector χ makes *plateau country*
-//!   (two-tier tablelands bounded by ≈ 50-block escarpments) where χ > 0.1 and *skerry
+//! * **Regional character** (§2a anti-monotony): a λ 8 km selector χ makes *open plains* where
+//!   χ < −0.12…−0.26 (≈ 25 % of the land: low, calm floodplain/steppe basins at SEA + 3.5…10.5,
+//!   ±1.5-block swells, rivers in broad shallow valleys), rolling hills in the middle, *plateau
+//!   country* (two-tier tablelands bounded by ≈ 50-block escarpments) where χ > 0.3, and *skerry
 //!   archipelagos* on the shelf where χ < −0.1; plus mesa country (badlands), dune seas, volcanoes.
 //! * **Inland lakes**: one candidate per 1.4 km cell; flat level from the pre-lake rim, basin +
 //!   containment sill (see [`TerrainShaper::apply_lake`] for the no-water-wall theorem).
@@ -324,7 +326,7 @@ pub struct TerrainShaper {
     dune_mod: DFbm,
     wind: (f64, f64),
     mesa: DFbm,
-    /// Regional character selector (λ 8 km): > 0 plateau country, < 0 archipelago coasts.
+    /// Regional character selector χ (λ 8 km): low → plains / archipelagos, high → plateau country.
     character: DFbm,
     plateau: DFbm,
     islands: DFbm,
@@ -381,6 +383,8 @@ fn sabs_tent(x: D2) -> D2 {
 /// Gradient scale G of the river noise for the valley distance min(|n|/s, |n|/G) (≈ p60 |∇n|).
 const RIVER_WALL_G: f32 = 1.5e-3;
 
+/// Plateau country where the regional character χ exceeds this (≈ 27 % of the land).
+const PLATEAU_CHI: f32 = 0.3;
 /// Height of the plateau-country step (two tiers: 65 % + 35 %).
 const PLATEAU_HEIGHT: f32 = 46.0;
 
@@ -478,6 +482,11 @@ impl TerrainShaper {
         }
     }
 
+    /// Regional character selector χ (λ 8 km; debug / art-pass tools).
+    pub fn character_at(&self, x: f64, z: f64) -> f32 {
+        self.character.value(x, z, 0.0)
+    }
+
     /// Names of the components returned by [`TerrainShaper::debug_parts`].
     pub fn debug_parts_names(&self) -> Vec<&'static str> {
         vec!["base", "ridge", "hills", "mountain", "final"]
@@ -545,15 +554,13 @@ impl TerrainShaper {
         }
     }
 
-    /// Open-plains weight `P = s(E*; 0.22, 0.48) · (1 − s(M; 0.04, 0.25)) · s(C; −0.06, 0.06) ·
-    /// (1 − s(χ; 0.06, 0.16))`, with the erosion boosted by 0.35 where the regional character χ is
-    /// low — big calm lowlands as the contrast to belts and plateau country (χ > 0.1).
+    /// Open-plains weight `P = s(χ; −0.12, −0.26) · (1 − s(M; 0.04, 0.25)) · s(C; −0.06, 0.06)`:
+    /// the low quarter of the regional character χ (λ 8 km; ≈ 25 % of the land) becomes big calm
+    /// lowlands — the contrast to belts, rolling hills (−0.12 < χ < 0.3) and plateau country
+    /// (χ > 0.3). χ alone (not the erosion, whose zero-set valleys are only ≈ 100 m wide) keeps
+    /// the plains' edges km-scale ramps.
     fn plain_weight(&self, cd: &ClimateD, chi: D2) -> D2 {
-        let e_eff = cd.e + smoothstep_d(-0.04, -0.22, chi) * 0.35;
-        smoothstep_d(0.22, 0.48, e_eff)
-            * (1.0 - smoothstep_d(0.04, 0.25, cd.orogeny))
-            * smoothstep_d(-0.06, 0.06, cd.c)
-            * (1.0 - smoothstep_d(0.06, 0.16, chi))
+        smoothstep_d(-0.12, -0.26, chi) * (1.0 - smoothstep_d(0.04, 0.25, cd.orogeny)) * smoothstep_d(-0.06, 0.06, cd.c)
     }
 
     /// The height construction (see module docs) *without* inland lakes (lakes need the climate
@@ -621,7 +628,7 @@ impl TerrainShaper {
         }
 
         // --- regional character (DESIGN §2a anti-monotony): one λ 8 km selector χ
-        //   χ > 0.1 → plateau country: H += P·smoothstep(e, e + 0.035, n_p) — mesas/tablelands
+        //   χ > 0.3 → plateau country: H += P·smoothstep(e, e + 0.035, n_p) — mesas/tablelands
         //     several km across bounded by escarpments ≈ 50 blocks wide (slope ≈ 1–1.7); rivers
         //     later cut canyons through them (lower envelope);
         //   χ < −0.1 → archipelago coasts: on the shelf the sea floor is pulled toward a skerry
@@ -629,8 +636,8 @@ impl TerrainShaper {
         //   low χ also widens the open plains (see `plain_weight`).
         let belt_free = 1.0 - smoothstep(0.1, 0.4, cd.orogeny.v);
         if belt_free > 0.0 && cd.c.v > -0.45 {
-            if chi.v > 0.1 && cd.c.v > 0.0 {
-                let wgt = smoothstep_d(0.1, 0.22, chi) * (belt_free * (1.0 - reg.swamp) * smoothstep(0.0, 0.12, cd.c.v));
+            if chi.v > PLATEAU_CHI && cd.c.v > 0.0 {
+                let wgt = smoothstep_d(PLATEAU_CHI, PLATEAU_CHI + 0.12, chi) * (belt_free * (1.0 - reg.swamp) * smoothstep(0.0, 0.12, cd.c.v));
                 let np = self.plateau.sample(x, z, fp);
                 let step = smoothstep_d(-0.02, 0.015, np) * 0.65 + smoothstep_d(0.16, 0.195, np) * 0.35;
                 h = h + step * wgt * PLATEAU_HEIGHT;
