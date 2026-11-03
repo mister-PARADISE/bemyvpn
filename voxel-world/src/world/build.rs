@@ -1460,4 +1460,52 @@ mod tests {
             assert!(wet_mismatch * 10 <= wet.max(10), "{wet_mismatch}/{wet}");
         }
     }
+    /// Sizes that are not multiples of the chunk / lattice / tile size, no heightfield levels.
+    #[test]
+    fn odd_sizes_and_voxels_only() {
+        let gen = WorldGen::new(2026);
+        let (cx, cz) = land_centre(&gen);
+        for (l0, hf, lv) in [(100u32, 50u32, 1u32), (37, 16, 0), (130, 64, 2)] {
+            let w = build_world(&gen, &params(cx + 3, cz - 5, l0, l0 / 2, l0, hf, lv));
+            assert_eq!(w.l0.size, l0);
+            assert_eq!(w.levels.len(), lv as usize);
+            check_spans(&w.l0);
+        }
+    }
+
+    /// Caves are carved inside the cave radius only; outside it the columns are bit-identical to
+    /// a cave-free build.
+    #[test]
+    fn caves_only_inside_radius() {
+        let mut carved_total = 0usize;
+        for seed in [1u64, 42, 2026] {
+            let gen = WorldGen::new(seed);
+            let (cx, cz) = land_centre(&gen);
+            let r = 56i32;
+            let a = build_world(&gen, &params(cx, cz, 160, r as u32, 0, 16, 0));
+            let b = build_world(&gen, &params(cx, cz, 160, 0, 0, 16, 0));
+            for j in 0..160 {
+                for i in 0..160 {
+                    let (x, z) = (a.l0.origin_x + i, a.l0.origin_z + j);
+                    let d2 = (x as f64 + 0.5 - cx as f64).powi(2) + (z as f64 + 0.5 - cz as f64).powi(2);
+                    let (sa, sb) = (a.l0.spans(x, z), b.l0.spans(x, z));
+                    if d2 > (r * r) as f64 {
+                        assert_eq!(sa, sb, "seed {seed}: column ({x},{z}) outside the cave radius changed");
+                        continue;
+                    }
+                    // carved = opaque in the cave-free build, liquid/air with caves
+                    let top = sb.iter().filter(|s| s.mat.is_opaque()).map(|s| s.y1 as i32).max().unwrap_or(0);
+                    for y in 0..top {
+                        let (ma, mb) = (a.l0.block(x, y, z), b.l0.block(x, y, z));
+                        if mb.is_opaque() && !ma.is_opaque() {
+                            carved_total += 1;
+                            assert!(y >= MIN_CARVE_Y, "carved below y = {MIN_CARVE_Y}");
+                        }
+                    }
+                }
+            }
+        }
+        eprintln!("carved blocks: {carved_total}");
+        assert!(carved_total > 1000, "no caves carved at all");
+    }
 }
