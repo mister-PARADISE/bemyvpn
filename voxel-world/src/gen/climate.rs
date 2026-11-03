@@ -356,7 +356,8 @@ impl DFbm {
 ///
 /// Musgrave's recurrence `sigᵢ = (1 − |nᵢ|)²·wᵢ`, `wᵢ₊₁ = clamp(g·sigᵢ, 0, 1)` produces C⁰ creases
 /// at every clamp boundary and at |nᵢ| = 0 of the detail octaves ("curtain folds" in a hillshade).
-/// Here the abs is a smooth abs `√(n² + ε²)` (ε shrinks for the first octave → crisp main crests)
+/// Here the abs is a smooth abs `√(n² + ε²)` (ε ≈ 0.1: crests stay crisp at mountain scale but are C¹ over a few dozen
+/// blocks, so slope-steered detail does not flip across them)
 /// and the weight is the unclamped power `wᵢ₊₁ = sigᵢ^0.8 ∈ [0,1]` — detail still concentrates on
 /// crests, but the field is C¹ everywhere.
 #[derive(Clone, Debug)]
@@ -389,7 +390,7 @@ impl DRidged {
         let mut spectral = 1.0f32;
         let mut weight = D2::c(1.0);
         let mut sum = D2::ZERO;
-        let mut eps = 0.03f32;
+        let mut eps = 0.10f32;
         for &(ref s, c, sn) in &self.layers {
             let fade = lod_fade(1.0 / f, fp);
             if fade <= 0.0 {
@@ -404,7 +405,7 @@ impl DRidged {
             sum += sig * (fade * spectral);
             spectral *= 0.5;
             f *= 2.0;
-            eps = 0.12;
+            eps = 0.14;
         }
         (sum * self.inv_norm).clamp(0.0, 1.0)
     }
