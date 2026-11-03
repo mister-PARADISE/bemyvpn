@@ -133,7 +133,7 @@ pub fn render_with_stats(world: &World, cam: &Camera, sun: &Sun, settings: &Rend
         }
         let avg = (acc / n.max(1.0)).exp() as f32;
         let target = 0.42f32;
-        let auto = (target / avg.max(1e-4)).powf(0.5).clamp(0.5, 2.5);
+        let auto = (target / avg.max(1e-4)).powf(0.5).clamp(0.5, 3.5);
         exposure *= auto;
     }
     st.exposure = exposure;

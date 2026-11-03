@@ -666,9 +666,31 @@ impl<'a> Frame<'a> {
             let (bx, bz) = (h.p[0].floor() as i32, h.p[2].floor() as i32);
             alb = alb * (1.0 + 0.10 * det * (hash_f01(hash3(0xFA2, bx >> 1, 0, bz >> 1)) * 2.0 - 1.0));
         }
+        // Forest cells: Worley crown pattern (bright domes, dark gaps) faded by the footprint, so
+        // distant forests read as a canopy texture instead of a flat green blanket.
+        if mat.is_leaves() {
+            let crown = 5.0f64;
+            let det = 1.0 - smoothstep(0.35, 1.2, (fp as f64 / crown) as f32);
+            if det > 0.0 {
+                let (gx, gz) = (h.p[0] / crown, h.p[2] / crown);
+                let (ix, iz) = (gx.floor() as i32, gz.floor() as i32);
+                let mut f1 = 9.0f64;
+                for dz in -1..=1 {
+                    for dx in -1..=1 {
+                        let hh = hash3(0xC40, ix + dx, 0, iz + dz);
+                        let px = (ix + dx) as f64 + hash_f01(hh) as f64;
+                        let pz = (iz + dz) as f64 + hash_f01(hh.rotate_left(21)) as f64;
+                        f1 = f1.min(((gx - px).powi(2) + (gz - pz).powi(2)).sqrt());
+                    }
+                }
+                let dome = (1.0 - (f1 as f32 / 0.75).min(1.0)).sqrt();
+                let k = 0.45 + 0.8 * dome;
+                alb = alb * lerp(1.0, k, det);
+            }
+        }
         // Slope rock: steep far terrain shows bare stone regardless of the cell albedo.
         let slope = (1.0 - n.y.min(1.0)) * 1.0;
-        if !matches!(mat, Material::Snow | Material::Ice | Material::PackedIce | Material::Lava) {
+        if !matches!(mat, Material::Snow | Material::Ice | Material::PackedIce | Material::Lava) && !mat.is_leaves() {
             let rock = Material::Stone.albedo() * 0.85;
             alb = alb.lerp(rock, smoothstep(0.45, 0.7, slope + 0.25 * (1.0 - n.y)));
         }
@@ -800,7 +822,7 @@ impl<'a> Frame<'a> {
         let tr = if tr.y > -0.05 { Vec3::new(tr.x, -0.05, tr.z).normalize() } else { tr };
         let e_sun = self.sun_irradiance(wl);
         let sky_up = self.sky_irradiance(Vec3::Y);
-        let (bed_l, path) = match far {
+        let (bed_l, path, vdepth) = match far {
             None => {
                 let o = [p[0], wl - 0.001, p[2]];
                 let ray = Ray::new(o, d3(tr));
@@ -813,10 +835,10 @@ impl<'a> Frame<'a> {
                             }
                             _ => Vec3::ZERO,
                         };
-                        (lb, h.t as f32)
+                        (lb, h.t as f32, (wl - h.p[1]) as f32)
                     }
-                    Some(h) => (Vec3::ZERO, h.t as f32),
-                    None => (Vec3::ZERO, maxp as f32),
+                    Some(h) => (Vec3::ZERO, h.t as f32, (wl - h.p[1]) as f32),
+                    None => (Vec3::ZERO, maxp as f32, maxp as f32),
                 }
             }
             Some((level, bed)) => {
@@ -833,7 +855,7 @@ impl<'a> Frame<'a> {
                 } else {
                     Vec3::ZERO
                 };
-                (lb, path)
+                (lb, path, dep)
             }
         };
         let att = Vec3::new((-WATER_SIGMA[0] * path).exp(), (-WATER_SIGMA[1] * path).exp(), (-WATER_SIGMA[2] * path).exp());
@@ -844,6 +866,17 @@ impl<'a> Frame<'a> {
         let scat = scat_col * (e_sun * (0.5 * self.sun.y.max(0.0)) + sky_up * 0.7) * (1.0 / (2.0 * PI));
         let trans = bed_l * att + scat * (Vec3::ONE - att);
         let mut l = refl * f + trans * (1.0 - f);
+        // Shore foam: thin water (vertical depth < ~1 m) breaks into a noisy white rim; the
+        // pattern is band-limited (replaced by its mean coverage when a foam blob < 2 pixels).
+        if vdepth < 1.3 {
+            let k = 1.0 - smoothstep(0.0, 1.3, vdepth.max(0.0));
+            let detail = 1.0 - smoothstep(0.25, 0.9, fp);
+            let nz = self.ripple.n2(p[0] * 0.55 + 31.0, p[2] * 0.55 - 17.0) * 0.6 + self.ripple.n2(p[0] * 1.7, p[2] * 1.7) * 0.4;
+            let pat = smoothstep(0.15, 0.55, nz * 0.5 + 0.5 + 0.55 * k - 0.35);
+            let cover = (pat * detail + 0.45 * (1.0 - detail)) * k;
+            let foam = (e_sun * self.sun.y.max(0.0) + sky_up) * (0.75 / PI);
+            l = l.lerp(foam, (cover * 0.8).min(0.85));
+        }
         // Sun glint (GGX, roughness widened by the sub-pixel ripple variance).
         let sd = self.sun_dir(jit);
         let ndl = n.dot(sd);

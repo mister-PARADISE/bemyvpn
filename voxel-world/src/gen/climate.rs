@@ -411,11 +411,17 @@ struct Octave {
     f: f32,
     amp: f32,
     lambda: f64,
+    /// Per-octave lattice offset (noise-space units). Without it every octave of every field is
+    /// evaluated at a lattice vertex at the world origin, where gradient noise is exactly 0 —
+    /// all seeds would then share C(0,0) = Q_C(0) (a coast) and a river through the origin.
+    ou: f64,
+    ov: f64,
 }
 
 impl Octave {
     fn new(seed: u64, angle: f64, freq: f64, amp: f32) -> Self {
         let (sn, c) = angle.sin_cos();
+        let h = crate::noise::mix64(seed ^ 0x0FF5_E7);
         Octave {
             s: FastSimplex::new(seed),
             cf: c * freq,
@@ -427,18 +433,20 @@ impl Octave {
             f: freq as f32,
             amp,
             lambda: 1.0 / freq,
+            ou: (crate::noise::hash_f01(h) as f64 - 0.5) * 2048.0,
+            ov: (crate::noise::hash_f01(crate::noise::mix64(h)) as f64 - 0.5) * 2048.0,
         }
     }
     /// Noise value and world-space gradient of this octave (unscaled by `amp`).
     #[inline(always)]
     fn eval(&self, x: f64, z: f64) -> (f32, f32, f32) {
-        let (n, nx, nz) = self.s.n2d(x * self.cf - z * self.sf, x * self.sf + z * self.cf);
+        let (n, nx, nz) = self.s.n2d(x * self.cf - z * self.sf + self.ou, x * self.sf + z * self.cf + self.ov);
         (n, nx * self.dcf + nz * self.dsf, nz * self.dcf - nx * self.dsf)
     }
     /// Noise value and the *noise-space* gradient rotated back to world orientation.
     #[inline(always)]
     fn eval_ns(&self, x: f64, z: f64) -> (f32, f32, f32, f32) {
-        let (n, nx, nz) = self.s.n2d(x * self.cf - z * self.sf, x * self.sf + z * self.cf);
+        let (n, nx, nz) = self.s.n2d(x * self.cf - z * self.sf + self.ou, x * self.sf + z * self.cf + self.ov);
         (n, nx * self.c + nz * self.sn, nz * self.c - nx * self.sn, self.f)
     }
     #[inline(always)]
@@ -501,6 +509,20 @@ impl DFbm {
     #[inline]
     pub fn value(&self, x: f64, z: f64, fp: f64) -> f32 {
         self.sample(x, z, fp).v
+    }
+
+    /// The first `n` octaves only (same normalisation as the full sum): a cheap low-pass proxy
+    /// of the field for far-field queries (rain-shadow streamlines).
+    #[inline]
+    pub fn sample_n(&self, x: f64, z: f64, n: usize) -> D2 {
+        let (mut v, mut dx, mut dz) = (0.0f32, 0.0f32, 0.0f32);
+        for o in self.oct.iter().take(n) {
+            let (a, ax, az) = o.eval(x, z);
+            v += o.amp * a;
+            dx += o.amp * ax;
+            dz += o.amp * az;
+        }
+        D2::new(v, dx, dz)
     }
 }
 
