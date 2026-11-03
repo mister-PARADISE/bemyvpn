@@ -10,6 +10,24 @@ Budgets per screenshot: world build ≤ 30 s, render ≤ 90 s (1920×1080 with A
 Default clipmap: level 0 = 2048² voxels, heightfield levels k=1..5 (cells 2…32 blocks, 2048² cells each) → 32 768-block radius. Orbital: 6 levels.
 Earth curvature: the renderer drops geometry by d²/(2R), R = 6 371 000 m, relative to the camera (≈80 m at 32 km).
 
+## 0. LATEST USER REQUIREMENTS — HIGHEST PRIORITY (critics: check these; engineers: implement)
+
+**Playability: walkable terrain and natural building spots.** The user (who will later play in
+this world) says: "a character will struggle to run around, there is no place to build a base or a
+house, everything is crooked. I'm not asking for flat things, but improve it."
+* **Walkability.** Remove high-frequency "stair-step" roughness from ordinary terrain: outside
+  mountains/cliffs, neighbouring columns should differ by ≤ 1 block almost everywhere (target:
+  ≥ 80 % of non-mountain land columns have max |Δh| to their 4 neighbours ≤ 1). Shape comes from
+  smooth large-scale undulation, not per-block noise. Fine detail amplitude must fade where it would
+  create constant 1–2 block steps.
+* **Bimodal slopes (natural).** Concentrate steepness into distinct cliffs, escarpments and rock
+  bands; between them, long gentle walkable slopes — not a uniform "cheese grater".
+* **Natural flat spots** (geomorphologically motivated, smooth soft edges, never perfectly square):
+  river terraces (flat shelves along rivers at a few levels), hillside benches (20–80 block shelves),
+  plateau meadows, broad floodplains, besides the large plains. Target: every 300×300 block region of
+  non-mountain land contains at least one ≥ 16×16 area with height range ≤ 2.
+* Add a test/metric that measures both targets on seeds 1, 42, 2026 and report the numbers.
+
 ## Conventions
 
 * 1 unit = 1 block = 1 m. **y is up.** World y ∈ [0, 512). `SEA_LEVEL = 140`: water fills y < 140.

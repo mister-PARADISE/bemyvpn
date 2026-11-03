@@ -1217,7 +1217,10 @@ fn plan_coast(s: &Scout) -> Vec<Candidate> {
                 let sun = Sun { azimuth_deg: (yaw / DEG + off).rem_euclid(360.0), elevation_deg: elev };
                 let cliff = (s.max3[k] - SEA).max(0.0).round() as i32;
                 let shore = s.frac(cat::SHORE, k, 2);
-                let title = if cliff >= 35 {
+                // title from what the frame actually shows: a beach in view, else cliffs
+                let title = if st.c(cat::SHORE) > 0.08 && (shore > 0.1 || cliff < 35) {
+                    "Закат на песчаном берегу".to_string()
+                } else if cliff >= 35 {
                     format!("Закат над морскими утёсами ({} м)", cliff)
                 } else if shore > 0.2 {
                     "Закат на песчаном берегу".to_string()
