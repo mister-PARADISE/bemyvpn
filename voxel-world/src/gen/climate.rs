@@ -932,6 +932,25 @@ fn build_map(q: &[f32; 25], target: fn(f32) -> f32) -> MonoMap {
     MonoMap::new(&xs, &ys)
 }
 
+/// Gradient floor of the river distance estimate (≈ ½ the median |∇n_r| = 1.36·10⁻³).
+pub const RIVER_GRAD_FLOOR: f32 = 7.0e-4;
+
+/// Distance (blocks) to the river centre-line `n = 0`, regularised first-order estimate
+/// `d = |n| / √(|∇n|² + f²)`.
+///
+/// The plain estimate `|n|/|∇n|` is exact for a linear field but not Lipschitz: its true
+/// gradient `sgn(n)∇n/|∇n| − |n|∇|∇n|/|∇n|²` blows up where |∇n| is small (interfluves), so
+/// valley walls `V(d)` printed 12-block single-column steps there while the dual-number slope
+/// (which cannot see the Hessian term) still reported ≈ 2. The floor f bounds the Hessian term
+/// by ≈ d·|∇²n|/f; near rivers (|∇n| ≫ f) the estimate is unchanged. The returned gradient is
+/// the first (dominant) term.
+#[inline]
+pub fn river_distance(n: D2) -> D2 {
+    let s = (n.dx * n.dx + n.dz * n.dz + RIVER_GRAD_FLOOR * RIVER_GRAD_FLOOR).sqrt();
+    let sgn = if n.v < 0.0 { -1.0 } else { 1.0 };
+    D2::new((n.v.abs() / s).min(1.0e5), sgn * n.dx / s, sgn * n.dz / s)
+}
+
 /// Raw erosion: a smooth |·| of an fBm, so that low erosion (= mountains) concentrates along
 /// the zero set of the noise — long, branching orogenic belts instead of round blobs.
 #[inline]
@@ -989,7 +1008,7 @@ pub struct ClimateD {
     pub maritime: f32,
     /// Raw river noise (zero set = river centre-lines).
     pub river_n: D2,
-    /// First-order distance (blocks) to the river centre-line, `|n|/|∇n|`.
+    /// Distance (blocks) to the river centre-line, [`river_distance`].
     pub river_dist: f32,
     /// River presence 0..1 (0 = dry valley / source region).
     pub river_gate: f32,
@@ -1256,9 +1275,8 @@ impl ClimateSampler {
         // fold would otherwise print creases parallel to every river.
         let pv = 1.0 - sabs_d(sabs_d(w, 0.06) * 3.0 - 2.0, 0.25);
 
-        // River geometry. Distance to the zero set: d ≈ |n|/|∇n| (exact for a linear field).
-        let grad = n_r.grad_len().max(1e-7);
-        let river_dist = (n_r.v.abs() / grad).min(1.0e5);
+        // River geometry: regularised distance to the zero set (see `river_distance`).
+        let river_dist = river_distance(n_r).v;
         // ~70 % of valleys carry a river; the rest are dry valleys (sources fade smoothly).
         let gate = crate::math::smoothstep(-0.55, -0.15, g);
         let e01 = saturate((e.v + 1.0) * 0.5);

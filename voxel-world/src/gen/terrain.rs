@@ -38,7 +38,7 @@
 //! * 3D density `ρ = (H − y) + J·N₃(x, 1.4y, z)` with |N₃| ≤ 1 ⇒ sign(ρ) = sign(H − y) exactly
 //!   outside `[H − J, H + J]`; above the surface N₃ is biased downward to suppress floating blobs.
 use super::biome::{classify, BiomeInput, SnowLine};
-use super::climate::{lerp_d, smoothstep_d, ClimateD, ClimateSampler, DEroded, DFbm, DRidged, D2};
+use super::climate::{lerp_d, river_distance, smoothstep_d, ClimateD, ClimateSampler, DEroded, DFbm, DRidged, D2};
 use super::{ColumnInfo, SEA_LEVEL, WORLD_HEIGHT};
 use crate::math::{saturate, smoothstep};
 use crate::noise::{derive_seed, hash2, hash_f01, mix64, salt, Fbm, Worley2};
@@ -346,6 +346,12 @@ fn sabs_tent(x: D2) -> D2 {
     x.abs()
 }
 
+/// Gradient scale G of the river noise for the valley distance min(|n|/s, |n|/G) (≈ p60 |∇n|).
+const RIVER_WALL_G: f32 = 1.5e-3;
+
+/// Maximum slope of river valley / canyon walls (≈ 65°; steeper is left to the 3D band).
+const WALL_MAX: f32 = 2.2;
+
 const VOLCANO_CELL: f64 = 3600.0;
 const VOLCANO_P: f32 = 0.14;
 const HOODOO_CELL: f64 = 14.0;
@@ -585,13 +591,14 @@ impl TerrainShaper {
         // --- rivers: lower envelope with a U-channel + valley walls
         let gate = cd.river_gate;
         if gate > 0.0 && cd.c.v > -0.35 {
-            let n = cd.river_n;
-            let gl = n.grad_len().max(1e-7);
-            // d = |n|/|∇n| as a dual (gradient of the distance ≈ unit vector across the river).
-            let sgn = if n.v < 0.0 { -1.0 } else { 1.0 };
-            let d = D2::new(n.v.abs() / gl, sgn * n.dx / gl, sgn * n.dz / gl);
-            let d = D2::new(d.v.min(1.0e5), d.dx, d.dz);
             let w = (cd.river_width * cd.river_width + 0.36 * (fp * fp) as f32).sqrt();
+            // Distance coordinate across the valley: d = min(|n|/s, |n|/G), s = √(|∇n|² + f²).
+            // The first-order estimate |n|/s alone is not Lipschitz where |∇n| is small (its
+            // dropped Hessian term ≈ d·|∇²n|/|∇n| reached 5 blocks per block → 12-block steps on
+            // canyon walls while the dual-number slope said ≈ 2); |n|/G alone overstates the
+            // distance where |∇n| ≫ G. The min picks |n|/s exactly where |∇n| ≥ G (Hessian term
+            // small) and |n|/G where |∇n| < G (exact gradient, magnitude |∇n|/G < 1).
+            let d = river_distance(cd.river_n).min(cd.river_n.abs() * (1.0 / RIVER_WALL_G));
             let depth = 2.5 + 0.25 * w;
             let above = (h.v - SEA).max(0.0);
             let bank = SEA - 0.6 + (1.0 - gate) * above * 0.95;
@@ -601,8 +608,18 @@ impl TerrainShaper {
                 let r = d * (1.0 / w);
                 (1.0 - r.sq()) * (-depth) + bank
             } else {
+                // Wall V(u) = σu + κu² until its slope σ + 2κu reaches WALL_MAX at
+                // u* = (WALL_MAX − σ)/2κ, linear beyond (C¹). Without the cap, canyon walls in
+                // the orogeny belts (E* → −1: σ = 2.6, κ = 0.0135) reach slope > 4 within
+                // 60 blocks — 12-block single-column steps. Gradient: WALL_MAX·∇u + u*·∇σ.
                 let u = d - w;
-                u * sigma + u.sq() * kappa + bank
+                let sig = sigma.minf(WALL_MAX);
+                let ustar = (WALL_MAX - sig.v) / (2.0 * kappa);
+                if u.v <= ustar {
+                    u * sig + u.sq() * kappa + bank
+                } else {
+                    u * WALL_MAX + sig * ustar + (kappa * ustar * ustar - WALL_MAX * ustar + bank)
+                }
             };
             let k = 6.0 + 10.0 * saturate((cd.e.v + 1.0) * 0.5);
             if v.v < h.v + k {
