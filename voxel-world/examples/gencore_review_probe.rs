@@ -29,3 +29,4 @@ fn main() {
     }
     println!("badlands/hoodoo cols {n}, exposed side blocks {faces}, non-terracotta {stone_faces} ({:.1}%), max drop {maxdrop}", 100.0 * stone_faces as f64 / faces.max(1) as f64);
 }
+// (lake probe statistics are in gencore_review_lakes.rs)

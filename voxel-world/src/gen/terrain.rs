@@ -788,21 +788,34 @@ impl TerrainShaper {
     /// (sea or river nearby, steep slope across the rim, deep cut inside, desert, volcano).
     /// A pure function of (seed, cell) evaluated at footprint 0, so every LOD level agrees.
     fn probe_lake(&self, cs: &ClimateSampler, cx: f64, cz: f64, r: f32) -> Option<f32> {
-        if self.volcano_cone(cx, cz).is_some() {
-            return None;
-        }
-        let sample = |x: f64, z: f64| -> Option<f32> {
+        self.probe_lake_why(cs, cx, cz, r).ok()
+    }
+
+    /// [`probe_lake`] with the rejection reason (debug / tests).
+    pub fn probe_lake_why(&self, cs: &ClimateSampler, cx: f64, cz: f64, r: f32) -> Result<f32, &'static str> {
+        let sample = |x: f64, z: f64| -> Result<f32, &'static str> {
             let cd = cs.sample_d(x, z, 0.0);
-            if cd.c.v < -0.04 || cd.river > 0.0 || cd.river_dist < cd.river_width + 60.0 {
-                return None;
+            if cd.c.v < -0.04 {
+                return Err("sea");
+            }
+            // a river *channel* on a probe (valley flanks are fine: the level test below
+            // rejects basins whose rim is cut down to the sea-level river)
+            if cd.river_gate > 0.2 && cd.river_dist < cd.river_width + 25.0 {
+                return Err("river");
             }
             let sh = self.shape_impl(&cd, x, z, 0.0, None);
-            if sh.regions.badlands > 0.2 || (sh.regions.desert > 0.3 && r > 140.0) || sh.water_level != i32::MIN {
-                return None;
+            if sh.regions.badlands > 0.2 || (sh.regions.desert > 0.3 && r > 140.0) {
+                return Err("dry");
             }
-            Some(sh.height.v)
+            if sh.water_level != i32::MIN {
+                return Err("wet");
+            }
+            Ok(sh.height.v)
         };
         let centre = sample(cx, cz)?;
+        if self.volcano_cone(cx, cz).map_or(false, |(cone, _)| cone.v > centre - 60.0) {
+            return Err("volcano");
+        }
         let (mut rim_lo, mut rim_hi) = (f32::MAX, f32::MIN);
         for k in 0..LAKE_RIM_SAMPLES {
             let a = (k as f64 + 0.5) * std::f64::consts::TAU / LAKE_RIM_SAMPLES as f64;
@@ -811,8 +824,11 @@ impl TerrainShaper {
             rim_hi = rim_hi.max(h);
         }
         let level = (rim_lo - 1.0).floor();
-        if level < SEA + 2.0 || level > 440.0 || rim_hi - rim_lo > 0.35 * r + 12.0 {
-            return None;
+        if level < SEA + 2.0 || level > 440.0 {
+            return Err("level");
+        }
+        if rim_hi - rim_lo > 0.35 * r + 12.0 {
+            return Err("slope");
         }
         let mut inner_lo = centre;
         for k in 0..6 {
@@ -820,9 +836,15 @@ impl TerrainShaper {
             inner_lo = inner_lo.min(sample(cx + a.cos() * 0.5 * r as f64, cz + a.sin() * 0.5 * r as f64)?);
         }
         if inner_lo < level - 12.0 {
-            return None;
+            return Err("cut");
         }
-        Some(level)
+        Ok(level)
+    }
+
+    /// Debug: (centre x, z, radius, probe result) of lake cell (ix, iz), if it has a candidate.
+    pub fn lake_debug(&self, cs: &ClimateSampler, ix: i32, iz: i32) -> Option<(f64, f64, f32, Result<f32, &'static str>)> {
+        let (cx, cz, r, _) = self.lake_candidate(ix, iz)?;
+        Some((cx, cz, r, self.probe_lake_why(cs, cx, cz, r)))
     }
 
     fn lake_level_cached(&self, cs: &ClimateSampler, ix: i32, iz: i32, cx: f64, cz: f64, r: f32) -> Option<f32> {
