@@ -101,6 +101,26 @@ Height H(x,z) is built from **nested splines** of (C, E, PV) plus fractal detail
   (≈ −1 per 250 m), `biome` = `biome::classify(...)`.
 * Band-limited LOD: when `footprint` > 1 use `sample2_lod` everywhere so far heightfields don't alias.
 
+### 2a. USER REQUIREMENTS (override anything above/below that conflicts)
+
+**Mountains: rarer but bigger.** Mountains must concentrate in a few LARGE ranges instead of
+being everywhere. Gate the mountain amplitude A with a low-frequency "orogeny belt" mask
+(e.g. `Fbm` λ ≈ 9000, smoothstep threshold) so that mountainous terrain (H > SEA+150) covers only
+≈ 10–15 % of land, while those ranges are massive: main peaks y ≈ 430–500, broad foothills,
+range widths of several km and lengths of 10–30 km. Between ranges: plains, rolling hills,
+plateaus, river valleys, mesas.
+
+**Snow is altitude-driven, never a lowland biome.** A single snow line at y ≈ 330
+(≈ 190 m above sea), modulated ±12 blocks by low-frequency noise and at most ±15 by climate
+temperature. Above the snow line snow covers exposed surfaces whose slope is below a threshold that
+grows with altitude (gentle faces get snow first → snow in gullies/couloirs, bare rock on cliffs);
+above y ≈ 420 permanent snow/packed ice (glaciers) on everything but near-vertical faces.
+**Below the snow line there is no snow at all**: cold lowlands are taiga/tundra-like with grass,
+podzol, gravel, moss, spruce — no white ground, no frozen oceans/rivers (ice may appear only on
+lakes above the snow line). The snowy biomes (SnowySlopes, SnowyPeaks, Glacier, AlpineGrove,
+SnowyPlains/SnowyTaiga/SnowyBeach/FrozenOcean/FrozenRiver) must therefore be assigned by ALTITUDE
+zones relative to the snow line (or become very rare), not by lowland climate.
+
 ## 3. Biomes & surface rules (gen-core, `biome.rs`)
 
 All 30 `Biome`s should appear somewhere (Volcanic and Hoodoos rare). Classification uses C, E,

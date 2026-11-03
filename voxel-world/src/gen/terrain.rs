@@ -295,8 +295,8 @@ impl TerrainShaper {
             offset: offset_spline(),
             amp: amp_spline(),
             wall: wall_spline(),
-            ridged: DRidged::new(s("terrain.ridged"), 1500.0, 6, 2.0, 1.0),
-            hills: DEroded::new(s("terrain.hills"), 900.0, 8, 0.5, 1.5),
+            ridged: DRidged::new(s("terrain.ridged"), 1500.0, 4, 2.0, 1.0),
+            hills: DEroded::new(s("terrain.hills"), 900.0, 6, 0.5, 1.5),
             rough: DFbm::new(s("terrain.rough"), 40.0, 2, 2.0, 0.5),
             jag: DFbm::new(s("terrain.jag"), 800.0, 2, 2.0, 0.5),
             select: DFbm::new(s("terrain.select"), 1100.0, 2, 2.0, 0.5),
@@ -387,7 +387,7 @@ impl TerrainShaper {
         let mut mountain = amp * shape * vfac;
         // dendritic gullies on mountain flanks (strength ∝ local relief)
         if mountain.v > 12.0 {
-            let ga = 0.14 * mountain.v.min(260.0) * smoothstep(12.0, 50.0, mountain.v);
+            let ga = 0.24 * mountain.v.min(260.0) * smoothstep(12.0, 60.0, mountain.v);
             let g = self.gullies(x, z, (mountain.dx + base.dx, mountain.dz + base.dz), ga, fp);
             mountain = mountain + g;
         }
@@ -403,7 +403,7 @@ impl TerrainShaper {
         let rug = smoothstep(10.0, 120.0, amp.v);
         // flat beaches / shallows: no speckle islands at the waterline
         let shore = 0.25 + 0.75 * smoothstep(1.5, 9.0, (h.v - SEA).abs());
-        let rough_amp = (1.4 + 1.6 * rug) * (1.0 - 0.85 * reg.desert) * (1.0 - 0.7 * reg.swamp) * shore;
+        let rough_amp = (1.0 + 1.4 * rug) * (1.0 - 0.85 * reg.desert) * (1.0 - 0.7 * reg.swamp) * shore;
         h = h + self.rough.sample(x, z, fp) * rough_amp;
 
         // --- badlands: plateau mesas, then smooth terraces
@@ -538,20 +538,20 @@ impl TerrainShaper {
 
     /// Slope-aligned gully noise ("erosion filter").
     ///
-    /// For octave k (cell size Lₖ = 220·2⁻ᵏ) every cell of a jittered lattice carries a plane wave
+    /// For octave k (cell size Lₖ = 360·2⁻ᵏ, amplitude ×0.47 per octave) every cell of a jittered lattice carries a plane wave
     /// `cos 2π((p − pⱼ)·t̂·s)/Lₖ` whose wave vector t̂ is *perpendicular* to the current terrain
     /// gradient g, so its crests run downhill (gullies and spurs). The waves are blended with the
     /// compact kernel `w = (1 − |p − pⱼ|²/Lₖ²)³` (normalised), and `s = min(2.5|g|, 1)` fades
     /// them out on flat ground. The derivative of each octave is added to g before the next octave
     /// → finer gullies bend into coarser ones (dendritic look). Exact derivative except for the
     /// dependence of t̂ on g (Hessian), see `slope_matches_fd`.
-    fn gullies(&self, x: f64, z: f64, grad: (f32, f32), amp: f32, fp: f64) -> D2 {
+    pub fn gullies(&self, x: f64, z: f64, grad: (f32, f32), amp: f32, fp: f64) -> D2 {
         const TAU: f32 = std::f32::consts::TAU;
         let (mut gx, mut gz) = grad;
         let mut out = D2::ZERO;
         let mut a = amp;
-        let mut cell = 220.0f64;
-        for oct in 0..4u64 {
+        let mut cell = 360.0f64;
+        for oct in 0..5u64 {
             let fade = if fp > 1.0 { saturate(((cell / fp - 2.0) * 0.5) as f32) } else { 1.0 };
             if fade <= 0.0 {
                 break;
@@ -604,7 +604,7 @@ impl TerrainShaper {
                 gx += vx * wgt;
                 gz += vz * wgt;
             }
-            a *= 0.5;
+            a *= 0.47;
             cell *= 0.5;
         }
         out
