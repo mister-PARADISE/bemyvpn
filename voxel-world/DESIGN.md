@@ -217,6 +217,12 @@ endless variations"), not a handful of fixed templates:
   cones, Bézier trunks, DDA branches), merge runs, no per-voxel allocations — tree generation must
   stay cheap (giants are rare). Only existing `Material`s may be used (materials.rs is frozen).
 * `canopy_lod` must include the expected contribution of landmark giants and taller spruces.
+* **Beauty guardrails (hard rule).** Variety must never make trees ugly: every species keeps its
+  recognisable silhouette; parameters are correlated (crown size ∝ height, trunk thickness ∝ height,
+  branch length ∝ crown radius) and clamped to natural ranges (lean ≤ ~15°, mild asymmetry, sparse
+  holes); no floating leaves, no leaf blobs detached from branches, no trunk poking through the
+  crown top, no stair-stepped "noise mess". Render a catalogue of ≥ 8 random instances per species
+  + the landmark giants, LOOK at it, and tighten ranges until every instance looks good.
 
 ## 6. World build (world-build, `world/build.rs`)
 
