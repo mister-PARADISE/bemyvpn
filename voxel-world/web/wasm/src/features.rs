@@ -65,6 +65,13 @@ impl FeatureCache {
     pub fn len(&self) -> usize {
         self.tiles.len()
     }
+    /// Approximate heap bytes held by the memo.
+    pub fn mem_bytes(&self) -> usize {
+        self.tiles
+            .values()
+            .map(|v| v.capacity() * std::mem::size_of::<Placed>() + v.iter().map(|p| p.cols.capacity() * std::mem::size_of::<FeatureColumn>()).sum::<usize>())
+            .sum()
+    }
     pub fn is_empty(&self) -> bool {
         self.tiles.is_empty()
     }

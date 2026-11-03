@@ -10,7 +10,7 @@ use voxel_world::imageio::write_png_rgb8;
 use voxel_world::materials::{linear_to_srgb, Material};
 
 fn out_dir() -> PathBuf {
-    let d = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/agent-cavesfeatures");
+    let d = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/agent-cavesfeatures-review");
     std::fs::create_dir_all(&d).unwrap();
     d
 }
@@ -467,7 +467,7 @@ fn scene(g: &WorldGen, cx: i32, cz: i32, n: i32, s: f32) -> (usize, usize, Vec<u
     let cols: Vec<ColumnInfo> = (0..n * n).map(|i| g.column((x0 + i % n) as f64 + 0.5, (z0 + i / n) as f64 + 0.5)).collect();
     let tops: Vec<i32> = cols.iter().map(top_solid).collect();
     let ymin = tops.iter().min().unwrap() - 6;
-    let ymax = tops.iter().max().unwrap() + 40;
+    let ymax = tops.iter().max().unwrap() + 95;
     let mut vx = Vox::new(x0, ymin, z0, n, ymax - ymin, n);
     for k in 0..n {
         for i in 0..n {
@@ -491,7 +491,8 @@ fn scene(g: &WorldGen, cx: i32, cz: i32, n: i32, s: f32) -> (usize, usize, Vec<u
             }
         }
     }
-    let feats = g.features_in(x0 - 12, z0 - 12, x0 + n + 12, z0 + n + 12);
+    let m = voxel_world::gen::MAX_FEATURE_RADIUS;
+    let feats = g.features_in(x0 - m, z0 - m, x0 + n + m, z0 + n + m);
     for f in &feats {
         let ground = if f.root_x >= x0 && f.root_x < x0 + n && f.root_z >= z0 && f.root_z < z0 + n {
             tops[((f.root_z - z0) * n + (f.root_x - x0)) as usize] + 1
@@ -535,6 +536,32 @@ fn scenes(g: &WorldGen, seed: u64) {
     eprintln!("wrote {}", p.display());
 }
 
+/// In-situ scenes around landmark giants (one per giant species when found).
+fn giant_scenes(g: &WorldGen, seed: u64) {
+    let mut found: Vec<(i32, i32, Species)> = Vec::new();
+    'outer: for ring in 0..40i32 {
+        for k in 0..(8 * ring.max(1)) {
+            let a = k as f64 / (8 * ring.max(1)) as f64 * std::f64::consts::TAU;
+            let (x, z) = ((ring as f64 * 512.0 * a.cos()) as i32, (ring as f64 * 512.0 * a.sin()) as i32);
+            for r in g.features.roots_in(g, x, z, x + 512, z + 512) {
+                if r.3 >= 3 && !found.iter().any(|f| f.2 == r.2) {
+                    eprintln!("giant {} at ({}, {})", r.2.name(), r.0, r.1);
+                    found.push((r.0, r.1, r.2));
+                }
+            }
+            if found.len() >= 6 {
+                break 'outer;
+            }
+        }
+    }
+    let imgs: Vec<_> = found.iter().map(|&(x, z, _)| scene(g, x, z, 88, 2.2)).collect();
+    let rows: Vec<Vec<_>> = imgs.chunks(2).map(|c| c.to_vec()).collect();
+    let (w, h, img) = compose(&rows, 4);
+    let p = out_dir().join(format!("seed{seed}_giants.png"));
+    write_png_rgb8(&p, w as u32, h as u32, &img).unwrap();
+    eprintln!("wrote {}", p.display());
+}
+
 /// Top-down feature map around several biome spots: canopy top material shaded by height.
 fn feature_map(g: &WorldGen, seed: u64) {
     let n = 256i32;
@@ -544,7 +571,8 @@ fn feature_map(g: &WorldGen, seed: u64) {
         let (x0, z0) = (cx - n / 2, cz - n / 2);
         let cols: Vec<ColumnInfo> = (0..n * n).map(|i| g.column((x0 + i % n) as f64 + 0.5, (z0 + i / n) as f64 + 0.5)).collect();
         let mut top = vec![(i32::MIN, Material::Air); (n * n) as usize];
-        let feats = g.features_in(x0 - 12, z0 - 12, x0 + n + 12, z0 + n + 12);
+        let m = voxel_world::gen::MAX_FEATURE_RADIUS;
+    let feats = g.features_in(x0 - m, z0 - m, x0 + n + m, z0 + n + m);
         let mut roots = Vec::new();
         for f in &feats {
             let ground = top_solid(&g.column(f.root_x as f64 + 0.5, f.root_z as f64 + 0.5)) + 1;
@@ -716,6 +744,9 @@ fn main() {
     }
     if mode == "features" || mode == "all" {
         feature_map(&g, seed);
+    }
+    if mode == "giants" || mode == "all" {
+        giant_scenes(&g, seed);
     }
     if mode == "cutaway" || mode == "all" {
         let (x, z) = find_spot(&g, 200.0, 260.0, (3000.0, -2000.0));

@@ -475,6 +475,10 @@ fn timings_per_chunk() {
                 }
             }
             let tw = t.elapsed().as_secs_f64() * 1e3 / k as f64;
+            let (nt, fb) = (warm.feats.len(), warm.feats.mem_bytes());
+            if fb > 0 {
+                eprintln!("  {name}: feature cache {nt} tiles, {:.0} KB ({:.1} KB/tile)", fb as f64 / 1024.0, fb as f64 / 1024.0 / nt as f64);
+            }
             tot_cold += tc;
             tot_warm += tw * k as f64;
             n_cold += 1;
@@ -508,6 +512,7 @@ fn merge_reduces_quads() {
     let mut a = ChunkBuilder::new();
     let mut b = ChunkBuilder::new();
     a.merge_mask = 0;
+    b.merge_mask = 7;
     let (mut qa, mut qb) = (0, 0);
     for &(name, cx, cz) in &mix {
         a.build(&g, cx, cz);
@@ -521,3 +526,4 @@ fn merge_reduces_quads() {
     assert!(qb <= qa);
     let _ = HashSet::<u8>::new();
 }
+

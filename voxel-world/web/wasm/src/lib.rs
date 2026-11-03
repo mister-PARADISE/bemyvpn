@@ -209,7 +209,8 @@ pub extern "C" fn vw_spawn_ptr() -> u32 {
 }
 
 /// Extension (not in API.md): which kinds merge coplanar +Y faces (bit k = kind k).
-/// Default 0b111. 0 disables merging (one quad per block face).
+/// Default 0b110 (water + foliage); 7 also merges opaque tops (fewer quads, but T-junction
+/// sparkles possible); 0 = one quad per block face everywhere.
 #[no_mangle]
 pub extern "C" fn vw_set_merge(mask: u32) {
     with(|s| s.chunk.merge_mask = mask & 7);

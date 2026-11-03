@@ -169,7 +169,7 @@ fn offset_spline() -> Spline {
 
 /// Broad orogenic uplift (blocks) under the core of a mountain belt (`U·smoothstep(M)`): the
 /// elevated massif on which the ridged relief sits (valley floors of big ranges are high, too).
-const OROGENIC_UPLIFT: f32 = 85.0;
+const OROGENIC_UPLIFT: f32 = 110.0;
 
 /// Mountain amplitude A(C, E): uplift that multiplies the [0,1] mountain shape.
 fn amp_spline() -> Spline {
@@ -294,8 +294,10 @@ pub struct Regions {
     pub lake_level: f32,
     /// Aridity α = hot·dry ∈ [0, 1] (orders the drylands, see `biome::aridity`).
     pub arid: f32,
-    /// Open-plains weight: flat high-erosion lowlands outside the belts and plateau country.
+    /// Open-plains weight: calm lowlands (low regional character χ) outside the belts.
     pub plain: f32,
+    /// 1 where a sea stack raised the column (intended vertical walls).
+    pub stack: f32,
 }
 
 /// Everything computed for a column (public for debug tools).
@@ -408,7 +410,7 @@ const VOLCANO_CELL: f64 = 3600.0;
 const VOLCANO_P: f32 = 0.07;
 const HOODOO_CELL: f64 = 14.0;
 /// Fraction of hoodoo cells carrying a spire (art pass: 0.6 read as a rash of stripes).
-const HOODOO_P: f32 = 0.38;
+const HOODOO_P: f32 = 0.26;
 const DUNE_WAVELENGTH: f32 = 58.0;
 
 impl TerrainShaper {
@@ -526,7 +528,7 @@ impl TerrainShaper {
             0.0
         };
         let hoodoo = if badlands > 0.0 {
-            badlands * smoothstep(0.24, 0.36, self.select.value(x + 3100.0, z - 1700.0, fp))
+            badlands * smoothstep(0.30, 0.42, self.select.value(x + 3100.0, z - 1700.0, fp))
         } else {
             0.0
         };
@@ -753,9 +755,12 @@ impl TerrainShaper {
                 }
             };
             let k = 6.0 + 10.0 * saturate((cd.e.v + 1.0) * 0.5);
+            // gully steering follows the wall near the river: a weight that varies over ≈ 200
+            // blocks of river distance (a switch on "wall below terrain" would rotate the wave
+            // vectors within a few blocks → phase jumps of the gully waves)
+            let ww = smoothstep(0.0, 0.3, gate) * (1.0 - smoothstep(40.0, 220.0, d.v - w));
+            wall = (ww, v.dx, v.dz);
             if v.v < h.v + k {
-                let ww = smoothstep(k, -k, v.v - h.v);
-                wall = (ww, v.dx, v.dz);
                 h = h.smin(v, k);
             }
             reg.channel = gate * (1.0 - smoothstep(w * 0.7, w * 1.15, d.v));
@@ -824,7 +829,10 @@ impl TerrainShaper {
         let stack_w = smoothstep(-0.25, -0.55, cd.e_raw.v) * smoothstep(-0.26, -0.21, cd.c.v) * smoothstep(-0.13, -0.17, cd.c.v);
         if stack_w > 0.05 && h.v < SEA + 4.0 && water_level <= SEA_LEVEL {
             if let Some(st) = self.sea_stack(x, z, stack_w, fp) {
-                h = h.max(st);
+                if st.v > h.v {
+                    h = st;
+                    reg.stack = 1.0;
+                }
             }
         }
 
@@ -1294,7 +1302,7 @@ impl TerrainShaper {
             r += a_n * n.clamp(-1.0, 1.0);
         }
         if a_s > 0.0 {
-            let rec = self.strata.recess(y as f32 + self.strata.offset(x, z));
+            let rec = self.strata.recess(y as f32 + self.strata.offset(x, z), self.strata.facies(x, z));
             r -= a_s * (1.0 / NOTCH_REACH) * rec;
         }
         // Taper 1 − u⁴ → the detail vanishes at the band edges, so ρ is continuous there and
@@ -1438,7 +1446,7 @@ mod tests {
                     let special = |c: &ColumnInfo| {
                         let cd = g.climate.sample_d(c.x, c.z, 0.0);
                         let r = g.terrain.shape(&cd, c.x, c.z, 0.0).regions;
-                        r.badlands > 0.05 || r.hoodoo > 0.05 || r.volcanic > 0.05
+                        r.badlands > 0.05 || r.hoodoo > 0.05 || r.volcanic > 0.05 || r.stack > 0.0
                     };
                     if special(&c0) || special(&c1) {
                         continue;

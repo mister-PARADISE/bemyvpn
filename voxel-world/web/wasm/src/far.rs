@@ -181,30 +181,45 @@ pub fn find_spawn(gen: &WorldGen, nodes: &mut Nodes, x: f64, z: f64) -> [f32; 6]
         tmax = tmax.max(height_at(gen, nodes, sx + dx, sz + dz));
     }
     let eye = tmax + 32.0;
-    let mut best_yaw = (f32::MIN, 0.0f64);
+    // view direction: march 24 azimuths; reward visible land (with relief), give water a
+    // little credit (a coast in view is nice, an empty sea is not), punish nearby walls
+    let mut best_yaw = (f32::MIN, 0.0f64, -0.12f32);
     for k in 0..24 {
         let yaw = k as f64 * std::f64::consts::TAU / 24.0;
         let (s, c) = yaw.sin_cos();
-        let mut open: f32 = 0.0;
-        let mut water: f32 = 0.0;
-        let mut hs = Vec::with_capacity(12);
-        for d in 1..=12 {
-            let dist = d as f64 * 160.0;
-            let q = gen.column_lod(sx + s * dist, sz + c * dist, 32.0);
-            let top = q.height.max(if q.water_level != i32::MIN { q.water_level as f32 } else { 0.0 });
+        let mut horizon = f32::MIN;
+        let mut score = 0.0f32;
+        let mut lo = f32::MAX;
+        let mut hi = f32::MIN;
+        let mut mean_ang = 0.0f32;
+        let n = 24;
+        for d in 1..=n {
+            let dist = 40.0 + d as f64 * d as f64 * 6.0; // 46 … 3496, denser near the eye
+            let q = gen.column_lod(sx + s * dist, sz + c * dist, (dist / 24.0).clamp(4.0, 64.0));
+            let wet = q.water_level != i32::MIN && q.water_level as f32 > q.height;
+            let top = if wet { q.water_level as f32 } else { q.height };
             let ang = (top - eye) / dist as f32;
-            open += (-ang).clamp(-0.3, 0.3);
-            if q.water_level != i32::MIN && q.water_level as f32 > q.height {
-                water += 1.0;
+            mean_ang += ang;
+            if dist < 400.0 && ang > 0.08 {
+                score -= 3.0; // a slope right in front of the camera
             }
-            hs.push(q.height);
+            if ang > horizon {
+                // visible sample
+                score += if wet { 0.3 } else { 1.0 };
+                horizon = ang;
+            }
+            if !wet {
+                lo = lo.min(q.height);
+                hi = hi.max(q.height);
+            }
         }
-        let mean = hs.iter().sum::<f32>() / hs.len() as f32;
-        let var = hs.iter().map(|h| (h - mean).abs()).sum::<f32>() / hs.len() as f32;
-        let score = open * 4.0 + var.min(60.0) * 0.03 + (water.min(4.0) - (water - 8.0).max(0.0)) * 0.1;
+        let relief = if hi > lo { (hi - lo).min(200.0) } else { 0.0 };
+        score += relief * 0.02;
         if score > best_yaw.0 {
-            best_yaw = (score, yaw);
+            // look slightly below the mean terrain elevation angle of that direction
+            let pitch = ((mean_ang / n as f32).atan() - 0.04).clamp(-0.35, 0.05);
+            best_yaw = (score, yaw, pitch);
         }
     }
-    [sx as f32, eye, sz as f32, best_yaw.1 as f32, -0.12, 0.0]
+    [sx as f32, eye, sz as f32, best_yaw.1 as f32, best_yaw.2, 0.0]
 }

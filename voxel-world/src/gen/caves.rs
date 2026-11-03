@@ -227,6 +227,7 @@ fn dot3(a: [f32; 3], b: [f32; 3]) -> f32 {
 /// Squared Gauss–Newton distance to the curve {a = 0, b = 0}:
 /// `d² = (a²|∇b|² − 2ab ∇a·∇b + b²|∇a|²) / |∇a × ∇b|²` (regularised when the sheets are tangent).
 #[inline]
+#[cfg_attr(not(test), allow(dead_code))]
 fn curve_dist2(a: f32, ga: [f32; 3], b: f32, gb: [f32; 3]) -> f32 {
     curve_dist2_angle(a, ga, b, gb).0
 }

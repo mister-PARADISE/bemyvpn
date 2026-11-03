@@ -284,7 +284,7 @@ pub const BED_UNIT: f32 = 4.0;
 /// Thickness of one erosion unit: soft units weather back into notches (rock shelters).
 pub const NOTCH_UNIT: f32 = 8.0;
 /// Probability that an erosion unit is soft (recessive).
-const SOFT_P: f32 = 0.22;
+const SOFT_P: f32 = 0.2;
 
 /// Aridity `α = smoothstep(0.2, 0.5, T)·smoothstep(−0.12, −0.7, H)` ∈ [0, 1] of the sea-level
 /// climate: one scalar orders the drylands (savanna/steppe ring → desert → red desert → badlands),
@@ -305,15 +305,13 @@ pub fn aridity(temperature: f32, humidity: f32) -> f32 {
 ///   `16 f²(1 − f)²` drives the terrain density (soft beds weather back under the hard bed above
 ///   → rock shelters, ledges; thin fins holed from both sides → small arches) and their core is
 ///   dark shale (Deepslate) / red mudstone (RedSandstone in arid climates).
-/// Granite appears only as rare thin vertical dikes and as deep plutons (cut-away views).
+/// Granite appears only in deep plutons (cut-away views) — never as spots on surface rock.
 #[derive(Clone, Copy, Debug)]
 pub struct Strata {
     seed: u64,
     fold: FastSimplex,
     warp: FastSimplex,
     facies: FastSimplex,
-    dike: FastSimplex,
-    dike_gate: FastSimplex,
 }
 
 impl Strata {
@@ -324,8 +322,6 @@ impl Strata {
             fold: FastSimplex::new(s ^ 1),
             warp: FastSimplex::new(s ^ 2),
             facies: FastSimplex::new(s ^ 3),
-            dike: FastSimplex::new(s ^ 4),
-            dike_gate: FastSimplex::new(s ^ 5),
         }
     }
 
@@ -343,12 +339,14 @@ impl Strata {
     }
 
     /// Recess strength ∈ [0, 1] at bedding coordinate ℓ: `16 f²(1 − f)²` across a soft erosion
-    /// unit (f = position inside the unit), 0 in hard units. C¹ in ℓ.
+    /// unit (f = position inside the unit), 0 in hard units. C¹ in ℓ. A unit is soft where its
+    /// hash is below `SOFT_P·(1 + 0.9·facies)`, so soft beds pinch out laterally (the facies field
+    /// varies over ≈ 900 blocks) instead of striping every face of a range identically.
     #[inline]
-    pub fn recess(&self, ell: f32) -> f32 {
+    pub fn recess(&self, ell: f32, facies: f32) -> f32 {
         let u = ell * (1.0 / NOTCH_UNIT);
         let k = u.floor();
-        if self.unit_hash(k as i64, 0x50F7) >= SOFT_P {
+        if self.unit_hash(k as i64, 0x50F7) >= SOFT_P * (1.0 + 0.9 * facies) {
             return 0.0;
         }
         let f = u - k;
@@ -363,24 +361,11 @@ impl Strata {
         self.facies.n2d(x * F, z * F).0
     }
 
-    /// Rare thin vertical granite dikes: the ≈ 4-block neighbourhood of the zero set of a λ 700
-    /// field, only where a λ 2.4 km gate is high (≈ 5 % of the area).
-    #[inline]
-    pub fn dike(&self, x: f64, z: f64) -> bool {
-        const G: f64 = 1.0 / 2400.0;
-        const F: f64 = 1.0 / 700.0;
-        if self.dike_gate.n2d(x * G, z * G).0 < 0.55 {
-            return false;
-        }
-        let (n, dx, dz) = self.dike.n2d(x * F, z * F);
-        let gl = (dx * dx + dz * dz).sqrt() * F as f32;
-        n.abs() < 2.0 * gl
-    }
-
     /// Lithology at bedding coordinate ℓ given the facies value and the aridity.
     #[inline]
     pub fn lithology(&self, ell: f32, facies: f32, arid: f32) -> Material {
-        if self.recess(ell) > 0.3 {
+        // dark shale / red mudstone only in the ≈ 3-block core of a soft bed (thin lines)
+        if self.recess(ell, facies) > 0.62 {
             return if arid > 0.45 { Material::RedSandstone } else { Material::Deepslate };
         }
         let k = (ell * (1.0 / BED_UNIT)).floor() as i64;
@@ -416,14 +401,13 @@ struct ColGeo {
     valid: bool,
     offset: f32,
     facies: f32,
-    dike: bool,
     patch: f32,
     soil: f32,
 }
 
 thread_local! {
     static GEO: std::cell::Cell<ColGeo> = const { std::cell::Cell::new(ColGeo {
-        seed: 0, x: 0, z: 0, valid: false, offset: 0.0, facies: 0.0, dike: false, patch: 0.0, soil: 0.0,
+        seed: 0, x: 0, z: 0, valid: false, offset: 0.0, facies: 0.0, patch: 0.0, soil: 0.0,
     }) };
     /// (seed, x bits, z bits) → (macro slope, height − macro height) of the last column asked.
     static MACRO: std::cell::Cell<(u64, u64, u64, f32, f32)> = const { std::cell::Cell::new((u64::MAX, 0, 0, 0.0, 0.0)) };
@@ -475,7 +459,7 @@ impl SurfaceRules {
         &self.strata
     }
 
-    /// Per-column values: bedding offset, facies, dike flag, patch field, soil field.
+    /// Per-column values: bedding offset, facies, patch field, soil field.
     #[inline]
     fn geo(&self, x: i32, z: i32) -> ColGeo {
         let g = GEO.with(|c| c.get());
@@ -494,7 +478,6 @@ impl SurfaceRules {
             valid: true,
             offset: self.strata.offset(xf, zf),
             facies: self.strata.facies(xf, zf),
-            dike: self.strata.dike(xf, zf),
             patch: p,
             soil: self.soil.n2d(xf * (1.0 / 31.0), zf * (1.0 / 31.0)).0,
         };
@@ -539,7 +522,10 @@ impl SurfaceRules {
         if rel < 0.0 {
             return None;
         }
-        let (sm, dev) = self.macro_relief(col);
+        // Far-LOD samples (the heightfield builder samples ≥ 1 block away from the centre of a
+        // band-limited cell column): the column itself is already the macro surface.
+        let far = (xf - col.x).abs() > 0.75 || (zf - col.z).abs() > 0.75;
+        let (sm, dev) = if far { (col.slope, 0.0) } else { self.macro_relief(col) };
         let hollow = smoothstep(-0.5, -4.0, dev);
         let limit = snow_slope_limit(rel) + 0.75 * hollow;
         if sm >= limit || col.slope > limit + 0.9 + 0.8 * hollow {
@@ -552,7 +538,7 @@ impl SurfaceRules {
     }
 
     /// Rock below the soil: bedrock floor, deepslate under bedding level 60 (coherent: follows
-    /// the beds), deep granite plutons, rare granite dikes, otherwise the bedded lithology.
+    /// the beds), deep granite plutons, otherwise the bedded lithology.
     #[inline]
     fn rock(&self, x: i32, y: i32, z: i32, col: &ColumnInfo) -> Material {
         if y < BEDROCK_TOP {
@@ -571,9 +557,6 @@ impl SurfaceRules {
         }
         if ell < 60.0 {
             return Material::Deepslate;
-        }
-        if g.dike {
-            return Material::Granite;
         }
         self.strata.lithology(ell, g.facies, aridity(col.climate.temperature, col.climate.humidity))
     }
@@ -613,7 +596,7 @@ impl SurfaceRules {
         // pale sandstone beds (caprock ledges) — fewer, larger orange masses
         if matches!(b, Biome::Badlands | Biome::Hoodoos) {
             if depth == 0 && slope < 0.75 && !(b == Biome::Hoodoos && below_surface < -3.0) {
-                return if p > 0.5 {
+                return if p > 0.25 {
                     Sand
                 } else if p < -0.62 {
                     Terracotta
@@ -627,7 +610,7 @@ impl SurfaceRules {
             if depth < 56 {
                 let ell = y as f32 + 0.5 + 0.35 * g.offset;
                 let k = (ell * (1.0 / 6.0)).floor() as i64;
-                if hash_f01(mix64(self.seed ^ 0xCA9 ^ (k as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15))) < 0.17 {
+                if hash_f01(mix64(self.seed ^ 0xCA9 ^ (k as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15))) < 0.26 {
                     return Sandstone;
                 }
                 return Terracotta;
@@ -718,7 +701,7 @@ impl SurfaceRules {
                 if depth < sand && !(steep && b == Biome::Desert && depth > 0) {
                     if depth == 0 && b == Biome::Desert {
                         // red-desert ecotone toward the badlands: red sand patches grow with aridity
-                        let red = smoothstep(0.55, 0.72, aridity(col.climate.temperature, col.climate.humidity));
+                        let red = 0.6 * smoothstep(0.62, 0.78, aridity(col.climate.temperature, col.climate.humidity));
                         if red > 0.0 && 0.5 + 0.5 * p < red {
                             return RedSand;
                         }
@@ -797,7 +780,7 @@ impl SurfaceRules {
                 }
             }
             Biome::Taiga | Biome::SnowyTaiga | Biome::AlpineGrove => {
-                if p > 0.3 {
+                if p > 0.48 {
                     Podzol
                 } else if p < -0.6 {
                     Moss
@@ -884,7 +867,7 @@ mod tests {
     }
 
     /// Mesa cliffs and hoodoo spires expose a column's side down to its neighbour's top; those
-    /// blocks must be banded terracotta / red sand, never grey stone (previously the generic
+    /// blocks must be banded terracotta / red sand (or the pale sandstone caprock beds), never grey stone (previously the generic
     /// "deeper than jaggedness + 10 → rock" cut-off made the lower part of every spire stone).
     #[test]
     fn badlands_faces_are_terracotta() {
@@ -906,7 +889,7 @@ mod tests {
                     for y in (n.height.floor() as i32 + 1)..=top {
                         let m = g.surface_material(x.floor() as i32, y, z.floor() as i32, top - y, &c);
                         faces += 1;
-                        if !matches!(m, Material::Terracotta | Material::RedSand | Material::Sand | Material::Snow) {
+                        if !matches!(m, Material::Terracotta | Material::RedSand | Material::Sand | Material::Sandstone | Material::Snow) {
                             stone += 1;
                         }
                     }

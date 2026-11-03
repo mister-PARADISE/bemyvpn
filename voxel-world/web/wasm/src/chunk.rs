@@ -14,7 +14,7 @@
 //! leaves only 0.55, below rock 0.15) → flat open ground 255, cliff walls ≈ 145, overhang
 //! undersides and forest floors darker. Quads are rotated so the AO interpolation diagonal
 //! follows the darker corners (no anisotropy). Coplanar +Y faces with identical attributes are
-//! greedily merged (configurable per kind, see `merge_mask`).
+//! greedily merged (per kind, see `merge_mask`; default water + foliage).
 use crate::features::{FeatureCache, Run};
 use crate::terrain::{deep_fill, Liquids, Nodes, Shape, WH};
 use voxel_world::gen::{ColumnInfo, WorldGen};
@@ -31,6 +31,11 @@ const C_AIR: u8 = 0;
 const C_WATER: u8 = 1;
 const C_LEAF: u8 = 2;
 const C_FULL: u8 = 3;
+
+/// Default +Y merging: water and foliage only. Merged opaque tops would create T-junctions
+/// whose sub-pixel rasterisation cracks sparkle on solid ground; under translucent water or
+/// alpha-tested leaves they are invisible. `vw_set_merge(7)` enables opaque merging too.
+pub const DEFAULT_MERGE: u32 = 0b110;
 
 pub const KIND_OPAQUE: usize = 0;
 pub const KIND_WATER: usize = 1;
@@ -170,7 +175,7 @@ impl ChunkBuilder {
             tab: face_tab(),
             cls,
             occ,
-            merge_mask: 0b111,
+            merge_mask: DEFAULT_MERGE,
             features: true,
             liquids: None,
             nodes: Nodes::new(),

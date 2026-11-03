@@ -244,6 +244,32 @@ impl<'a> Frame<'a> {
         Ray::curved(o, d, [self.cam[0], self.cam[2]], self.kappa)
     }
 
+    /// Local (world-space) direction at point `p` of the bent ray whose straight direction is
+    /// `d`: its tangent (d_x, d_y + 2κ q·d_xz, d_z), q = p_xz − cam_xz. This is the direction
+    /// in the surface's own frame — e.g. the sun sits ρ/R lower at distance ρ — and the one that
+    /// must enter n·l, Fresnel and mirror reflection.
+    #[inline]
+    pub fn local_dir(&self, p: [f64; 3], d: Vec3) -> Vec3 {
+        if self.kappa == 0.0 {
+            return d;
+        }
+        let qd = (p[0] - self.cam[0]) * d.x as f64 + (p[2] - self.cam[2]) * d.z as f64;
+        Vec3::new(d.x, d.y + (2.0 * self.kappa * qd) as f32, d.z).normalize()
+    }
+
+    /// Inverse of [`Self::local_dir`]: the bent ray leaving `o` with world-space tangent `w`
+    /// (returned with its straight unit direction).
+    #[inline]
+    fn ray_with_tangent(&self, o: [f64; 3], w: Vec3) -> (Ray, Vec3) {
+        let s = if self.kappa == 0.0 {
+            w
+        } else {
+            let qw = (o[0] - self.cam[0]) * w.x as f64 + (o[2] - self.cam[2]) * w.z as f64;
+            Vec3::new(w.x, w.y - (2.0 * self.kappa * qw) as f32, w.z).normalize()
+        };
+        (self.ray(o, d3(s)), s)
+    }
+
     /// Primary ray direction through continuous pixel coordinates (px, py) (top-left origin).
     #[inline]
     pub fn primary_dir(&self, px: f32, py: f32) -> Vec3 {
@@ -406,7 +432,8 @@ impl<'a> Frame<'a> {
             HitKind::Voxel { bx, by, bz, mat, face } => {
                 if mat == Material::Water {
                     let wl = (by + 1) as f64;
-                    return self.shade_water(h.p, d, h.t, fp, None, wl, depth, jit, ctx);
+                    let dl = local_tangent(ray, d, h.t);
+                    return self.shade_water(h.p, dl, h.t, fp, None, wl, depth, jit, ctx);
                 }
                 self.shade_voxel(h, bx, by, bz, mat, face, d, fp, None, jit, ctx)
             }
@@ -427,9 +454,9 @@ impl<'a> Frame<'a> {
                         return l;
                     }
                     let bed = v.terrain(h.p[0], h.p[2]);
-                    return self.shade_water(h.p, d, h.t, fp, Some((level, bed)), h.p[1], depth, jit, ctx);
+                    let dl = local_tangent(ray, d, h.t);
+                    return self.shade_water(h.p, dl, h.t, fp, Some((level, bed)), h.p[1], depth, jit, ctx);
                 }
-                let _ = ray;
                 self.shade_height(h, level, d, fp, None, jit)
             }
         }
@@ -667,8 +694,10 @@ impl<'a> Frame<'a> {
     #[allow(clippy::too_many_arguments)]
     fn light(&self, p: [f64; 3], n: Vec3, ng: [f64; 3], albedo: Vec3, amb: Vec3, d: Vec3, f0: f32, rough: f32, underwater: Option<f64>, translucent: bool, jit: u32, eps: f64) -> Vec3 {
         let sd = self.sun_dir(jit);
-        let ndl = n.dot(sd);
-        let ngl = ng[0] * sd.x as f64 + ng[1] * sd.y as f64 + ng[2] * sd.z as f64;
+        // n·l in the surface's local frame (the shadow ray below leaves with this tangent).
+        let sl = self.local_dir(p, sd);
+        let ndl = n.dot(sl);
+        let ngl = ng[0] * sl.x as f64 + ng[1] * sl.y as f64 + ng[2] * sl.z as f64;
         let mut e_sun = Vec3::ZERO;
         let mut sun_vis = 0.0f32;
         if (ndl > 0.0 && ngl > -0.05) || (translucent && ndl < 0.0) {
@@ -715,7 +744,7 @@ impl<'a> Frame<'a> {
             let fr = f0 + (1.0 - f0) * (1.0 - nv).powi(5);
             l += self.sky_radiance(if r.y < 0.0 { Vec3::new(r.x, 0.02, r.z).normalize() } else { r }) * (fr * ao);
             if sun_vis > 0.0 && ndl > 0.0 {
-                l += e_sun * ggx_spec(n, v, sd, rough, f0) * ndl;
+                l += e_sun * ggx_spec(n, v, sl, rough, f0) * ndl;
             }
         }
         l
@@ -868,9 +897,14 @@ impl<'a> Frame<'a> {
 
     #[allow(clippy::too_many_arguments)]
     fn shade_water(&self, p: [f64; 3], d: Vec3, t: f64, fp: f32, far: Option<(u8, f64)>, wl: f64, depth: u32, jit: u32, ctx: &mut Ctx) -> Vec3 {
-        let mode: u32 = std::env::var("RR_RIPPLE").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
-        let fpr = match mode { 0 => fp, 1 => fp / (-d.y).max(0.04), 2 => fp / (-d.y).max(0.04).sqrt(), _ => fp / (-d.y).max(0.04) * 0.5 };
-        let (gx, gz, var) = self.ripple_grad(p[0], p[2], fpr);
+        // The pixel footprint on the water plane is an ellipse with axes fp and fp/|cos θ_v|
+        // (θ_v = view zenith angle). Ripple octaves are band-limited against its MAJOR axis — at
+        // grazing angles the isotropic footprint keeps octaves that are < 1 pixel along the view
+        // direction, which alias into salt-and-pepper glitter no AA budget can resolve. The
+        // `ripple_grad` criterion (fade between 8 and 4 × its footprint argument) is applied to
+        // fp_major/2, i.e. octaves fade out between 4 and 2 samples per wavelength (Nyquist).
+        let fp_major = fp / (-d.y).max(0.04);
+        let (gx, gz, var) = self.ripple_grad(p[0], p[2], 0.5 * fp_major);
         let calm = 1.0 - 0.6 * smoothstep(800.0, 6000.0, t as f32);
         let n = Vec3::new(-gx * calm, 1.0, -gz * calm).normalize();
         let v = -d;
@@ -882,21 +916,22 @@ impl<'a> Frame<'a> {
             r = Vec3::new(r.x, 0.01, r.z).normalize();
         }
         let refl = if depth == 0 {
+            // `r` is the mirror direction in the local frame (`d` is local, see `shade`).
             let o = [p[0], wl + 0.01, p[2]];
-            let ray = self.ray(o, d3(r));
+            let (ray, rs) = self.ray_with_tangent(o, r);
             match self.scene.trace(&ray, 0.0, self.max_dist, false) {
                 Some(h) => {
                     let fp2 = fp + h.t as f32 * self.pix_angle;
-                    let l = self.shade(&h, &ray, r, fp2, depth + 1, jit, ctx);
+                    let l = self.shade(&h, &ray, rs, fp2, depth + 1, jit, ctx);
                     match &self.atm {
                         Some(a) => {
-                            let ap = a.aerial(r, h.t);
+                            let ap = a.aerial(rs, h.t);
                             l * ap.t + ap.inscatter
                         }
                         None => l,
                     }
                 }
-                None => self.miss(r, false),
+                None => self.miss(rs, false),
             }
         } else {
             self.sky_radiance(r)
@@ -966,10 +1001,11 @@ impl<'a> Frame<'a> {
         }
         // Sun glint (GGX, roughness widened by the sub-pixel ripple variance).
         let sd = self.sun_dir(jit);
-        let ndl = n.dot(sd);
+        let sl = self.local_dir(p, sd);
+        let ndl = n.dot(sl);
         if ndl > 0.0 && e_sun.max_elem() > 1e-5 {
             let rough = (0.004 + var + 0.0004 * fp).sqrt().min(0.5);
-            let spec = ggx_spec(n, v, sd, rough, 0.02);
+            let spec = ggx_spec(n, v, sl, rough, 0.02);
             if spec * e_sun.max_elem() > 1e-4 {
                 let o = [p[0], wl + 0.02, p[2]];
                 let ray = self.ray(o, d3(sd));
@@ -980,6 +1016,15 @@ impl<'a> Frame<'a> {
         }
         l
     }
+}
+
+/// Unit world-space tangent at parameter t of a (possibly bent) ray with straight direction `d`.
+#[inline]
+fn local_tangent(ray: &Ray, d: Vec3, t: f64) -> Vec3 {
+    if ray.k2 == 0.0 && ray.k1 == 0.0 {
+        return d;
+    }
+    Vec3::new(d.x, ray.dy(t) as f32, d.z).normalize()
 }
 
 /// Ore veins: clustered point process — a 2×2×2 super-cell is a vein with probability p(y)
