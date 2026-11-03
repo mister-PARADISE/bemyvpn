@@ -58,8 +58,8 @@ pub const MIN_CARVE_Y: i32 = 4;
 const AQ_CELL: f64 = 56.0;
 /// Highest possible aquifer water table.
 const AQ_MAX_LEVEL: f32 = (SEA_LEVEL - 14) as f32;
-/// Probability that an aquifer cell holds water.
-const AQ_PROB: f32 = 0.45;
+/// Aquifer presence threshold on a 2D simplex (≈ 45 % of cells hold water).
+const AQ_PRESENCE_T: f32 = 0.05;
 
 // ------------------------------------------------------------------ 3D simplex with gradient
 
@@ -273,12 +273,14 @@ pub struct CaveCarver {
     ravine_depth: Simplex,
     rough: Simplex,
     aq_seed: u64,
+    aq_presence: Simplex,
+    aq_height: Simplex,
 }
 
 /// Cheese fBm wavelength and its mean gradient → blocks conversion (measured by the test
-/// `cheese_gradient_scale`: E|∇n| ≈ 0.030/block for λ = 110, 3 octaves).
-const CHEESE_LAMBDA: f64 = 110.0;
-const CHEESE_SCALE: f32 = 1.0 / 0.030;
+/// `cheese_gradient_scale`: E|∇n| ≈ 0.022/block for λ = 150, 3 octaves).
+const CHEESE_LAMBDA: f64 = 150.0;
+const CHEESE_SCALE: f32 = 1.0 / 0.022;
 
 impl CaveCarver {
     pub fn new(seed: u64) -> Self {
@@ -299,6 +301,8 @@ impl CaveCarver {
             ravine_depth: Simplex::new(s("caves.ravine_depth")),
             rough: Simplex::new(s("caves.rough")),
             aq_seed: s("caves.aquifer"),
+            aq_presence: Simplex::new(s("caves.aquifer_presence")),
+            aq_height: Simplex::new(s("caves.aquifer_height")),
         }
     }
 
@@ -369,7 +373,7 @@ impl CaveCarver {
         // ---- cheese caverns ----------------------------------------------------------------
         let region = self.cheese_region.n2(x * (1.0 / 1900.0), z * (1.0 / 1900.0));
         // Threshold: high near the surface, lower deep down, regional drift.
-        let mut t = 0.205 - 0.06 * region;
+        let mut t = 0.40 - 0.10 * region;
         t += 0.45 * (1.0 - smoothstep(12.0, 55.0, cover));
         t -= 0.035 * (1.0 - smoothstep(30.0, 110.0, yf)); // big halls deep down
         if t < 0.62 {
@@ -395,7 +399,9 @@ impl CaveCarver {
             let (l1, l2, dist) = self.aquifer_pair(x, z);
             let lmax = l1.max(l2);
             if (l1 - l2).abs() > 0.5 && yf < lmax + 3.0 {
-                let wall = 1.5 * (dist - 2.5);
+                // septum along the bisector, its position wobbling ±1.5 blocks
+                let wob = 1.5 * self.rough.n3(x * (1.0 / 23.0), yf as f64 * (1.0 / 17.0), z * (1.0 / 23.0));
+                let wall = 1.5 * (dist + wob - 2.5);
                 f = f.min(wall);
             }
         }
@@ -466,13 +472,21 @@ impl CaveCarver {
 
     /// Water table of an aquifer cell (world y), or −1e4 when the cell is dry.
     #[inline]
+    /// Presence and level come from low-frequency noise evaluated at the cell centre (plus a
+    /// little hash dither), quantised to 10-block steps: neighbouring cells usually share one
+    /// table, so septa only appear where the regional water table steps.
     fn aq_level(&self, cx: i32, cz: i32) -> f32 {
+        let px = (cx as f64 + 0.5) * AQ_CELL;
+        let pz = (cz as f64 + 0.5) * AQ_CELL;
         let h = hash2(self.aq_seed ^ 0xA0A0, cx, cz);
-        if hash_f01(h) >= AQ_PROB {
+        let pres = self.aq_presence.n2(px * (1.0 / 520.0), pz * (1.0 / 520.0)) + 0.2 * (hash_f01(h) - 0.5);
+        if pres < AQ_PRESENCE_T {
             return -1.0e4;
         }
-        let u = hash_f01(mix64(h));
-        (LAVA_LEVEL as f32 + 3.0 + (AQ_MAX_LEVEL - LAVA_LEVEL as f32 - 3.0) * u.powf(1.6)).floor()
+        let v = 0.5 + 0.5 * self.aq_height.n2(px * (1.0 / 800.0), pz * (1.0 / 800.0));
+        let lo = LAVA_LEVEL as f32 + 3.0;
+        let l = lo + (AQ_MAX_LEVEL - lo) * v.clamp(0.0, 1.0).powf(1.3);
+        (l / 10.0).round() * 10.0 + 3.0
     }
 
     /// Local aquifer water table at (x, z) (`None` = dry cell).
@@ -598,6 +612,7 @@ mod tests {
         let mut tot = 0usize;
         let mut carved = 0usize;
         let mut by: [(usize, usize); 6] = [(0, 0); 6];
+        let mut comp = [0usize; 4];
         for seed in [1u64, 2, 3] {
             let g = WorldGen::new(seed);
             for i in 0..700u64 {
@@ -610,7 +625,14 @@ mod tests {
                 let top = col.height as i32 - 1;
                 let mut y = 4;
                 while y < top {
-                    let f = g.cave_field(x, y as f64 + 0.5, z, &col);
+                    let p = g.caves.parts(x, y as f64 + 0.5, z, &col);
+                    let f = p.total;
+                    if f > 0.0 {
+                        // attribute the carved block to the dominant component
+                        let v = [p.cheese, p.tunnels, p.shafts, p.ravine];
+                        let k = (0..4).fold(0, |b, i| if v[i] > v[b] { i } else { b });
+                        comp[k] += 1;
+                    }
                     tot += 1;
                     let b = ((y / 64) as usize).min(5);
                     by[b].0 += 1;
@@ -626,6 +648,13 @@ mod tests {
         let bands: Vec<String> =
             by.iter().enumerate().map(|(i, &(t, c))| format!("y{}..: {:.1}%", i * 64, 100.0 * c as f64 / t.max(1) as f64)).collect();
         eprintln!("cave fraction {:.2}% ({carved}/{tot}); {}", 100.0 * frac, bands.join(", "));
+        eprintln!(
+            "dominant component share of underground: cheese {:.2}% tunnels {:.2}% shafts {:.2}% ravine {:.2}%",
+            100.0 * comp[0] as f64 / tot as f64,
+            100.0 * comp[1] as f64 / tot as f64,
+            100.0 * comp[2] as f64 / tot as f64,
+            100.0 * comp[3] as f64 / tot as f64
+        );
         assert!((0.06..=0.12).contains(&frac), "cave fraction {frac}");
     }
 

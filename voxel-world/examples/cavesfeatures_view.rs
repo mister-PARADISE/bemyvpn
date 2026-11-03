@@ -125,47 +125,54 @@ fn caves_slices(g: &WorldGen, seed: u64) {
     eprintln!("wrote {}", p.display());
 }
 
-/// Horizontal (plan) sections of the raw cave field at several y, coloured by component.
+/// X-ray plan views: for y-ranges, the highest carved point of each (x, z), coloured by the
+/// dominant component and shaded by height — shows the network topology.
 fn caves_plan(g: &WorldGen, seed: u64) {
     let (cx, cz) = find_spot(g, 230.0, 300.0, (3000.0, -2000.0));
     let w = 512usize;
-    let ys = [40.0, 80.0, 120.0, 170.0];
+    let ranges = [(20.0, 70.0), (70.0, 120.0), (120.0, 170.0), (170.0, 230.0)];
     let gap = 6;
-    let total_w = ys.len() * (w + gap);
+    let total_w = ranges.len() * (w + gap);
     let mut img = vec![255u8; total_w * w * 3];
-    // columns once (sampled every 2 blocks, nearest)
     let cols: Vec<ColumnInfo> = (0..(w / 2) * (w / 2))
         .map(|i| {
             let (ix, iz) = (i % (w / 2), i / (w / 2));
             g.column(cx - 256.0 + ix as f64 * 2.0 + 1.0, cz - 256.0 + iz as f64 * 2.0 + 1.0)
         })
         .collect();
-    for (si, &y) in ys.iter().enumerate() {
+    for (si, &(y0, y1)) in ranges.iter().enumerate() {
         for pz in 0..w {
             for px in 0..w {
                 let col = &cols[(pz / 2) * (w / 2) + px / 2];
                 let x = cx - 256.0 + px as f64 + 0.5;
                 let z = cz - 256.0 + pz as f64 + 0.5;
-                let c = if (y as f32) > col.height {
-                    [200, 225, 245]
+                let mut c = [110u8, 110, 110];
+                if y0 as f32 > col.height {
+                    c = [200, 225, 245];
                 } else {
-                    let p = g.caves.parts(x, y, z, col);
-                    if p.total > 0.0 {
-                        let m = p.cheese.max(p.tunnels).max(p.shafts).max(p.ravine);
-                        if m == p.cheese {
-                            [150, 40, 30]
-                        } else if m == p.tunnels {
-                            [20, 20, 30]
-                        } else if m == p.shafts {
-                            [30, 140, 60]
-                        } else {
-                            [160, 120, 20]
+                    let mut y = (y1 as f32).min(col.height) as f64;
+                    while y >= y0 {
+                        let p = g.caves.parts(x, y, z, col);
+                        if p.total > 0.0 {
+                            let v = [p.cheese, p.tunnels, p.shafts, p.ravine];
+                            let k = (0..4).fold(0, |b, i| if v[i] > v[b] { i } else { b });
+                            let base: [f32; 3] = match k {
+                                0 => [190.0, 60.0, 40.0],
+                                1 => [40.0, 60.0, 200.0],
+                                2 => [40.0, 190.0, 80.0],
+                                _ => [220.0, 170.0, 30.0],
+                            };
+                            let t = 0.35 + 0.65 * ((y - y0) / (y1 - y0)) as f32;
+                            let fill = g.cave_fill(x as i32, y as i32, z as i32, col);
+                            c = [(base[0] * t) as u8, (base[1] * t) as u8, (base[2] * t) as u8];
+                            if fill == CaveFill::Water {
+                                c = [c[0] / 3, c[1] / 2 + 60, 255];
+                            }
+                            break;
                         }
-                    } else {
-                        let v = (120.0 + p.total.clamp(-20.0, 0.0) * 2.0) as u8;
-                        [v, v, v]
+                        y -= 2.0;
                     }
-                };
+                }
                 let o = (pz * total_w + si * (w + gap) + px) * 3;
                 img[o..o + 3].copy_from_slice(&c);
             }

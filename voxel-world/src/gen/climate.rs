@@ -29,8 +29,8 @@
 //! interpolant (Fritsch–Carlson) through `(q_raw(pᵢ), target(pᵢ))`, where `q_raw(pᵢ)` are the
 //! empirical quantiles measured by the test `calibration_quantiles` (200 k samples × 3 seeds over
 //! 40×40 km, constants below) and `target` is the desired quantile function — i.e. empirical CDF
-//! equalisation followed by the inverse target CDF. `C`: 20 % deep ocean (< −0.45), 45 % ocean
-//! (< −0.18), 8 % coast band (−0.18…−0.05), rest inland. `E, W, H`: uniform on [−1, 1];
+//! equalisation followed by the inverse target CDF. `C`: 20 % deep ocean (< −0.45), 48 % ocean
+//! (< −0.18) before the orogenic uplift (≈ 45 % after), 8 % coast band (−0.18…−0.05), rest inland. `E, W, H`: uniform on [−1, 1];
 //! `T`: warm-skewed piecewise-linear target (≈15 % below −0.58). The monotone maps are resampled
 //! on a 257-node uniform table for O(1) evaluation.
 //!
@@ -893,7 +893,9 @@ const Q_H2: [f32; 25] = [
 
 /// Target quantile function of continentalness (piecewise linear in p).
 fn target_c(p: f32) -> f32 {
-    const K: [(f32, f32); 6] = [(0.0, -1.0), (0.20, -0.45), (0.45, -0.18), (0.53, -0.05), (0.78, 0.35), (1.0, 1.0)];
+    // Ocean quantile 0.48 (not 0.45): the orogenic uplift C += 0.28·M turns ≈ 3 % of the shelf
+    // seas into land, so the final ocean fraction is ≈ 45 %.
+    const K: [(f32, f32); 6] = [(0.0, -1.0), (0.20, -0.45), (0.48, -0.18), (0.555, -0.05), (0.79, 0.35), (1.0, 1.0)];
     for w in K.windows(2) {
         if p <= w[1].0 {
             let t = (p - w[0].0) / (w[1].0 - w[0].0);
@@ -1001,8 +1003,6 @@ pub struct ClimateD {
     pub h: D2,
     /// Orogeny belt mask M ∈ [0, 1] (1 = core of a mountain range).
     pub orogeny: D2,
-    /// Prevailing wind (unit-ish vector, |w| ≤ 1; weaker in calm cells of ψ).
-    pub wind: (f32, f32),
     /// Upwind mountain mass (rain shadow strength, 0..1) and upwind ocean fraction.
     pub shadow: f32,
     pub maritime: f32,
@@ -1295,7 +1295,6 @@ impl ClimateSampler {
             t,
             h,
             orogeny: m,
-            wind: self.wind(x, z),
             shadow: sh.v,
             maritime: mar.v,
             river_n: n_r,
