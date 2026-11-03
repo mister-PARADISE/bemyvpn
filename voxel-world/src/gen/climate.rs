@@ -305,7 +305,8 @@ pub fn lerp_d(a: D2, b: D2, t: D2) -> D2 {
 /// `noise::Simplex::n2d`) specialised for throughput: the lattice cell uses a truncating-cast
 /// floor (no libm call), corners are hashed with a 32-bit multiply–xorshift mixer, and gradients
 /// come from a 16-entry table of unit vectors (offset by half a step, none axis-aligned).
-/// ≈ 2.5× faster than the generic version; every climate/terrain octave runs through it.
+/// Measured ≈ 19 ns vs ≈ 21 ns for `noise::Simplex::n2d` on this VM (`gencore_bench`); every
+/// climate/terrain octave runs through it.
 #[derive(Clone, Copy, Debug)]
 pub struct FastSimplex {
     seed: u32,

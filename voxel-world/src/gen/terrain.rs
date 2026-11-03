@@ -17,12 +17,23 @@
 //! * hills = derivative-damped ("eroded") fBm, ridges = smooth ridged multifractal on the
 //!   continental warp (curved ranges), blended by pv-peakness and uplift; `v(pv)` lowers valleys.
 //!   Because `pv` is folded from the river noise, ridges run between rivers.
+//! * **Orogenic massif** (DESIGN §2a): `+130·smoothstep(0.05, 0.9, M)` under the core of an
+//!   orogeny belt `M` (see `climate.rs`), on which the ridged relief (amplitude from the
+//!   effective erosion E*, itself squeezed low inside belts) sits → few, large ranges
+//!   (≈ 10 % of land above SEA+150, main peaks 430–496, ranges 10–20 km long).
+//! * **Regional character** (§2a anti-monotony): a λ 8 km selector χ makes *plateau country*
+//!   (two-tier tablelands bounded by ≈ 50-block escarpments) where χ > 0.1 and *skerry
+//!   archipelagos* on the shelf where χ < −0.1; plus mesa country (badlands), dune seas, volcanoes.
+//! * **Inland lakes**: one candidate per 1.4 km cell; flat level from the pre-lake rim, basin +
+//!   containment sill (see [`TerrainShaper::apply_lake`] for the no-water-wall theorem).
 //! * **Gully filter** (dendritic drainage): 4 octaves of slope-aligned plane waves on a jittered
 //!   lattice, wave vector ⟂ a smooth steering gradient, amplitude ∝ local slope × wavelength,
 //!   each octave steered by the previous ones (see [`TerrainShaper::gullies`]).
-//! * **Rivers**: with `d = |n|/|∇n|` (distance to the zero set of the river noise) the valley is the
-//!   lower envelope `H = smin(H₀, V(d))`, `V(d) = bank − D(1 − d²/w²)` inside the channel and
-//!   `bank + σ(E)·u + κ(E)·u²`, `u = d − w`, outside: σ ≈ 0.05 (flood plains) … 2.5 (canyons).
+//! * **Rivers**: with `d = min(|n|/√(|∇n|²+f²), |n|/G)` (distance to the zero set of the river
+//!   noise; the min keeps it Lipschitz, see the river stage) the valley is the lower envelope
+//!   `H = smin(H₀, V(d))`, `V(d) = bank − D(1 − d²/w²)` inside the channel and
+//!   `bank + σ(E)·u + κ(E)·u²`, `u = d − w`, outside (σ ≈ 0.05 flood plains … 2.6 canyons), the
+//!   wall slope capped C¹ at 2.2 (linear continuation beyond `u* = (2.2 − σ)/2κ`).
 //! * **Mesas**: smooth terraces `τ(h) = s(⌊h/s⌋ + smoothstep(0.80, 1, frac(h/s)))` applied to a
 //!   plateau field; for far LOD the terrace is *box-filtered analytically* over the height range
 //!   seen by one sample (`Δh = |∇h|·footprint`) using the closed-form antiderivative of the periodic
@@ -366,7 +377,7 @@ const PLATEAU_HEIGHT: f32 = 46.0;
 const WALL_MAX: f32 = 2.2;
 
 const VOLCANO_CELL: f64 = 3600.0;
-const VOLCANO_P: f32 = 0.14;
+const VOLCANO_P: f32 = 0.07;
 const HOODOO_CELL: f64 = 14.0;
 const DUNE_WAVELENGTH: f32 = 58.0;
 
@@ -516,8 +527,13 @@ impl TerrainShaper {
 
         // --- mountains / hills
         let q = &cd.q;
-        let (ridge, steer) = self.ridged.sample_with_steer(q.x, q.z, fp);
-        let (ridge, steer) = (q.chain(ridge), q.chain(steer));
+        // (the ridged field only matters where there is uplift: skip it on the open sea floor)
+        let (ridge, steer) = if amp.v > 0.0 || amp.dx != 0.0 || amp.dz != 0.0 {
+            let (r, st) = self.ridged.sample_with_steer(q.x, q.z, fp);
+            (q.chain(r), q.chain(st))
+        } else {
+            (D2::ZERO, D2::ZERO)
+        };
         let ridge = ((ridge - 0.12) * 1.25).clamp(0.0, 1.0);
         let hills = self.hills.sample(x, z, fp);
         let hills01 = (hills * 1.3 + 0.45).clamp(0.0, 1.0);
@@ -959,8 +975,24 @@ impl TerrainShaper {
     fn apply_lake(&self, cs: &ClimateSampler, h: &mut D2, reg: &mut Regions, x: f64, z: f64) -> Option<i32> {
         let ix = (x / LAKE_CELL).floor() as i32;
         let iz = (z / LAKE_CELL).floor() as i32;
+        // candidate centres lie in the middle third of their cell and reach ≤ 1.12·R_MAX + 110
+        // blocks: cull neighbour cells by box distance before hashing
+        const REACH_MAX: f64 = LAKE_R_MAX as f64 * 1.12 + 110.0;
+        let (fx, fz) = (x / LAKE_CELL - ix as f64, z / LAKE_CELL - iz as f64);
+        let box_d = |f: f64, d: i32| -> f64 {
+            let (lo, hi) = (d as f64 + 0.333, d as f64 + 0.667);
+            (lo - f).max(f - hi).max(0.0) * LAKE_CELL
+        };
         for dz in -1..=1 {
+            let bz = box_d(fz, dz);
+            if bz >= REACH_MAX {
+                continue;
+            }
             for dx in -1..=1 {
+                let bx = box_d(fx, dx);
+                if bx * bx + bz * bz >= REACH_MAX * REACH_MAX {
+                    continue;
+                }
                 let Some((cx, cz, r, depth)) = self.lake_candidate(ix + dx, iz + dz) else { continue };
                 let (ddx, ddz) = (x - cx, z - cz);
                 let d2 = ddx * ddx + ddz * ddz;
