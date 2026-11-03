@@ -884,6 +884,12 @@ const Q_G: [f32; 25] = [
     0.7552, 0.8269, 0.8814, 0.9261, 0.9791,
 ];
 
+// Effective humidity (rain shadow + orographic + maritime terms), before re-calibration.
+const Q_H2: [f32; 25] = [
+    -1.6, -1.4, -1.2, -1.0, -0.85, -0.7, -0.6, -0.5, -0.4, -0.3, -0.2, -0.1, 0.0, 0.1, 0.2, 0.3,
+    0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.1, 1.3,
+];
+
 /// Target quantile function of continentalness (piecewise linear in p).
 fn target_c(p: f32) -> f32 {
     const K: [(f32, f32); 6] = [(0.0, -1.0), (0.20, -0.45), (0.45, -0.18), (0.53, -0.05), (0.78, 0.35), (1.0, 1.0)];
@@ -936,16 +942,47 @@ fn erosion_raw(n: D2) -> D2 {
 // Climate sampler
 // =====================================================================================
 
+/// Orogeny belts: half-width (blocks) of the tubular neighbourhood of the zero set of the
+/// belt field `b` (distance estimate `|b|/|∇b|`) and the raw gate thresholds that cut the
+/// belts into ranges of finite length.
+const OROGENY_HALF_WIDTH: f32 = 3000.0;
+const OROGENY_GATE: (f32, f32) = (0.02, 0.16);
+
+/// Rain shadow: streamline lattice spacing, step count and step length (blocks).
+const SHADOW_SPACING: f64 = 256.0;
+const SHADOW_STEPS: usize = 8;
+const SHADOW_STEP: f64 = 700.0;
+/// Regularisation of the wind normalisation `w = curl ψ / max(|∇ψ|, ε)`: calm cells of the
+/// pressure field get weaker winds instead of an undefined direction.
+const WIND_EPS: f32 = 1.2e-5;
+/// Humidity response: −K_SHADOW·(upwind mountain mass) + K_ORO·(local uplift)·(1 − shadow)
+/// + K_MARITIME·(upwind ocean fraction − ½).
+const K_SHADOW: f32 = 1.7;
+const K_ORO: f32 = 0.45;
+const K_MARITIME: f32 = 0.5;
+
 /// Climate with gradients plus the river geometry needed by the terrain shaper.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ClimateD {
     pub c: D2,
+    /// *Effective* erosion `E* = lerp(E_out, E_in, M)` (exported as `Climate::erosion`):
+    /// outside the orogeny belts E* ∈ [−0.3, 1] (plains, hills, plateaus), inside E* ∈ [−1, −0.1].
     pub e: D2,
+    /// Calibrated raw erosion (uniform on [−1, 1]); shapes the coast (sea cliffs vs beaches).
+    pub e_raw: D2,
     /// Calibrated weirdness = calibrated river noise.
     pub w: D2,
     pub pv: D2,
     pub t: D2,
+    /// Effective humidity (after rain shadow / orographic / maritime terms, re-calibrated).
     pub h: D2,
+    /// Orogeny belt mask M ∈ [0, 1] (1 = core of a mountain range).
+    pub orogeny: D2,
+    /// Prevailing wind (unit-ish vector, |w| ≤ 1; weaker in calm cells of ψ).
+    pub wind: (f32, f32),
+    /// Upwind mountain mass (rain shadow strength, 0..1) and upwind ocean fraction.
+    pub shadow: f32,
+    pub maritime: f32,
     /// Raw river noise (zero set = river centre-lines).
     pub river_n: D2,
     /// First-order distance (blocks) to the river centre-line, `|n|/|∇n|`.
@@ -974,6 +1011,28 @@ impl ClimateD {
     }
 }
 
+/// One entry of the per-thread rain-shadow lattice cache (see [`ClimateSampler::shadow`]).
+#[derive(Clone, Copy)]
+struct ShadowEntry {
+    seed: u64,
+    ix: i32,
+    iz: i32,
+    valid: bool,
+    v: [f32; 2],
+}
+
+const SHADOW_CACHE_SIZE: usize = 4096;
+
+thread_local! {
+    /// Direct-mapped memo of streamline integrals at lattice nodes. A node's value is a pure
+    /// function of (seed, node), so the cache never changes results — it only avoids recomputing
+    /// the 8-step streamline (≈ 70 noise octaves) for every column.
+    static SHADOW_CACHE: std::cell::RefCell<Vec<ShadowEntry>> = std::cell::RefCell::new(vec![
+        ShadowEntry { seed: 0, ix: 0, iz: 0, valid: false, v: [0.0; 2] };
+        SHADOW_CACHE_SIZE
+    ]);
+}
+
 pub struct ClimateSampler {
     pub seed: u64,
     warp_c: DWarp,
@@ -984,12 +1043,16 @@ pub struct ClimateSampler {
     fbm_t: DFbm,
     fbm_h: DFbm,
     fbm_g: DFbm,
+    fbm_o: DFbm,
+    fbm_og: DFbm,
+    fbm_psi: DFbm,
     cal_c: MonoMap,
     cal_e: MonoMap,
     cal_w: MonoMap,
     cal_t: MonoMap,
     cal_h: MonoMap,
     cal_g: MonoMap,
+    cal_h2: MonoMap,
 }
 
 impl ClimateSampler {
@@ -1005,12 +1068,16 @@ impl ClimateSampler {
             fbm_t: DFbm::new(s("climate.temperature"), 4200.0, 3, 2.0, 0.5),
             fbm_h: DFbm::new(s("climate.humidity"), 3200.0, 3, 2.0, 0.5),
             fbm_g: DFbm::new(s("climate.river_gate"), 2600.0, 1, 2.0, 0.5),
+            fbm_o: DFbm::new(s("climate.orogeny"), 30000.0, 2, 2.0, 0.4),
+            fbm_og: DFbm::new(s("climate.orogeny_gate"), 16000.0, 2, 2.0, 0.5),
+            fbm_psi: DFbm::new(s("climate.pressure"), 36000.0, 2, 2.0, 0.5),
             cal_c: build_map(&Q_C, target_c),
             cal_e: build_map(&Q_E, uniform_target),
             cal_w: build_map(&Q_W, uniform_target),
             cal_t: build_map(&Q_T, target_t),
             cal_h: build_map(&Q_H, uniform_target),
             cal_g: build_map(&Q_G, uniform_target),
+            cal_h2: build_map(&Q_H2, uniform_target),
         }
     }
 
@@ -1034,23 +1101,151 @@ impl ClimateSampler {
         ]
     }
 
+    /// Raw effective humidity (before the second calibration `Q_H2`). Used by calibration tests.
+    pub fn humidity_raw2(&self, x: f64, z: f64) -> f32 {
+        self.sample_parts(x, z, 0.0).0.v
+    }
+
+    /// Orogeny belt mask `M = (1 − smoothstep(¼W, W, |b|/|∇b|)) · smoothstep(g₀, g₁, g)`.
+    ///
+    /// Mountain ranges are *tubular neighbourhoods of the zero set* of a very low-frequency field
+    /// `b` (λ 30 km, on the continental warp → gently curved): `|b|/|∇b|` is the first-order
+    /// distance to the curve `b = 0`, so every range has a well-defined crest line and a width
+    /// in blocks (≈ 2W core-to-foothill) independent of the local noise amplitude. A second field
+    /// `g` (λ 16 km) gates the curves into ranges of finite length (≈ 10–30 km).
+    #[inline]
+    pub fn orogeny(&self, q: &P2, x: f64, z: f64, fp: f64) -> D2 {
+        let b = q.chain(self.fbm_o.sample(q.x, q.z, fp));
+        let g = self.fbm_og.sample(x, z, fp);
+        Self::belt(b, g)
+    }
+
+    #[inline]
+    fn belt(b: D2, g: D2) -> D2 {
+        let gl = b.grad_len().max(1e-9);
+        let sgn = if b.v < 0.0 { -1.0 } else { 1.0 };
+        let d = D2::new((b.v.abs() / gl).min(1.0e6), sgn * b.dx / gl, sgn * b.dz / gl);
+        let core = 1.0 - smoothstep_d(0.25 * OROGENY_HALF_WIDTH, OROGENY_HALF_WIDTH, d);
+        if core.v <= 0.0 {
+            return D2::ZERO;
+        }
+        core * smoothstep_d(OROGENY_GATE.0, OROGENY_GATE.1, g)
+    }
+
+    /// Prevailing wind at p: `w = (∂ψ/∂z, −∂ψ/∂x) / max(|∇ψ|, ε)` — the curl of a scalar
+    /// pressure potential ψ (λ 36 km). Divergence-free, circulates around highs and lows.
+    #[inline]
+    pub fn wind(&self, x: f64, z: f64) -> (f32, f32) {
+        let psi = self.fbm_psi.sample(x, z, 0.0);
+        let gl = psi.grad_len().max(WIND_EPS);
+        (psi.dz / gl, -psi.dx / gl)
+    }
+
+    /// Low-pass land indicator and mountain mass at a far-field point (cheap proxies: first
+    /// 3 octaves of continentalness, unwarped; orogeny on unwarped coordinates).
+    #[inline]
+    fn far_fields(&self, x: f64, z: f64) -> (f32, f32) {
+        let c = self.cal_c.eval(self.fbm_c.sample_n(x, z, 3).v).0;
+        let land = crate::math::smoothstep(-0.24, -0.04, c);
+        let m = Self::belt(self.fbm_o.sample(x, z, 0.0), self.fbm_og.sample(x, z, 0.0)).v;
+        (land, m * land)
+    }
+
+    /// Streamline integral at a lattice node: trace *backward* along the wind field
+    /// (`p ← p − Δ·w(p)`, 8 steps of 700 blocks, explicit Euler) and average, with weights
+    /// `e^{−k/6}`, the mountain mass (rain shadow) and the ocean fraction (maritime air).
+    fn shadow_node(&self, x: f64, z: f64) -> [f32; 2] {
+        let (mut px, mut pz) = (x, z);
+        let (mut s, mut o, mut ws) = (0.0f32, 0.0f32, 0.0f32);
+        for k in 0..SHADOW_STEPS {
+            let (wx, wz) = self.wind(px, pz);
+            px -= SHADOW_STEP * wx as f64;
+            pz -= SHADOW_STEP * wz as f64;
+            let wk = (-(k as f32) / 6.0).exp();
+            let (land, mass) = self.far_fields(px, pz);
+            s += wk * mass;
+            o += wk * (1.0 - land);
+            ws += wk;
+        }
+        [s / ws, o / ws]
+    }
+
+    fn shadow_node_cached(&self, ix: i32, iz: i32) -> [f32; 2] {
+        let slot = (((ix as u32).wrapping_mul(0x9E37_79B1) ^ (iz as u32).wrapping_mul(0x85EB_CA77)) >> 20) as usize
+            % SHADOW_CACHE_SIZE;
+        let hit = SHADOW_CACHE.with(|c| {
+            let e = c.borrow()[slot];
+            (e.valid && e.seed == self.seed && e.ix == ix && e.iz == iz).then_some(e.v)
+        });
+        if let Some(v) = hit {
+            return v;
+        }
+        let v = self.shadow_node(ix as f64 * SHADOW_SPACING, iz as f64 * SHADOW_SPACING);
+        SHADOW_CACHE.with(|c| c.borrow_mut()[slot] = ShadowEntry { seed: self.seed, ix, iz, valid: true, v });
+        v
+    }
+
+    /// Rain shadow S and maritime fraction O at (x, z): C¹ interpolation (smoothstep-weighted
+    /// bilinear) of the streamline integrals on a 256-block lattice. Both are very
+    /// low-frequency (they integrate over ≈ 5.6 km of fields with λ ≥ 16 km).
+    pub fn shadow(&self, x: f64, z: f64) -> (D2, D2) {
+        let gx = x / SHADOW_SPACING;
+        let gz = z / SHADOW_SPACING;
+        let (fx0, fz0) = (gx.floor(), gz.floor());
+        let (ix, iz) = (fx0 as i32, fz0 as i32);
+        let (fx, fz) = ((gx - fx0) as f32, (gz - fz0) as f32);
+        let a = self.shadow_node_cached(ix, iz);
+        let b = self.shadow_node_cached(ix + 1, iz);
+        let c = self.shadow_node_cached(ix, iz + 1);
+        let d = self.shadow_node_cached(ix + 1, iz + 1);
+        let sx = fx * fx * (3.0 - 2.0 * fx);
+        let sz = fz * fz * (3.0 - 2.0 * fz);
+        let k = 1.0 / SHADOW_SPACING as f32;
+        let dsx = 6.0 * fx * (1.0 - fx) * k;
+        let dsz = 6.0 * fz * (1.0 - fz) * k;
+        let f = |i: usize| {
+            let (va, vb, vc, vd) = (a[i], b[i], c[i], d[i]);
+            let top = va + (vb - va) * sx;
+            let bot = vc + (vd - vc) * sx;
+            D2::new(
+                top + (bot - top) * sz,
+                ((vb - va) + ((vd - vc) - (vb - va)) * sz) * dsx,
+                (bot - top) * dsz,
+            )
+        };
+        (f(0), f(1))
+    }
+
+    /// Effective humidity before re-calibration, plus (orogeny, shadow, maritime, wind).
+    fn sample_parts(&self, x: f64, z: f64, fp: f64) -> (D2, D2, D2, D2, P2) {
+        let q = self.warp_c.warp(&P2::identity(x, z), fp);
+        let hp = q.half_from(x, z);
+        let h_raw = hp.chain(self.fbm_h.sample(hp.x - 5101.0, hp.z + 2909.0, fp));
+        let m = self.orogeny(&q, x, z, fp);
+        let (sh, mar) = self.shadow(x, z);
+        let he = self.cal_h.eval_d(h_raw) - sh * K_SHADOW + m * (1.0 - sh) * K_ORO + (mar - 0.5) * K_MARITIME;
+        (he, m, sh, mar, q)
+    }
+
     /// Full climate with gradients and river geometry.
     pub fn sample_d(&self, x: f64, z: f64, fp: f64) -> ClimateD {
-        let q = self.warp_c.warp(&P2::identity(x, z), fp);
+        let (he, m, sh, mar, q) = self.sample_parts(x, z, fp);
         let c_raw = q.chain(self.fbm_c.sample(q.x, q.z, fp));
         let e_raw = q.chain(erosion_raw(self.fbm_e.sample(q.x + 7313.0, q.z - 3511.0, fp)));
-        let m = self.warp_m.warp(&q, fp);
-        let n_r = m.chain(self.fbm_r.sample(m.x, m.z, fp));
+        let mw = self.warp_m.warp(&q, fp);
+        let n_r = mw.chain(self.fbm_r.sample(mw.x, mw.z, fp));
         let hp = q.half_from(x, z);
         let t_raw = hp.chain(self.fbm_t.sample(hp.x, hp.z, fp));
-        let h_raw = hp.chain(self.fbm_h.sample(hp.x - 5101.0, hp.z + 2909.0, fp));
         let g_raw = self.fbm_g.value(x, z, fp);
 
         let c = self.cal_c.eval_d(c_raw);
-        let e = self.cal_e.eval_d(e_raw);
+        let e_uni = self.cal_e.eval_d(e_raw);
+        // Effective erosion: affine squeeze of the uniform erosion into [−0.3, 1] outside the
+        // belts and [−1, −0.1] inside, blended by M → big relief only inside orogenic belts.
+        let e = lerp_d(e_uni * 0.65 + 0.35, e_uni * 0.45 - 0.55, m);
         let w = self.cal_w.eval_d(n_r);
         let t = self.cal_t.eval_d(t_raw);
-        let h = self.cal_h.eval_d(h_raw);
+        let h = self.cal_h2.eval_d(he);
         let g = self.cal_g.eval(g_raw).0;
         // pv = 1 − |3|w| − 2| with smoothed folds (smooth |·| = √(x²+ε²) − ε): the kinks of the
         // fold would otherwise print creases parallel to every river.
@@ -1068,7 +1263,25 @@ impl ClimateSampler {
         let inland = crate::math::smoothstep(-0.22, -0.10, c.v);
         let river = gate * inland * (1.0 - crate::math::smoothstep(river_width, river_width + valley, river_dist));
 
-        ClimateD { c, e, w, pv, t, h, river_n: n_r, river_dist, river_gate: gate, river_width, river, q }
+        ClimateD {
+            c,
+            e,
+            e_raw: e_uni,
+            w,
+            pv,
+            t,
+            h,
+            orogeny: m,
+            wind: self.wind(x, z),
+            shadow: sh.v,
+            maritime: mar.v,
+            river_n: n_r,
+            river_dist,
+            river_gate: gate,
+            river_width,
+            river,
+            q,
+        }
     }
 }
 
@@ -1090,7 +1303,7 @@ mod tests {
     /// The printed tables are the Q_* constants above. Run with `--nocapture` to see them.
     #[test]
     fn calibration_quantiles() {
-        let mut fields: Vec<Vec<f32>> = vec![Vec::new(); 6];
+        let mut fields: Vec<Vec<f32>> = vec![Vec::new(); 7];
         for &seed in &[1u64, 42, 2026] {
             let cs = ClimateSampler::new(seed);
             for i in 0..200_000u64 {
@@ -1100,12 +1313,15 @@ mod tests {
                 for k in 0..6 {
                     fields[k].push(r[k]);
                 }
+                if i % 4 == 0 {
+                    fields[6].push(cs.humidity_raw2(x, z));
+                }
             }
         }
-        let names = ["Q_C", "Q_E", "Q_W", "Q_T", "Q_H", "Q_G"];
-        let consts = [&Q_C, &Q_E, &Q_W, &Q_T, &Q_H, &Q_G];
+        let names = ["Q_C", "Q_E", "Q_W", "Q_T", "Q_H", "Q_G", "Q_H2"];
+        let consts = [&Q_C, &Q_E, &Q_W, &Q_T, &Q_H, &Q_G, &Q_H2];
         let mut worst = 0.0f32;
-        for k in 0..6 {
+        for k in 0..7 {
             let q = quantiles(fields[k].clone());
             let s: Vec<String> = q.iter().map(|v| format!("{v:.4}")).collect();
             eprintln!("const {}: [f32; 25] = [{}];", names[k], s.join(", "));
