@@ -507,9 +507,8 @@ impl SurfaceRules {
     /// * fields: the band-limited macro slope must stay below `θ(r) + 0.75·hollow`, θ the
     ///   altitude-dependent limit and `hollow = smoothstep(−0.5, −4, H − H_macro)` — snow streaks
     ///   down couloirs and gullies of faces that are otherwise too steep;
-    /// * crags and spurs: the local slope must stay below `θ + 0.9 + 0.8·hollow`;
-    /// * above the glacier level, moderately steep icefalls (macro slope > 0.75) show packed ice
-    ///   in coherent patches.
+    /// * crags and spurs: the local slope must stay below `θ + 0.9 + 0.8·hollow`.
+    /// The top is always white snow; glacier ice shows only below it (step sides, ice cliffs).
     fn snow_cover(&self, x: i32, y: i32, z: i32, col: &ColumnInfo) -> Option<Material> {
         if (y as f32) < SNOW_LINE_MIN - 1.0 {
             return None;
@@ -530,9 +529,6 @@ impl SurfaceRules {
         let limit = snow_slope_limit(rel) + 0.75 * hollow;
         if sm >= limit || col.slope > limit + 0.9 + 0.8 * hollow {
             return None;
-        }
-        if rel > GLACIER_REL && sm > 0.75 && self.geo(x, z).patch > 0.2 {
-            return Some(Material::PackedIce);
         }
         Some(Material::Snow)
     }
@@ -720,12 +716,12 @@ impl SurfaceRules {
                 return self.rock(x, y, z, col);
             }
             Biome::Glacier => {
-                // firn / glacier ice under the (snow-line-driven) surface
+                // firn over glacier ice under the (snow-line-driven) surface
                 if depth == 0 {
-                    return if steep { self.rock(x, y, z, col) } else { PackedIce };
+                    return if steep { self.rock(x, y, z, col) } else { Snow };
                 }
                 if depth < 9 + dirt_depth && !steep {
-                    return if p > 0.6 { Ice } else { PackedIce };
+                    return if depth < 3 { Snow } else { PackedIce };
                 }
                 return self.rock(x, y, z, col);
             }
@@ -733,7 +729,7 @@ impl SurfaceRules {
                 // the top block was handled by `snow_cover`; a snowpack lies below it where
                 // the surface is snowy, otherwise bare rock / scree / alpine turf
                 if depth > 0 && depth < 3 && self.snow_cover(x, y + depth, z, col).is_some() {
-                    return if b == Biome::SnowyPeaks { PackedIce } else { Snow };
+                    return Snow;
                 }
                 if b == Biome::SnowyPlains && !steep && slope < 0.5 && depth < dirt_depth {
                     return if depth == 0 { if p > 0.3 { Gravel } else { Grass } } else { Dirt };
@@ -780,7 +776,7 @@ impl SurfaceRules {
                 }
             }
             Biome::Taiga | Biome::SnowyTaiga | Biome::AlpineGrove => {
-                if p > 0.48 {
+                if p > 0.62 {
                     Podzol
                 } else if p < -0.6 {
                     Moss
@@ -789,7 +785,7 @@ impl SurfaceRules {
                 }
             }
             Biome::OldGrowthTaiga => {
-                if p > -0.05 {
+                if p > 0.2 {
                     Podzol
                 } else if p < -0.6 {
                     Moss

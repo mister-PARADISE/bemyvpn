@@ -57,7 +57,7 @@
 //!
 //! # LOD
 //! `canopy_lod` is the expectation of the same processes (Boolean model):
-//! `coverage = 1 − exp(−x − 0.6x²)`, `x = Σ_L ρ_L Σ_s f_s·E[A_s]·scale^1.6 + Σ_giants ρ_g E[A_g]`
+//! `coverage = 1 − exp(−x − 0.3x²)`, `x = Σ_L ρ_L Σ_s f_s·E[A_s]·scale^1.6 + Σ_giants ρ_g E[A_g]`
 //! with `ρ_L = retention_L/cell_L²·p_L·excl_L·void_giants` (`excl` = Poisson void probability
 //! of the bigger layers within the exclusion radius), `E[A_s]`, `E[top_s]` the genome
 //! expectations of each species' footprint area and top height (validated against rasterised
@@ -253,7 +253,7 @@ impl Species {
             Snag => (2.8, 8.2),
             Stump => (1.6, 2.0),
             AncientOak => (697.6, 19.0),
-            Sequoia => (243.8, 76.2),
+            Sequoia => (249.8, 76.2),
             JungleGiant => (347.7, 43.7),
             Baobab => (145.0, 16.4),
             Willow => (208.6, 14.2),
@@ -1086,9 +1086,9 @@ impl FeaturePlacer {
             return none;
         }
         // Boolean model 1 − e^(−x) assumes Poisson overlap; the hard-core process is more
-        // regular (crowns overlap less), which the second-order term β·x² (β = 0.6, fitted by
-        // `canopy_lod_matches_features`) accounts for.
-        let x = sum_a + 0.6 * sum_a * sum_a;
+        // regular (crowns overlap less), which the second-order term β·x² (β = 0.3, fitted by
+        // `canopy_lod_matches_features` on the genome-based shapes) accounts for.
+        let x = sum_a + 0.3 * sum_a * sum_a;
         CanopyLod { coverage: 1.0 - (-x).exp(), height: sum_ah / sum_a, leaf: best.1 }
     }
 }
@@ -1883,7 +1883,7 @@ fn cone_extent(g: &Genome, h: f32, c: &ConeSpec, n: i32) -> i32 {
     let lean = if n >= 2 { 0.0 } else { lean_off(g, h) };
     let crown = (c.r_max * 1.0 + 0.45).max(c.r_min) * (1.0 + c.lobes + c.asym) + 0.3;
     let roots = if n >= 2 { n as f32 * 0.5 + 1.6 + 0.4 * n as f32 + 1.0 } else { 0.0 };
-    ((lean + crown.max(roots) + 2.0).ceil() as i32).min(5)
+    (lean + crown.max(roots) + 2.0).ceil() as i32
 }
 
 /// Parameters of the cone-crown conifer generator.
@@ -3156,7 +3156,7 @@ mod tests {
             }
         }
         assert!(checked >= 4, "only {checked} patches");
-        assert!(worst < 0.15, "LOD coverage off by {worst}");
+        assert!(worst < 0.07, "LOD coverage off by {worst}");
     }
 
     #[test]

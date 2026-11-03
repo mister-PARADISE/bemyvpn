@@ -244,30 +244,22 @@ impl<'a> Frame<'a> {
         Ray::curved(o, d, [self.cam[0], self.cam[2]], self.kappa)
     }
 
-    /// Local (world-space) direction at point `p` of the bent ray whose straight direction is
-    /// `d`: its tangent (d_x, d_y + 2κ q·d_xz, d_z), q = p_xz − cam_xz. This is the direction
-    /// in the surface's own frame — e.g. the sun sits ρ/R lower at distance ρ — and the one that
-    /// must enter n·l, Fresnel and mirror reflection.
+    /// Normal of the *lowered* surface (the frame in which rays are straight) at world point `p`
+    /// for a world-space normal `n`. The lowering is the shear S(x, y, z) = (x, y − κρ², z),
+    /// ρ² = |xz − c|²; normals map with the inverse transpose of its Jacobian:
+    ///   n′ ∝ (n_x + 2κ q_x n_y, n_y, n_z + 2κ q_z n_y),  q = p_xz − c_xz,
+    /// e.g. the sea at distance ρ tilts outward by atan(ρ/R). All optics (n·l, Fresnel, mirror
+    /// reflection, refraction, glints) are evaluated with n′ against the *straight* directions —
+    /// this is exact for the lowered geometry, whereas reflecting in the bent world frame is not
+    /// (the shear is not an isometry).
     #[inline]
-    pub fn local_dir(&self, p: [f64; 3], d: Vec3) -> Vec3 {
+    pub fn lowered_normal(&self, p: [f64; 3], n: Vec3) -> Vec3 {
         if self.kappa == 0.0 {
-            return d;
+            return n;
         }
-        let qd = (p[0] - self.cam[0]) * d.x as f64 + (p[2] - self.cam[2]) * d.z as f64;
-        Vec3::new(d.x, d.y + (2.0 * self.kappa * qd) as f32, d.z).normalize()
-    }
-
-    /// Inverse of [`Self::local_dir`]: the bent ray leaving `o` with world-space tangent `w`
-    /// (returned with its straight unit direction).
-    #[inline]
-    fn ray_with_tangent(&self, o: [f64; 3], w: Vec3) -> (Ray, Vec3) {
-        let s = if self.kappa == 0.0 {
-            w
-        } else {
-            let qw = (o[0] - self.cam[0]) * w.x as f64 + (o[2] - self.cam[2]) * w.z as f64;
-            Vec3::new(w.x, w.y - (2.0 * self.kappa * qw) as f32, w.z).normalize()
-        };
-        (self.ray(o, d3(s)), s)
+        let k = (2.0 * self.kappa) as f32 * n.y;
+        let (qx, qz) = ((p[0] - self.cam[0]) as f32, (p[2] - self.cam[2]) as f32);
+        Vec3::new(n.x + k * qx, n.y, n.z + k * qz).normalize()
     }
 
     /// Primary ray direction through continuous pixel coordinates (px, py) (top-left origin).
@@ -432,8 +424,7 @@ impl<'a> Frame<'a> {
             HitKind::Voxel { bx, by, bz, mat, face } => {
                 if mat == Material::Water {
                     let wl = (by + 1) as f64;
-                    let dl = local_tangent(ray, d, h.t);
-                    return self.shade_water(h.p, dl, h.t, fp, None, wl, depth, jit, ctx);
+                    return self.shade_water(h.p, d, h.t, fp, None, wl, depth, jit, ctx);
                 }
                 self.shade_voxel(h, bx, by, bz, mat, face, d, fp, None, jit, ctx)
             }
@@ -454,9 +445,9 @@ impl<'a> Frame<'a> {
                         return l;
                     }
                     let bed = v.terrain(h.p[0], h.p[2]);
-                    let dl = local_tangent(ray, d, h.t);
-                    return self.shade_water(h.p, dl, h.t, fp, Some((level, bed)), h.p[1], depth, jit, ctx);
+                    return self.shade_water(h.p, d, h.t, fp, Some((level, bed)), h.p[1], depth, jit, ctx);
                 }
+                let _ = ray;
                 self.shade_height(h, level, d, fp, None, jit)
             }
         }
@@ -694,10 +685,12 @@ impl<'a> Frame<'a> {
     #[allow(clippy::too_many_arguments)]
     fn light(&self, p: [f64; 3], n: Vec3, ng: [f64; 3], albedo: Vec3, amb: Vec3, d: Vec3, f0: f32, rough: f32, underwater: Option<f64>, translucent: bool, jit: u32, eps: f64) -> Vec3 {
         let sd = self.sun_dir(jit);
-        // n·l in the surface's local frame (the shadow ray below leaves with this tangent).
-        let sl = self.local_dir(p, sd);
-        let ndl = n.dot(sl);
-        let ngl = ng[0] * sl.x as f64 + ng[1] * sl.y as f64 + ng[2] * sl.z as f64;
+        // Shading normals in the straight-ray frame (Earth curvature, see `lowered_normal`); the
+        // offsets of the shadow ray origin below stay in world space (`ng`).
+        let n = self.lowered_normal(p, n);
+        let ngl_n = self.lowered_normal(p, v3(ng));
+        let ndl = n.dot(sd);
+        let ngl = ngl_n.dot(sd) as f64;
         let mut e_sun = Vec3::ZERO;
         let mut sun_vis = 0.0f32;
         if (ndl > 0.0 && ngl > -0.05) || (translucent && ndl < 0.0) {
@@ -744,7 +737,7 @@ impl<'a> Frame<'a> {
             let fr = f0 + (1.0 - f0) * (1.0 - nv).powi(5);
             l += self.sky_radiance(if r.y < 0.0 { Vec3::new(r.x, 0.02, r.z).normalize() } else { r }) * (fr * ao);
             if sun_vis > 0.0 && ndl > 0.0 {
-                l += e_sun * ggx_spec(n, v, sl, rough, f0) * ndl;
+                l += e_sun * ggx_spec(n, v, sd, rough, f0) * ndl;
             }
         }
         l
@@ -906,7 +899,8 @@ impl<'a> Frame<'a> {
         let fp_major = fp / (-d.y).max(0.04);
         let (gx, gz, var) = self.ripple_grad(p[0], p[2], 0.5 * fp_major);
         let calm = 1.0 - 0.6 * smoothstep(800.0, 6000.0, t as f32);
-        let n = Vec3::new(-gx * calm, 1.0, -gz * calm).normalize();
+        // Ripple normal, expressed in the straight-ray frame (the curved sea tilts outward).
+        let n = self.lowered_normal(p, Vec3::new(-gx * calm, 1.0, -gz * calm).normalize());
         let v = -d;
         let cos_i = v.dot(n).max(0.02);
         let f = 0.02 + 0.98 * (1.0 - cos_i).powi(5);
@@ -916,22 +910,21 @@ impl<'a> Frame<'a> {
             r = Vec3::new(r.x, 0.01, r.z).normalize();
         }
         let refl = if depth == 0 {
-            // `r` is the mirror direction in the local frame (`d` is local, see `shade`).
             let o = [p[0], wl + 0.01, p[2]];
-            let (ray, rs) = self.ray_with_tangent(o, r);
+            let ray = self.ray(o, d3(r));
             match self.scene.trace(&ray, 0.0, self.max_dist, false) {
                 Some(h) => {
                     let fp2 = fp + h.t as f32 * self.pix_angle;
-                    let l = self.shade(&h, &ray, rs, fp2, depth + 1, jit, ctx);
+                    let l = self.shade(&h, &ray, r, fp2, depth + 1, jit, ctx);
                     match &self.atm {
                         Some(a) => {
-                            let ap = a.aerial(rs, h.t);
+                            let ap = a.aerial(r, h.t);
                             l * ap.t + ap.inscatter
                         }
                         None => l,
                     }
                 }
-                None => self.miss(rs, false),
+                None => self.miss(r, false),
             }
         } else {
             self.sky_radiance(r)
@@ -1001,11 +994,10 @@ impl<'a> Frame<'a> {
         }
         // Sun glint (GGX, roughness widened by the sub-pixel ripple variance).
         let sd = self.sun_dir(jit);
-        let sl = self.local_dir(p, sd);
-        let ndl = n.dot(sl);
+        let ndl = n.dot(sd);
         if ndl > 0.0 && e_sun.max_elem() > 1e-5 {
             let rough = (0.004 + var + 0.0004 * fp).sqrt().min(0.5);
-            let spec = ggx_spec(n, v, sl, rough, 0.02);
+            let spec = ggx_spec(n, v, sd, rough, 0.02);
             if spec * e_sun.max_elem() > 1e-4 {
                 let o = [p[0], wl + 0.02, p[2]];
                 let ray = self.ray(o, d3(sd));
@@ -1016,15 +1008,6 @@ impl<'a> Frame<'a> {
         }
         l
     }
-}
-
-/// Unit world-space tangent at parameter t of a (possibly bent) ray with straight direction `d`.
-#[inline]
-fn local_tangent(ray: &Ray, d: Vec3, t: f64) -> Vec3 {
-    if ray.k2 == 0.0 && ray.k1 == 0.0 {
-        return d;
-    }
-    Vec3::new(d.x, ray.dy(t) as f32, d.z).normalize()
 }
 
 /// Ore veins: clustered point process — a 2×2×2 super-cell is a vein with probability p(y)
@@ -1083,49 +1066,39 @@ mod tests {
         )
     }
 
-    /// Mirror reflection on the curved sea, done in the bent-ray (world) frame, must equal the
-    /// reflection of the straight ray about the tilted normal of the lowered sphere-like surface
-    /// y = 140 − κρ² (normal ∝ (2κq_x, 1, 2κq_z)) — the textbook construction.
+    /// `lowered_normal` vs. an independent construction: the gradient (central differences) of
+    /// the implicit function of the lowered surface G(x, y, z) = y + κ|xz − c|² − h(x, z) for an
+    /// analytic terrain h, whose world normal is ∝ (−h_x, 1, −h_z).
     #[test]
-    fn curved_reflection_matches_tilted_normal() {
+    fn lowered_normal_is_gradient_of_lowered_surface() {
         let w = sea_world();
         let cam = Camera { pos: [3.0, 260.0, -7.0], yaw: 0.0, pitch: 0.0, fov_y_deg: 60.0 };
         let s = RenderSettings { width: 16, height: 16, ..Default::default() };
         let mut f = Frame::new(&w, &cam, &Sun { azimuth_deg: 10.0, elevation_deg: 20.0 }, &s);
-        f.kappa = 1.0 / 400_000.0; // exaggerated: tilt ρ/R′ of several degrees
-        let mut worst = 0.0f64;
-        let mut n_tested = 0;
-        for k in 0..200 {
-            let a = k as f64 * 0.731;
-            let e = -0.02 - 0.3 * ((k * 37 % 100) as f64 / 100.0);
-            let d = [a.sin() * e.cos(), e.sin(), a.cos() * e.cos()];
-            let ray = f.ray(cam.pos, d);
-            // Hit the lowered sea: y(t) = 140 (bent-ray picture), smallest root.
-            let (qa, qb, qc) = (ray.k2, ray.d[1] + ray.k1, ray.o[1] - 140.0);
-            let disc = qb * qb - 4.0 * qa * qc;
-            if disc < 0.0 {
-                continue; // bends away above the horizon of the exaggerated planet
+        for kappa in [0.5 / EARTH_RADIUS, 1.0 / 200_000.0] {
+            f.kappa = kappa;
+            let h = |x: f64, z: f64| 140.0 + 30.0 * (x * 0.0007).sin() * (z * 0.0011).cos() + 0.002 * x;
+            for k in 0..300 {
+                let x = -40_000.0 + 80_000.0 * ((k * 7919) % 1000) as f64 / 1000.0;
+                let z = -40_000.0 + 80_000.0 * ((k * 104_729) % 997) as f64 / 997.0;
+                let e = 0.5;
+                let hx = (h(x + e, z) - h(x - e, z)) / (2.0 * e);
+                let hz = (h(x, z + e) - h(x, z - e)) / (2.0 * e);
+                let nw = Vec3::new(-hx as f32, 1.0, -hz as f32).normalize();
+                let g = |x: f64, y: f64, z: f64| y + kappa * ((x - cam.pos[0]).powi(2) + (z - cam.pos[2]).powi(2)) - h(x, z);
+                let y = h(x, z);
+                let gx = (g(x + e, y, z) - g(x - e, y, z)) / (2.0 * e);
+                let gy = (g(x, y + e, z) - g(x, y - e, z)) / (2.0 * e);
+                let gz = (g(x, y, z + e) - g(x, y, z - e)) / (2.0 * e);
+                let reference = Vec3::new(gx as f32, gy as f32, gz as f32).normalize();
+                let got = f.lowered_normal([x, y, z], nw);
+                assert!(got.dot(reference) > 1.0 - 1e-6, "{:?} vs {:?}", got, reference);
             }
-            let t = (-qb - disc.sqrt()) / (2.0 * qa);
-            let p = ray.at(t);
-            let dv = Vec3::new(d[0] as f32, d[1] as f32, d[2] as f32);
-            let r = local_tangent(&ray, dv, t).reflect(Vec3::Y);
-            let (_, rs) = f.ray_with_tangent(p, r);
-            // Reference in the dropped (straight-ray) picture.
-            let (qx, qz) = (p[0] - cam.pos[0], p[2] - cam.pos[2]);
-            let n = Vec3::new((2.0 * f.kappa * qx) as f32, 1.0, (2.0 * f.kappa * qz) as f32).normalize();
-            let rr = dv.reflect(n);
-            let tilt = (2.0 * f.kappa * (qx * qx + qz * qz).sqrt()).atan();
-            let err = (rs.dot(rr).clamp(-1.0, 1.0) as f64).acos();
-            worst = worst.max(err / tilt.max(1e-9));
-            n_tested += 1;
         }
-        assert!(n_tested > 100);
-        // First-order construction: error ≪ the tilt itself.
-        assert!(worst < 0.05, "reflection error {worst} × tilt");
     }
 
-    /// The sun seen from a point ρ further toward it stands ρ/R higher (local frame).
+    /// The sun seen from a point ρ further toward it stands ρ/R higher above that point's
+    /// horizon (sea normal tilted outward by ρ/R).
     #[test]
     fn local_sun_elevation_follows_curvature() {
         let w = sea_world();
@@ -1133,8 +1106,8 @@ mod tests {
         let s = RenderSettings { width: 16, height: 16, ..Default::default() };
         let f = Frame::new(&w, &cam, &Sun { azimuth_deg: 0.0, elevation_deg: 3.0 }, &s);
         for rho in [-30_000.0f64, 10_000.0, 30_000.0] {
-            let l = f.local_dir([0.0, 140.0, rho], f.sun);
-            let e = (l.y as f64).asin().to_degrees();
+            let n = f.lowered_normal([0.0, 140.0, rho], Vec3::Y);
+            let e = (n.dot(f.sun) as f64).asin().to_degrees();
             let expect = 3.0 + (rho / EARTH_RADIUS).to_degrees();
             assert!((e - expect).abs() < 0.01, "ρ {rho}: {e} vs {expect}");
         }

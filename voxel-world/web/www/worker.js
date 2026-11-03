@@ -6,7 +6,7 @@
 //   main → {type:'far', id, cell, x0, z0, n, gen}                → {type:'far', id, ok, gen, buf, hmin, hmax, wet, ms}
 // Far tiles are converted to the GPU layout used by index.html (16 bytes / vertex):
 //   f32 terrain top, f32 water level (dilated by one cell onto the shore, -1e4 = none),
-//   u8 r,g,b (sRGB far albedo), u8 material, i8 nx, i8 nz (unit normal ×127), u8 0, u8 0.
+//   u8 r,g,b (sRGB far albedo), u8 material, i8 nx, i8 nz (unit normal ×127), u8 cavity AO (255 = open), u8 0.
 // Vertices: (n+1)² grid (row-major, z outer), then 4·(n+1) skirt copies of the edge vertices.
 'use strict';
 
@@ -102,7 +102,12 @@ function buildFar(m) {
     const l = 1 / Math.sqrt(nx * nx + nz * nz + 1);
     oi[db + 12] = Math.round(nx * l * 127);
     oi[db + 13] = Math.round(nz * l * 127);
-    ou[db + 14] = 0; ou[db + 15] = 0;
+    // cavity occlusion: how far the vertex lies below the mean of its 8 neighbours (in cells)
+    let sum = 0;
+    for (let dj = -1; dj <= 1; dj++) for (let di = -1; di <= 1; di++) if (di || dj) sum += H[k + dj * S + di];
+    const cav = (h - sum / 8) / cell;
+    ou[db + 14] = Math.round(255 * Math.min(1, Math.max(0.35, 1 + 1.6 * Math.min(cav, 0) + 0.25 * Math.max(cav, 0))) / 1.0) & 255;
+    ou[db + 15] = 0;
     if (h < hmin) hmin = h;
     if (h > hmax) hmax = h;
     if (w > -1e8 && w > hmax) hmax = w;
