@@ -6,8 +6,9 @@
 //!    atlas with mip chain, far-ground statistics;
 //! 2. one sample per pixel through the pixel centre (rayon over row bands, per-thread caches);
 //! 3. adaptive anti-aliasing: pixels whose tone-mapped luminance differs from a neighbour by more
-//!    than a threshold receive 4 or 8 extra stratified samples (with jittered sun directions → soft
-//!    shadow edges), resolved with a tone-map-aware (Karis) weighted mean;
+//!    than a threshold receive 4 or 8 extra samples from a (0,2)-sequence, escalated to 16 when
+//!    the new samples still disagree (sub-pixel geometry, glints); each sample jitters the sun
+//!    direction over the solar disk (soft shadow edges); resolve = tone-map-aware (Karis) mean;
 //! 4. exposure (`settings.exposure` × a calibrated base × a gentle auto-exposure factor) and a
 //!    multi-scale bloom of the brightest pixels.
 //!
