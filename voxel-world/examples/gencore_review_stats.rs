@@ -58,6 +58,49 @@ fn main() {
         }
         let water_cols = cols.iter().filter(|c| c.water_level > c.height as i32).count();
         let lakes = cols.iter().filter(|c| c.water_level > SEA_LEVEL && c.water_level > c.height as i32 && c.biome != Biome::Volcanic).count();
+        // belt cores (orogeny M > 0.5 on land): connected components → range lengths
+        {
+            let core: Vec<bool> = cols
+                .iter()
+                .map(|c| c.height >= sea && g.climate.sample_d(c.x, c.z, step).orogeny.v > 0.5)
+                .collect();
+            let mut seen = vec![false; n * n];
+            let mut lens = Vec::new();
+            for k in 0..n * n {
+                if seen[k] || !core[k] {
+                    continue;
+                }
+                let mut st = vec![k];
+                seen[k] = true;
+                let mut cells = Vec::new();
+                while let Some(p) = st.pop() {
+                    cells.push(p);
+                    let (i, j) = (p % n, p / n);
+                    for (a, b) in [(i.wrapping_sub(1), j), (i + 1, j), (i, j.wrapping_sub(1)), (i, j + 1)] {
+                        if a < n && b < n && !seen[b * n + a] && core[b * n + a] {
+                            seen[b * n + a] = true;
+                            st.push(b * n + a);
+                        }
+                    }
+                }
+                if (cells.len() as f64) * step * step < 2.0e6 {
+                    continue;
+                }
+                let (mut x0, mut x1, mut z0, mut z1) = (usize::MAX, 0, usize::MAX, 0);
+                for &p in &cells {
+                    x0 = x0.min(p % n);
+                    x1 = x1.max(p % n);
+                    z0 = z0.min(p / n);
+                    z1 = z1.max(p / n);
+                }
+                let diag = (((x1 - x0) as f64).powi(2) + ((z1 - z0) as f64).powi(2)).sqrt() * step / 1000.0;
+                lens.push((cells.len() as f64 * step * step / 1e6, diag));
+            }
+            lens.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
+            let s: Vec<String> = lens.iter().take(10).map(|(a, d)| format!("{a:.0}km²/{d:.0}km")).collect();
+            let corefrac = core.iter().filter(|&&b| b).count() as f64 / nl;
+            println!("   belt cores (M>0.5): {:.1}% of land; {} ranges ≥2 km²; largest (area/bbox diag): {}", 100.0 * corefrac, lens.len(), s.join(", "));
+        }
         // mountain connected components (H > SEA+150) — 4-neighbour flood fill
         let mut lab = vec![0u32; n * n];
         let mut comps: Vec<(usize, f64, f32)> = Vec::new(); // (cells, extent km, top)

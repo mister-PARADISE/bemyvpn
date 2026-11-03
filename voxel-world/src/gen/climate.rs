@@ -968,7 +968,7 @@ fn erosion_raw(n: D2) -> D2 {
 /// field `b`. With the median `|∇b| ≈ 1.0·10⁻⁴` (λ = 30 km) they correspond to a flat core of
 /// half-width ≈ 600 blocks and foothills out to ≈ 2 200 blocks from the crest line. Plus the raw
 /// gate thresholds that cut the belts into ranges of finite length.
-pub const OROGENY_BAND: (f32, f32) = (0.06, 0.22);
+pub const OROGENY_BAND: (f32, f32) = (0.07, 0.25);
 pub const OROGENY_GATE: (f32, f32) = (0.02, 0.16);
 /// Continentalness added in the core of a belt (crustal thickening).
 const OROGENY_LAND: f32 = 0.28;

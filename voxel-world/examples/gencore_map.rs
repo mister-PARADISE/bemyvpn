@@ -155,7 +155,7 @@ fn main() {
             b.copy_from_slice(&to8(bc));
             let col = if wet {
                 let depth = c.water_level as f32 - c.height;
-                let lava = c.water_level > SEA_LEVEL;
+                let lava = c.water_level > SEA_LEVEL && c.biome == Biome::Volcanic;
                 if lava {
                     Vec3::new(1.0, 0.25, 0.02)
                 } else {
@@ -179,7 +179,7 @@ fn main() {
             let mut a = far_albedo(mat, c.surface_temperature, c.climate.humidity, y as f32);
             if wet {
                 let depth = c.water_level as f32 - c.height;
-                if c.water_level > SEA_LEVEL {
+                if c.water_level > SEA_LEVEL && c.biome == Biome::Volcanic {
                     a = Vec3::new(1.0, 0.3, 0.05);
                 } else {
                     let wcol = voxel_world::materials::water_tint(if c.biome == Biome::Swamp { 0.7 } else { 0.0 }, c.climate.temperature);
@@ -246,7 +246,7 @@ fn main() {
                     } else {
                         depth = -1;
                         if y < col.water_level {
-                            if col.water_level > SEA_LEVEL { [255, 90, 20] } else { [40, 90, 200] }
+                            if col.water_level > SEA_LEVEL && col.biome == Biome::Volcanic { [255, 90, 20] } else { [40, 90, 200] }
                         } else {
                             let t = y as f32 / 512.0;
                             to8(srgb([200, 225, 250]).lerp(srgb([110, 160, 230]), t))

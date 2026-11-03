@@ -317,7 +317,7 @@ pub struct TerrainShaper {
 
 /// Inland lakes: cell size, candidate probability, max radius, rim probes.
 const LAKE_CELL: f64 = 1400.0;
-const LAKE_P: f32 = 0.55;
+const LAKE_P: f32 = 0.8;
 const LAKE_R_MAX: f32 = 300.0;
 const LAKE_RIM_SAMPLES: usize = 12;
 const LAKE_CACHE_SIZE: usize = 1024;
@@ -338,6 +338,12 @@ thread_local! {
         LakeEntry { seed: 0, ix: 0, iz: 0, valid: false, level: f32::NAN };
         LAKE_CACHE_SIZE
     ]);
+}
+
+/// Basin depth of a lake of radius r.
+#[inline]
+fn lake_depth(r: f32) -> f32 {
+    7.0 + 0.07 * r
 }
 
 /// |x| as a dual (kink at 0 is the sill crest).
@@ -457,15 +463,18 @@ impl TerrainShaper {
         } else {
             0.0
         };
-        let swamp = smoothstep(0.30, 0.48, hu)
+        let swamp = (1.0 - smoothstep(0.2, 0.55, cd.orogeny.v))
+            * smoothstep(0.30, 0.48, hu)
             * smoothstep(-0.20, 0.02, t)
             * smoothstep(-0.10, 0.30, e)
             * smoothstep(0.40, 0.22, c)
             * smoothstep(-0.14, -0.06, c);
         // sea cliffs follow the *raw* erosion (the coast-shaping input of the offset spline)
         let cliff = smoothstep(-0.25, -0.60, cd.e_raw.v) * smoothstep(-0.20, -0.15, c) * smoothstep(0.02, -0.06, c);
-        // dry-land landforms only on land (no mesas or spires on the sea floor)
-        let land = smoothstep(-0.16, -0.08, c);
+        // dry-land landforms only on land (no mesas or spires on the sea floor) and not in the
+        // cores of orogenic belts (low E* and the rain shadow make belts "hot-dry" by climate,
+        // which would terrace whole mountain ranges and pile dunes on their flanks)
+        let land = smoothstep(-0.16, -0.08, c) * (1.0 - smoothstep(0.2, 0.55, cd.orogeny.v));
         Regions {
             desert: desert_all * (1.0 - badlands) * land,
             badlands: badlands * land,
@@ -800,7 +809,7 @@ impl TerrainShaper {
         let jx = 0.333 + 0.334 * hash_f01(mix64(id ^ 1)) as f64;
         let jz = 0.333 + 0.334 * hash_f01(mix64(id ^ 2)) as f64;
         let r = 90.0 + (LAKE_R_MAX - 90.0) * hash_f01(mix64(id ^ 3)).powf(1.5);
-        let depth = 7.0 + 0.07 * r;
+        let depth = lake_depth(r);
         Some(((ix as f64 + jx) * LAKE_CELL, (iz as f64 + jz) * LAKE_CELL, r, depth))
     }
 
@@ -854,6 +863,10 @@ impl TerrainShaper {
         }
         if rim_hi - rim_lo > 0.35 * r + 12.0 {
             return Err("slope");
+        }
+        // a lake must actually hold water: the basin floor at the centre is below the level
+        if centre - lake_depth(r) > level - 2.0 {
+            return Err("dry basin");
         }
         let mut inner_lo = centre;
         for k in 0..6 {
