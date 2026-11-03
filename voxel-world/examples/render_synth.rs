@@ -28,11 +28,11 @@ fn scenes(t: &SynthTerrain) -> Vec<SceneDef> {
         SceneDef {
             name: "noon",
             center: (0, 0),
-            cam: [-25.0, ground(-25.0, -40.0) + 22.0, -40.0],
-            yaw: 35f64.to_radians(),
-            pitch: (-9f64).to_radians(),
+            cam: [0.0, ground(0.0, 0.0) + 60.0, 0.0],
+            yaw: 180f64.to_radians(),
+            pitch: (-10f64).to_radians(),
             fov: 60.0,
-            sun: (150.0, 58.0),
+            sun: (140.0, 48.0),
             l0: 2048,
             hf: 2048,
             levels: 3,
@@ -72,18 +72,40 @@ fn scenes(t: &SynthTerrain) -> Vec<SceneDef> {
         },
         SceneDef {
             name: "diorama",
-            center: (40, 70),
-            cam: [40.0 - 190.0, ground(40.0, 70.0) + 150.0, 70.0 - 170.0],
+            center: (85, 70),
+            cam: [85.0 - 300.0, 420.0, 70.0 - 260.0],
             yaw: 0.0,
             pitch: 0.0,
-            fov: 42.0,
-            sun: (215.0, 42.0),
+            fov: 40.0,
+            sun: (215.0, 40.0),
             l0: 256,
             hf: 256,
             levels: 0,
-            mode: ViewMode::Diorama { min_x: -45, max_x: 125, min_z: -15, max_z: 155, min_y: 60 },
+            mode: ViewMode::Diorama { min_x: 0, max_x: 170, min_z: -15, max_z: 155, min_y: 40 },
             haze: 1.0,
             exposure: 1.0,
+        },
+        {
+            // Inside the showcase tunnel, looking along it toward the lava pool and crystals.
+            let hc = ground(20.0, 95.0) - 17.0;
+            let cx = 18.0f64;
+            let cy = hc + 6.0 * (cx / 17.0).sin() + 0.5;
+            let cz = 95.0 + 10.0 * (cx / 23.0).cos();
+            SceneDef {
+                name: "cave",
+                center: (0, 0),
+                cam: [cx, cy, cz],
+                yaw: 95f64.to_radians(),
+                pitch: (-6f64).to_radians(),
+                fov: 70.0,
+                sun: (140.0, 48.0),
+                l0: 512,
+                hf: 512,
+                levels: 1,
+                mode: ViewMode::Normal,
+                haze: 1.0,
+                exposure: 1.0,
+            }
         },
     ]
 }
@@ -112,7 +134,7 @@ fn main() {
         let build_s = tb.elapsed().as_secs_f64();
         let mut cam = Camera { pos: sc.cam, yaw: sc.yaw, pitch: sc.pitch, fov_y_deg: sc.fov };
         if let ViewMode::Diorama { min_x, max_x, min_z, max_z, min_y } = sc.mode {
-            let c = [(min_x + max_x) as f64 * 0.5, (min_y as f64 + terrain.height(40.0, 70.0, 0.0).0) * 0.5, (min_z + max_z) as f64 * 0.5];
+            let c = [(min_x + max_x) as f64 * 0.5, (min_y as f64 + terrain.height(85.0, 70.0, 0.0).0) * 0.5 + 8.0, (min_z + max_z) as f64 * 0.5];
             cam = Camera::look_at(sc.cam, c, sc.fov);
         }
         let mut sun = Sun { azimuth_deg: sc.sun.0, elevation_deg: sc.sun.1 };

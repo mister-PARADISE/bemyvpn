@@ -235,7 +235,7 @@ impl SynthTerrain {
             let (xf, zf) = (x as f64 + 0.5, z as f64 + 0.5);
             // Arch: torus of major radius 14 around (60, hA, 40) in the plane z = const.
             let ha = self.column(60.0, 40.0, 0.0).h.floor();
-            let hc = self.column(20.0, 95.0, 0.0).h - 9.0;
+            let hc = self.column(20.0, 95.0, 0.0).h - 17.0;
             for y in 0..ymax {
                 let yf = y as f64 + 0.5;
                 let (dx, dy, dz) = (xf - 60.0, yf - ha, zf - 40.0);
