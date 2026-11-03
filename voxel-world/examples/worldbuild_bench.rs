@@ -51,7 +51,7 @@ fn main() {
             y += 4.0;
         }
     }
-    eprintln!("cave_field: {:.0} ns ({cnt} samples)", t.elapsed().as_secs_f64() * 1e9 / cnt as f64);
+    eprintln!("cave_field: {:.0} ns ({cnt} samples, {acc:.0})", t.elapsed().as_secs_f64() * 1e9 / cnt as f64);
     let t = Instant::now();
     let mut cnt = 0u64;
     let mut h = 0u64;
