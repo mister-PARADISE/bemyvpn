@@ -274,6 +274,10 @@ pub struct Regions {
     pub cliff: f32,
     /// Inside a river channel (0..1).
     pub channel: f32,
+    /// Inside an inland lake basin (1 inside the shore ring, 0 outside).
+    pub lake: f32,
+    /// Flat water level of that lake (world y; meaningful when `lake > 0`).
+    pub lake_level: f32,
 }
 
 /// Everything computed for a column (public for debug tools).
@@ -310,6 +314,37 @@ pub struct TerrainShaper {
     volcano: Worley2,
 }
 
+/// Inland lakes: cell size, candidate probability, max radius, rim probes.
+const LAKE_CELL: f64 = 1700.0;
+const LAKE_P: f32 = 0.55;
+const LAKE_R_MAX: f32 = 300.0;
+const LAKE_RIM_SAMPLES: usize = 12;
+const LAKE_CACHE_SIZE: usize = 1024;
+
+#[derive(Clone, Copy)]
+struct LakeEntry {
+    seed: u64,
+    ix: i32,
+    iz: i32,
+    valid: bool,
+    /// NaN = probed, no lake.
+    level: f32,
+}
+
+thread_local! {
+    /// Memo of probed lake levels (pure function of (seed, cell): never changes results).
+    static LAKE_CACHE: std::cell::RefCell<Vec<LakeEntry>> = std::cell::RefCell::new(vec![
+        LakeEntry { seed: 0, ix: 0, iz: 0, valid: false, level: f32::NAN };
+        LAKE_CACHE_SIZE
+    ]);
+}
+
+/// |x| as a dual (kink at 0 is the sill crest).
+#[inline]
+fn sabs_tent(x: D2) -> D2 {
+    x.abs()
+}
+
 const VOLCANO_CELL: f64 = 3600.0;
 const VOLCANO_P: f32 = 0.14;
 const HOODOO_CELL: f64 = 14.0;
@@ -342,7 +377,7 @@ impl TerrainShaper {
 
     pub fn column(&self, climate: &ClimateSampler, x: f64, z: f64, footprint: f64) -> ColumnInfo {
         let cd = climate.sample_d(x, z, footprint);
-        let sh = self.shape(&cd, x, z, footprint);
+        let sh = self.shape_full(climate, &cd, x, z, footprint);
         self.finish(&cd, &sh, x, z)
     }
 
@@ -431,8 +466,18 @@ impl TerrainShaper {
         }
     }
 
-    /// The full height construction (see module docs).
+    /// The height construction (see module docs) *without* inland lakes (lakes need the climate
+    /// sampler to probe their rim; see [`TerrainShaper::shape_full`]).
     pub fn shape(&self, cd: &ClimateD, x: f64, z: f64, fp: f64) -> Shape {
+        self.shape_impl(cd, x, z, fp, None)
+    }
+
+    /// The complete height construction including inland lakes (what `column` uses).
+    pub fn shape_full(&self, climate: &ClimateSampler, cd: &ClimateD, x: f64, z: f64, fp: f64) -> Shape {
+        self.shape_impl(cd, x, z, fp, Some(climate))
+    }
+
+    fn shape_impl(&self, cd: &ClimateD, x: f64, z: f64, fp: f64, lakes: Option<&ClimateSampler>) -> Shape {
         let mut reg = self.regions(cd, x, z, fp);
         // Offset (hypsometry + coast shape) from the raw erosion; uplift, valley walls etc. from
         // the effective, orogeny-gated erosion.
@@ -562,8 +607,17 @@ impl TerrainShaper {
             reg.channel = gate * (1.0 - smoothstep(w * 0.7, w * 1.15, d.v));
         }
 
-        // --- volcanoes (smooth max with a concave cone + caldera)
+        // --- inland lakes: flat water level, basin + containment sill (see `apply_lake`)
         let mut water_level = i32::MIN;
+        if let Some(cs) = lakes {
+            if cd.c.v > -0.12 {
+                if let Some(level) = self.apply_lake(cs, &mut h, &mut reg, x, z) {
+                    water_level = level;
+                }
+            }
+        }
+
+        // --- volcanoes (smooth max with a concave cone + caldera)
         if let Some((cone, lava)) = self.volcano_cone(x, z) {
             let before = h;
             h = h.smax(cone, 28.0);
@@ -575,6 +629,10 @@ impl TerrainShaper {
                 if h.v < l as f32 - 0.5 {
                     water_level = l;
                 }
+            }
+            if water_level != i32::MIN && reg.lake > 0.0 && h.v >= reg.lake_level {
+                // the cone rose above a lake level: dry there
+                water_level = i32::MIN;
             }
         }
 
@@ -606,7 +664,10 @@ impl TerrainShaper {
         };
         let j_c = 14.0 * reg.cliff * smoothstep(SEA + 3.0, SEA + 12.0, h.v);
         let j_s = 9.0 * smoothstep(1.2, 2.8, slope) * smoothstep(SEA + 2.0, SEA + 20.0, h.v);
-        let tame = (1.0 - reg.badlands) * (1.0 - reg.desert) * (1.0 - 0.8 * reg.volcanic) * (1.0 - reg.swamp);
+        // no 3D detail on lake basins: an overhang hollow next to a water column would expose
+        // a vertical water face
+        let tame = (1.0 - reg.badlands) * (1.0 - reg.desert) * (1.0 - 0.8 * reg.volcanic) * (1.0 - reg.swamp)
+            * if reg.lake > 0.0 || water_level > SEA_LEVEL { 0.0 } else { 1.0 };
         let mut jag = j_m.max(j_c).max(j_s) * tame;
         jag = jag.min(28.0).min((WORLD_HEIGHT as f32 - 3.0 - h.v).max(0.0));
         if jag < 0.5 {
@@ -615,6 +676,9 @@ impl TerrainShaper {
 
         if water_level == i32::MIN && h.v < SEA {
             water_level = SEA_LEVEL;
+        } else if water_level > SEA_LEVEL && reg.volcanic <= 0.5 && h.v >= water_level as f32 {
+            // hoodoo spire / soft ceiling raised the column above its lake level
+            water_level = i32::MIN;
         }
         Shape { height: h, mountain: mountain.v, regions: reg, jaggedness: jag, water_level, steer: steer_dbg }
     }
@@ -702,6 +766,124 @@ impl TerrainShaper {
             taper *= 0.72;
         }
         out
+    }
+
+    /// Lake candidate of lattice cell (ix, iz): centre, radius, bowl depth (no probing).
+    #[inline]
+    fn lake_candidate(&self, ix: i32, iz: i32) -> Option<(f64, f64, f32, f32)> {
+        let id = hash2(self.seed ^ 0x1A4E_5EED, ix, iz);
+        if hash_f01(id) >= LAKE_P {
+            return None;
+        }
+        let jx = 0.25 + 0.5 * hash_f01(mix64(id ^ 1)) as f64;
+        let jz = 0.25 + 0.5 * hash_f01(mix64(id ^ 2)) as f64;
+        let r = 90.0 + (LAKE_R_MAX - 90.0) * hash_f01(mix64(id ^ 3)).powf(1.5);
+        let depth = 5.0 + 0.045 * r;
+        Some(((ix as f64 + jx) * LAKE_CELL, (iz as f64 + jz) * LAKE_CELL, r, depth))
+    }
+
+    /// Probe a candidate: the flat water level is set by the *pre-lake* terrain on the rim,
+    /// `L = ⌊min_rim H⌋ − 1`, and the lake is rejected where it would not be a natural basin
+    /// (sea or river nearby, steep slope across the rim, deep cut inside, desert, volcano).
+    /// A pure function of (seed, cell) evaluated at footprint 0, so every LOD level agrees.
+    fn probe_lake(&self, cs: &ClimateSampler, cx: f64, cz: f64, r: f32) -> Option<f32> {
+        if self.volcano_cone(cx, cz).is_some() {
+            return None;
+        }
+        let sample = |x: f64, z: f64| -> Option<f32> {
+            let cd = cs.sample_d(x, z, 0.0);
+            if cd.c.v < -0.04 || cd.river > 0.0 || cd.river_dist < cd.river_width + 60.0 {
+                return None;
+            }
+            let sh = self.shape_impl(&cd, x, z, 0.0, None);
+            if sh.regions.badlands > 0.2 || (sh.regions.desert > 0.3 && r > 140.0) || sh.water_level != i32::MIN {
+                return None;
+            }
+            Some(sh.height.v)
+        };
+        let centre = sample(cx, cz)?;
+        let (mut rim_lo, mut rim_hi) = (f32::MAX, f32::MIN);
+        for k in 0..LAKE_RIM_SAMPLES {
+            let a = (k as f64 + 0.5) * std::f64::consts::TAU / LAKE_RIM_SAMPLES as f64;
+            let h = sample(cx + a.cos() * r as f64, cz + a.sin() * r as f64)?;
+            rim_lo = rim_lo.min(h);
+            rim_hi = rim_hi.max(h);
+        }
+        let level = (rim_lo - 1.0).floor();
+        if level < SEA + 2.0 || level > 440.0 || rim_hi - rim_lo > 0.35 * r + 12.0 {
+            return None;
+        }
+        let mut inner_lo = centre;
+        for k in 0..6 {
+            let a = k as f64 * std::f64::consts::TAU / 6.0;
+            inner_lo = inner_lo.min(sample(cx + a.cos() * 0.5 * r as f64, cz + a.sin() * 0.5 * r as f64)?);
+        }
+        if inner_lo < level - 12.0 {
+            return None;
+        }
+        Some(level)
+    }
+
+    fn lake_level_cached(&self, cs: &ClimateSampler, ix: i32, iz: i32, cx: f64, cz: f64, r: f32) -> Option<f32> {
+        let slot = (((ix as u32).wrapping_mul(0x9E37_79B1) ^ (iz as u32).wrapping_mul(0x85EB_CA77)) >> 22) as usize % LAKE_CACHE_SIZE;
+        let hit = LAKE_CACHE.with(|c| {
+            let e = c.borrow()[slot];
+            (e.valid && e.seed == self.seed && e.ix == ix && e.iz == iz).then_some(e.level)
+        });
+        if let Some(l) = hit {
+            return if l.is_nan() { None } else { Some(l) };
+        }
+        let l = self.probe_lake(cs, cx, cz, r);
+        LAKE_CACHE.with(|c| {
+            c.borrow_mut()[slot] = LakeEntry { seed: self.seed, ix, iz, valid: true, level: l.unwrap_or(f32::NAN) }
+        });
+        l
+    }
+
+    /// Inland lake basins (Worley-type cell process, ≤ 1 lake per 1.7 km cell).
+    ///
+    /// With `ρ = |p − c|/R + 0.12·n(p)` (noise-perturbed normalised radius → irregular shores):
+    /// * basin: `H₁ = H − D·max(0, 1 − ρ²)²` (islands survive where the terrain is high),
+    /// * sill: `H₂ = smax(H₁, L + 1.2 − 0.35·R·|ρ − 1|, 2)` — a tent function peaking 1.2 blocks
+    ///   above the level exactly on the rim ρ = 1,
+    /// * water where `ρ < 1 ∧ H₂ < L`.
+    ///
+    /// Containment theorem: on ρ = 1 we have `H₂ ≥ L + 1.2`, so the water set `{ρ < 1, H₂ < L}`
+    /// is enclosed by dry ground at or above its level — no vertical water faces, whatever the
+    /// terrain does between the rim probes (where it dips, the sill becomes a small natural dam).
+    fn apply_lake(&self, cs: &ClimateSampler, h: &mut D2, reg: &mut Regions, x: f64, z: f64) -> Option<i32> {
+        let ix = (x / LAKE_CELL).floor() as i32;
+        let iz = (z / LAKE_CELL).floor() as i32;
+        for dz in -1..=1 {
+            for dx in -1..=1 {
+                let Some((cx, cz, r, depth)) = self.lake_candidate(ix + dx, iz + dz) else { continue };
+                let (ddx, ddz) = (x - cx, z - cz);
+                let d2 = ddx * ddx + ddz * ddz;
+                let reach = r as f64 * 1.25 + 8.0;
+                if d2 >= reach * reach {
+                    continue;
+                }
+                let Some(level) = self.lake_level_cached(cs, ix + dx, iz + dz, cx, cz, r) else { continue };
+                let dist = d2.sqrt().max(1e-3);
+                let n = self.dune_phase.sample(x * 1.7 + 911.0, z * 1.7 - 377.0, 0.0);
+                let rho = D2::new((dist / r as f64) as f32, (ddx / dist) as f32 / r, (ddz / dist) as f32 / r) + n * 0.12;
+                if rho.v < 1.0 {
+                    let q = 1.0 - rho.sq();
+                    *h = *h - q.sq() * depth;
+                }
+                let tent = (1.0 - sabs_tent(rho - 1.0) * (0.35 * r)) + level + 0.2;
+                if tent.v > h.v - 2.0 {
+                    *h = h.smax(tent, 2.0);
+                }
+                reg.lake = 1.0 - smoothstep(0.92, 1.0, rho.v);
+                reg.lake_level = level;
+                if rho.v < 1.0 && h.v < level {
+                    return Some(level as i32);
+                }
+                return None;
+            }
+        }
+        None
     }
 
     /// Volcano cone (dual) + optional lava lake level, if a volcano cell is near.
