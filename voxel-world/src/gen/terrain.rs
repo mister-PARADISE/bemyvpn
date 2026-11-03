@@ -22,7 +22,7 @@
 //!   effective erosion E*, itself squeezed low inside belts) sits → few, large ranges
 //!   (≈ 10 % of land above SEA+150, main peaks 430–496, ranges 10–20 km long).
 //! * **Regional character** (§2a anti-monotony): a λ 8 km selector χ makes *open plains* where
-//!   χ < −0.02…−0.18 (≈ 30 % of the land: low, calm steppe/meadow/floodplain basins at
+//!   χ < 0.05…−0.12 (≈ 35 % of the land: low, calm steppe/meadow/floodplain basins at
 //!   SEA + 3…8, ±1.5-block swells, rivers in broad floodplains with 2 % banks), rolling hills in
 //!   the middle, *plateau
 //!   country* (two-tier tablelands bounded by ≈ 50-block escarpments) where χ > 0.3, and *skerry
@@ -542,7 +542,7 @@ impl TerrainShaper {
         // cores of orogenic belts (low E* and the rain shadow make belts "hot-dry" by climate,
         // which would terrace whole mountain ranges and pile dunes on their flanks)
         let land = smoothstep(-0.16, -0.08, c) * (1.0 - smoothstep(0.2, 0.55, cd.orogeny.v));
-        let plain = if c > -0.08 { self.plain_weight(cd, self.character.sample(x, z, fp)).v } else { 0.0 };
+        let plain = if c > -0.12 { self.plain_weight(cd, self.character.sample(x, z, fp)).v } else { 0.0 };
         Regions {
             desert: desert_all * (1.0 - badlands) * land,
             badlands: badlands * land,
@@ -555,13 +555,13 @@ impl TerrainShaper {
         }
     }
 
-    /// Open-plains weight `P = w(2 − w)`, `w = s(χ; −0.02, −0.18) · (1 − s(M; 0.04, 0.25)) · s(C; −0.06, 0.06)`:
-    /// the low third of the regional character χ (λ 8 km; ≈ 30 % of the land) becomes big calm
-    /// lowlands — the contrast to belts, rolling hills (−0.02 < χ < 0.3) and plateau country
+    /// Open-plains weight `P = w(2 − w)`, `w = s(χ; 0.05, −0.12) · (1 − s(M; 0.04, 0.25)) · s(C; −0.12, −0.02)`:
+    /// the low ≈ 40 % of the regional character χ (λ 8 km) becomes big calm lowlands — the
+    /// contrast to belts, rolling hills (0.05 < χ < 0.3) and plateau country
     /// (χ > 0.3). χ alone (not the erosion, whose zero-set valleys are only ≈ 100 m wide) keeps
     /// the plains' edges km-scale ramps.
     fn plain_weight(&self, cd: &ClimateD, chi: D2) -> D2 {
-        let w = smoothstep_d(-0.02, -0.18, chi) * (1.0 - smoothstep_d(0.04, 0.25, cd.orogeny)) * smoothstep_d(-0.06, 0.06, cd.c);
+        let w = smoothstep_d(0.05, -0.12, chi) * (1.0 - smoothstep_d(0.04, 0.25, cd.orogeny)) * smoothstep_d(-0.12, -0.02, cd.c);
         // w(2 − w): the residual hill relief (1 − w)² vanishes quickly inside the plains
         w * (2.0 - w)
     }
@@ -614,7 +614,7 @@ impl TerrainShaper {
         // ridge/valley relief, ±1.5-block swells) — lowland basins where rivers meander across
         // genuinely flat floodplains, steppe and meadows.
         let chi = if cd.c.v > -0.45 { self.character.sample(x, z, fp) } else { D2::ZERO };
-        let plain = if cd.c.v > -0.08 { self.plain_weight(cd, chi) } else { D2::ZERO };
+        let plain = if cd.c.v > -0.12 { self.plain_weight(cd, chi) } else { D2::ZERO };
         if plain.v > 0.0 {
             // low plains a few blocks above the (sea-level) rivers: SEA + 3 near the coast …
             // + 8 far inland, so rivers wind through them in broad, barely incised floodplains
