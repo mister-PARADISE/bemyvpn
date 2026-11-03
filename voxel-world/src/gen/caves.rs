@@ -288,8 +288,8 @@ impl CaveCarver {
         CaveCarver {
             seed,
             bed: Sheet::new(s("caves.bedding"), 150.0, 3.4, 0.0),
-            joint1: Sheet::new(s("caves.joint1"), 135.0, 0.55, 0.45),
-            joint2: Sheet::new(s("caves.joint2"), 165.0, 0.55, 1.35),
+            joint1: Sheet::new(s("caves.joint1"), 115.0, 0.55, 0.45),
+            joint2: Sheet::new(s("caves.joint2"), 130.0, 0.55, 1.35),
             radius_n: Simplex::new(s("caves.radius")),
             shaft_gate: Simplex::new(s("caves.shaftgate")),
             cheese: Fbm::new(s("caves.cheese"), CHEESE_LAMBDA, 3, 2.0, 0.5),
@@ -374,7 +374,7 @@ impl CaveCarver {
         let region = self.cheese_region.n2(x * (1.0 / 1900.0), z * (1.0 / 1900.0));
         // Threshold: high near the surface, lower deep down, regional drift.
         let mut t = 0.385 - 0.10 * region;
-        t += 0.45 * (1.0 - smoothstep(12.0, 55.0, cover));
+        t += 0.42 * (1.0 - smoothstep(10.0, 42.0, cover));
         t -= 0.035 * (1.0 - smoothstep(30.0, 110.0, yf)); // big halls deep down
         if t < 0.62 {
             let n = self.cheese.sample3(x, y * 1.6, z);

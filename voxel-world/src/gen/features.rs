@@ -1612,6 +1612,22 @@ mod tests {
     }
 
     #[test]
+    fn canopy_lod_performance() {
+        let g = WorldGen::new(1);
+        let cols: Vec<ColumnInfo> = (0..256).map(|i| g.column_lod(i as f64 * 97.0, i as f64 * -61.0, 8.0)).collect();
+        let n = 400_000;
+        let t0 = std::time::Instant::now();
+        let mut acc = 0.0f32;
+        for i in 0..n {
+            let c = &cols[i % 256];
+            acc += g.canopy_lod(c.x, c.z, c, 8.0).coverage;
+        }
+        let ns = t0.elapsed().as_secs_f64() * 1e9 / n as f64;
+        eprintln!("canopy_lod: {ns:.0} ns/call (mean coverage {:.3})", acc / n as f32);
+        assert!(ns < 2000.0);
+    }
+
+    #[test]
     fn features_performance() {
         let g = WorldGen::new(1);
         let t0 = std::time::Instant::now();
