@@ -359,8 +359,9 @@ impl SurfaceRules {
         let hc = hash2(self.seed ^ 0x51, x, z);
         let dirt_depth = 3 + (hc & 1) as i32 + ((hc >> 1) & 1) as i32;
 
-        // ---------- snow: altitude-driven only (nothing below the local snow line)
-        if depth == 0 && !underwater {
+        // ---------- snow: altitude-driven only (nothing below the local snow line), and only on
+        // the open surface — not on cave floors or overhang ledges deep below the column top
+        if depth == 0 && !underwater && below_surface <= col.jaggedness + 1.5 {
             if let Some(m) = self.snow_cover(y, col, jit) {
                 return m;
             }

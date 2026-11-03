@@ -309,6 +309,10 @@ pub struct TerrainShaper {
     dune_mod: DFbm,
     wind: (f64, f64),
     mesa: DFbm,
+    /// Regional character selector (λ 8 km): > 0 plateau country, < 0 archipelago coasts.
+    character: DFbm,
+    plateau: DFbm,
+    islands: DFbm,
     swamp_n: DFbm,
     hoodoo: Worley2,
     volcano: Worley2,
@@ -355,6 +359,9 @@ fn sabs_tent(x: D2) -> D2 {
 /// Gradient scale G of the river noise for the valley distance min(|n|/s, |n|/G) (≈ p60 |∇n|).
 const RIVER_WALL_G: f32 = 1.5e-3;
 
+/// Height of the plateau-country step (two tiers: 65 % + 35 %).
+const PLATEAU_HEIGHT: f32 = 46.0;
+
 /// Maximum slope of river valley / canyon walls (≈ 65°; steeper is left to the 3D band).
 const WALL_MAX: f32 = 2.2;
 
@@ -382,6 +389,9 @@ impl TerrainShaper {
             dune_mod: DFbm::new(s("terrain.dune_mod"), 150.0, 2, 2.0, 0.5),
             wind: (wa.cos(), wa.sin()),
             mesa: DFbm::new(s("terrain.mesa"), 520.0, 4, 2.0, 0.5),
+            character: DFbm::new(s("terrain.character"), 8000.0, 2, 2.0, 0.5),
+            plateau: DFbm::new(s("terrain.plateau"), 2600.0, 2, 2.0, 0.45),
+            islands: DFbm::new(s("terrain.islands"), 300.0, 3, 2.0, 0.5),
             swamp_n: DFbm::new(s("terrain.swamp"), 36.0, 2, 2.0, 0.5),
             hoodoo: Worley2::new(s("terrain.hoodoo"), HOODOO_CELL, 0.75),
             volcano: Worley2::new(s("terrain.volcano"), VOLCANO_CELL, 0.7),
@@ -537,6 +547,32 @@ impl TerrainShaper {
         let sea_w = 1.0 - smoothstep(-0.26, -0.16, cd.c.v);
         if sea_w > 0.0 {
             h = h + hills * (18.0 * sea_w);
+        }
+
+        // --- regional character (DESIGN §2a anti-monotony): one λ 8 km selector χ
+        //   χ > 0.1 → plateau country: H += P·smoothstep(e, e + 0.035, n_p) — mesas/tablelands
+        //     several km across bounded by escarpments ≈ 50 blocks wide (slope ≈ 1–1.7); rivers
+        //     later cut canyons through them (lower envelope);
+        //   χ < −0.1 → archipelago coasts: on the shelf the sea floor is pulled toward a skerry
+        //     field `SEA + 2 + 16(n_i − 0.12)` wherever n_i > 0.12 (λ 300) → rocky islets.
+        let belt_free = 1.0 - smoothstep(0.1, 0.4, cd.orogeny.v);
+        if belt_free > 0.0 && cd.c.v > -0.45 {
+            let chi = self.character.sample(x, z, fp);
+            if chi.v > 0.1 && cd.c.v > 0.0 {
+                let wgt = smoothstep_d(0.1, 0.22, chi) * (belt_free * (1.0 - reg.swamp) * smoothstep(0.0, 0.12, cd.c.v));
+                let np = self.plateau.sample(x, z, fp);
+                let step = smoothstep_d(-0.02, 0.015, np) * 0.65 + smoothstep_d(0.16, 0.195, np) * 0.35;
+                h = h + step * wgt * PLATEAU_HEIGHT;
+            } else if chi.v < -0.1 && cd.c.v < -0.08 {
+                let shelf = smoothstep(-0.42, -0.30, cd.c.v) * smoothstep(-0.08, -0.16, cd.c.v);
+                let wgt = smoothstep_d(-0.1, -0.22, chi) * (belt_free * shelf);
+                if wgt.v > 0.0 {
+                    let ni = self.islands.sample(x, z, fp);
+                    let isl = smoothstep_d(0.12, 0.30, ni);
+                    let top = ni * 16.0 + (SEA + 2.0 - 16.0 * 0.12);
+                    h = lerp_d(h, top.max(h), isl * wgt);
+                }
+            }
         }
 
         // --- fine roughness ±2–4 blocks (less on dunes/swamps/beaches)
@@ -700,6 +736,12 @@ impl TerrainShaper {
             * if reg.lake > 0.0 || water_level > SEA_LEVEL { 0.0 } else { 1.0 };
         let mut jag = j_m.max(j_c).max(j_s) * tame;
         jag = jag.min(28.0).min((WORLD_HEIGHT as f32 - 3.0 - h.v).max(0.0));
+        if h.v >= SEA {
+            // A dry column's 3D band must stay above the sea: otherwise the overhang noise
+            // hollows out air pockets below sea level next to river/sea water columns, which the
+            // builder never floods (exposed vertical water faces in canyon floors).
+            jag = jag.min((h.v - SEA - 1.0).max(0.0));
+        }
         if jag < 0.5 {
             jag = 0.0;
         }
@@ -1420,6 +1462,28 @@ mod tests {
         }
         eprintln!("{lakes} lakes, {water_cols} water columns checked");
         assert!(lakes >= 4 && water_cols > 500);
+    }
+
+    /// A dry column's 3D detail band never reaches below sea level (no unflooded air pockets
+    /// under the waterline next to river/sea columns). Brute force over jagged columns.
+    #[test]
+    fn dry_band_stays_above_sea() {
+        let g = WorldGen::new(1);
+        let mut n = 0;
+        for i in 0..60_000u64 {
+            let x = ((rnd(i * 2 + 555) - 0.5) * 40_000.0).floor() + 0.5;
+            let z = ((rnd(i * 2 + 556) - 0.5) * 40_000.0).floor() + 0.5;
+            let c = g.column(x, z);
+            if c.water_level != i32::MIN || c.jaggedness == 0.0 {
+                continue;
+            }
+            n += 1;
+            assert!(c.height - c.jaggedness >= SEA - 1e-3, "band reaches {} at ({x},{z})", c.height - c.jaggedness);
+            for y in 100..SEA_LEVEL {
+                assert!(g.density(x, y as f64 + 0.5, z, &c) > 0.0, "air below sea level at ({x},{y},{z})");
+            }
+        }
+        assert!(n > 2000, "{n}");
     }
 
     /// Seeds must not share structure at the world origin (all octaves used to sit on a lattice
