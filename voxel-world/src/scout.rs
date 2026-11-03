@@ -1368,7 +1368,7 @@ fn plan_alpine(s: &Scout, avoid: &[[f64; 2]]) -> Vec<Candidate> {
             let mut res = Vec::new();
             for (ps, cx, cz, _, az) in pos {
                 let (cx, cz) = (cx.floor() + 0.5, cz.floor() + 0.5);
-                let cy = camera_floor(s.gen, cx, cz, 10.0) as f64 + 10.0;
+                let cy = camera_floor(s.gen, cx, cz, 20.0) as f64 + 12.0;
                 let r = (px - cx).hypot(pz - cz);
                 let a = ((hp as f64 - cy) / r).atan();
                 let vs = Viewshed::new(&t, [cx, cy, cz], VIEW_RANGE);
