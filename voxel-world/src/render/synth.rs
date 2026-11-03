@@ -61,6 +61,8 @@ impl SynthTerrain {
 
     /// Height of the analytic terrain at (x, z) band-limited to `footprint` blocks.
     pub fn height(&self, x: f64, z: f64, fp: f64) -> (f64, f32) {
+        // Offset: lattice noises vanish at the origin (would create a spike there).
+        let (x, z) = (x + 3171.37, z - 1529.71);
         let c = self.cont.sample2_lod(x, z, fp) as f64 * 3.2 + 0.25;
         // Base: deep ocean → shelf → coast → lowland.
         let base = if c < 0.0 {
@@ -69,13 +71,13 @@ impl SynthTerrain {
             SEA - 4.0 + 70.0 * (c.min(1.5)) / (1.0 + c.min(1.5))
         };
         let land = smoothstep(0.0, 0.35, c as f32) as f64;
-        let rg = smoothstep(-0.05, 0.25, self.range.sample2_lod(x + 900.0, z - 300.0, fp)) as f64;
+        let rg = smoothstep(-0.12, 0.18, self.range.sample2_lod(x + 900.0, z - 300.0, fp)) as f64;
         let r = self.ridged.sample2_lod(x, z, fp) as f64;
-        let mountains = land * rg * 330.0 * r.max(0.0).powf(1.6);
+        let mountains = land * rg * 400.0 * r.max(0.0).powf(1.5);
         let hills = land * (14.0 + 18.0 * (1.0 - rg)) * self.hills.sample2_lod(x, z, fp) as f64 * 2.2;
         let rough = if fp < 20.0 { self.rough.sample2_lod(x, z, fp) as f64 * 4.0 * land } else { 0.0 };
         let mut h = base + mountains + hills + rough + land * 10.0;
-        let mesa = smoothstep(0.08, 0.22, self.mesa.sample2_lod(x - 4000.0, z + 2500.0, fp)) * land as f32;
+        let mesa = smoothstep(0.22, 0.32, self.mesa.sample2_lod(x - 4000.0, z + 2500.0, fp)) * land as f32;
         if mesa > 0.0 && h > SEA + 3.0 {
             let s = 11.0;
             let v = (h - SEA) / s;

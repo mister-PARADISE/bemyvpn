@@ -361,7 +361,13 @@ impl TerrainShaper {
         let ridge = q.chain(self.ridged.sample(q.x, q.z, 0.0));
         let hills = self.hills.sample(x, z, 0.0);
         let sh = self.shape(cd, x, z, 0.0);
-        vec![base.v, ridge.v * 300.0, hills.v * 300.0, sh.mountain, sh.height.v]
+        let amp = spline_d(&self.amp, &inp).maxf(0.0);
+        let r2 = ((ridge - 0.12) * 1.25).clamp(0.0, 1.0);
+        let hills01 = (hills * 1.3 + 0.45).clamp(0.0, 1.0);
+        let s_mix = (smoothstep_d(-0.5, 0.6, cd.pv) * 0.5 + smoothstep_d(40.0, 200.0, amp) * 0.5).clamp(0.0, 1.0);
+        let vfac = smoothstep_d(-0.95, -0.35, cd.pv) * 0.65 + 0.35;
+        let m = amp * lerp_d(hills01, r2, s_mix) * vfac;
+        vec![base.v, ridge.v * 300.0, hills.v * 300.0, sh.mountain, sh.height.v, m.v, m.dx + base.dx, m.dz + base.dz]
     }
 
     /// Region weights from climate alone.
@@ -401,7 +407,8 @@ impl TerrainShaper {
 
         // --- mountains / hills
         let q = &cd.q;
-        let ridge = q.chain(self.ridged.sample(q.x, q.z, fp));
+        let (ridge, steer) = self.ridged.sample_with_steer(q.x, q.z, fp);
+        let (ridge, steer) = (q.chain(ridge), q.chain(steer));
         let ridge = ((ridge - 0.12) * 1.25).clamp(0.0, 1.0);
         let hills = self.hills.sample(x, z, fp);
         let hills01 = (hills * 1.3 + 0.45).clamp(0.0, 1.0);
@@ -413,7 +420,12 @@ impl TerrainShaper {
         // dendritic gullies on mountain flanks (strength ∝ local relief)
         if mountain.v > 12.0 {
             let ga = 0.65 * smoothstep(12.0, 60.0, mountain.v);
-            let g = self.gullies(x, z, (mountain.dx + base.dx, mountain.dz + base.dz), ga, fp);
+            // Smooth steering proxy (see `DRidged::sample_with_steer`): regional slope + uplift
+            // gradient + rounded main crests. Sharp crests must not steer the gully phase.
+            let k = amp.v * vfac.v * s_mix.v * 1.25;
+            let gx = base.dx + amp.dx * shape.v * vfac.v + k * steer.dx;
+            let gz = base.dz + amp.dz * shape.v * vfac.v + k * steer.dz;
+            let g = self.gullies(x, z, (gx, gz), ga, fp);
             mountain = mountain + g;
         }
         let mut h = base + mountain;

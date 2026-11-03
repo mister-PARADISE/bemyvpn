@@ -386,10 +386,19 @@ impl DRidged {
 
     #[inline]
     pub fn sample(&self, x: f64, z: f64, fp: f64) -> D2 {
+        self.sample_with_steer(x, z, fp).0
+    }
+
+    /// Ridged value plus a *steering proxy*: the first octave alone with strongly rounded crest
+    /// (ε = 0.45), on the same scale as the full field — a smooth stand-in whose gradient direction
+    /// rotates slowly even across sharp crests.
+    #[inline]
+    pub fn sample_with_steer(&self, x: f64, z: f64, fp: f64) -> (D2, D2) {
         let mut f = self.inv_wavelength;
         let mut spectral = 1.0f32;
         let mut weight = D2::c(1.0);
         let mut sum = D2::ZERO;
+        let mut steer = D2::ZERO;
         let mut eps = 0.10f32;
         for &(ref s, c, sn) in &self.layers {
             let fade = lod_fade(1.0 / f, fp);
@@ -400,6 +409,9 @@ impl DRidged {
             let ff = f as f32;
             let (cf, sf) = (c as f32, sn as f32);
             let nd = D2::new(n, ff * (nx * cf + nz * sf), ff * (nz * cf - nx * sf));
+            if eps < 0.11 {
+                steer = (1.0 - sabs_d(nd, 0.45)).maxf(0.0).sq() * (1.6 * self.inv_norm);
+            }
             let sig = (1.0 - sabs_d(nd, eps)).maxf(0.0).sq() * weight;
             weight = sig.powf(0.8);
             sum += sig * (fade * spectral);
@@ -407,7 +419,7 @@ impl DRidged {
             f *= 2.0;
             eps = 0.14;
         }
-        (sum * self.inv_norm).clamp(0.0, 1.0)
+        ((sum * self.inv_norm).clamp(0.0, 1.0), steer)
     }
 }
 
@@ -720,7 +732,7 @@ fn build_map(q: &[f32; 25], target: fn(f32) -> f32) -> MonoMap {
 /// the zero set of the noise — long, branching orogenic belts instead of round blobs.
 #[inline]
 fn erosion_raw(n: D2) -> D2 {
-    sabs_d(n, 0.03) * 2.0 - 0.5
+    sabs_d(n, 0.15) * 2.0 - 0.5
 }
 
 // =====================================================================================
