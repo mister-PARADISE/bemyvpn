@@ -33,7 +33,7 @@ fn main() {
                         hi = hi.max(h);
                     }
                 }
-                if hi - lo > 24.0 && rel_hist[5] + rel_hist[4] < 0 {
+                if hi - lo > 6.0 && hi - lo < 12.0 && rel_hist[2] < 12 {
                     let cd = g.climate.sample_d(x, z, 0.0);
                     eprintln!("  ({x:.0},{z:.0}) relief {:.0} h {:.0} biome {:?} river_dist {:.0} gate {:.2} desert {:.2} bad {:.2} lake {:.2} swamp {:.2}", hi - lo, c.height, c.biome, cd.river_dist, cd.river_gate, r.desert, r.badlands, r.lake, r.swamp);
                 }

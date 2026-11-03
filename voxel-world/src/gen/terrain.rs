@@ -22,7 +22,7 @@
 //!   effective erosion E*, itself squeezed low inside belts) sits → few, large ranges
 //!   (≈ 10 % of land above SEA+150, main peaks 430–496, ranges 10–20 km long).
 //! * **Regional character** (§2a anti-monotony): a λ 8 km selector χ makes *open plains* where
-//!   χ < −0.12…−0.26 (≈ 25 % of the land: low, calm floodplain/steppe basins at SEA + 3.5…10.5,
+//!   χ < −0.04…−0.20 (≈ 30 % of the land: low, calm floodplain/steppe basins at SEA + 2.8…6.8,
 //!   ±1.5-block swells, rivers in broad shallow valleys), rolling hills in the middle, *plateau
 //!   country* (two-tier tablelands bounded by ≈ 50-block escarpments) where χ > 0.3, and *skerry
 //!   archipelagos* on the shelf where χ < −0.1; plus mesa country (badlands), dune seas, volcanoes.
@@ -392,7 +392,7 @@ const PLATEAU_HEIGHT: f32 = 46.0;
 const WALL_MAX: f32 = 1.8;
 
 /// Open plains: rise of the calm surface from the coast (SEA + 3.5) to far inland.
-const PLAIN_RISE: f32 = 7.0;
+const PLAIN_RISE: f32 = 4.0;
 /// Soft summit ceiling: `h' = C + A·ln(1 + (h − C)/A)` above C (slope factor 1/(1 + (h − C)/A),
 /// ≥ 0.2 for every reachable h: summits are compressed, never flattened into caps).
 const CEIL_START: f32 = 430.0;
@@ -554,13 +554,13 @@ impl TerrainShaper {
         }
     }
 
-    /// Open-plains weight `P = s(χ; −0.12, −0.26) · (1 − s(M; 0.04, 0.25)) · s(C; −0.06, 0.06)`:
-    /// the low quarter of the regional character χ (λ 8 km; ≈ 25 % of the land) becomes big calm
-    /// lowlands — the contrast to belts, rolling hills (−0.12 < χ < 0.3) and plateau country
+    /// Open-plains weight `P = s(χ; −0.04, −0.20) · (1 − s(M; 0.04, 0.25)) · s(C; −0.06, 0.06)`:
+    /// the low third of the regional character χ (λ 8 km; ≈ 30 % of the land) becomes big calm
+    /// lowlands — the contrast to belts, rolling hills (−0.04 < χ < 0.3) and plateau country
     /// (χ > 0.3). χ alone (not the erosion, whose zero-set valleys are only ≈ 100 m wide) keeps
     /// the plains' edges km-scale ramps.
     fn plain_weight(&self, cd: &ClimateD, chi: D2) -> D2 {
-        smoothstep_d(-0.12, -0.26, chi) * (1.0 - smoothstep_d(0.04, 0.25, cd.orogeny)) * smoothstep_d(-0.06, 0.06, cd.c)
+        smoothstep_d(-0.04, -0.20, chi) * (1.0 - smoothstep_d(0.04, 0.25, cd.orogeny)) * smoothstep_d(-0.06, 0.06, cd.c)
     }
 
     /// The height construction (see module docs) *without* inland lakes (lakes need the climate
@@ -613,9 +613,9 @@ impl TerrainShaper {
         let chi = if cd.c.v > -0.45 { self.character.sample(x, z, fp) } else { D2::ZERO };
         let plain = if cd.c.v > -0.08 { self.plain_weight(cd, chi) } else { D2::ZERO };
         if plain.v > 0.0 {
-            // low plains a few blocks above the (sea-level) rivers: 143.5 near the coast … 150.5
-            // far inland, so rivers wind through them in shallow, broad valleys
-            let flat = smoothstep_d(-0.05, 0.6, cd.c) * PLAIN_RISE + (SEA + 3.5) + self.swell.sample(x, z, fp) * 5.0;
+            // low plains a few blocks above the (sea-level) rivers: SEA + 2.8 near the coast …
+            // + 6.8 far inland, so rivers wind through them in broad, barely incised floodplains
+            let flat = smoothstep_d(-0.05, 0.6, cd.c) * PLAIN_RISE + (SEA + 2.8) + self.swell.sample(x, z, fp) * 4.0;
             h = lerp_d(h, flat, plain);
             sgx = lerp(sgx, flat.dx, plain.v);
             sgz = lerp(sgz, flat.dz, plain.v);
@@ -727,8 +727,8 @@ impl TerrainShaper {
             let depth = 2.5 + 0.25 * w;
             let above = (h.v - SEA).max(0.0);
             let bank = SEA - 0.6 + (1.0 - gate) * above * 0.95;
-            // plains: almost flat banks (σ → 0.03, no convexity) — broad floodplains
-            let sigma = lerp_d(spline_d(&self.wall, &inp), D2::c(0.03), plain);
+            // plains: almost flat banks (σ → 0.02, no convexity) — broad floodplains
+            let sigma = lerp_d(spline_d(&self.wall, &inp), D2::c(0.02), plain);
             // convexity κ: U-shaped troughs in the belts (gentle floor, walls steepening upward)
             let kappa = (0.011 * (1.0 - saturate((cd.e.v + 1.0) * 0.5)) + 0.0015) * (1.0 - 0.9 * plain.v);
             let v = if d.v < w {

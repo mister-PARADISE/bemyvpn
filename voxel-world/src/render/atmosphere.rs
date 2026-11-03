@@ -331,6 +331,9 @@ pub struct Atmosphere {
     /// Irradiance from the sky onto an upward facing surface (no sun).
     pub e_sky_up: Vec3,
     pub ground_albedo: Vec3,
+    /// Uniform radiance of the (Lambertian) ground below the horizon, as baked into the SH
+    /// irradiance: ρ_g (E_sun cos θ_s + E_sky↑) / π.
+    pub l_ground: Vec3,
 }
 
 impl Atmosphere {
@@ -360,6 +363,7 @@ impl Atmosphere {
             sh: [Vec3::ZERO; 9],
             e_sky_up: Vec3::ZERO,
             ground_albedo: Vec3::from_array(ground_albedo),
+            l_ground: Vec3::ZERO,
         };
         atm.sun_e_cam = atm.sun_illuminance(h_cam);
         atm.build_lut();
@@ -619,6 +623,7 @@ impl Atmosphere {
         }
         self.sh = sh;
         self.e_sky_up = e_up;
+        self.l_ground = l_ground;
     }
 }
 
@@ -709,5 +714,41 @@ mod tests {
         let dn = noon.irradiance(-Vec3::Y);
         assert!(up.y > 0.0 && dn.y > 0.0);
         assert!(up.z / up.x > dn.z / dn.x);
+    }
+}
+
+#[cfg(test)]
+mod sh_tests {
+    use super::*;
+
+    /// The order-2 SH irradiance must match a direct quadrature of ∫ L cos θ dω (sky above the
+    /// horizon, l_ground below) for every normal, also for a strongly anisotropic sunset sky.
+    #[test]
+    fn sh_irradiance_matches_quadrature() {
+        for (sun_el, tol) in [(0.9f32, 0.06f32), (0.08, 0.10)] {
+            let s = Vec3::new(0.3, sun_el, 0.8).normalize();
+            let atm = Atmosphere::new(150.0, s, 1.0, 40_000.0);
+            let env = |d: Vec3| if d.y >= 0.0 { atm.sky(d) } else { atm.l_ground };
+            for n in [Vec3::Y, Vec3::X, -Vec3::Z, Vec3::new(0.5, 0.6, -0.4).normalize(), s, Vec3::new(-s.x, 0.0, -s.z).normalize()] {
+                let (nt, np) = (180usize, 360usize);
+                let mut e = Vec3::ZERO;
+                for it in 0..nt {
+                    let th = (it as f64 + 0.5) / nt as f64 * PI;
+                    let dw = ((PI / nt as f64) * (2.0 * PI / np as f64) * th.sin()) as f32;
+                    for ip in 0..np {
+                        let ph = (ip as f64 + 0.5) / np as f64 * 2.0 * PI;
+                        let d = Vec3::new((th.sin() * ph.cos()) as f32, th.cos() as f32, (th.sin() * ph.sin()) as f32);
+                        let c = d.dot(n);
+                        if c > 0.0 {
+                            e += env(d) * (c * dw);
+                        }
+                    }
+                }
+                let sh = atm.irradiance(n);
+                let rel = (sh.luminance() - e.luminance()).abs() / e.luminance();
+                eprintln!("sun {sun_el} n {:?}: quad {:?} sh {:?} rel {:.3}", n, e, sh, rel);
+                assert!(rel < tol, "SH irradiance off by {rel}");
+            }
+        }
     }
 }

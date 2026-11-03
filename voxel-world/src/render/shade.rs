@@ -35,16 +35,33 @@ const AO_LEN: f64 = 22.0;
 const VIS_DIST: f64 = 260.0;
 
 /// Per-thread scratch: direct-mapped cache of per-vertex sky visibility.
+///
+/// The cached values depend on the frame (world, sun, sky), so the cache is tagged with the id of
+/// the [`Frame`] that filled it and flushed when a different frame uses it. (The renderer keeps one
+/// `Ctx` per worker thread for the whole process; without the tag a later render — another shot,
+/// another sun, another seed — would silently reuse irradiance computed for an earlier one.)
 pub struct Ctx {
     keys: Vec<u64>,
     vals: Vec<[f32; 4]>,
+    frame: u64,
 }
 
 impl Ctx {
     pub fn new() -> Ctx {
-        Ctx { keys: vec![u64::MAX; 1 << 13], vals: vec![[0.0; 4]; 1 << 13] }
+        Ctx { keys: vec![u64::MAX; 1 << 13], vals: vec![[0.0; 4]; 1 << 13], frame: 0 }
+    }
+    /// Flush the memo if it was filled by another frame.
+    #[inline]
+    pub fn bind(&mut self, frame_id: u64) {
+        if self.frame != frame_id {
+            self.keys.fill(u64::MAX);
+            self.frame = frame_id;
+        }
     }
 }
+
+/// Process-wide frame counter (ids start at 1; 0 = "no frame").
+static NEXT_FRAME_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 impl Default for Ctx {
     fn default() -> Self {
@@ -99,6 +116,8 @@ pub struct Frame<'a> {
     pub far: FarGround,
     ao_dirs: [[f32; 3]; AO_RAYS],
     studio_sun: Vec3,
+    /// Unique id of this frame (tags per-thread caches, see [`Ctx`]).
+    pub id: u64,
 }
 
 #[inline]
@@ -211,6 +230,7 @@ impl<'a> Frame<'a> {
             far,
             ao_dirs,
             studio_sun,
+            id: NEXT_FRAME_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
         }
     }
 
@@ -255,6 +275,22 @@ impl<'a> Frame<'a> {
         match &self.atm {
             Some(a) => a.sky(d),
             None => studio_backdrop(d),
+        }
+    }
+
+    /// The environment radiance that the SH irradiance [`Self::sky_irradiance`] integrates: sky
+    /// above the horizon, the uniform ground-bounce radiance below it (studio: the backdrop ×0.8).
+    #[inline]
+    fn env_radiance(&self, d: Vec3) -> Vec3 {
+        match &self.atm {
+            Some(a) => {
+                if d.y >= 0.0 {
+                    a.sky(d)
+                } else {
+                    a.l_ground
+                }
+            }
+            None => studio_backdrop(d) * 0.8,
         }
     }
 
@@ -475,12 +511,20 @@ impl<'a> Frame<'a> {
         e * ao
     }
 
-    /// Ray-traced irradiance at a face vertex (12 cosine-distributed rays, Monte-Carlo estimate
-    /// E = π/K Σ L_i): escaped rays see the sky radiance, blocked rays see a one-bounce estimate
-    /// of the hit surface (albedo × sky/sun irradiance, judged by whether the hit block is exposed
-    /// at the top of its column), emitters (lava, crystal) contribute their radiance. Memoised per
-    /// thread (pure function of the vertex and face).
+    /// Ray-traced irradiance at a face vertex from 12 cosine-distributed rays, memoised per thread
+    /// (pure function of the vertex, the face and the frame).
+    ///
+    /// Estimator (ratio control variate): with `L_env` the environment the SH irradiance integrates
+    /// and `E_env(n) = ∫ L_env cos θ dω` its exact (SH) value,
+    ///   E ≈ E_env(n) · Σ_{escaped} ℓ(L_env(dᵢ)) / Σ_{all} ℓ(L_env(dᵢ))  +  π/K · Σ_{blocked} L_hit(dᵢ),
+    /// ℓ = luminance. The first term is the env irradiance scaled by the irradiance-weighted
+    /// visible fraction, so an unoccluded vertex gets exactly `E_env(n)` — no Monte-Carlo noise from
+    /// a strongly anisotropic (sunset) sky, which a plain π/K Σ L_env(dᵢ) estimate turns into
+    /// block-sized blotches on open ground. Blocked rays add a one-bounce estimate of the hit
+    /// surface (albedo × sky/sun irradiance, judged by whether the hit block is exposed at the top
+    /// of its column); emitters (lava, crystal) add their radiance.
     fn vertex_irradiance(&self, v: [i32; 3], face: u8, ctx: &mut Ctx) -> [f32; 4] {
+        ctx.bind(self.id);
         let key = (v[0] as u32 as u64) | ((v[1] as u32 as u64 & 0x3FF) << 32) | ((v[2] as u32 as u64 & 0x3_FFFF) << 42) | ((face as u64) << 60);
         let slot = (mix64(key) as usize) & (ctx.keys.len() - 1);
         if ctx.keys[slot] == key {
@@ -491,28 +535,24 @@ impl<'a> Frame<'a> {
         let rot = hash_f01(hash3(0xA0, v[0], v[1], v[2] ^ (face as i32) << 20)) * 2.0 * PI;
         let (sr, cr) = rot.sin_cos();
         let o = [v[0] as f64 + n.x as f64 * 0.03, v[1] as f64 + n.y as f64 * 0.03, v[2] as f64 + n.z as f64 * 0.03];
-        let mut sum = Vec3::ZERO;
+        let mut bounce = Vec3::ZERO;
+        let (mut w_all, mut w_esc) = (0.0f32, 0.0f32);
         let e_sun = self.sun_irradiance(v[1] as f64);
         let e_up = self.sky_irradiance(Vec3::Y);
         for dl in &self.ao_dirs {
             let (x, y) = (dl[0] * cr - dl[1] * sr, dl[0] * sr + dl[1] * cr);
             let d = t1 * x + t2 * y + n * dl[2];
+            let w = self.env_radiance(d).luminance().max(1e-6);
+            w_all += w;
             let ray = Ray::new(o, d3(d));
             match self.scene.l0.trace(&ray, 0.0, AO_LEN, false) {
-                None => {
-                    sum += if d.y < -0.02 && !self.studio {
-                        // Escaped downward (over a cliff edge): distant sunlit ground.
-                        self.far.land * (e_sun * self.sun.y.max(0.0) + e_up) * (1.0 / PI)
-                    } else {
-                        self.sky_radiance(d)
-                    };
-                }
+                None => w_esc += w,
                 Some(h) => {
                     if let HitKind::Voxel { mat, face: hf, bx, by, bz } = h.kind {
                         let e = mat.emission();
                         if e != Vec3::ZERO {
                             let fk = if hf == 2 { FACE_TOP } else if hf == 3 { FACE_BOTTOM } else { FACE_SIDE };
-                            sum += e * self.tex.average(mat, fk).e;
+                            bounce += e * self.tex.average(mat, fk).e;
                         } else {
                             let alb = materials::far_albedo(mat, 0.3, 0.2, by as f32);
                             let top = self.world.l0.top(bx, bz) as i32;
@@ -520,14 +560,15 @@ impl<'a> Frame<'a> {
                             let hn = v3(h.n);
                             let ndl = hn.dot(self.sun).max(0.0);
                             let e_hit = if exposed { e_up * 0.8 + e_sun * (ndl * 0.75) } else { e_up * 0.1 };
-                            sum += alb * e_hit * (1.0 / PI);
+                            bounce += alb * e_hit * (1.0 / PI);
                         }
                     }
                 }
             }
         }
-        let k = PI / AO_RAYS as f32;
-        let r = [sum.x * k, sum.y * k, sum.z * k, 0.0];
+        let vis = if w_all > 0.0 { w_esc / w_all } else { 1.0 };
+        let e = self.sky_irradiance(n) * vis + bounce * (PI / AO_RAYS as f32);
+        let r = [e.x, e.y, e.z, vis];
         ctx.keys[slot] = key;
         ctx.vals[slot] = r;
         r

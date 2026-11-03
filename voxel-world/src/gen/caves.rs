@@ -228,11 +228,30 @@ fn dot3(a: [f32; 3], b: [f32; 3]) -> f32 {
 /// `d² = (a²|∇b|² − 2ab ∇a·∇b + b²|∇a|²) / |∇a × ∇b|²` (regularised when the sheets are tangent).
 #[inline]
 fn curve_dist2(a: f32, ga: [f32; 3], b: f32, gb: [f32; 3]) -> f32 {
+    curve_dist2_angle(a, ga, b, gb).0
+}
+
+/// [`curve_dist2`] plus `sin²θ = |∇a × ∇b|² / (|∇a|²|∇b|²)`, θ = crossing angle of the sheets.
+/// In terms of the sheet distances `dₐ = a/|∇a|`, `d_b = b/|∇b|` the distance is
+/// `d² = (dₐ² + d_b² − 2 dₐ d_b cos θ) / (sin²θ + ε)` — exact for planes, but where the sheets
+/// cross at a grazing angle (sin²θ → ε) the first-order model breaks down: the field becomes
+/// extremely steep (measured ≈ 70 blocks/block) and carves thin ribbons along tangencies.
+#[inline]
+fn curve_dist2_angle(a: f32, ga: [f32; 3], b: f32, gb: [f32; 3]) -> (f32, f32) {
     let aa = dot3(ga, ga);
     let bb = dot3(gb, gb);
     let ab = dot3(ga, gb);
-    let det = (aa * bb - ab * ab).max(0.0) + 0.04 * aa * bb + 1e-12;
-    (a * a * bb - 2.0 * a * b * ab + b * b * aa).max(0.0) / det
+    let cross = (aa * bb - ab * ab).max(0.0);
+    let det = cross + 0.04 * aa * bb + 1e-12;
+    let d2 = (a * a * bb - 2.0 * a * b * ab + b * b * aa).max(0.0) / det;
+    (d2, cross / (aa * bb + 1e-12))
+}
+
+/// Penalty (blocks) removing tube segments where the two sheets cross at a grazing angle
+/// (θ ≲ 20°), where the linearised distance is unreliable: `GRAZE·(1 − smoothstep(s₀, s₁, sin²θ))`.
+#[inline]
+fn graze_penalty(sin2: f32) -> f32 {
+    8.0 * (1.0 - smoothstep(0.04, 0.16, sin2))
 }
 
 #[inline]
@@ -364,10 +383,11 @@ impl CaveCarver {
         let (cc, gc) = self.joint2.eval(x, y, z);
         let rn = self.radius_n.n3(x * (1.0 / 70.0), y * (1.0 / 45.0), z * (1.0 / 70.0));
         let r = 2.6 + 2.8 * smoothstep(-0.55, 0.65, rn);
-        let d_ab = curve_dist2(a, ga, b, gb);
-        let d_ac = curve_dist2(a, ga, cc, gc);
-        let d_t = d_ab.min(d_ac);
-        let tunnels = (r * r - d_t) / (2.0 * r);
+        let (d_ab, s_ab) = curve_dist2_angle(a, ga, b, gb);
+        let (d_ac, s_ac) = curve_dist2_angle(a, ga, cc, gc);
+        let t_ab = (r * r - d_ab) / (2.0 * r) - graze_penalty(s_ab);
+        let t_ac = (r * r - d_ac) / (2.0 * r) - graze_penalty(s_ac);
+        let tunnels = t_ab.max(t_ac);
         // shafts: sub-vertical curves B = 0 ∧ C = 0, only in gated districts
         // The gate fades the shaft field by −SHAFT_FADE·(1 − sg) (instead of shrinking the radius
         // to a positive minimum and then jumping to −50 at sg = 0, which cut thin shafts off with
@@ -376,8 +396,8 @@ impl CaveCarver {
         let sg = smoothstep(0.25, 0.6, self.shaft_gate.n2(x * (1.0 / 400.0), z * (1.0 / 400.0)));
         let shafts = if sg > 0.0 {
             let rs = 1.4 + 1.8 * smoothstep(-0.5, 0.6, rn);
-            let d_bc = curve_dist2(b, gb, cc, gc);
-            (rs * rs - d_bc) / (2.0 * rs) - SHAFT_FADE * (1.0 - sg)
+            let (d_bc, s_bc) = curve_dist2_angle(b, gb, cc, gc);
+            (rs * rs - d_bc) / (2.0 * rs) - SHAFT_FADE * (1.0 - sg) - graze_penalty(s_bc)
         } else {
             -50.0
         };
@@ -957,5 +977,31 @@ mod tests {
         let ns2 = t0.elapsed().as_secs_f64() * 1e9 / n as f64;
         eprintln!("cave_fill: {ns2:.0} ns/eval ({k})");
         assert!(ns < 3000.0);
+    }
+}
+#[cfg(test)]
+mod dbg_tests {
+    use super::*;
+    use crate::gen::WorldGen;
+    #[test]
+    fn dbg_point() {
+        for seed in [1u64, 2] {
+            let g = WorldGen::new(seed);
+            let (x, z) = (-4081.5, -2055.5);
+            let col = g.column(x, z);
+            let mut prev = g.caves.field(x, 119.83, z, &col);
+            for k in 0..=64 {
+                let y = 119.83 + 0.5 * k as f64 / 64.0;
+                let p = g.caves.parts(x, y, z, &col);
+                if (p.total - prev).abs() > 0.3 {
+                    let c = &g.caves;
+                    let (a, ga) = c.bed.eval(x, y, z);
+                    let (b, gb) = c.joint1.eval(x, y, z);
+                    let (cc, gc) = c.joint2.eval(x, y, z);
+                    eprintln!("seed {seed} y {y:.4} {:?} ab {:?} ac {:?} a {a} b {b} c {cc} ga {ga:?} gb {gb:?} gc {gc:?}", p, curve_dist2_angle(a, ga, b, gb), curve_dist2_angle(a, ga, cc, gc));
+                }
+                prev = p.total;
+            }
+        }
     }
 }
