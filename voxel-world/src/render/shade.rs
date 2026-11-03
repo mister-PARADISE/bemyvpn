@@ -118,6 +118,8 @@ pub struct Frame<'a> {
     studio_sun: Vec3,
     /// Unique id of this frame (tags per-thread caches, see [`Ctx`]).
     pub id: u64,
+    /// Earth-curvature coefficient κ = 1/(2R) (0 in the studio), see `trace` module docs.
+    pub kappa: f64,
 }
 
 #[inline]
@@ -231,7 +233,15 @@ impl<'a> Frame<'a> {
             ao_dirs,
             studio_sun,
             id: NEXT_FRAME_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            kappa: if studio { 0.0 } else { 0.5 / crate::render::trace::EARTH_RADIUS },
         }
+    }
+
+    /// A ray through the curved world (geometry lowered by ρ²/2R around the camera); the hit
+    /// points it produces are in world coordinates.
+    #[inline]
+    pub fn ray(&self, o: [f64; 3], d: [f64; 3]) -> Ray {
+        Ray::curved(o, d, [self.cam[0], self.cam[2]], self.kappa)
     }
 
     /// Primary ray direction through continuous pixel coordinates (px, py) (top-left origin).
@@ -297,7 +307,7 @@ impl<'a> Frame<'a> {
     /// Radiance arriving at `o` from direction `d` (aerial perspective included). `fp0` = pixel
     /// footprint (blocks) at the origin, growing by `pix_angle` per block.
     pub fn radiance(&self, o: [f64; 3], d: Vec3, fp0: f32, depth: u32, jit: u32, ctx: &mut Ctx) -> Sample {
-        let ray = Ray::new(o, d3(d));
+        let ray = self.ray(o, d3(d));
         let hit = self.scene.trace(&ray, 0.0, self.max_dist, true);
         match hit {
             Some(h) => {
@@ -671,7 +681,7 @@ impl<'a> Frame<'a> {
                     // Light through one leaf block: start the shadow ray on the sun side of the block.
                     o = [o[0] + sd.x as f64 * 1.0, o[1] + sd.y as f64 * 1.0, o[2] + sd.z as f64 * 1.0];
                 }
-                let ray = Ray::new(o, d3(sd));
+                let ray = self.ray(o, d3(sd));
                 if !self.scene.occluded(&ray, 0.0, INF) {
                     sun_vis = 1.0;
                     e_sun = e;
@@ -871,7 +881,7 @@ impl<'a> Frame<'a> {
         }
         let refl = if depth == 0 {
             let o = [p[0], wl + 0.01, p[2]];
-            let ray = Ray::new(o, d3(r));
+            let ray = self.ray(o, d3(r));
             match self.scene.trace(&ray, 0.0, self.max_dist, false) {
                 Some(h) => {
                     let fp2 = fp + h.t as f32 * self.pix_angle;
@@ -960,7 +970,7 @@ impl<'a> Frame<'a> {
             let spec = ggx_spec(n, v, sd, rough, 0.02);
             if spec * e_sun.max_elem() > 1e-4 {
                 let o = [p[0], wl + 0.02, p[2]];
-                let ray = Ray::new(o, d3(sd));
+                let ray = self.ray(o, d3(sd));
                 if !self.scene.occluded(&ray, 0.0, INF) {
                     l += e_sun * spec * ndl;
                 }

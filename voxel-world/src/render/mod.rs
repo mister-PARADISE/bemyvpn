@@ -268,6 +268,60 @@ mod tests {
         }
     }
 
+    fn flat_world(mat: crate::materials::Material, top: i32) -> World {
+        use crate::world::{BuildParams, HfCell, Span};
+        let p = BuildParams { center_x: 0, center_z: 0, l0_size: 128, hf_size: 64, hf_levels: 1, cave_radius: 0, feature_radius: 0 };
+        World::synthetic(
+            p,
+            move |_, _| vec![Span::new(0, top, mat)],
+            move |_, _, _| HfCell { h: top as f32, water: f32::NEG_INFINITY, albedo: mat.albedo(), mat, biome: crate::gen::Biome::Plains },
+        )
+    }
+
+    /// Per-thread memo caches must never leak between renders: a world rendered after another
+    /// render on the same worker thread equals the same render on a fresh thread.
+    #[test]
+    fn no_state_leaks_between_renders() {
+        let w = flat_world(crate::materials::Material::Sand, 140);
+        let cam = Camera { pos: [0.5, 150.0, 0.5], yaw: 0.3, pitch: -0.5, fov_y_deg: 50.0 };
+        let s = RenderSettings { width: 64, height: 40, ..Default::default() };
+        let sun_a = Sun { azimuth_deg: 160.0, elevation_deg: 35.0 };
+        let sun_b = Sun { azimuth_deg: 20.0, elevation_deg: 8.0 };
+        let pool = || rayon::ThreadPoolBuilder::new().num_threads(1).build().unwrap();
+        let fresh = pool().install(|| render(&w, &cam, &sun_b, &s));
+        let seq = pool().install(|| {
+            let _ = render(&w, &cam, &sun_a, &s);
+            render(&w, &cam, &sun_b, &s)
+        });
+        for (p, q) in fresh.pixels.iter().zip(seq.pixels.iter()) {
+            assert_eq!(p.to_array().map(f32::to_bits), q.to_array().map(f32::to_bits));
+        }
+    }
+
+    /// Open flat snow under a low sun: the ambient term must not add block-scale Monte-Carlo
+    /// blotches (a uniform plane may only show its texture).
+    #[test]
+    fn open_ground_ambient_is_smooth() {
+        let w = flat_world(crate::materials::Material::Snow, 140);
+        let cam = Camera { pos: [0.5, 150.0, 0.5], yaw: 0.0, pitch: -0.5, fov_y_deg: 50.0 };
+        let s = RenderSettings { width: 240, height: 136, aa: false, ..Default::default() };
+        let rel_std = |el: f64| {
+            let img = render(&w, &cam, &Sun { azimuth_deg: 160.0, elevation_deg: el }, &s);
+            let (mut acc, mut n, mut mean) = (0.0f64, 0.0f64, 0.0f64);
+            for y in 76..132 {
+                let row: Vec<f64> = (60..180).map(|x| img.get(x, y).luminance() as f64).collect();
+                let m = row.iter().sum::<f64>() / row.len() as f64;
+                mean += m;
+                acc += row.iter().map(|v| (v - m) * (v - m)).sum::<f64>();
+                n += row.len() as f64;
+            }
+            (acc / n).sqrt() / (mean / 56.0)
+        };
+        let (low, high) = (rel_std(4.5), rel_std(35.0));
+        // Before the ratio estimator: 0.079 at 4.5° vs 0.040 at 35°.
+        assert!(low < 1.3 * high + 0.005, "sunset ambient noise {low} vs noon {high}");
+    }
+
     #[test]
     fn tonemap_monotone_and_bounded() {
         let mut prev = -1.0;

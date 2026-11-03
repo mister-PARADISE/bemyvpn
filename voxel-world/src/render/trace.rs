@@ -22,6 +22,19 @@
 //! Each level owns the part of the ray inside its square but outside every finer level's square
 //! (≤ 2 intervals per level); intervals are disjoint so they are traversed in t order and the first
 //! hit is the nearest one.
+//!
+//! ## Earth curvature
+//! Geometry is lowered by δ = ρ²/(2R) (ρ = horizontal distance to the camera, R = 6 371 km) —
+//! ≈ 80 m at 32 km. Instead of moving the geometry, the ray is bent the opposite way in world
+//! space: with q₀ = o_xz − c_xz and κ = 1/(2R),
+//!   y(t) = o_y + d_y t + κ(|q₀ + t d_xz|² − |q₀|²) = o_y + (d_y + k₁) t + k₂ t²,
+//!   k₁ = 2κ q₀·d_xz, k₂ = κ|d_xz|² ≥ 0,
+//! a convex parabola, so (a) its minimum over a cell interval (the max-mip bound test) is at an
+//! endpoint or at the vertex t* = −(d_y + k₁)/(2k₂), (b) the bilinear-patch test stays an exact
+//! quadratic (k₂ just enters the t² coefficient), (c) the water plane test is a quadratic too.
+//! Hit points are therefore in *world* coordinates (on the undisplaced surface), so shading,
+//! shadows and textures need no correction. Level 0 is traced with the straight ray: inside it
+//! |δ(ρ) − δ(ρ₀)| ≤ 0.17 m, far below a block, and voxels stay exact.
 use crate::materials::Material;
 use crate::render::types::ViewMode;
 use crate::world::{HeightLevel, Level0, World};
@@ -34,22 +47,67 @@ pub const AXIS_Y: u8 = 1;
 pub const AXIS_Z: u8 = 2;
 pub const AXIS_NONE: u8 = 3;
 
+/// Earth radius used for the curvature drop (DESIGN: R = 6 371 000 m).
+pub const EARTH_RADIUS: f64 = 6_371_000.0;
+
+/// A ray `x(t) = o_x + d_x t`, `z(t) = o_z + d_z t`, `y(t) = o_y + (d_y + k1) t + k2 t²`
+/// (k1 = k2 = 0: straight; see the module docs for the curvature terms).
 #[derive(Clone, Copy, Debug)]
 pub struct Ray {
     pub o: [f64; 3],
     pub d: [f64; 3],
     pub inv: [f64; 3],
+    pub k1: f64,
+    pub k2: f64,
 }
 
 impl Ray {
     #[inline]
     pub fn new(o: [f64; 3], d: [f64; 3]) -> Ray {
         let iv = |v: f64| if v != 0.0 { 1.0 / v } else { INF };
-        Ray { o, d, inv: [iv(d[0]), iv(d[1]), iv(d[2])] }
+        Ray { o, d, inv: [iv(d[0]), iv(d[1]), iv(d[2])], k1: 0.0, k2: 0.0 }
+    }
+    /// Ray through a world whose geometry is lowered by κ·|xz − c|² relative to the camera at
+    /// `c` (κ = 1/(2R); κ = 0 gives a straight ray). Expressed as a bent ray in world space.
+    #[inline]
+    pub fn curved(o: [f64; 3], d: [f64; 3], c: [f64; 2], kappa: f64) -> Ray {
+        let mut r = Ray::new(o, d);
+        if kappa > 0.0 {
+            let (qx, qz) = (o[0] - c[0], o[2] - c[1]);
+            r.k1 = 2.0 * kappa * (qx * d[0] + qz * d[2]);
+            r.k2 = kappa * (d[0] * d[0] + d[2] * d[2]);
+        }
+        r
+    }
+    /// The same ray without curvature.
+    #[inline]
+    pub fn straight(&self) -> Ray {
+        Ray { k1: 0.0, k2: 0.0, ..*self }
+    }
+    #[inline]
+    pub fn y(&self, t: f64) -> f64 {
+        self.o[1] + (self.d[1] + self.k1) * t + self.k2 * t * t
+    }
+    /// dy/dt at t.
+    #[inline]
+    pub fn dy(&self, t: f64) -> f64 {
+        self.d[1] + self.k1 + 2.0 * self.k2 * t
     }
     #[inline]
     pub fn at(&self, t: f64) -> [f64; 3] {
-        [self.o[0] + self.d[0] * t, self.o[1] + self.d[1] * t, self.o[2] + self.d[2] * t]
+        [self.o[0] + self.d[0] * t, self.y(t), self.o[2] + self.d[2] * t]
+    }
+    /// min y(t) over [a, b] (convex parabola: an endpoint or the vertex).
+    #[inline]
+    pub fn y_min(&self, a: f64, b: f64) -> f64 {
+        let m = self.y(a).min(self.y(b));
+        if self.k2 > 0.0 {
+            let tv = -(self.d[1] + self.k1) / (2.0 * self.k2);
+            if tv > a && tv < b {
+                return m.min(self.y(tv));
+            }
+        }
+        m
     }
 }
 
@@ -118,7 +176,33 @@ pub fn clip_xz(ray: &Ray, x0: f64, z0: f64, x1: f64, z1: f64, t0: f64, t1: f64) 
     }
 }
 
-/// Clip a ray interval to y ≤ ymax (and y ≥ ymin).
+/// Clip a (possibly curved) ray interval to y(t) ≤ ymax. The sublevel set of the convex
+/// parabola y(t) is one interval [r₁, r₂] (roots of k₂t² + (d_y + k₁)t + o_y − ymax).
+#[inline]
+fn clip_below(ray: &Ray, ymax: f64, t0: f64, t1: f64) -> Option<(f64, f64)> {
+    if ray.k2 <= 0.0 {
+        return clip_y(&ray.straight(), -INF, ymax, t0, t1);
+    }
+    let (a, b, c) = (ray.k2, ray.d[1] + ray.k1, ray.o[1] - ymax);
+    let disc = b * b - 4.0 * a * c;
+    if disc < 0.0 {
+        return None;
+    }
+    let sq = disc.sqrt();
+    let q = -0.5 * (b + if b >= 0.0 { sq } else { -sq });
+    let (mut r1, mut r2) = (q / a, if q != 0.0 { c / q } else { q / a });
+    if r1 > r2 {
+        std::mem::swap(&mut r1, &mut r2);
+    }
+    let (lo, hi) = (t0.max(r1), t1.min(r2));
+    if lo < hi {
+        Some((lo, hi))
+    } else {
+        None
+    }
+}
+
+/// Clip a straight ray interval to y ≤ ymax (and y ≥ ymin).
 #[inline]
 fn clip_y(ray: &Ray, ymin: f64, ymax: f64, t0: f64, t1: f64) -> Option<(f64, f64)> {
     let (oy, dy) = (ray.o[1], ray.d[1]);
@@ -166,8 +250,8 @@ fn hdda<G: Grid>(g: &G, ray: &Ray, t0: f64, t1: f64, entry_axis: u8) -> Option<H
     if ilo >= ihi || jlo >= jhi {
         return None;
     }
-    let (ox, oy, oz) = (ray.o[0], ray.o[1], ray.o[2]);
-    let (dx, dy, dz) = (ray.d[0], ray.d[1], ray.d[2]);
+    let (ox, oz) = (ray.o[0], ray.o[2]);
+    let (dx, dz) = (ray.d[0], ray.d[2]);
     let (ivx, ivz) = (ray.inv[0], ray.inv[2]);
     let p = ray.at(t0);
     let mut i = (((p[0] - gx) / c).floor() as i32).clamp(ilo, ihi - 1);
@@ -198,9 +282,7 @@ fn hdda<G: Grid>(g: &G, ray: &Ray, t0: f64, t1: f64, entry_axis: u8) -> Option<H
         };
         let te = tx.min(tz);
         let tend = te.min(t1);
-        let ya = oy + dy * t;
-        let yb = oy + dy * tend;
-        let ylo = ya.min(yb);
+        let ylo = ray.y_min(t, tend);
         if ylo < g.bound(m, ci, cj) {
             if m > 0 {
                 m -= 1;
@@ -309,7 +391,9 @@ impl<'a> L0View<'a> {
         self.block(x, y, z).is_opaque()
     }
 
+    /// Exact voxel hit of the *straight* ray (curvature terms are ignored on level 0).
     pub fn trace(&self, ray: &Ray, t0: f64, t1: f64, water: bool) -> Option<Hit> {
+        let ray = &ray.straight();
         let (x0, z0, x1, z1) = self.bounds();
         let (a, b, axis) = clip_xz(ray, x0, z0, x1, z1, t0, t1)?;
         // Upper clip only on the far side (keeps top-face classification exact at entry).
@@ -584,7 +668,9 @@ impl<'v, 'a> Grid for HfGrid<'v, 'a> {
         let (h, w) = v.dual(i, j, self.water);
         let x0 = v.lv.origin_x as f64 + (i as f64 + 0.5) * c;
         let z0 = v.lv.origin_z as f64 + (j as f64 + 0.5) * c;
+        // Local parameter s = t − ta: y(ta + s) = y_a + y'_a s + k₂ s².
         let pa = ray.at(ta);
+        let dya = ray.dy(ta);
         let ua = (pa[0] - x0) / c;
         let va = (pa[2] - z0) / c;
         let du = ray.d[0] / c;
@@ -597,22 +683,16 @@ impl<'v, 'a> Grid for HfGrid<'v, 'a> {
         let tt = if cc >= 0.0 {
             Some(0.0)
         } else {
-            let bb = e * du + f * dv + g * (ua * dv + va * du) - ray.d[1];
-            let aa = g * du * dv;
+            let bb = e * du + f * dv + g * (ua * dv + va * du) - dya;
+            let aa = g * du * dv - ray.k2;
             first_crossing(aa, bb, cc, l)
         };
         let tw = if w > -INF {
             if pa[1] <= w {
                 Some(0.0)
-            } else if ray.d[1] < 0.0 {
-                let t = (w - pa[1]) / ray.d[1];
-                if t <= l {
-                    Some(t)
-                } else {
-                    None
-                }
             } else {
-                None
+                // w − y(ta + s) ≥ 0: concave (or linear) in s.
+                first_crossing(-ray.k2, -dya, w - pa[1], l)
             }
         } else {
             None
@@ -674,7 +754,8 @@ impl<'a> Scene<'a> {
         Scene { world, l0, hf, diorama }
     }
 
-    /// Nearest hit along the ray in (t0, t1). `water`: water surfaces stop the ray.
+    /// Nearest hit along the ray in (t0, t1). `water`: water surfaces stop the ray. Heightfield
+    /// levels follow the ray's curvature terms, level 0 its straight part (module docs).
     pub fn trace(&self, ray: &Ray, t0: f64, t1: f64, water: bool) -> Option<Hit> {
         // Collect disjoint segments [a, b) owned by each level, then walk them in t order.
         let mut segs: [(f64, f64, i8); 20] = [(0.0, 0.0, 0); 20];
@@ -692,7 +773,7 @@ impl<'a> Scene<'a> {
             }
             let sq = v.square;
             let Some((a, b, _)) = clip_xz(ray, sq[0], sq[1], sq[2], sq[3], t0, t1) else { continue };
-            let Some((a, b)) = clip_y(ray, -INF, v.top, a, b) else { continue };
+            let Some((a, b)) = clip_below(ray, v.top, a, b) else { continue };
             match v.hole.and_then(|h| clip_xz(ray, h[0], h[1], h[2], h[3], a, b)) {
                 None => {
                     segs[ns] = (a, b, k as i8);
@@ -998,11 +1079,12 @@ mod tests {
         None
     }
 
-    #[test]
-    fn heightfield_matches_bruteforce() {
+    /// Heightfield traversal vs. fine stepping + bisection; `kappa` > 0 bends the rays (Earth
+    /// curvature, exaggerated in tests so that the k₂ t² terms dominate inside a cell).
+    fn check_hf(kappa: f64, seed: u64) {
         let w = test_world(16, 3, 32, -500, 777);
         let scene = Scene::new(&w, ViewMode::Normal);
-        let mut rng = Rng(99);
+        let mut rng = Rng(seed);
         let mut n_hit = 0;
         let mut miss_close = 0;
         let mut total = 0;
@@ -1020,7 +1102,9 @@ mod tests {
                 }
                 let l = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
                 let d = [d[0] / l, d[1] / l, d[2] / l];
-                let ray = Ray::new(o, d);
+                // Camera somewhere around the level: the ray may move toward or away from it.
+                let cam = [rng.r(sq[0], sq[2]), rng.r(sq[1], sq[3])];
+                let ray = Ray::curved(o, d, cam, kappa);
                 // Whole square of this level (ignore the hole for the comparison).
                 let Some((a, b, _)) = clip_xz(&ray, sq[0], sq[1], sq[2], sq[3], 0.0, 1e6) else { continue };
                 let water = k % 2 == 0;
@@ -1050,21 +1134,85 @@ mod tests {
                         let s = v.surface(p[0], p[2], water);
                         assert!((p[1] - s).abs() < 1e-6 * (1.0 + tf));
                     }
-                    (None, Some(ts)) => panic!("traversal missed a hit at t={} ray {:?} {:?} lvl {}", ts, o, d, lvl),
+                    (None, Some(ts)) => panic!("traversal missed a hit at t={} ray {:?} {:?} lvl {} kappa {}", ts, o, d, lvl, kappa),
                 }
             }
         }
-        eprintln!("hf check: {} rays, {} hits, {} grazing differences", total, n_hit, miss_close);
+        eprintln!("hf check (kappa {kappa}): {} rays, {} hits, {} grazing differences", total, n_hit, miss_close);
         assert!(n_hit > total / 3);
         assert!(miss_close * 200 < total);
     }
 
     #[test]
+    fn heightfield_matches_bruteforce() {
+        check_hf(0.0, 99);
+    }
+
+    #[test]
+    fn heightfield_matches_bruteforce_curved() {
+        // κ = 1/(2·1500 m): the drop over one 8-block cell is comparable to the relief there.
+        check_hf(1.0 / 3000.0, 98);
+        // The real value (sub-millimetre inside these small test squares) must not disturb anything.
+        check_hf(0.5 / EARTH_RADIUS, 97);
+    }
+
+    #[test]
+    fn curved_ray_helpers() {
+        let mut rng = Rng(3);
+        for _ in 0..20000 {
+            let o = [rng.r(-5e4, 5e4), rng.r(-100.0, 600.0), rng.r(-5e4, 5e4)];
+            let mut d = [rng.r(-1.0, 1.0), rng.r(-1.0, 1.0), rng.r(-1.0, 1.0)];
+            let l = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+            d.iter_mut().for_each(|x| *x /= l);
+            let c = [rng.r(-5e4, 5e4), rng.r(-5e4, 5e4)];
+            let kappa = if rng.f() < 0.5 { 0.5 / EARTH_RADIUS } else { 1e-4 };
+            let r = Ray::curved(o, d, c, kappa);
+            // y(t) is the bent world-space path: o_y + d_y t + κ(|q(t)|² − |q(0)|²).
+            let t = rng.r(0.0, 1e5);
+            let q2 = |t: f64| (o[0] + d[0] * t - c[0]).powi(2) + (o[2] + d[2] * t - c[1]).powi(2);
+            let y_ref = o[1] + d[1] * t + kappa * (q2(t) - q2(0.0));
+            assert!((r.y(t) - y_ref).abs() <= 1e-9 * (1.0 + y_ref.abs()), "{} vs {}", r.y(t), y_ref);
+            // y_min over an interval vs dense sampling.
+            let (a, b) = (rng.r(0.0, 5e4), rng.r(5e4, 1e5));
+            let ym = r.y_min(a, b);
+            let mut lo = INF;
+            for k in 0..=2000 {
+                lo = lo.min(r.y(a + (b - a) * k as f64 / 2000.0));
+            }
+            assert!(ym <= lo + 1e-9 * (1.0 + lo.abs()) && ym >= lo - 1e-3 * (1.0 + (b - a) * (b - a) * r.k2), "{} vs {}", ym, lo);
+            // clip_below: inside ⇔ y ≤ ymax.
+            let ymax = rng.r(0.0, 600.0);
+            match clip_below(&r, ymax, a, b) {
+                Some((ca, cb)) => {
+                    assert!(ca >= a && cb <= b && ca < cb);
+                    let mid = 0.5 * (ca + cb);
+                    assert!(r.y(mid) <= ymax + 1e-6 * (1.0 + ymax));
+                    for t in [a + (ca - a) * 0.5, cb + (b - cb) * 0.5] {
+                        if (t - ca).abs() > 1e-6 * (1.0 + t) && (t - cb).abs() > 1e-6 * (1.0 + t) && t > a && t < b {
+                            assert!(r.y(t) >= ymax - 1e-6 * (1.0 + ymax), "outside point below ymax");
+                        }
+                    }
+                }
+                None => {
+                    assert!(ym >= ymax - 1e-6 * (1.0 + ymax), "clip_below rejected a dipping ray: min {} ymax {}", ym, ymax);
+                }
+            }
+        }
+    }
+
+    #[test]
     fn scene_segments_cover_levels() {
+        check_scene(0.0, 5);
+        // Strongly bent rays (camera at the level-0 centre): curvature on heightfields only.
+        check_scene(1.0 / 4000.0, 6);
+    }
+
+    fn check_scene(kappa: f64, seed: u64) {
         // A long ray from the centre crosses level 0 then all heightfield levels in order.
         let w = test_world(32, 3, 32, 3, -5);
         let scene = Scene::new(&w, ViewMode::Normal);
-        let mut rng = Rng(5);
+        let mut rng = Rng(seed);
+        let mut grazing = 0;
         for _ in 0..3000 {
             let o = [rng.r(-10.0, 15.0), rng.r(30.0, 45.0), rng.r(-17.0, 7.0)];
             let mut d = [rng.r(-1.0, 1.0), rng.r(-0.15, 0.0), rng.r(-1.0, 1.0)];
@@ -1072,7 +1220,7 @@ mod tests {
             for x in d.iter_mut() {
                 *x /= l;
             }
-            let ray = Ray::new(o, d);
+            let ray = Ray::curved(o, d, [3.0, -5.0], kappa);
             let hit = scene.trace(&ray, 0.0, 1e6, true);
             // Reference: min over every level's own clipped segments.
             let mut best = INF;
@@ -1099,9 +1247,21 @@ mod tests {
                 hole = (hole.0.min(sq[0]), hole.1.min(sq[1]), hole.2.max(sq[2]), hole.3.max(sq[3]));
             }
             match hit {
-                Some(h) => assert!(h.t <= best + 1e-6 && h.t > best - 2.0, "{} vs {}", h.t, best),
+                Some(h) => {
+                    assert!(h.t <= best + 1e-6, "{} vs {}", h.t, best);
+                    if h.t < best - 2.0 {
+                        // Earlier than the stepped reference: only legitimate as a grazing
+                        // crossing the coarse stepping skipped — the hit must lie on the surface.
+                        let HitKind::Height { level, water } = h.kind else { panic!("l0 hit missed by reference") };
+                        let s = scene.hf[level as usize].surface(h.p[0], h.p[2], water);
+                        let y = ray.at(h.t)[1];
+                        assert!((y - s).abs() < 1e-6 * (1.0 + h.t) || (water && (h.p[1] - s).abs() < 1e-9), "{} vs {}: y {} surface {}", h.t, best, y, s);
+                        grazing += 1;
+                    }
+                }
                 None => assert!(best == INF),
             }
         }
+        assert!(grazing * 100 < 3000, "{grazing} grazing differences");
     }
 }

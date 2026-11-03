@@ -804,8 +804,9 @@ mod tests {
     }
 
     /// No jumps of the field near its zero level. For random points and 0.5-block vertical and
-    /// horizontal steps with a large difference, the step is bisected down to 1/128 block: a
-    /// continuous (if steep) field shrinks the difference proportionally, a cut-off does not.
+    /// horizontal steps with a large difference, the step is bisected (toward the steeper half)
+    /// down to 2⁻¹³ block: a continuous field shrinks the difference to ~0 (it is steep only
+    /// near critical points of the sheet noises, ≲ 200 blocks/block), a cut-off does not.
     /// (The old cheese / ravine / shaft / septum cut-offs jumped by up to 18–50 blocks.)
     #[test]
     fn field_has_no_jumps_near_zero() {
@@ -828,7 +829,7 @@ mod tests {
                         steep += 1;
                         // bisect toward the steepest sub-interval
                         let (mut lo, mut hi) = (0.0f64, 1.0f64);
-                        for _ in 0..6 {
+                        for _ in 0..12 {
                             let mid = 0.5 * (lo + hi);
                             if (f(mid) - f(lo)).abs() >= (f(hi) - f(mid)).abs() {
                                 hi = mid;
@@ -839,14 +840,14 @@ mod tests {
                         let d = (f(hi) - f(lo)).abs();
                         if d > worst_fine {
                             worst_fine = d;
-                            eprintln!("steep step {a:.2} → {b:.2} at ({x}, {y:.2}, {z}) dir ({dx},{dy},{dz}): 1/128-block step {d:.3}");
+                            eprintln!("steep step {a:.2} → {b:.2} at ({x}, {y:.2}, {z}) dir ({dx},{dy},{dz}): 2^-13-block step {d:.4}");
                         }
                     }
                 }
             }
         }
-        eprintln!("{steep} steep 0.5-block steps; worst difference over 1/128 block: {worst_fine:.3}");
-        assert!(worst_fine < 1.0, "field discontinuity: jump {worst_fine} over 1/128 block");
+        eprintln!("{steep} steep 0.5-block steps; worst difference over 2^-13 block: {worst_fine:.4}");
+        assert!(worst_fine < 0.1, "field discontinuity: jump {worst_fine} over 2^-13 block");
     }
 
     /// Emulates the world builder (4×4×4 lattice, trilinear interpolation, wet guard) over
@@ -977,31 +978,5 @@ mod tests {
         let ns2 = t0.elapsed().as_secs_f64() * 1e9 / n as f64;
         eprintln!("cave_fill: {ns2:.0} ns/eval ({k})");
         assert!(ns < 3000.0);
-    }
-}
-#[cfg(test)]
-mod dbg_tests {
-    use super::*;
-    use crate::gen::WorldGen;
-    #[test]
-    fn dbg_point() {
-        for seed in [1u64, 2] {
-            let g = WorldGen::new(seed);
-            let (x, z) = (-4081.5, -2055.5);
-            let col = g.column(x, z);
-            let mut prev = g.caves.field(x, 119.83, z, &col);
-            for k in 0..=64 {
-                let y = 119.83 + 0.5 * k as f64 / 64.0;
-                let p = g.caves.parts(x, y, z, &col);
-                if (p.total - prev).abs() > 0.3 {
-                    let c = &g.caves;
-                    let (a, ga) = c.bed.eval(x, y, z);
-                    let (b, gb) = c.joint1.eval(x, y, z);
-                    let (cc, gc) = c.joint2.eval(x, y, z);
-                    eprintln!("seed {seed} y {y:.4} {:?} ab {:?} ac {:?} a {a} b {b} c {cc} ga {ga:?} gb {gb:?} gc {gc:?}", p, curve_dist2_angle(a, ga, b, gb), curve_dist2_angle(a, ga, cc, gc));
-                }
-                prev = p.total;
-            }
-        }
     }
 }
