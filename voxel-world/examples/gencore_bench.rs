@@ -13,6 +13,23 @@ fn main() {
         acc += s.n2d(x * 0.01, z * 0.01).0;
     }
     eprintln!("n2d: {:.1} ns", t.elapsed().as_secs_f64() * 1e9 / n as f64);
+    let fs = voxel_world::gen::climate::FastSimplex::new(5);
+    let t = Instant::now();
+    for &(x, z) in &pts {
+        acc += fs.n2d(x * 0.01, z * 0.01).0;
+    }
+    eprintln!("fast n2d: {:.1} ns", t.elapsed().as_secs_f64() * 1e9 / n as f64);
+    let f = voxel_world::gen::climate::DFbm::new(3, 1000.0, 4, 2.0, 0.5);
+    let t = Instant::now();
+    for &(x, z) in &pts {
+        acc += f.sample(x, z, 0.0).v;
+    }
+    eprintln!("DFbm 4 oct: {:.1} ns", t.elapsed().as_secs_f64() * 1e9 / n as f64);
+    let t = Instant::now();
+    for &(x, z) in &pts {
+        acc += g.climate.sample_raw(x, z, 0.0)[0];
+    }
+    eprintln!("climate raw: {:.1} ns", t.elapsed().as_secs_f64() * 1e9 / n as f64);
     for &fp in &[0.0, 8.0] {
         let t = Instant::now();
         let cds: Vec<_> = pts.iter().map(|&(x, z)| g.climate.sample_d(x, z, fp)).collect();

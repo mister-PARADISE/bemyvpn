@@ -341,6 +341,8 @@ impl FastSimplex {
     }
 
     /// (value, ∂/∂x, ∂/∂y) w.r.t. the input coordinates; value ≈ [−1, 1].
+    /// Branch-free: the simplex orientation and the kernel cut-offs are arithmetic selects
+    /// (random branches would mispredict half of the time).
     #[inline]
     pub fn n2d(&self, x: f64, y: f64) -> (f32, f32, f32) {
         let s = (x + y) * FS_F2;
@@ -349,32 +351,26 @@ impl FastSimplex {
         let t = (i + j) as f64 * 0.211_324_865_405_187_1f64;
         let x0 = (x - (i as f64 - t)) as f32;
         let y0 = (y - (j as f64 - t)) as f32;
-        let (i1, j1) = if x0 > y0 { (1i32, 0i32) } else { (0i32, 1i32) };
+        let i1 = (x0 > y0) as i32;
+        let j1 = 1 - i1;
         let x1 = x0 - i1 as f32 + FS_G2;
         let y1 = y0 - j1 as f32 + FS_G2;
         let x2 = x0 - 1.0 + 2.0 * FS_G2;
         let y2 = y0 - 1.0 + 2.0 * FS_G2;
         let (ii, jj) = (i as i32, j as i32);
-        let mut v = 0.0f32;
-        let mut dx = 0.0f32;
-        let mut dy = 0.0f32;
-        let mut corner = |cx: f32, cy: f32, h: usize| {
-            let tt = 0.5 - cx * cx - cy * cy;
-            if tt > 0.0 {
-                let g = GRAD16[h];
-                let gd = g[0] * cx + g[1] * cy;
-                let t2 = tt * tt;
-                let t3 = t2 * tt;
-                let t4 = t2 * t2;
-                v += t4 * gd;
-                dx += -8.0 * cx * t3 * gd + t4 * g[0];
-                dy += -8.0 * cy * t3 * gd + t4 * g[1];
-            }
-        };
-        corner(x0, y0, self.hash(ii, jj));
-        corner(x1, y1, self.hash(ii + i1, jj + j1));
-        corner(x2, y2, self.hash(ii + 1, jj + 1));
-        (v * FS_SCALE, dx * FS_SCALE, dy * FS_SCALE)
+        #[inline(always)]
+        fn corner(cx: f32, cy: f32, g: [f32; 2]) -> (f32, f32, f32) {
+            let tt = (0.5 - cx * cx - cy * cy).max(0.0);
+            let gd = g[0] * cx + g[1] * cy;
+            let t2 = tt * tt;
+            let t3 = t2 * tt;
+            let t4 = t2 * t2;
+            (t4 * gd, -8.0 * cx * t3 * gd + t4 * g[0], -8.0 * cy * t3 * gd + t4 * g[1])
+        }
+        let a = corner(x0, y0, GRAD16[self.hash(ii, jj)]);
+        let b = corner(x1, y1, GRAD16[self.hash(ii + i1, jj + j1)]);
+        let c = corner(x2, y2, GRAD16[self.hash(ii + 1, jj + 1)]);
+        ((a.0 + b.0 + c.0) * FS_SCALE, (a.1 + b.1 + c.1) * FS_SCALE, (a.2 + b.2 + c.2) * FS_SCALE)
     }
 }
 
