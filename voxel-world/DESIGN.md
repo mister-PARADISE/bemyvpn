@@ -125,11 +125,15 @@ zones relative to the snow line (or become very rare), not by lowland climate.
 ≈ snow line − 90, then sparse stunted conifers/bushes, none above ≈ snow line − 30. Slope
 also reduces density. Result on every big mountain: forest → alpine meadow → bare rock → snow.
 
-**Rain shadow (climate).** A prevailing wind direction per world (seed-derived). Effective humidity
-= base humidity − k·(upwind mountain mass), where upwind mass = max/integral of mountain amplitude
-sampled along the upwind ray (e.g. 6–10 samples over 0.5–6 km, low-res — must stay cheap or be
-computed from the low-frequency fields only). Windward slopes wet (forest/jungle), leeward side dry
-(steppe/savanna/desert). Coasts facing the wind are wetter.
+**Rain shadow (climate) — wind is a FIELD, not one direction.** Prevailing (climatic, static)
+wind varies across the world like real circulation cells: wind = curl of a low-frequency scalar
+"pressure" potential ψ (e.g. `Simplex::n2d` / fBm of 2–3 octaves, λ ≈ 20–40 km):
+w(x,z) = (∂ψ/∂z, −∂ψ/∂x), normalised. This field is divergence-free and swirls around highs/lows,
+so different regions get different wind directions with smooth turns between them. Effective
+humidity = base humidity − k·(mountain mass upwind), where "upwind" means stepping BACKWARD along
+the local wind field (streamline tracing, 6–10 steps of 400–800 blocks, using only the
+low-frequency mountain-amplitude fields so it stays cheap). Windward slopes wet (forest/jungle),
+leeward sides dry (steppe/savanna/desert); coasts facing the local wind are wetter.
 
 **Anti-monotony (everyone).** The world must never feel uniform:
 * Regional terrain "character" from a low-frequency selector: rolling hills, flat meander plains,
