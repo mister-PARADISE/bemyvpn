@@ -42,7 +42,8 @@
 //!
 //! # LOD
 //! `canopy_lod` is the expectation of the same process (Boolean model):
-//! `coverage = 1 − exp(−Σ_L ρ_L Σ_s f_s·π r_s²)` with `ρ_L = retention_L/cell_L²·p_L·excl_L`
+//! `coverage = 1 − exp(−x − 0.6x²)`, `x = Σ_L ρ_L Σ_s f_s·π r_s²` (second-order term: hard-core
+//! crowns overlap less than Poisson ones), with `ρ_L = retention_L/cell_L²·p_L·excl_L`
 //! (`excl` = Poisson void probability of the bigger layers within the exclusion radius),
 //! mean canopy height `Σ ρA h / Σ ρA`, representative leaf of the dominant species. The grove and
 //! mix fields are band-limited and blend to their measured expectation as the footprint grows.
@@ -186,8 +187,8 @@ impl Species {
             Cactus => (0.62, 3.4),
             Boulder => (2.55, 2.1),
             IceSpire => (3.48, 14.6),
-            Palm => (4.3, 9.5),
-            FallenLog => (1.3, 1.0),
+            Palm => (3.3, 10.6),
+            FallenLog => (1.4, 1.6),
         }
     }
 }
@@ -681,7 +682,11 @@ impl FeaturePlacer {
         if sum_a <= 0.0 {
             return none;
         }
-        CanopyLod { coverage: 1.0 - (-sum_a).exp(), height: sum_ah / sum_a, leaf: best.1 }
+        // Boolean model 1 − e^(−x) assumes Poisson overlap; the hard-core process is more
+        // regular (crowns overlap less), which the second-order term β·x² (β = 0.6, fitted by
+        // `canopy_lod_matches_features`) accounts for.
+        let x = sum_a + 0.6 * sum_a * sum_a;
+        CanopyLod { coverage: 1.0 - (-x).exp(), height: sum_ah / sum_a, leaf: best.1 }
     }
 }
 
