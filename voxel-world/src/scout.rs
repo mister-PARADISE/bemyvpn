@@ -1114,7 +1114,7 @@ fn plan_river(s: &Scout) -> Vec<Candidate> {
             };
             let rule = |_| PitchRule::Horizon { sy: 0.3, min: -18.0 * DEG, max: 0.0 };
             let (yaw, st, vscore) = best_yaw(&vs, &yaws, vfov, rule, |_, v| {
-                landscape_score(v, 0.3)
+                landscape_score(v, 0.3) - 2.0 * v.wall
                     + 2.0 * (v.center[cat::bit(cat::WATER)] / 0.12).min(1.0)
                     + 1.2 * ((v.center_depth - 2.7) / 0.8).clamp(0.0, 1.0)
             });
@@ -1191,12 +1191,16 @@ fn plan_coast(s: &Scout) -> Vec<Candidate> {
                 let rule = |_| PitchRule::Horizon { sy: 0.2, min: -14.0 * DEG, max: -2.0 * DEG };
                 // per yaw: choose the sun side over the sea (glitter path)
                 let side_score = |yaw: f64, v: &ViewStats| -> (f32, f64) {
+                    // the sun must clear the local horizon by ≥ 2.5° (a visible disc and glitter
+                    // path), and an open sea horizon (≤ 0.3°) under it is preferred
                     let mut best = (f32::NEG_INFINITY, 22.0);
-                    for o in [22.0, -22.0] {
+                    for o in [22.0, -22.0, 16.0, -16.0, 28.0, -28.0] {
                         let az = yaw + o * DEG;
                         let glint = vs.column_fraction(az, v.pitch, vfov, cat::OCEAN);
-                        let blocked = vs.horizon_deg(az) > elev - 1.0;
-                        let sc = 1.2 * glint - if blocked { 1.5 } else { 0.0 };
+                        let hz = vs.horizon_deg(az);
+                        let open = (1.0 - (hz as f32 - 0.3).max(0.0) / 2.0).clamp(0.0, 1.0);
+                        let blocked = elev - hz < 2.5;
+                        let sc = 1.2 * glint + 0.6 * open - if blocked { 2.5 } else { 0.0 } - 0.01 * (o as f32 - 22.0).abs();
                         if sc > best.0 {
                             best = (sc, o);
                         }

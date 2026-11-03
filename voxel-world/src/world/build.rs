@@ -51,8 +51,8 @@
 //! radius, where the interpolated cave field `F̂ > −3` — `F` is ≈ a signed distance in blocks, so
 //! this is a ≈3-block shell around every cavity, found for free from the lattice values the
 //! column already holds. Small builds (l0 ≤ 512, the cut-away dioramas whose box faces expose
-//! arbitrary interior blocks) evaluate every block inside the cave radius. All other blocks are
-//! invisible and get Stone / Deepslate (y < 64) / Bedrock (y = 0).
+//! arbitrary interior blocks) evaluate every block. All other blocks are invisible and get
+//! Stone / Deepslate (y < 64) / Bedrock (y = 0).
 //!
 //! **Feature compositing** is order-independent: every feature block gets the priority
 //! `(class, hash(root))`, class = replace_solid 3 > log 2 > other 1 > leaves 0; runs are applied
@@ -80,11 +80,11 @@ use std::time::Instant;
 pub const CHUNK: i32 = 16;
 /// Lattice spacing of the 3-D band / cave interpolation (blocks).
 pub const LATTICE: i32 = 4;
-/// Outside the cave radius, blocks deeper than this in their solid run (and not side-exposed)
-/// get the plain deep fill instead of `surface_material`.
+/// In large builds, blocks deeper than this in their solid run (and neither side-exposed nor near
+/// a cavity) get the plain deep fill instead of `surface_material`.
 pub const SURFACE_DEPTH: i32 = 24;
-/// Level-0 builds up to this size (cut-away / diorama builds) give every block inside the cave
-/// radius its true strata; larger builds only blocks that can be seen (see module docs).
+/// Level-0 builds up to this size (cut-away / diorama builds) give every block its true strata;
+/// larger builds only the blocks that can be seen (see module docs).
 pub const FULL_STRATA_MAX_L0: u32 = 512;
 /// Inside the cave radius, solid blocks with interpolated cave field `F̂ > −CAVE_NEAR` (≈ within
 /// this many blocks of a cavity) are treated as potentially visible.
@@ -572,7 +572,7 @@ fn voxelise_column(
     };
     let wl = if col.water_level == i32::MIN { 0 } else { col.water_level.clamp(0, WH) };
     let in_caves = cav.is_some();
-    let dense_lo = if in_caves { 0 } else { (band_lo - SURFACE_DEPTH).min(expo).clamp(0, band_lo) };
+    let dense_lo = if in_caves || c.full_strata { 0 } else { (band_lo - SURFACE_DEPTH).min(expo).clamp(0, band_lo) };
     let dense_hi = band_hi.max(wl).clamp(dense_lo, WH);
     let (lo, hi) = (dense_lo as usize, dense_hi as usize);
     let kind = &mut b.kind;
@@ -661,9 +661,9 @@ fn voxelise_column(
                 // block of a small cut-away build)
                 let near_cave = in_caves && {
                     let j = yi / LATTICE;
-                    c.full_strata || (j < jt && b.bcav[j as usize].max(b.bcav[j as usize + 1]) > -CAVE_NEAR)
+                    j < jt && b.bcav[j as usize].max(b.bcav[j as usize + 1]) > -CAVE_NEAR
                 };
-                if near_cave || d < SURFACE_DEPTH || yi >= expo {
+                if c.full_strata || near_cave || d < SURFACE_DEPTH || yi >= expo {
                     gen.surface_material(x, yi, z, d, col)
                 } else {
                     deep_fill(yi)
