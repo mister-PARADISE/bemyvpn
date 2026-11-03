@@ -1,0 +1,152 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>vw_web mesh preview (debug)</title>
+<style>html,body{margin:0;background:#000}canvas{display:block}#s{position:fixed;left:6px;top:4px;color:#fff;font:12px monospace;text-shadow:0 0 3px #000}</style>
+<canvas id="c" width="1280" height="720"></canvas><div id="s">loading…</div>
+<script>
+// Debug viewer for the wasm mesher (owner: wasm-core). Not the product viewer.
+// URL: preview.html?seed=42&x=..&y=..&z=..&yaw=..&pitch=..&r=5&sun=az,el&merge=7&mode=lit|ao|sky
+'use strict';
+const P = new URLSearchParams(location.search);
+const num = (k, d) => (P.has(k) ? parseFloat(P.get(k)) : d);
+(async () => {
+  const st = document.getElementById('s');
+  const bytes = await (await fetch('../../www/gen.wasm')).arrayBuffer();
+  const { instance } = await WebAssembly.instantiate(bytes, {});
+  const ex = instance.exports;
+  const seed = num('seed', 42);
+  ex.vw_init(seed >>> 0, 0);
+  let cam = { x: num('x', 0), y: num('y', NaN), z: num('z', 0), yaw: num('yaw', 0), pitch: num('pitch', -0.2) };
+  if (P.get('bm')) {
+    const bm = await (await fetch('../../www/bookmarks.json')).json();
+    const b = bm[String(seed)].find((q) => q.name === P.get('bm'));
+    cam = { x: b.x, y: b.y, z: b.z, yaw: b.yaw, pitch: b.pitch };
+    if (!P.has('sun')) P.set('sun', b.sun_az + ',' + b.sun_el);
+  }
+  if (P.get('spawn')) {
+    ex.vw_find_spawn(cam.x, cam.z);
+    const s = new Float32Array(ex.memory.buffer, ex.vw_spawn_ptr(), 6);
+    cam = { x: s[0], y: s[1], z: s[2], yaw: s[3], pitch: s[4] };
+  }
+  if (Number.isNaN(cam.y)) cam.y = ex.vw_height_at(cam.x, cam.z) + 30;
+  ex.vw_set_merge(num('merge', 7));
+  const mode = { lit: 0, ao: 1, sky: 2, mat: 3 }[P.get('mode') || 'lit'];
+  const R = num('r', 5);
+  const [saz, sel] = (P.get('sun') || '210,35').split(',').map(parseFloat);
+  const D2R = Math.PI / 180;
+  const sun = [Math.sin(saz * D2R) * Math.cos(sel * D2R), Math.sin(sel * D2R), Math.cos(saz * D2R) * Math.cos(sel * D2R)];
+
+  const cv = document.getElementById('c');
+  const gl = cv.getContext('webgl2', { antialias: true });
+  const vs = `#version 300 es
+  layout(location=0) in uvec4 a0; layout(location=1) in uvec4 a1; layout(location=2) in uvec4 a2;
+  uniform mat4 uVP; uniform vec3 uOrg;
+  out vec3 vW; flat out uint vN; flat out uint vMat; out float vAO; out vec3 vTint; out float vSky; flat out uint vFl;
+  void main(){
+    vec3 p = vec3(float(a0.x), float(a0.z + a0.w * 256u), float(a0.y));
+    vW = p + uOrg; vN = a1.x; vMat = a1.y; vAO = float(a1.z); vFl = a1.w;
+    vTint = pow(vec3(a2.xyz) / 255.0, vec3(2.2)); vSky = float(a2.w) / 255.0;
+    gl_Position = uVP * vec4(vW, 1.0);
+  }`;
+  const fs = `#version 300 es
+  precision highp float; precision highp int;
+  in vec3 vW; flat in uint vN; flat in uint vMat; in float vAO; in vec3 vTint; in float vSky; flat in uint vFl;
+  uniform vec4 uMat[40]; uniform vec3 uSun; uniform vec3 uCamW; uniform int uMode; uniform int uKind;
+  out vec4 o;
+  const vec3 NRM[6] = vec3[6](vec3(1,0,0),vec3(-1,0,0),vec3(0,1,0),vec3(0,-1,0),vec3(0,0,1),vec3(0,0,-1));
+  float h3(vec3 p){ p = fract(p * 0.3183099 + 0.1); p *= 17.0; return fract(p.x * p.y * p.z * (p.x + p.y + p.z)); }
+  void main(){
+    vec3 n = NRM[vN];
+    vec3 blk = floor(vW - n * 0.5);
+    vec3 tex = floor((vW - n * 0.01) * 16.0) / 16.0;
+    float t = h3(tex * 7.13 + float(vMat));
+    vec4 mt = uMat[vMat];
+    if (uKind == 2 && t < 0.18) discard;
+    vec3 alb = mt.rgb * vTint * (0.85 + 0.3 * t) * (0.94 + 0.12 * h3(blk));
+    float ao = 0.3 + 0.7 * vAO / 3.0;
+    vec3 skyc = vec3(0.45, 0.6, 0.9);
+    vec3 sunc = vec3(2.6, 2.4, 2.1);
+    float lam = max(dot(n, uSun), 0.0);
+    vec3 col = alb * (sunc * lam * mix(0.25, 1.0, vSky) + skyc * vSky * ao * 0.9 + vec3(0.05) * ao);
+    if ((int(mt.a) & 4) != 0) col += alb * 2.0;
+    if (uKind == 1) { col = vec3(0.04, 0.16, 0.3) * (0.4 + vSky) + vec3(0.6,0.7,0.9) * pow(max(dot(reflect(normalize(vW - uCamW), n), uSun), 0.0), 64.0); }
+    if (uMode == 1) col = vec3(vAO / 3.0);
+    if (uMode == 2) col = vec3(vSky);
+    if (uMode == 3) col = alb;
+    float d = length(vW - uCamW);
+    col = mix(col, vec3(0.62, 0.72, 0.85), 1.0 - exp(-d / 900.0));
+    col = col / (1.0 + col);
+    o = vec4(pow(col, vec3(1.0 / 2.2)), uKind == 1 ? 0.75 : 1.0);
+  }`;
+  const sh = (t, s) => { const x = gl.createShader(t); gl.shaderSource(x, s); gl.compileShader(x); if (!gl.getShaderParameter(x, gl.COMPILE_STATUS)) throw gl.getShaderInfoLog(x); return x; };
+  const pr = gl.createProgram();
+  gl.attachShader(pr, sh(gl.VERTEX_SHADER, vs)); gl.attachShader(pr, sh(gl.FRAGMENT_SHADER, fs)); gl.linkProgram(pr);
+  if (!gl.getProgramParameter(pr, gl.LINK_STATUS)) throw gl.getProgramInfoLog(pr);
+  gl.useProgram(pr);
+  const U = (n) => gl.getUniformLocation(pr, n);
+  const mt = new Float32Array(ex.memory.buffer.slice(ex.vw_material_table_ptr(), ex.vw_material_table_ptr() + ex.vw_material_count() * 16));
+  gl.uniform4fv(U('uMat'), mt);
+  gl.uniform3fv(U('uSun'), sun);
+  gl.uniform1i(U('uMode'), mode);
+  // shared index buffer
+  const MAXQ = 65536;
+  const idx = new Uint32Array(MAXQ * 6);
+  for (let q = 0; q < MAXQ; q++) { idx.set([4*q, 4*q+1, 4*q+2, 4*q, 4*q+2, 4*q+3], q * 6); }
+  const ib = gl.createBuffer(); gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ib); gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, idx, gl.STATIC_DRAW);
+  const ccx = Math.floor(cam.x / 32), ccz = Math.floor(cam.z / 32);
+  const chunks = [];
+  let tms = 0, quads = 0, bytesTot = 0;
+  for (let dz = -R; dz <= R; dz++) for (let dx = -R; dx <= R; dx++) {
+    const cx = ccx + dx, cz = ccz + dz;
+    const t0 = performance.now();
+    ex.vw_build_chunk(cx, cz);
+    tms += performance.now() - t0;
+    const kinds = [];
+    for (let k = 0; k < 3; k++) {
+      const len = ex.vw_mesh_len(k);
+      if (!len) { kinds.push(null); continue; }
+      const data = new Uint8Array(ex.memory.buffer, ex.vw_mesh_ptr(k), len).slice();
+      bytesTot += len; quads += len / 48;
+      const vao = gl.createVertexArray(); gl.bindVertexArray(vao);
+      const vb = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, vb); gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
+      for (let a = 0; a < 3; a++) { gl.enableVertexAttribArray(a); gl.vertexAttribIPointer(a, 4, gl.UNSIGNED_BYTE, 12, a * 4); }
+      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ib);
+      kinds.push({ vao, n: len / 48 * 6 });
+    }
+    chunks.push({ cx, cz, kinds });
+  }
+  // camera
+  const f = [Math.sin(cam.yaw) * Math.cos(cam.pitch), Math.sin(cam.pitch), Math.cos(cam.yaw) * Math.cos(cam.pitch)];
+  let r = [f[1]*0 - f[2]*1, f[2]*0 - f[0]*0, f[0]*1 - f[1]*0];
+  const rl = Math.hypot(...r); r = r.map((v) => v / rl);
+  const u = [r[1]*f[2] - r[2]*f[1], r[2]*f[0] - r[0]*f[2], r[0]*f[1] - r[1]*f[0]];
+  const e = [cam.x, cam.y, cam.z];
+  const dot = (a, b) => a[0]*b[0] + a[1]*b[1] + a[2]*b[2];
+  const view = [r[0], u[0], -f[0], 0, r[1], u[1], -f[1], 0, r[2], u[2], -f[2], 0, -dot(r, e), -dot(u, e), dot(f, e), 1];
+  const fov = num('fov', 60) * D2R, asp = cv.width / cv.height, near = 0.3, far = 4000;
+  const t = 1 / Math.tan(fov / 2);
+  const proj = [t / asp, 0, 0, 0, 0, t, 0, 0, 0, 0, (far + near) / (near - far), -1, 0, 0, 2 * far * near / (near - far), 0];
+  const mul = (a, b) => { const o = new Array(16).fill(0); for (let i = 0; i < 4; i++) for (let j = 0; j < 4; j++) for (let k = 0; k < 4; k++) o[j*4+i] += a[k*4+i] * b[j*4+k]; return o; };
+  gl.uniformMatrix4fv(U('uVP'), false, new Float32Array(mul(proj, view)));
+  gl.uniform3fv(U('uCamW'), e);
+  gl.viewport(0, 0, cv.width, cv.height);
+  gl.clearColor(0.62, 0.72, 0.85, 1); gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+  gl.enable(gl.DEPTH_TEST);
+  for (const k of [0, 2, 1]) {
+    gl.uniform1i(U('uKind'), k);
+    if (k === 2) gl.disable(gl.CULL_FACE); else gl.enable(gl.CULL_FACE);
+    if (k === 1) { gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA); gl.depthMask(false); }
+    for (const c of chunks) {
+      const m = c.kinds[k]; if (!m) continue;
+      gl.uniform3f(U('uOrg'), c.cx * 32, 0, c.cz * 32);
+      gl.bindVertexArray(m.vao);
+      gl.drawElements(gl.TRIANGLES, m.n, gl.UNSIGNED_INT, 0);
+    }
+    gl.depthMask(true); gl.disable(gl.BLEND);
+  }
+  gl.finish();
+  const biome = ex.vw_biome_at(cam.x, cam.z);
+  st.textContent = `seed ${seed} cam ${cam.x.toFixed(0)},${cam.y.toFixed(0)},${cam.z.toFixed(0)} chunks ${chunks.length} avg ${(tms / chunks.length).toFixed(1)} ms quads ${quads} (${(bytesTot / 1048576).toFixed(1)} MB) biome ${biome}`;
+  window.__done = st.textContent;
+})().catch((e) => { document.getElementById('s').textContent = 'ERR ' + e; window.__done = 'ERR ' + e; });
+</script>

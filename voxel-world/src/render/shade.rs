@@ -868,7 +868,9 @@ impl<'a> Frame<'a> {
 
     #[allow(clippy::too_many_arguments)]
     fn shade_water(&self, p: [f64; 3], d: Vec3, t: f64, fp: f32, far: Option<(u8, f64)>, wl: f64, depth: u32, jit: u32, ctx: &mut Ctx) -> Vec3 {
-        let (gx, gz, var) = self.ripple_grad(p[0], p[2], fp);
+        let mode: u32 = std::env::var("RR_RIPPLE").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
+        let fpr = match mode { 0 => fp, 1 => fp / (-d.y).max(0.04), 2 => fp / (-d.y).max(0.04).sqrt(), _ => fp / (-d.y).max(0.04) * 0.5 };
+        let (gx, gz, var) = self.ripple_grad(p[0], p[2], fpr);
         let calm = 1.0 - 0.6 * smoothstep(800.0, 6000.0, t as f32);
         let n = Vec3::new(-gx * calm, 1.0, -gz * calm).normalize();
         let v = -d;
