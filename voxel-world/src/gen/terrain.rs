@@ -37,7 +37,7 @@
 //!   gentle apron) joined with smooth-max, caldera `rim − D(1 − (d/r_c)⁴)` with a lava lake level.
 //! * 3D density `ρ = (H − y) + J·N₃(x, 1.4y, z)` with |N₃| ≤ 1 ⇒ sign(ρ) = sign(H − y) exactly
 //!   outside `[H − J, H + J]`; above the surface N₃ is biased downward to suppress floating blobs.
-use super::biome::{classify, BiomeInput};
+use super::biome::{classify, BiomeInput, SnowLine};
 use super::climate::{lerp_d, smoothstep_d, ClimateD, ClimateSampler, DEroded, DFbm, DRidged, D2};
 use super::{ColumnInfo, SEA_LEVEL, WORLD_HEIGHT};
 use crate::math::{saturate, smoothstep};
@@ -312,6 +312,7 @@ pub struct TerrainShaper {
     swamp_n: DFbm,
     hoodoo: Worley2,
     volcano: Worley2,
+    snow: SnowLine,
 }
 
 /// Inland lakes: cell size, candidate probability, max radius, rim probes.
@@ -372,6 +373,7 @@ impl TerrainShaper {
             swamp_n: DFbm::new(s("terrain.swamp"), 36.0, 2, 2.0, 0.5),
             hoodoo: Worley2::new(s("terrain.hoodoo"), HOODOO_CELL, 0.75),
             volcano: Worley2::new(s("terrain.volcano"), VOLCANO_CELL, 0.7),
+            snow: SnowLine::new(seed),
         }
     }
 
@@ -398,6 +400,8 @@ impl TerrainShaper {
             river_dist: cd.river_dist,
             river_width: cd.river_width,
             mountain: sh.mountain,
+            snow_line: self.snow.at(x, z, cd.t.v),
+            water_level: sh.water_level,
         });
         ColumnInfo {
             x,

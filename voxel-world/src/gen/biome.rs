@@ -1,23 +1,78 @@
 //! Biome classification + surface rules. OWNER: gen-core.
 //!
+//! # Snow line (DESIGN §2a: snow is altitude-driven, never a lowland biome)
+//! A single snow line `S(x,z) = 330 + 12·n(x,z) − 15·T` (n: 2-octave simplex, λ ≈ 2.6 km,
+//! |n| ≤ 1; T: sea-level climate temperature ∈ [−1, 1]) — so S ∈ [303, 357]. Above S, exposed
+//! ground whose slope is below `θ(r) = 0.55 + 1.25·smoothstep(0, 90, r)` (r = y − S) is snow:
+//! gentle faces first, couloirs and gullies fill in with altitude, cliffs stay bare; from
+//! r ≥ 90 (y ≈ 420) permanent snow / packed ice on everything but near-vertical faces.
+//! **Below S there is no snow, ice or frozen water at all.**
+//!
 //! # Classification
-//! A decision procedure over (C, E, PV, T, H) plus the *derived* column quantities (height,
-//! slope, surface temperature `T_s = T − (H − sea)/250 − 0.12·aspect`, landform region weights).
-//! Using the derived quantities makes biome borders follow the terrain: snow lines are isotherms of
-//! `T_s`, peaks are where altitude and convexity (pv) are high, beaches only where the coast is
-//! gentle, stony shores where it is steep, rivers exactly in the carved channel. Lowland biomes
-//! partition the (T_s, H) plane (Whittaker-style) so that neighbours are climatic neighbours:
-//! desert ↔ savanna ↔ jungle, plains ↔ forest ↔ dark forest, taiga ↔ snowy taiga …
+//! A decision procedure over (C, E, PV, T, H) plus *derived* column quantities (height, slope,
+//! `T_s = T − (H − sea)/250 − 0.12·aspect`, landform region weights, snow line). Altitude zones
+//! relative to the snow line come first (forest → alpine meadow → bare rock → snow):
+//! * r ≥ 90: `Glacier` (slope < 1.5) / `SnowyPeaks`; 0 ≤ r < 90: `SnowyPeaks` (crests, steep),
+//!   `SnowySlopes`, `SnowyPlains` (flat high plateaus); lakes above S: `FrozenRiver` /
+//!   `FrozenOcean` (deep), their shores `SnowyBeach`.
+//! * −30 ≤ r < 0 (above the treeline): `StonyPeaks` / alpine `Meadow`.
+//! * −90 ≤ r < −30 on mountain flanks (sparse stunted conifers): `AlpineGrove`, cold:
+//!   `SnowyTaiga` (−60 ≤ r), steep: `StonyPeaks`.
+//!
+//! Lowland biomes partition the (T_s, H) plane (Whittaker-style) so that neighbours are climatic
+//! neighbours: desert ↔ savanna ↔ jungle, plains ↔ forest ↔ dark forest, taiga ↔ old-growth
+//! taiga; the cold end is snow-free tundra/taiga (grass, podzol, moss, gravel).
 //!
 //! # Surface rules
 //! `material()` costs one integer hash plus at most two noise evaluations (a 2D simplex for patches
-//! at the top, a 3D simplex for rock strata underground). Layer thicknesses vary by hash.
-use super::{Biome, Climate, ColumnInfo, BEDROCK_TOP, SEA_LEVEL};
+//! at the top or the snow line above y 300, a 3D simplex for rock strata underground).
+use super::climate::FastSimplex;
 use super::terrain::Regions;
+use super::{Biome, Climate, ColumnInfo, BEDROCK_TOP, SEA_LEVEL};
 use crate::materials::Material;
 use crate::noise::{derive_seed, hash2, hash3, salt, Simplex};
 
 const SEA: f32 = SEA_LEVEL as f32;
+
+/// Mean snow line (world y).
+pub const SNOW_LINE: f32 = 330.0;
+/// Height above the local snow line from which glaciers / permanent ice cover everything.
+pub const GLACIER_REL: f32 = 90.0;
+/// No snow line is ever below this (330 − 12 − 15).
+pub const SNOW_LINE_MIN: f32 = SNOW_LINE - 27.0;
+
+/// The local snow line `S(x,z) = 330 + 12·n(x,z) − 15·T` (see module docs).
+#[derive(Clone, Copy, Debug)]
+pub struct SnowLine {
+    a: FastSimplex,
+    b: FastSimplex,
+}
+
+impl SnowLine {
+    pub fn new(seed: u64) -> Self {
+        let s = derive_seed(seed, salt("biome.snowline"));
+        SnowLine { a: FastSimplex::new(s), b: FastSimplex::new(s ^ 0x5A0B) }
+    }
+    /// `temperature` = sea-level climate temperature (`Climate::temperature`).
+    #[inline]
+    pub fn at(&self, x: f64, z: f64, temperature: f32) -> f32 {
+        const F: f64 = 1.0 / 2600.0;
+        let n = (self.a.n2d(x * F, z * F).0 + 0.5 * self.b.n2d(z * 2.13 * F + 17.3, x * 2.13 * F - 4.1).0) * (1.0 / 1.5);
+        SNOW_LINE + 12.0 * n.clamp(-1.0, 1.0) - 15.0 * temperature.clamp(-1.0, 1.0)
+    }
+}
+
+/// Convenience for other modules (features: treeline at ≈ S − 90 … S − 30):
+/// `snow_line(gen.seed, col.x, col.z, col.climate.temperature)`.
+pub fn snow_line(seed: u64, x: f64, z: f64, temperature: f32) -> f32 {
+    SnowLine::new(seed).at(x, z, temperature)
+}
+
+/// Slope below which snow sticks at height `rel` above the snow line (rise over run).
+#[inline]
+pub fn snow_slope_limit(rel: f32) -> f32 {
+    0.55 + 1.25 * crate::math::smoothstep(0.0, GLACIER_REL, rel)
+}
 
 /// Everything `classify` looks at.
 #[derive(Clone, Copy, Debug, Default)]
@@ -32,9 +87,14 @@ pub struct BiomeInput {
     pub river_width: f32,
     /// Height of the mountain term above the base offset.
     pub mountain: f32,
+    /// Local snow line (world y), see [`SnowLine`].
+    pub snow_line: f32,
+    /// `ColumnInfo::water_level` of the column (`i32::MIN` = dry).
+    pub water_level: i32,
 }
 
-/// Snow line: surface temperature below which exposed flat ground is snow-covered.
+/// Retained for compatibility: surface temperature of the *old* isotherm snow line. Snow is now
+/// altitude-driven ([`SnowLine`]); this constant only separates cold from temperate lowlands.
 pub const SNOW_T: f32 = -0.5;
 
 /// Biome decision procedure (see module docs).
@@ -45,27 +105,34 @@ pub fn classify(b: &BiomeInput) -> Biome {
     let st = b.surface_temperature;
     let alt = h - SEA;
     let r = &b.regions;
+    let rel = h - b.snow_line;
 
     if r.volcanic > 0.5 && h >= SEA - 1.0 {
         return Volcanic;
     }
 
     // ---------------- water-covered
-    if h < SEA - 0.5 {
+    let wet = b.water_level != i32::MIN && h < b.water_level as f32 - 0.5;
+    if wet && b.water_level > SEA_LEVEL {
+        if r.lake <= 0.0 {
+            return Volcanic; // caldera lava lake outside the volcanic weight (defensive)
+        }
+        if b.water_level as f32 >= b.snow_line {
+            // frozen tarn: deep ones keep the "frozen ocean" ice sheet
+            return if b.water_level as f32 - h > 12.0 { FrozenOcean } else { FrozenRiver };
+        }
+        return if r.swamp > 0.5 { Swamp } else { River };
+    }
+    if wet {
         if r.channel > 0.35 && c.continentalness > -0.17 {
-            return if st < SNOW_T { FrozenRiver } else { River };
+            return River;
         }
         if r.swamp > 0.5 {
             return Swamp;
         }
-        if c.continentalness > -0.12 && h > SEA - 5.0 {
+        if c.continentalness > -0.12 && h > SEA - 5.0 && b.river_dist < b.river_width * 2.5 + 6.0 {
             // shallow inland water (rivers' flanks, lagoons)
-            if b.river_dist < b.river_width * 2.5 + 6.0 {
-                return if st < SNOW_T { FrozenRiver } else { River };
-            }
-        }
-        if c.temperature < -0.6 {
-            return FrozenOcean;
+            return River;
         }
         if h < 92.0 {
             return DeepOcean;
@@ -76,14 +143,16 @@ pub fn classify(b: &BiomeInput) -> Biome {
         return Ocean;
     }
 
-    // ---------------- shores
+    // ---------------- lake shores
+    if r.lake > 0.5 && h < r.lake_level + 2.5 && b.slope < 0.6 {
+        return if rel >= 0.0 { SnowyBeach } else { Beach };
+    }
+
+    // ---------------- sea shores (all far below the snow line)
     let coastal = c.continentalness < -0.04 && alt < 4.5;
     if coastal && r.channel < 0.5 {
         if b.slope > 0.85 || r.cliff > 0.55 {
             return StonyShore;
-        }
-        if st < SNOW_T {
-            return SnowyBeach;
         }
         if r.swamp > 0.5 {
             return Swamp;
@@ -91,7 +160,19 @@ pub fn classify(b: &BiomeInput) -> Biome {
         return Beach;
     }
     if r.channel > 0.5 && alt < 2.0 {
-        return if st < SNOW_T { FrozenRiver } else { River };
+        return River;
+    }
+
+    // ---------------- altitude zones relative to the snow line
+    let peaky = (b.mountain > 120.0 && c.peaks_valleys > 0.25) || b.slope > 1.0;
+    if rel >= GLACIER_REL {
+        return if b.slope < 1.5 { Glacier } else { SnowyPeaks };
+    }
+    if rel >= 0.0 {
+        if peaky || b.slope > 0.9 {
+            return SnowyPeaks;
+        }
+        return if b.slope > 0.4 { SnowySlopes } else { SnowyPlains };
     }
 
     // ---------------- dry-land landforms with dedicated terrain
@@ -102,23 +183,19 @@ pub fn classify(b: &BiomeInput) -> Biome {
         return Badlands;
     }
 
-    // ---------------- altitude zones
-    let peaky = b.mountain > 120.0 || alt > 230.0;
-    if st < -0.85 && b.slope < 0.6 && alt > 150.0 {
-        return Glacier;
+    let mountainous = b.mountain > 40.0 || alt > 150.0;
+    if rel >= -30.0 && mountainous {
+        // above the treeline: bare rock or alpine meadow
+        return if b.slope > 0.75 || peaky { StonyPeaks } else { Meadow };
     }
-    if peaky && alt > 200.0 {
-        if st < SNOW_T + 0.05 {
-            return SnowyPeaks;
-        }
-        if alt > 260.0 || b.slope > 0.9 {
+    if rel >= -90.0 && mountainous {
+        // treeline zone: sparse stunted conifers
+        if b.slope > 1.1 {
             return StonyPeaks;
         }
-    }
-    if st < SNOW_T + 0.1 && alt > 110.0 && b.slope > 0.75 {
-        return SnowySlopes;
-    }
-    if st < -0.12 && alt > 95.0 && b.mountain > 40.0 {
+        if c.temperature < -0.3 && rel >= -60.0 {
+            return SnowyTaiga;
+        }
         return AlpineGrove;
     }
     if alt > 85.0 && st > -0.12 && st < 0.32 && b.slope < 0.55 && c.humidity > -0.1 && b.mountain > 35.0 {
@@ -132,19 +209,17 @@ pub fn classify(b: &BiomeInput) -> Biome {
         return Swamp;
     }
 
-    // ---------------- lowlands: Whittaker partition of (T_s, H)
+    // ---------------- lowlands: Whittaker partition of (T_s, H), snow-free
     let hu = c.humidity;
-    if st < -0.58 {
-        return if hu > -0.05 { SnowyTaiga } else { SnowyPlains };
-    }
     if st < -0.2 {
+        // boreal / tundra
         if hu > 0.45 {
             return OldGrowthTaiga;
         }
         if hu > -0.35 {
             return Taiga;
         }
-        return if st < -0.4 { SnowyPlains } else { Plains };
+        return Plains;
     }
     if st < 0.42 {
         if hu > 0.5 {
@@ -176,6 +251,7 @@ pub struct SurfaceRules {
     pub seed: u64,
     patch: Simplex,
     strata: Simplex,
+    snow: SnowLine,
 }
 
 #[inline]
@@ -189,13 +265,37 @@ impl SurfaceRules {
             seed,
             patch: Simplex::new(derive_seed(seed, salt("surface.patch"))),
             strata: Simplex::new(derive_seed(seed, salt("surface.strata"))),
+            snow: SnowLine::new(seed),
         }
+    }
+
+    /// The local snow line of a column (world y).
+    #[inline]
+    pub fn snow_line(&self, col: &ColumnInfo) -> f32 {
+        self.snow.at(col.x, col.z, col.climate.temperature)
     }
 
     /// Patchiness field in [-1, 1] at ~14-block scale (one 2D simplex).
     #[inline]
     fn patch(&self, x: i32, z: i32) -> f32 {
         self.patch.n2(x as f64 * 0.071, z as f64 * 0.071)
+    }
+
+    /// Snow cover of an exposed block at world y (None below the snow line or where the slope
+    /// exceeds the altitude-dependent limit). Dithered ±3 blocks so the line is not a contour.
+    #[inline]
+    fn snow_cover(&self, y: i32, col: &ColumnInfo, jit: f32) -> Option<Material> {
+        if (y as f32) < SNOW_LINE_MIN - 4.0 {
+            return None;
+        }
+        let rel = y as f32 + 0.5 - self.snow_line(col) + 6.0 * (jit - 0.5);
+        if rel < 0.0 || col.slope >= snow_slope_limit(rel) {
+            return None;
+        }
+        if rel > GLACIER_REL && (col.slope > 1.1 || jit < 0.3) {
+            return Some(Material::PackedIce);
+        }
+        Some(Material::Snow)
     }
 
     /// Underground rock: deepslate below y≈64 (dithered), bedrock floor, strata lenses
@@ -240,17 +340,31 @@ impl SurfaceRules {
         use Material::*;
         let h = hash3(self.seed, x, y, z);
         let below_surface = col.height - y as f32;
-        // Deep blocks, cave floors/walls far below the 2D surface band → rock.
-        if depth > 48 || below_surface > col.jaggedness + 10.0 + 4.0 * bit(h, 32) || y < BEDROCK_TOP {
+        let b = col.biome;
+        // Deep blocks, cave floors/walls far below the 2D surface band → rock. Badlands and
+        // hoodoo columns expose their whole side down to the neighbour (mesa cliffs, 36-block
+        // spires), so their banded terracotta must reach much deeper below the column top.
+        let cut = match b {
+            Biome::Badlands | Biome::Hoodoos => 64.0,
+            Biome::Volcanic => 28.0,
+            _ => col.jaggedness + 10.0 + 4.0 * bit(h, 32),
+        };
+        if depth > 48 || below_surface > cut || y < BEDROCK_TOP {
             return self.rock(x, y, z, h);
         }
-        let b = col.biome;
         let st = col.surface_temperature;
         let slope = col.slope;
-        let underwater = y < col.water_level && col.water_level <= SEA_LEVEL + 1;
+        let underwater = y < col.water_level && b != Biome::Volcanic;
         let jit = bit(h, 48);
         let hc = hash2(self.seed ^ 0x51, x, z);
         let dirt_depth = 3 + (hc & 1) as i32 + ((hc >> 1) & 1) as i32;
+
+        // ---------- snow: altitude-driven only (nothing below the local snow line)
+        if depth == 0 && !underwater {
+            if let Some(m) = self.snow_cover(y, col, jit) {
+                return m;
+            }
+        }
 
         // ---------- badlands / hoodoos: red sand on flats, banded terracotta
         if matches!(b, Biome::Badlands | Biome::Hoodoos) {
@@ -260,7 +374,7 @@ impl SurfaceRules {
             if depth < 2 && slope < 0.5 {
                 return RedSand;
             }
-            if depth < 40 {
+            if depth < 56 {
                 return Terracotta;
             }
             return self.rock(x, y, z, h);
@@ -283,7 +397,7 @@ impl SurfaceRules {
             return if depth < 20 { Basalt } else { self.rock(x, y, z, h) };
         }
 
-        // ---------- underwater floors
+        // ---------- underwater floors (sea, rivers, lakes)
         if underwater {
             let wd = col.water_level - y; // water depth above this block
             if depth >= 4 {
@@ -295,26 +409,41 @@ impl SurfaceRules {
             let p = self.patch(x, z);
             return match b {
                 Biome::Swamp => {
-                    if p > 0.2 { Clay } else { Mud }
+                    if p > 0.2 {
+                        Clay
+                    } else {
+                        Mud
+                    }
                 }
-                Biome::River | Biome::FrozenRiver => {
+                Biome::River | Biome::FrozenRiver | Biome::FrozenOcean => {
                     if p > 0.45 {
                         Clay
                     } else if p < -0.35 {
                         Gravel
+                    } else if col.water_level > SEA_LEVEL && p < 0.1 {
+                        Mud // still lake water: silt
                     } else {
                         Sand
                     }
                 }
                 Biome::DeepOcean => {
-                    if p > 0.3 { Clay } else if p < -0.2 { Sand } else { Gravel }
-                }
-                Biome::FrozenOcean => {
-                    if p > 0.4 { Clay } else { Gravel }
+                    if p > 0.3 {
+                        Clay
+                    } else if p < -0.2 {
+                        Sand
+                    } else {
+                        Gravel
+                    }
                 }
                 _ => {
                     if wd > 14 {
-                        if p > 0.35 { Gravel } else if p < -0.45 { Clay } else { Sand }
+                        if p > 0.35 {
+                            Gravel
+                        } else if p < -0.45 {
+                            Clay
+                        } else {
+                            Sand
+                        }
                     } else if p > 0.62 {
                         Gravel
                     } else {
@@ -326,10 +455,9 @@ impl SurfaceRules {
 
         // ---------- steep rock faces (any biome without its own rock)
         let steep = slope > 1.25 + 0.25 * jit;
-        let cold = st < SNOW_T + 0.04 * (jit - 0.5);
 
         match b {
-            Biome::Beach | Biome::Desert => {
+            Biome::Beach | Biome::Desert | Biome::SnowyBeach => {
                 let sand = if b == Biome::Desert { 4 + (hc & 3) as i32 } else { 3 + (hc & 1) as i32 };
                 if depth < sand {
                     return Sand;
@@ -339,15 +467,6 @@ impl SurfaceRules {
                 }
                 return self.rock(x, y, z, h);
             }
-            Biome::SnowyBeach => {
-                if depth == 0 {
-                    return Snow;
-                }
-                if depth < 4 {
-                    return Sand;
-                }
-                return if depth < 7 { Sandstone } else { self.rock(x, y, z, h) };
-            }
             Biome::StonyShore => {
                 if depth < 2 && self.patch(x, z) > 0.3 {
                     return Gravel;
@@ -355,30 +474,31 @@ impl SurfaceRules {
                 return self.rock(x, y, z, h);
             }
             Biome::Glacier => {
+                // firn / glacier ice under the (snow-line-driven) surface
                 if depth == 0 {
-                    return if steep { PackedIce } else { Snow };
+                    return if steep { self.rock(x, y, z, h) } else { PackedIce };
                 }
-                if depth < 10 + (hc & 3) as i32 {
+                if depth < 10 + (hc & 3) as i32 && !steep {
                     return if self.patch(x, z) > 0.6 { Ice } else { PackedIce };
                 }
                 return self.rock(x, y, z, h);
             }
-            Biome::SnowyPeaks | Biome::SnowySlopes => {
-                if steep && slope > 1.6 {
-                    return self.rock(x, y, z, h);
+            Biome::SnowyPeaks | Biome::SnowySlopes | Biome::SnowyPlains => {
+                // the top block was handled by `snow_cover`; a snowpack lies below it where
+                // the surface is snowy, otherwise bare rock / scree / alpine turf
+                let top_snow = self.snow_cover(y + depth, col, 0.5).is_some();
+                if top_snow && depth < 3 {
+                    return if b == Biome::SnowyPeaks && depth > 0 { PackedIce } else { Snow };
                 }
-                if depth == 0 {
-                    return Snow;
+                if b == Biome::SnowyPlains && !steep && depth < dirt_depth {
+                    return if depth == 0 { if self.patch(x, z) > 0.2 { Gravel } else { Grass } } else { Dirt };
                 }
-                if depth < 3 {
-                    return if b == Biome::SnowyPeaks { PackedIce } else { Snow };
+                if depth < 2 && slope < 0.9 && self.patch(x, z) > 0.3 {
+                    return Gravel;
                 }
                 return self.rock(x, y, z, h);
             }
             Biome::StonyPeaks => {
-                if depth == 0 && cold && slope < 0.9 {
-                    return Snow;
-                }
                 if depth < 2 && slope < 0.8 && self.patch(x, z) > 0.35 {
                     return Gravel;
                 }
@@ -401,26 +521,30 @@ impl SurfaceRules {
                 _ => Dirt,
             };
         }
-        // depth == 0: the exposed top block
-        if cold && slope < 1.0 {
-            return Snow;
-        }
+        // depth == 0: the exposed top block (never snow below the snow line)
         // scree on moderately steep mountain ground
         if slope > 0.95 && self.patch(x, z) > 0.25 {
             return Gravel;
         }
+        let p = self.patch(x, z);
         match b {
             Biome::River | Biome::FrozenRiver => {
-                if self.patch(x, z) > 0.3 { Gravel } else { Sand }
+                if p > 0.3 {
+                    Gravel
+                } else {
+                    Sand
+                }
             }
-            Biome::SnowyPlains | Biome::SnowyTaiga | Biome::AlpineGrove => {
-                if st < SNOW_T + 0.25 { Snow } else { Grass }
-            }
-            Biome::Taiga => {
-                if self.patch(x, z) > 0.25 { Podzol } else { Grass }
+            Biome::Taiga | Biome::SnowyTaiga | Biome::AlpineGrove => {
+                if p > 0.25 {
+                    Podzol
+                } else if p < -0.65 {
+                    Moss
+                } else {
+                    Grass
+                }
             }
             Biome::OldGrowthTaiga => {
-                let p = self.patch(x, z);
                 if p > -0.1 {
                     Podzol
                 } else if p < -0.6 {
@@ -430,7 +554,6 @@ impl SurfaceRules {
                 }
             }
             Biome::DarkForest => {
-                let p = self.patch(x, z);
                 if p > 0.55 {
                     Podzol
                 } else if p < -0.55 {
@@ -440,10 +563,13 @@ impl SurfaceRules {
                 }
             }
             Biome::Jungle => {
-                if self.patch(x, z) > 0.45 { Moss } else { Grass }
+                if p > 0.45 {
+                    Moss
+                } else {
+                    Grass
+                }
             }
             Biome::Swamp => {
-                let p = self.patch(x, z);
                 if p > 0.35 {
                     Mud
                 } else if p < -0.6 {
@@ -453,8 +579,25 @@ impl SurfaceRules {
                 }
             }
             Biome::Savanna => {
-                if self.patch(x, z) > 0.6 { Dirt } else { Grass }
+                if p > 0.6 {
+                    Dirt
+                } else {
+                    Grass
+                }
             }
+            Biome::Plains | Biome::Meadow if st < -0.35 => {
+                // tundra: grass with gravel, moss and podzol patches — but no snow
+                if p > 0.55 {
+                    Gravel
+                } else if p < -0.5 {
+                    Moss
+                } else if p > 0.3 {
+                    Podzol
+                } else {
+                    Grass
+                }
+            }
+            Biome::Meadow if slope > 0.6 && p > 0.4 => Gravel,
             _ => Grass,
         }
     }
