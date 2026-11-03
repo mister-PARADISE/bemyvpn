@@ -35,7 +35,7 @@ pub struct BiomeInput {
 }
 
 /// Snow line: surface temperature below which exposed flat ground is snow-covered.
-pub const SNOW_T: f32 = -0.42;
+pub const SNOW_T: f32 = -0.5;
 
 /// Biome decision procedure (see module docs).
 pub fn classify(b: &BiomeInput) -> Biome {
@@ -64,7 +64,7 @@ pub fn classify(b: &BiomeInput) -> Biome {
                 return if st < SNOW_T { FrozenRiver } else { River };
             }
         }
-        if c.temperature < -0.48 {
+        if c.temperature < -0.6 {
             return FrozenOcean;
         }
         if h < 92.0 {
@@ -134,17 +134,17 @@ pub fn classify(b: &BiomeInput) -> Biome {
 
     // ---------------- lowlands: Whittaker partition of (T_s, H)
     let hu = c.humidity;
-    if st < -0.45 {
+    if st < -0.58 {
         return if hu > -0.05 { SnowyTaiga } else { SnowyPlains };
     }
-    if st < -0.12 {
+    if st < -0.2 {
         if hu > 0.45 {
             return OldGrowthTaiga;
         }
         if hu > -0.35 {
             return Taiga;
         }
-        return if st < -0.3 { SnowyPlains } else { Plains };
+        return if st < -0.4 { SnowyPlains } else { Plains };
     }
     if st < 0.42 {
         if hu > 0.5 {
@@ -227,9 +227,9 @@ impl SurfaceRules {
                 return Material::Calcite;
             }
             Material::Granite
-        } else if v < -0.52 {
+        } else if (-0.84..-0.52).contains(&v) {
             Material::Andesite
-        } else if (0.26..0.30).contains(&v) {
+        } else if v < -0.84 {
             Material::Calcite
         } else {
             Material::Stone

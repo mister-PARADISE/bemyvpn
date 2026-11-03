@@ -156,10 +156,10 @@ fn amp_spline() -> Spline {
         0,
         vec![
             (-0.16, 0.0.into()),
-            (-0.03, cs(1, &[(-1.0, 45.0), (-0.5, 18.0), (0.0, 5.0), (1.0, 1.0)])),
-            (0.12, cs(1, &[(-1.0, 190.0), (-0.65, 120.0), (-0.3, 45.0), (0.0, 16.0), (0.5, 6.0), (1.0, 2.0)])),
-            (0.32, cs(1, &[(-1.0, 280.0), (-0.7, 210.0), (-0.4, 110.0), (-0.1, 38.0), (0.4, 12.0), (1.0, 4.0)])),
-            (0.65, cs(1, &[(-1.0, 300.0), (-0.7, 240.0), (-0.4, 140.0), (-0.1, 50.0), (0.4, 16.0), (1.0, 5.0)])),
+            (-0.03, cs(1, &[(-1.0, 55.0), (-0.5, 20.0), (0.0, 5.0), (1.0, 1.0)])),
+            (0.12, cs(1, &[(-1.0, 230.0), (-0.65, 150.0), (-0.3, 55.0), (0.0, 18.0), (0.5, 6.0), (1.0, 2.0)])),
+            (0.32, cs(1, &[(-1.0, 300.0), (-0.7, 255.0), (-0.4, 140.0), (-0.1, 45.0), (0.4, 12.0), (1.0, 4.0)])),
+            (0.65, cs(1, &[(-1.0, 310.0), (-0.7, 275.0), (-0.4, 170.0), (-0.1, 58.0), (0.4, 16.0), (1.0, 5.0)])),
         ],
     )
 }
@@ -295,8 +295,8 @@ impl TerrainShaper {
             offset: offset_spline(),
             amp: amp_spline(),
             wall: wall_spline(),
-            ridged: DRidged::new(s("terrain.ridged"), 1500.0, 4, 2.0, 1.0),
-            hills: DEroded::new(s("terrain.hills"), 900.0, 6, 0.5, 1.5),
+            ridged: DRidged::new(s("terrain.ridged"), 1500.0, 5),
+            hills: DEroded::new(s("terrain.hills"), 900.0, 6, 0.5, 0.25),
             rough: DFbm::new(s("terrain.rough"), 40.0, 2, 2.0, 0.5),
             jag: DFbm::new(s("terrain.jag"), 800.0, 2, 2.0, 0.5),
             select: DFbm::new(s("terrain.select"), 1100.0, 2, 2.0, 0.5),
@@ -348,6 +348,22 @@ impl TerrainShaper {
         }
     }
 
+    /// Names of the components returned by [`TerrainShaper::debug_parts`].
+    pub fn debug_parts_names(&self) -> Vec<&'static str> {
+        vec!["base", "ridge", "hills", "mountain", "final"]
+    }
+
+    /// Individual height components (scaled to blocks) for debug hillshades.
+    pub fn debug_parts(&self, cd: &ClimateD, x: f64, z: f64) -> Vec<f32> {
+        let inp = [cd.c, cd.e, cd.pv];
+        let base = spline_d(&self.offset, &inp);
+        let q = &cd.q;
+        let ridge = q.chain(self.ridged.sample(q.x, q.z, 0.0));
+        let hills = self.hills.sample(x, z, 0.0);
+        let sh = self.shape(cd, x, z, 0.0);
+        vec![base.v, ridge.v * 300.0, hills.v * 300.0, sh.mountain, sh.height.v]
+    }
+
     /// Region weights from climate alone.
     pub fn regions(&self, cd: &ClimateD, x: f64, z: f64, fp: f64) -> Regions {
         let (t, hu, e, c) = (cd.t.v, cd.h.v, cd.e.v, cd.c.v);
@@ -357,7 +373,7 @@ impl TerrainShaper {
         let very_dry = smoothstep(-0.50, -0.64, hu);
         let badlands = desert_all * very_dry * smoothstep(0.50, 0.20, e);
         let sel = self.select.value(x + 3100.0, z - 1700.0, fp);
-        let hoodoo = badlands * smoothstep(0.05, 0.22, sel);
+        let hoodoo = badlands * smoothstep(0.16, 0.30, sel);
         let swamp = smoothstep(0.30, 0.48, hu)
             * smoothstep(-0.20, 0.02, t)
             * smoothstep(-0.10, 0.30, e)
@@ -387,7 +403,7 @@ impl TerrainShaper {
         let mut mountain = amp * shape * vfac;
         // dendritic gullies on mountain flanks (strength ∝ local relief)
         if mountain.v > 12.0 {
-            let ga = 0.24 * mountain.v.min(260.0) * smoothstep(12.0, 60.0, mountain.v);
+            let ga = 0.65 * smoothstep(12.0, 60.0, mountain.v);
             let g = self.gullies(x, z, (mountain.dx + base.dx, mountain.dz + base.dz), ga, fp);
             mountain = mountain + g;
         }
@@ -538,30 +554,32 @@ impl TerrainShaper {
 
     /// Slope-aligned gully noise ("erosion filter").
     ///
-    /// For octave k (cell size Lₖ = 360·2⁻ᵏ, amplitude ×0.47 per octave) every cell of a jittered lattice carries a plane wave
-    /// `cos 2π((p − pⱼ)·t̂·s)/Lₖ` whose wave vector t̂ is *perpendicular* to the current terrain
+    /// For octave k (cell size Lₖ = 360·2⁻ᵏ) every cell of a jittered lattice carries a plane wave
+    /// `cos 2π((p − pⱼ)·t̂)/Lₖ` whose wave vector t̂ is *perpendicular* to the current terrain
     /// gradient g, so its crests run downhill (gullies and spurs). The waves are blended with the
-    /// compact kernel `w = (1 − |p − pⱼ|²/Lₖ²)³` (normalised), and `s = min(2.5|g|, 1)` fades
-    /// them out on flat ground. The derivative of each octave is added to g before the next octave
-    /// → finer gullies bend into coarser ones (dendritic look). Exact derivative except for the
-    /// dependence of t̂ on g (Hessian), see `slope_matches_fd`.
-    pub fn gullies(&self, x: f64, z: f64, grad: (f32, f32), amp: f32, fp: f64) -> D2 {
+    /// compact kernel `w = (1 − |p − pⱼ|²/Lₖ²)³` (normalised). The amplitude is
+    /// `aₖ = c·0.72ᵏ·|g₀|·Lₖ/2π`, i.e. octave k adds side slopes ≈ c·0.72ᵏ × the base slope (relief of a
+    /// gully ∝ slope × width, as in nature; flat ground gets nothing). Each octave's derivative is
+    /// added to g before the next octave → finer gullies bend into coarser ones (dendritic
+    /// drainage). Exact derivative except for the dependence of t̂ on g (Hessian), see
+    /// `slope_matches_fd`.
+    pub fn gullies(&self, x: f64, z: f64, grad: (f32, f32), c: f32, fp: f64) -> D2 {
         const TAU: f32 = std::f32::consts::TAU;
         let (mut gx, mut gz) = grad;
+        let g0 = (gx * gx + gz * gz).sqrt().min(1.5);
         let mut out = D2::ZERO;
-        let mut a = amp;
         let mut cell = 360.0f64;
+        let mut taper = 1.0f32;
         for oct in 0..5u64 {
             let fade = if fp > 1.0 { saturate(((cell / fp - 2.0) * 0.5) as f32) } else { 1.0 };
             if fade <= 0.0 {
                 break;
             }
             let gl = (gx * gx + gz * gz).sqrt();
-            if gl < 1e-3 {
+            if gl < 1e-4 {
                 break;
             }
-            let sres = (gl * 2.5).min(1.0);
-            let (tx, tz) = (gz / gl * sres, -gx / gl * sres);
+            let (tx, tz) = (gz / gl, -gx / gl);
             let px = x / cell;
             let pz = z / cell;
             let (ix, iz) = (px.floor(), pz.floor());
@@ -599,13 +617,13 @@ impl TerrainShaper {
                 let k = 1.0 / cell as f32; // ∂pp/∂x
                 let vx = (svx - v * swx) * inv * k;
                 let vz = (svz - v * swz) * inv * k;
-                let wgt = a * fade * sres * sres;
-                out += D2::new(v, vx, vz) * wgt;
-                gx += vx * wgt;
-                gz += vz * wgt;
+                let a = c * taper * g0 * cell as f32 / TAU * fade;
+                out += D2::new(v, vx, vz) * a;
+                gx += vx * a;
+                gz += vz * a;
             }
-            a *= 0.47;
             cell *= 0.5;
+            taper *= 0.72;
         }
         out
     }
@@ -699,10 +717,12 @@ impl TerrainShaper {
         if j <= 0.0 || base.abs() >= j {
             return base;
         }
-        let mut n = (self.n3.sample3(x, y * 1.4, z) * 2.4).clamp(-1.0, 1.0);
+        let mut n = (self.n3.sample3(x, y * 1.4, z) * 2.6).clamp(-1.0, 1.0);
         if base < 0.0 {
-            // Above the surface: bias downward → shelves/overhangs attached to the slope, few blobs.
-            n -= 0.45 * (-base / j);
+            // Above the surface: bias downward (quadratically in the height above H) → shelves and
+            // overhangs stay attached to the slope; isolated floating blobs become rare.
+            let t = -base / j;
+            n -= 0.35 * t + 0.45 * t * t;
         }
         base + j * n.clamp(-1.0, 1.0)
     }

@@ -121,6 +121,26 @@ lakes above the snow line). The snowy biomes (SnowySlopes, SnowyPeaks, Glacier, 
 SnowyPlains/SnowyTaiga/SnowyBeach/FrozenOcean/FrozenRiver) must therefore be assigned by ALTITUDE
 zones relative to the snow line (or become very rare), not by lowland climate.
 
+**Treeline (features + biomes).** Trees thin out and shrink with altitude: full forests up to
+≈ snow line − 90, then sparse stunted conifers/bushes, none above ≈ snow line − 30. Slope
+also reduces density. Result on every big mountain: forest → alpine meadow → bare rock → snow.
+
+**Rain shadow (climate).** A prevailing wind direction per world (seed-derived). Effective humidity
+= base humidity − k·(upwind mountain mass), where upwind mass = max/integral of mountain amplitude
+sampled along the upwind ray (e.g. 6–10 samples over 0.5–6 km, low-res — must stay cheap or be
+computed from the low-frequency fields only). Windward slopes wet (forest/jungle), leeward side dry
+(steppe/savanna/desert). Coasts facing the wind are wetter.
+
+**Anti-monotony (everyone).** The world must never feel uniform:
+* Regional terrain "character" from a low-frequency selector: rolling hills, flat meander plains,
+  high plateaus with escarpments (and canyons where rivers cut them), mesa country, dune seas,
+  archipelagos/skerries along some coasts, volcanic fields — each covering 1–5 km, blended smoothly.
+* Inland lakes: Worley-cell basins with a flat water level (lake shores, islands), some at altitude.
+* Biome patches of very different sizes (some small groves/clearings inside big forests,
+  meadows inside taiga, oases in desert), and sub-biome variation (forest density, tree mix,
+  surface material patches) driven by extra mid-frequency noise.
+* No two shots of the same world should look alike.
+
 ## 3. Biomes & surface rules (gen-core, `biome.rs`)
 
 All 30 `Biome`s should appear somewhere (Volcanic and Hoodoos rare). Classification uses C, E,

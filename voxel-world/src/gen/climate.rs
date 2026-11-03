@@ -12,7 +12,8 @@
 //!
 //! **Fields** (wavelengths λ in blocks):
 //! * continentalness `C = Q_C(fBm₇(λ5200) ∘ W_c)` with `W_c` a 3-octave domain warp (λ2400, ±700).
-//! * erosion `E = Q_E(fBm₅(λ2600) ∘ W_c)` (same warp, offset domain → decorrelated).
+//! * erosion `E = Q_E(2·sabs(fBm₅(λ4800) ∘ W_c) − ½)`: low erosion (mountains) along the zero set
+//!   of an fBm → long branching mountain belts (same warp, offset domain → decorrelated).
 //! * weirdness/river noise `n_r = fBm₄(λ1700) ∘ W_m ∘ W_c` where `W_m` is a meander warp (λ600, ±90).
 //!   `W = Q_W(n_r)`, `pv = 1 − |3|W| − 2|`. Because the river centre-lines are the zero set
 //!   `n_r = 0` and valleys are `pv → −1 ⇔ W → 0`, **rivers always run along valley floors** and
@@ -24,7 +25,7 @@
 //! empirical quantiles measured by the test `calibration_quantiles` (200 k samples × 3 seeds over
 //! 40×40 km, constants below) and `target` is the desired quantile function — i.e. empirical CDF
 //! equalisation followed by the inverse target CDF. `C`: 20 % deep ocean (< −0.45), 45 % ocean
-//! (< −0.18), 8 % coast band (−0.18…−0.05), rest inland. `E, W, T, H`: uniform on [−1, 1].
+//! (< −0.18), 8 % coast band (−0.18…−0.05), rest inland. `E, W, H`: uniform on [−1, 1]; `T`: warm-skewed piecewise-linear target.
 //!
 //! Domain warps carry their Jacobian `J = (I + A·∇f)·J_prev`, so the gradient of a warped field is
 //! `∇_p n(q(p)) = Jᵀ ∇_q n` — exact.
@@ -351,20 +352,22 @@ impl DFbm {
     }
 }
 
-/// Musgrave ridged multifractal with exact gradient. Output ∈ [0, 1], sharp crests on the zero
-/// set of the base noise; each octave is weighted by the previous octave's signal so detail
-/// concentrates on crests (`sigᵢ = (o − |nᵢ|)²·wᵢ`, `wᵢ₊₁ = clamp(g·sigᵢ, 0, 1)`).
+/// Smooth ridged multifractal with exact gradient. Output ∈ [0, 1].
+///
+/// Musgrave's recurrence `sigᵢ = (1 − |nᵢ|)²·wᵢ`, `wᵢ₊₁ = clamp(g·sigᵢ, 0, 1)` produces C⁰ creases
+/// at every clamp boundary and at |nᵢ| = 0 of the detail octaves ("curtain folds" in a hillshade).
+/// Here the abs is a smooth abs `√(n² + ε²)` (ε shrinks for the first octave → crisp main crests)
+/// and the weight is the unclamped power `wᵢ₊₁ = sigᵢ^0.8 ∈ [0,1]` — detail still concentrates on
+/// crests, but the field is C¹ everywhere.
 #[derive(Clone, Debug)]
 pub struct DRidged {
     inv_wavelength: f64,
-    gain: f32,
-    offset: f32,
     layers: Vec<(Simplex, f64, f64)>,
     inv_norm: f32,
 }
 
 impl DRidged {
-    pub fn new(seed: u64, wavelength: f64, octaves: u32, gain: f32, offset: f32) -> Self {
+    pub fn new(seed: u64, wavelength: f64, octaves: u32) -> Self {
         let layers = (0..octaves)
             .map(|i| {
                 let a = GOLDEN_ANGLE * i as f64 + 1.3;
@@ -374,10 +377,10 @@ impl DRidged {
         let mut norm = 0.0;
         let mut w = 1.0f32;
         for _ in 0..octaves {
-            norm += w * offset * offset;
+            norm += w;
             w *= 0.5;
         }
-        DRidged { inv_wavelength: 1.0 / wavelength, gain, offset, layers, inv_norm: 1.0 / norm }
+        DRidged { inv_wavelength: 1.0 / wavelength, layers, inv_norm: 1.0 / norm }
     }
 
     #[inline]
@@ -386,6 +389,7 @@ impl DRidged {
         let mut spectral = 1.0f32;
         let mut weight = D2::c(1.0);
         let mut sum = D2::ZERO;
+        let mut eps = 0.03f32;
         for &(ref s, c, sn) in &self.layers {
             let fade = lod_fade(1.0 / f, fp);
             if fade <= 0.0 {
@@ -395,11 +399,12 @@ impl DRidged {
             let ff = f as f32;
             let (cf, sf) = (c as f32, sn as f32);
             let nd = D2::new(n, ff * (nx * cf + nz * sf), ff * (nz * cf - nx * sf));
-            let sig = (self.offset - nd.abs()).sq() * weight;
-            weight = (sig * self.gain).clamp(0.0, 1.0);
+            let sig = (1.0 - sabs_d(nd, eps)).maxf(0.0).sq() * weight;
+            weight = sig.powf(0.8);
             sum += sig * (fade * spectral);
             spectral *= 0.5;
             f *= 2.0;
+            eps = 0.12;
         }
         (sum * self.inv_norm).clamp(0.0, 1.0)
     }
@@ -644,9 +649,9 @@ const Q_C: [f32; 25] = [
     0.4219, 0.4928, 0.5671, 0.6523, 0.7607,
 ];
 const Q_E: [f32; 25] = [
-    -0.7820, -0.6661, -0.5766, -0.4993, -0.4261, -0.3562, -0.2973, -0.2438, -0.1936, -0.1456,
-    -0.0979, -0.0501, -0.0025, 0.0459, 0.0935, 0.1421, 0.1906, 0.2410, 0.2944, 0.3541,
-    0.4245, 0.4978, 0.5760, 0.6632, 0.7767,
+    -0.5000, -0.4993, -0.4936, -0.4772, -0.4475, -0.4043, -0.3586, -0.3121, -0.2645, -0.2164,
+    -0.1685, -0.1199, -0.0700, -0.0185, 0.0350, 0.0921, 0.1536, 0.2208, 0.2968, 0.3855,
+    0.4931, 0.6015, 0.7190, 0.8613, 1.0433,
 ];
 const Q_W: [f32; 25] = [
     -0.8515, -0.7454, -0.6546, -0.5741, -0.4965, -0.4183, -0.3521, -0.2922, -0.2336, -0.1747,
@@ -681,20 +686,40 @@ fn target_c(p: f32) -> f32 {
     1.0
 }
 
+/// Temperature: slightly warm-skewed (≈15 % frozen T < −0.58, ≈25 % hot T > 0.45).
+fn target_t(p: f32) -> f32 {
+    const K: [(f32, f32); 4] = [(0.0, -1.0), (0.15, -0.6), (0.5, 0.1), (1.0, 1.0)];
+    for w in K.windows(2) {
+        if p <= w[1].0 {
+            let t = (p - w[0].0) / (w[1].0 - w[0].0);
+            return w[0].1 + (w[1].1 - w[0].1) * t;
+        }
+    }
+    1.0
+}
+
 fn uniform_target(p: f32) -> f32 {
     2.0 * p - 1.0
 }
 
 fn build_map(q: &[f32; 25], target: fn(f32) -> f32) -> MonoMap {
-    let mut xs = vec![-1.0f32];
+    // End knots half a unit beyond the extreme measured quantiles (beyond that: clamped).
+    let mut xs = vec![q[0] - 0.5];
     let mut ys = vec![-1.0f32];
     for (i, &p) in P_LEVELS.iter().enumerate() {
         xs.push(q[i]);
         ys.push(target(p));
     }
-    xs.push(1.0);
+    xs.push(q[24] + 0.5);
     ys.push(1.0);
     MonoMap::new(&xs, &ys)
+}
+
+/// Raw erosion: a smooth |·| of an fBm, so that low erosion (= mountains) concentrates along
+/// the zero set of the noise — long, branching orogenic belts instead of round blobs.
+#[inline]
+fn erosion_raw(n: D2) -> D2 {
+    sabs_d(n, 0.03) * 2.0 - 0.5
 }
 
 // =====================================================================================
@@ -764,7 +789,7 @@ impl ClimateSampler {
             seed,
             warp_c: DWarp::new(s("climate.warp_c"), 3000.0, 2, 160.0),
             fbm_c: DFbm::new(s("climate.continent"), 5200.0, 7, 2.0, 0.5),
-            fbm_e: DFbm::new(s("climate.erosion"), 2600.0, 5, 2.0, 0.5),
+            fbm_e: DFbm::new(s("climate.erosion"), 4800.0, 5, 2.0, 0.5),
             warp_m: DWarp::new(s("climate.meander"), 700.0, 2, 45.0),
             fbm_r: DFbm::new(s("climate.river"), 2100.0, 3, 2.0, 0.42),
             fbm_t: DFbm::new(s("climate.temperature"), 4200.0, 4, 2.0, 0.5),
@@ -773,7 +798,7 @@ impl ClimateSampler {
             cal_c: build_map(&Q_C, target_c),
             cal_e: build_map(&Q_E, uniform_target),
             cal_w: build_map(&Q_W, uniform_target),
-            cal_t: build_map(&Q_T, uniform_target),
+            cal_t: build_map(&Q_T, target_t),
             cal_h: build_map(&Q_H, uniform_target),
             cal_g: build_map(&Q_G, uniform_target),
         }
@@ -791,7 +816,7 @@ impl ClimateSampler {
         let hp = q.half_from(x, z);
         [
             self.fbm_c.value(q.x, q.z, fp),
-            self.fbm_e.value(q.x + 7313.0, q.z - 3511.0, fp),
+            erosion_raw(self.fbm_e.sample(q.x + 7313.0, q.z - 3511.0, fp)).v,
             self.fbm_r.value(m.x, m.z, fp),
             self.fbm_t.value(hp.x, hp.z, fp),
             self.fbm_h.value(hp.x - 5101.0, hp.z + 2909.0, fp),
@@ -803,7 +828,7 @@ impl ClimateSampler {
     pub fn sample_d(&self, x: f64, z: f64, fp: f64) -> ClimateD {
         let q = self.warp_c.warp(&P2::identity(x, z), fp);
         let c_raw = q.chain(self.fbm_c.sample(q.x, q.z, fp));
-        let e_raw = q.chain(self.fbm_e.sample(q.x + 7313.0, q.z - 3511.0, fp));
+        let e_raw = q.chain(erosion_raw(self.fbm_e.sample(q.x + 7313.0, q.z - 3511.0, fp)));
         let m = self.warp_m.warp(&q, fp);
         let n_r = m.chain(self.fbm_r.sample(m.x, m.z, fp));
         let hp = q.half_from(x, z);
@@ -933,10 +958,10 @@ mod tests {
         assert!((0.40..0.50).contains(&f(ocean)));
         assert!((0.15..0.25).contains(&f(deep)));
         assert!((0.05..0.11).contains(&f(coast)));
-        assert!((0.18..0.32).contains(&f(hot)));
-        assert!((0.18..0.32).contains(&f(cold)));
-        for s in sums {
-            let m = s / n as f64;
+        assert!((0.18..0.36).contains(&f(hot)));
+        assert!((0.10..0.25).contains(&f(cold)));
+        for k in [0, 2, 3] {
+            let m = sums[k] / n as f64;
             assert!((0.42..0.58).contains(&m), "uniform field mean |x| {m}");
         }
     }

@@ -7,7 +7,7 @@ fn main() {
     let g = WorldGen::new(1);
     let n = 1024usize;
     let scale = 2.0f64;
-    let amp: f32 = std::env::args().nth(1).and_then(|s| s.parse().ok()).unwrap_or(60.0);
+    let amp: f32 = std::env::args().nth(1).and_then(|s| s.parse().ok()).unwrap_or(0.65);
     let mut h = vec![0.0f32; n * n];
     for j in 0..n {
         for i in 0..n {
