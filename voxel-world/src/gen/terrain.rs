@@ -153,16 +153,20 @@ fn offset_spline() -> Spline {
     )
 }
 
+/// Broad orogenic uplift (blocks) under the core of a mountain belt (`U·smoothstep(M)`): the
+/// elevated massif on which the ridged relief sits (valley floors of big ranges are high, too).
+const OROGENIC_UPLIFT: f32 = 130.0;
+
 /// Mountain amplitude A(C, E): uplift that multiplies the [0,1] mountain shape.
 fn amp_spline() -> Spline {
     Spline::new(
         0,
         vec![
             (-0.16, 0.0.into()),
-            (-0.03, cs(1, &[(-1.0, 55.0), (-0.5, 20.0), (0.0, 5.0), (1.0, 1.0)])),
-            (0.12, cs(1, &[(-1.0, 230.0), (-0.65, 150.0), (-0.3, 55.0), (0.0, 18.0), (0.5, 6.0), (1.0, 2.0)])),
-            (0.32, cs(1, &[(-1.0, 300.0), (-0.7, 255.0), (-0.4, 140.0), (-0.1, 45.0), (0.4, 12.0), (1.0, 4.0)])),
-            (0.65, cs(1, &[(-1.0, 310.0), (-0.7, 275.0), (-0.4, 170.0), (-0.1, 58.0), (0.4, 16.0), (1.0, 5.0)])),
+            (-0.03, cs(1, &[(-1.0, 70.0), (-0.5, 25.0), (0.0, 5.0), (1.0, 1.0)])),
+            (0.12, cs(1, &[(-1.0, 200.0), (-0.65, 140.0), (-0.3, 50.0), (0.0, 18.0), (0.5, 6.0), (1.0, 2.0)])),
+            (0.32, cs(1, &[(-1.0, 240.0), (-0.7, 205.0), (-0.4, 120.0), (-0.1, 40.0), (0.4, 12.0), (1.0, 4.0)])),
+            (0.65, cs(1, &[(-1.0, 250.0), (-0.7, 220.0), (-0.4, 140.0), (-0.1, 50.0), (0.4, 16.0), (1.0, 5.0)])),
         ],
     )
 }
@@ -447,7 +451,9 @@ impl TerrainShaper {
         let s_mix = (smoothstep_d(-0.5, 0.6, cd.pv) * 0.5 + smoothstep_d(40.0, 200.0, amp) * 0.5).clamp(0.0, 1.0);
         let shape = lerp_d(hills01, ridge, s_mix);
         let vfac = smoothstep_d(-0.95, -0.35, cd.pv) * 0.65 + 0.35;
-        let mut mountain = amp * shape * vfac;
+        // Orogenic massif: broad dome over the belt core (land only).
+        let massif = smoothstep_d(0.05, 0.9, cd.orogeny) * smoothstep_d(-0.12, 0.05, cd.c) * OROGENIC_UPLIFT;
+        let mut mountain = amp * shape * vfac + massif;
         let mut steer_dbg = (0.0, 0.0);
         // dendritic gullies on mountain flanks (strength ∝ local relief)
         if mountain.v > 12.0 {

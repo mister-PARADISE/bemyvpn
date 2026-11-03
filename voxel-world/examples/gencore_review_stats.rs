@@ -60,7 +60,7 @@ fn main() {
         let lakes = cols.iter().filter(|c| c.water_level > SEA_LEVEL && c.water_level > c.height as i32 && c.biome != Biome::Volcanic).count();
         // mountain connected components (H > SEA+150) — 4-neighbour flood fill
         let mut lab = vec![0u32; n * n];
-        let mut comps: Vec<(usize, f64)> = Vec::new(); // (cells, extent km)
+        let mut comps: Vec<(usize, f64, f32)> = Vec::new(); // (cells, extent km, top)
         let mut next = 1u32;
         for k in 0..n * n {
             if lab[k] != 0 || cols[k].height <= sea + 150.0 {
@@ -105,11 +105,12 @@ fn main() {
             let tr = sxx + szz;
             let det = sxx * szz - sxz * sxz;
             let l1 = tr / 2.0 + ((tr * tr / 4.0 - det).max(0.0)).sqrt();
-            comps.push((cells.len(), 2.0 * (3.0 * l1).sqrt() * step / 1000.0));
+            let top = cells.iter().map(|&p| cols[p].height).fold(0.0f32, f32::max);
+            comps.push((cells.len(), 2.0 * (3.0 * l1).sqrt() * step / 1000.0, top));
             next += 1;
         }
         comps.sort_by(|a, b| b.0.cmp(&a.0));
-        let big: Vec<String> = comps.iter().take(8).map(|(c, l)| format!("{:.1}km²/{:.1}km", *c as f64 * step * step / 1e6, l)).collect();
+        let big: Vec<String> = comps.iter().take(8).map(|(c, l, t)| format!("{:.1}km²/{:.1}km/{:.0}", *c as f64 * step * step / 1e6, l, t)).collect();
         let small = comps.iter().filter(|c| (c.0 as f64) * step * step < 1.0e6).count();
         println!(
             "seed {seed}: {} cols in {dt:.1}s | land {:.1}% | mountainous(H>{}) {:.1}% of land | H>430 cols {} | max H {hmax:.0} | water cols {:.1}% lake cols {:.2}%",

@@ -949,6 +949,8 @@ fn erosion_raw(n: D2) -> D2 {
 /// gate thresholds that cut the belts into ranges of finite length.
 pub const OROGENY_BAND: (f32, f32) = (0.06, 0.22);
 pub const OROGENY_GATE: (f32, f32) = (0.02, 0.16);
+/// Continentalness added in the core of a belt (crustal thickening).
+const OROGENY_LAND: f32 = 0.28;
 
 /// Rain shadow: streamline lattice spacing, step count and step length (blocks).
 const SHADOW_SPACING: f64 = 256.0;
@@ -1240,7 +1242,8 @@ impl ClimateSampler {
         let t_raw = hp.chain(self.fbm_t.sample(hp.x, hp.z, fp));
         let g_raw = self.fbm_g.value(x, z, fp);
 
-        let c = self.cal_c.eval_d(c_raw);
+        // Orogeny raises the crust: belts over shelf seas become mountainous islands/peninsulas.
+        let c = (self.cal_c.eval_d(c_raw) + m * OROGENY_LAND).minf(1.0);
         let e_uni = self.cal_e.eval_d(e_raw);
         // Effective erosion: affine squeeze of the uniform erosion into [−0.3, 1] outside the
         // belts and [−1, −0.1] inside, blended by M → big relief only inside orogenic belts.

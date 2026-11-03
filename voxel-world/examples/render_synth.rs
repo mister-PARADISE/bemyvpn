@@ -1,7 +1,8 @@
 //! Renders the renderer test scenes on synthetic analytic worlds into target/agent-render/.
 //!
 //! usage: cargo run --release --example render_synth -- [scene|all] [width height] [l0 hf levels] [--no-aa]
-//! scenes: noon, sunset, high, diorama, cave
+//! scenes: noon, sunset, high, diorama, cave, forest
+//! extra:  --cam=x,y,z,yaw_deg,pitch_deg[,sun_az,sun_el]  (y may be "+dy" = height above ground)
 use std::time::Instant;
 use voxel_world::render::synth::{synthetic_world, SynthTerrain};
 use voxel_world::render::{render_with_stats, save_png, Camera, RenderSettings, Sun, ViewMode};
@@ -82,6 +83,21 @@ fn scenes(t: &SynthTerrain) -> Vec<SceneDef> {
             hf: 256,
             levels: 0,
             mode: ViewMode::Diorama { min_x: 0, max_x: 170, min_z: -15, max_z: 155, min_y: 40 },
+            haze: 1.0,
+            exposure: 1.0,
+        },
+        SceneDef {
+            name: "forest",
+            center: (0, 0),
+            cam: [-120.0, ground(-120.0, -260.0) + 16.0, -260.0],
+            yaw: 160f64.to_radians(),
+            pitch: (-14f64).to_radians(),
+            fov: 60.0,
+            sun: (250.0, 30.0),
+            l0: 2048,
+            hf: 2048,
+            levels: 3,
+            mode: ViewMode::Normal,
             haze: 1.0,
             exposure: 1.0,
         },
