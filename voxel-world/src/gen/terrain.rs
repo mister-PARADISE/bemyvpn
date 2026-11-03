@@ -384,7 +384,13 @@ impl TerrainShaper {
         let s_mix = (smoothstep_d(-0.5, 0.6, cd.pv) * 0.5 + smoothstep_d(40.0, 200.0, amp) * 0.5).clamp(0.0, 1.0);
         let shape = lerp_d(hills01, ridge, s_mix);
         let vfac = smoothstep_d(-0.95, -0.35, cd.pv) * 0.65 + 0.35;
-        let mountain = amp * shape * vfac;
+        let mut mountain = amp * shape * vfac;
+        // dendritic gullies on mountain flanks (strength ∝ local relief)
+        if mountain.v > 12.0 {
+            let ga = 0.14 * mountain.v.min(260.0) * smoothstep(12.0, 50.0, mountain.v);
+            let g = self.gullies(x, z, (mountain.dx + base.dx, mountain.dz + base.dz), ga, fp);
+            mountain = mountain + g;
+        }
         let mut h = base + mountain;
 
         // --- seafloor relief
@@ -397,7 +403,7 @@ impl TerrainShaper {
         let rug = smoothstep(10.0, 120.0, amp.v);
         // flat beaches / shallows: no speckle islands at the waterline
         let shore = 0.25 + 0.75 * smoothstep(1.5, 9.0, (h.v - SEA).abs());
-        let rough_amp = (1.6 + 3.2 * rug) * (1.0 - 0.85 * reg.desert) * (1.0 - 0.7 * reg.swamp) * shore;
+        let rough_amp = (1.4 + 1.6 * rug) * (1.0 - 0.85 * reg.desert) * (1.0 - 0.7 * reg.swamp) * shore;
         h = h + self.rough.sample(x, z, fp) * rough_amp;
 
         // --- badlands: plateau mesas, then smooth terraces
@@ -528,6 +534,80 @@ impl TerrainShaper {
             water_level = SEA_LEVEL;
         }
         Shape { height: h, mountain: mountain.v, regions: reg, jaggedness: jag, water_level }
+    }
+
+    /// Slope-aligned gully noise ("erosion filter").
+    ///
+    /// For octave k (cell size Lₖ = 220·2⁻ᵏ) every cell of a jittered lattice carries a plane wave
+    /// `cos 2π((p − pⱼ)·t̂·s)/Lₖ` whose wave vector t̂ is *perpendicular* to the current terrain
+    /// gradient g, so its crests run downhill (gullies and spurs). The waves are blended with the
+    /// compact kernel `w = (1 − |p − pⱼ|²/Lₖ²)³` (normalised), and `s = min(2.5|g|, 1)` fades
+    /// them out on flat ground. The derivative of each octave is added to g before the next octave
+    /// → finer gullies bend into coarser ones (dendritic look). Exact derivative except for the
+    /// dependence of t̂ on g (Hessian), see `slope_matches_fd`.
+    fn gullies(&self, x: f64, z: f64, grad: (f32, f32), amp: f32, fp: f64) -> D2 {
+        const TAU: f32 = std::f32::consts::TAU;
+        let (mut gx, mut gz) = grad;
+        let mut out = D2::ZERO;
+        let mut a = amp;
+        let mut cell = 220.0f64;
+        for oct in 0..4u64 {
+            let fade = if fp > 1.0 { saturate(((cell / fp - 2.0) * 0.5) as f32) } else { 1.0 };
+            if fade <= 0.0 {
+                break;
+            }
+            let gl = (gx * gx + gz * gz).sqrt();
+            if gl < 1e-3 {
+                break;
+            }
+            let sres = (gl * 2.5).min(1.0);
+            let (tx, tz) = (gz / gl * sres, -gx / gl * sres);
+            let px = x / cell;
+            let pz = z / cell;
+            let (ix, iz) = (px.floor(), pz.floor());
+            let (fx, fz) = ((px - ix) as f32, (pz - iz) as f32);
+            let (ix, iz) = (ix as i32, iz as i32);
+            let seed = self.seed ^ (0x6011_1E5 + oct * 0x9E37);
+            let (mut sw, mut swx, mut swz) = (0.0f32, 0.0f32, 0.0f32);
+            let (mut sv, mut svx, mut svz) = (0.0f32, 0.0f32, 0.0f32);
+            for j in -1..=1 {
+                for i in -1..=1 {
+                    let hh = hash2(seed, ix + i, iz + j);
+                    let jx = 0.25 + 0.5 * hash_f01(hh);
+                    let jz = 0.25 + 0.5 * hash_f01(mix64(hh));
+                    let ppx = fx - (i as f32 + jx);
+                    let ppz = fz - (j as f32 + jz);
+                    let d2 = ppx * ppx + ppz * ppz;
+                    if d2 >= 1.0 {
+                        continue;
+                    }
+                    let q = 1.0 - d2;
+                    let w = q * q * q;
+                    let dw = -6.0 * q * q; // ∂w/∂pp = dw·pp
+                    let (sn, cs) = (TAU * (ppx * tx + ppz * tz)).sin_cos();
+                    sw += w;
+                    swx += dw * ppx;
+                    swz += dw * ppz;
+                    sv += w * cs;
+                    svx += dw * ppx * cs - w * sn * TAU * tx;
+                    svz += dw * ppz * cs - w * sn * TAU * tz;
+                }
+            }
+            if sw > 1e-6 {
+                let inv = 1.0 / sw;
+                let v = sv * inv;
+                let k = 1.0 / cell as f32; // ∂pp/∂x
+                let vx = (svx - v * swx) * inv * k;
+                let vz = (svz - v * swz) * inv * k;
+                let wgt = a * fade * sres * sres;
+                out += D2::new(v, vx, vz) * wgt;
+                gx += vx * wgt;
+                gz += vz * wgt;
+            }
+            a *= 0.5;
+            cell *= 0.5;
+        }
+        out
     }
 
     /// Volcano cone (dual) + optional lava lake level, if a volcano cell is near.
