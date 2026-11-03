@@ -943,11 +943,12 @@ fn erosion_raw(n: D2) -> D2 {
 // Climate sampler
 // =====================================================================================
 
-/// Orogeny belts: half-width (blocks) of the tubular neighbourhood of the zero set of the
-/// belt field `b` (distance estimate `|b|/|∇b|`) and the raw gate thresholds that cut the
-/// belts into ranges of finite length.
-const OROGENY_HALF_WIDTH: f32 = 3000.0;
-const OROGENY_GATE: (f32, f32) = (0.02, 0.16);
+/// Orogeny belts: `|b|` thresholds of the tubular neighbourhood of the zero set of the belt
+/// field `b`. With the median `|∇b| ≈ 1.0·10⁻⁴` (λ = 30 km) they correspond to a flat core of
+/// half-width ≈ 600 blocks and foothills out to ≈ 2 200 blocks from the crest line. Plus the raw
+/// gate thresholds that cut the belts into ranges of finite length.
+pub const OROGENY_BAND: (f32, f32) = (0.06, 0.22);
+pub const OROGENY_GATE: (f32, f32) = (0.02, 0.16);
 
 /// Rain shadow: streamline lattice spacing, step count and step length (blocks).
 const SHADOW_SPACING: f64 = 256.0;
@@ -1107,13 +1108,15 @@ impl ClimateSampler {
         self.sample_parts(x, z, 0.0).0.v
     }
 
-    /// Orogeny belt mask `M = (1 − smoothstep(¼W, W, |b|/|∇b|)) · smoothstep(g₀, g₁, g)`.
+    /// Orogeny belt mask `M = (1 − smoothstep(b₀, b₁, |b|)) · smoothstep(g₀, g₁, g)`.
     ///
     /// Mountain ranges are *tubular neighbourhoods of the zero set* of a very low-frequency field
-    /// `b` (λ 30 km, on the continental warp → gently curved): `|b|/|∇b|` is the first-order
-    /// distance to the curve `b = 0`, so every range has a well-defined crest line and a width
-    /// in blocks (≈ 2W core-to-foothill) independent of the local noise amplitude. A second field
-    /// `g` (λ 16 km) gates the curves into ranges of finite length (≈ 10–30 km).
+    /// `b` (λ 30 km, on the continental warp → gently curved): `|b|/G₀` (G₀ = median |∇b|) is a
+    /// globally normalised first-order distance to the curve `b = 0`, so every range has a crest
+    /// line, a core and broad foothills; its width varies naturally as `1/|∇b|` (massifs where
+    /// `b` lingers near 0). Unlike the local estimate `|b|/|∇b|`, this one has an *exact*
+    /// gradient (the local one drops a Hessian term of relative size ≈ d·|∇²b|/|∇b| ≈ 0.6).
+    /// A second field `g` (λ 16 km) gates the curves into ranges of finite length (≈ 10–30 km).
     #[inline]
     pub fn orogeny(&self, q: &P2, x: f64, z: f64, fp: f64) -> D2 {
         let b = q.chain(self.fbm_o.sample(q.x, q.z, fp));
@@ -1123,10 +1126,8 @@ impl ClimateSampler {
 
     #[inline]
     fn belt(b: D2, g: D2) -> D2 {
-        let gl = b.grad_len().max(1e-9);
-        let sgn = if b.v < 0.0 { -1.0 } else { 1.0 };
-        let d = D2::new((b.v.abs() / gl).min(1.0e6), sgn * b.dx / gl, sgn * b.dz / gl);
-        let core = 1.0 - smoothstep_d(0.25 * OROGENY_HALF_WIDTH, OROGENY_HALF_WIDTH, d);
+        // |b| has a kink on the crest line, but M is flat (≡ core) there: C¹ overall.
+        let core = 1.0 - smoothstep_d(OROGENY_BAND.0, OROGENY_BAND.1, b.abs());
         if core.v <= 0.0 {
             return D2::ZERO;
         }

@@ -19,7 +19,7 @@ use crate::gen::SEA_LEVEL;
 use crate::materials::{self, Material};
 use crate::math::{lerp, saturate, smoothstep, Vec3};
 use crate::noise::{hash3, hash_f01, mix64, Simplex};
-use crate::render::atmosphere::{sh_irradiance, sh_project, Atmosphere, E_SUN};
+use crate::render::atmosphere::{sh_irradiance, sh_project, Atmosphere};
 use crate::render::texture::{Textures, FACE_BOTTOM, FACE_SIDE, FACE_TOP};
 use crate::render::trace::{Hit, HitKind, Ray, Scene, INF};
 use crate::render::types::{Camera, RenderSettings, Sun, ViewMode};
@@ -967,9 +967,4 @@ pub fn ggx_spec(n: Vec3, v: Vec3, l: Vec3, rough: f32, f0: f32) -> f32 {
     let vh = v.dot(hv).max(0.0);
     let f = f0 + (1.0 - f0) * (1.0 - vh).powi(5);
     dfn * g * f / (4.0 * nv * nl)
-}
-
-#[allow(dead_code)]
-fn _unused() -> f32 {
-    E_SUN
 }

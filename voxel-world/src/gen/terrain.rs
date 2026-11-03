@@ -381,7 +381,7 @@ impl TerrainShaper {
     /// Individual height components (scaled to blocks) for debug hillshades.
     pub fn debug_parts(&self, cd: &ClimateD, x: f64, z: f64) -> Vec<f32> {
         let inp = [cd.c, cd.e, cd.pv];
-        let base = spline_d(&self.offset, &inp);
+        let base = spline_d(&self.offset, &[cd.c, cd.e_raw, cd.pv]);
         let q = &cd.q;
         let ridge = q.chain(self.ridged.sample(q.x, q.z, 0.0));
         let hills = self.hills.sample(x, z, 0.0);
@@ -413,7 +413,8 @@ impl TerrainShaper {
             * smoothstep(-0.10, 0.30, e)
             * smoothstep(0.40, 0.22, c)
             * smoothstep(-0.14, -0.06, c);
-        let cliff = smoothstep(-0.25, -0.60, e) * smoothstep(-0.20, -0.15, c) * smoothstep(0.02, -0.06, c);
+        // sea cliffs follow the *raw* erosion (the coast-shaping input of the offset spline)
+        let cliff = smoothstep(-0.25, -0.60, cd.e_raw.v) * smoothstep(-0.20, -0.15, c) * smoothstep(0.02, -0.06, c);
         // dry-land landforms only on land (no mesas or spires on the sea floor)
         let land = smoothstep(-0.16, -0.08, c);
         Regions {
@@ -429,8 +430,10 @@ impl TerrainShaper {
     /// The full height construction (see module docs).
     pub fn shape(&self, cd: &ClimateD, x: f64, z: f64, fp: f64) -> Shape {
         let mut reg = self.regions(cd, x, z, fp);
+        // Offset (hypsometry + coast shape) from the raw erosion; uplift, valley walls etc. from
+        // the effective, orogeny-gated erosion.
         let inp = [cd.c, cd.e, cd.pv];
-        let base = spline_d(&self.offset, &inp);
+        let base = spline_d(&self.offset, &[cd.c, cd.e_raw, cd.pv]);
         let amp = spline_d(&self.amp, &inp).maxf(0.0);
 
         // --- mountains / hills

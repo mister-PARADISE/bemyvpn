@@ -99,6 +99,9 @@ pub fn render(world: &World, cam: &Camera, sun: &Sun, settings: &RenderSettings)
 /// [`render`] plus timing statistics.
 pub fn render_with_stats(world: &World, cam: &Camera, sun: &Sun, settings: &RenderSettings) -> (Image, RenderStats) {
     let mut st = RenderStats::default();
+    if settings.width == 0 || settings.height == 0 {
+        return (Image::new(settings.width, settings.height), st);
+    }
     let t0 = std::time::Instant::now();
     let frame = Frame::new(world, cam, sun, settings);
     st.setup_s = t0.elapsed().as_secs_f64();
