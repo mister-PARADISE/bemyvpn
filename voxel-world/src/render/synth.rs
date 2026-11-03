@@ -126,7 +126,7 @@ impl SynthTerrain {
     }
 
     /// Tree at jittered grid cell (cx, cz) (cell 9 blocks): (root x, root z, trunk height, canopy radius).
-    fn tree_in_cell(&self, cx: i32, cz: i32) -> Option<(i32, i32, i32, f64, Material, Material)> {
+    pub fn tree_in_cell(&self, cx: i32, cz: i32) -> Option<Tree> {
         let hsh = hash2(self.seed ^ 0x7EE5, cx, cz);
         let rx = cx * 9 + 1 + (hsh % 7) as i32;
         let rz = cz * 9 + 1 + ((hsh >> 8) % 7) as i32;
@@ -149,11 +149,17 @@ impl SynthTerrain {
         } else {
             (Material::OakLog, Material::OakLeaves)
         };
-        Some((rx, rz, trunk, r, log, leaves))
+        let ground = col.h.floor() as i32 + 1;
+        Some((rx, rz, trunk, r, log, leaves, ground))
     }
 
     /// Exact voxel spans of the column (x, z) (sorted, no air).
     pub fn spans(&self, x: i32, z: i32) -> Vec<Span> {
+        self.spans_with(x, z, None)
+    }
+
+    /// Like `spans`, with an optional precomputed tree grid.
+    pub fn spans_with(&self, x: i32, z: i32, grid: Option<&TreeGrid>) -> Vec<Span> {
         let col = self.column(x as f64 + 0.5, z as f64 + 0.5, 0.0);
         let hi = col.h.floor() as i32 + 1; // solid blocks y < hi
         let top = self.top_material(&col);
@@ -224,8 +230,11 @@ impl SynthTerrain {
             let (gx, gz) = (x.div_euclid(9), z.div_euclid(9));
             for cz in gz - 1..=gz + 1 {
                 for cx in gx - 1..=gx + 1 {
-                    if let Some((rx, rz, trunk, r, log, leaves)) = self.tree_in_cell(cx, cz) {
-                        let ground = self.column(rx as f64 + 0.5, rz as f64 + 0.5, 0.0).h.floor() as i32 + 1;
+                    let tree = match grid {
+                        Some(g) => g.get(self, cx, cz),
+                        None => self.tree_in_cell(cx, cz),
+                    };
+                    if let Some((rx, rz, trunk, r, log, leaves, ground)) = tree {
                         let (dx, dz) = ((x - rx) as f64, (z - rz) as f64);
                         let ctr = ground as f64 + trunk as f64;
                         let ry = if log == Material::SpruceLog { r * 1.9 } else { r * 0.85 };
@@ -346,6 +355,35 @@ impl SynthTerrain {
     }
 }
 
+/// (root x, root z, trunk height, canopy radius, log, leaves, ground y).
+pub type Tree = (i32, i32, i32, f64, Material, Material, i32);
+
+/// Precomputed jittered-grid tree point process over a rectangle of cells.
+pub struct TreeGrid {
+    c0: (i32, i32),
+    n: (i32, i32),
+    cells: Vec<Option<Tree>>,
+}
+
+impl TreeGrid {
+    pub fn new(t: &SynthTerrain, x0: i32, z0: i32, x1: i32, z1: i32) -> TreeGrid {
+        use rayon::prelude::*;
+        let c0 = (x0.div_euclid(9) - 1, z0.div_euclid(9) - 1);
+        let n = (x1.div_euclid(9) - c0.0 + 2, z1.div_euclid(9) - c0.1 + 2);
+        let cells = (0..n.0 * n.1).into_par_iter().map(|k| t.tree_in_cell(c0.0 + k % n.0, c0.1 + k / n.0)).collect();
+        TreeGrid { c0, n, cells }
+    }
+    #[inline]
+    pub fn get(&self, t: &SynthTerrain, cx: i32, cz: i32) -> Option<Tree> {
+        let (i, j) = (cx - self.c0.0, cz - self.c0.1);
+        if i >= 0 && j >= 0 && i < self.n.0 && j < self.n.1 {
+            self.cells[(j * self.n.0 + i) as usize]
+        } else {
+            t.tree_in_cell(cx, cz)
+        }
+    }
+}
+
 /// Build a synthetic world centred at (cx, cz).
 pub fn synthetic_world(seed: u64, cx: i32, cz: i32, l0_size: u32, hf_size: u32, hf_levels: u32) -> World {
     let terrain = SynthTerrain::new(seed);
@@ -358,5 +396,7 @@ pub fn synthetic_world(seed: u64, cx: i32, cz: i32, l0_size: u32, hf_size: u32, 
         cave_radius: 256,
         feature_radius: l0_size / 2,
     };
-    World::synthetic(params, |x, z| terrain.spans(x, z), |k, x, z| terrain.hf_cell(k, x, z))
+    let (ox, oz) = params.l0_origin();
+    let grid = TreeGrid::new(&terrain, ox, oz, ox + l0_size as i32, oz + l0_size as i32);
+    World::synthetic(params, |x, z| terrain.spans_with(x, z, Some(&grid)), |k, x, z| terrain.hf_cell(k, x, z))
 }
