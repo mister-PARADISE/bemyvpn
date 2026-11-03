@@ -390,56 +390,104 @@ fn lod_fade(lambda: f64, fp: f64) -> f32 {
     }
 }
 
+/// One precomputed octave: rotation × frequency folded into a 2×2 matrix (f64 for the lattice
+/// coordinates, f32 for the chain rule), amplitude and wavelength (for LOD fading).
+#[derive(Clone, Copy, Debug)]
+struct Octave {
+    s: FastSimplex,
+    cf: f64,
+    sf: f64,
+    dcf: f32,
+    dsf: f32,
+    c: f32,
+    sn: f32,
+    f: f32,
+    amp: f32,
+    lambda: f64,
+}
+
+impl Octave {
+    fn new(seed: u64, angle: f64, freq: f64, amp: f32) -> Self {
+        let (sn, c) = angle.sin_cos();
+        Octave {
+            s: FastSimplex::new(seed),
+            cf: c * freq,
+            sf: sn * freq,
+            dcf: (c * freq) as f32,
+            dsf: (sn * freq) as f32,
+            c: c as f32,
+            sn: sn as f32,
+            f: freq as f32,
+            amp,
+            lambda: 1.0 / freq,
+        }
+    }
+    /// Noise value and world-space gradient of this octave (unscaled by `amp`).
+    #[inline(always)]
+    fn eval(&self, x: f64, z: f64) -> (f32, f32, f32) {
+        let (n, nx, nz) = self.s.n2d(x * self.cf - z * self.sf, x * self.sf + z * self.cf);
+        (n, nx * self.dcf + nz * self.dsf, nz * self.dcf - nx * self.dsf)
+    }
+    /// Noise value and the *noise-space* gradient rotated back to world orientation.
+    #[inline(always)]
+    fn eval_ns(&self, x: f64, z: f64) -> (f32, f32, f32, f32) {
+        let (n, nx, nz) = self.s.n2d(x * self.cf - z * self.sf, x * self.sf + z * self.cf);
+        (n, nx * self.c + nz * self.sn, nz * self.c - nx * self.sn, self.f)
+    }
+    #[inline(always)]
+    fn fade(&self, fp: f64) -> f32 {
+        lod_fade(self.lambda, fp)
+    }
+}
+
 /// fBm with analytic gradient, normalised by the amplitude sum (std ≈ 0.2–0.3, range ⊂ [−1, 1]).
 /// Band-limited exactly like `noise::Fbm::sample2_lod`: an octave of wavelength λ gets weight
 /// `clamp((λ/footprint − 2)/2, 0, 1)`.
 #[derive(Clone, Debug)]
 pub struct DFbm {
-    inv_wavelength: f64,
-    lacunarity: f64,
-    gain: f32,
-    layers: Vec<(FastSimplex, f64, f64)>,
-    inv_amp: f32,
+    oct: Vec<Octave>,
 }
 
 impl DFbm {
     pub fn new(seed: u64, wavelength: f64, octaves: u32, lacunarity: f64, gain: f32) -> Self {
-        let layers = (0..octaves)
-            .map(|i| {
-                let a = GOLDEN_ANGLE * i as f64 + 0.37;
-                (FastSimplex::new(derive_seed(seed, 0xD0 + i as u64)), a.cos(), a.sin())
-            })
-            .collect();
         let mut amp = 0.0;
         let mut a = 1.0f32;
         for _ in 0..octaves {
             amp += a;
             a *= gain;
         }
-        DFbm { inv_wavelength: 1.0 / wavelength, lacunarity, gain, layers, inv_amp: 1.0 / amp }
+        let mut f = 1.0 / wavelength;
+        let mut a = 1.0 / amp;
+        let oct = (0..octaves)
+            .map(|i| {
+                let o = Octave::new(derive_seed(seed, 0xD0 + i as u64), GOLDEN_ANGLE * i as f64 + 0.37, f, a);
+                f *= lacunarity;
+                a *= gain;
+                o
+            })
+            .collect();
+        DFbm { oct }
     }
 
     #[inline]
     pub fn sample(&self, x: f64, z: f64, fp: f64) -> D2 {
-        let mut f = self.inv_wavelength;
-        let mut a = 1.0f32;
         let (mut v, mut dx, mut dz) = (0.0f32, 0.0f32, 0.0f32);
-        for &(ref s, c, sn) in &self.layers {
-            let w = lod_fade(1.0 / f, fp);
-            if w <= 0.0 {
-                break;
-            }
-            let (n, nx, nz) = s.n2d((x * c - z * sn) * f, (x * sn + z * c) * f);
-            let wa = w * a;
-            let wf = wa * f as f32;
-            let (cf, sf) = (c as f32, sn as f32);
-            v += wa * n;
-            dx += wf * (nx * cf + nz * sf);
-            dz += wf * (nz * cf - nx * sf);
-            f *= self.lacunarity;
-            a *= self.gain;
+        for o in &self.oct {
+            let w = if fp > 1.0 {
+                let w = o.fade(fp);
+                if w <= 0.0 {
+                    break;
+                }
+                w * o.amp
+            } else {
+                o.amp
+            };
+            let (n, nx, nz) = o.eval(x, z);
+            v += w * n;
+            dx += w * nx;
+            dz += w * nz;
         }
-        D2::new(v * self.inv_amp, dx * self.inv_amp, dz * self.inv_amp)
+        D2::new(v, dx, dz)
     }
 
     /// Value only (same cost as `sample`; convenience).
@@ -459,26 +507,25 @@ impl DFbm {
 /// concentrates on crests, but the field is C¹ everywhere.
 #[derive(Clone, Debug)]
 pub struct DRidged {
-    inv_wavelength: f64,
-    layers: Vec<(FastSimplex, f64, f64)>,
+    oct: Vec<Octave>,
     inv_norm: f32,
 }
 
 impl DRidged {
     pub fn new(seed: u64, wavelength: f64, octaves: u32) -> Self {
-        let layers = (0..octaves)
-            .map(|i| {
-                let a = GOLDEN_ANGLE * i as f64 + 1.3;
-                (FastSimplex::new(derive_seed(seed, 0x2D0 + i as u64)), a.cos(), a.sin())
-            })
-            .collect();
         let mut norm = 0.0;
         let mut w = 1.0f32;
-        for _ in 0..octaves {
-            norm += w;
-            w *= 0.5;
-        }
-        DRidged { inv_wavelength: 1.0 / wavelength, layers, inv_norm: 1.0 / norm }
+        let mut f = 1.0 / wavelength;
+        let oct = (0..octaves)
+            .map(|i| {
+                let o = Octave::new(derive_seed(seed, 0x2D0 + i as u64), GOLDEN_ANGLE * i as f64 + 1.3, f, w);
+                norm += w;
+                w *= 0.5;
+                f *= 2.0;
+                o
+            })
+            .collect();
+        DRidged { oct, inv_norm: 1.0 / norm }
     }
 
     #[inline]
@@ -491,30 +538,25 @@ impl DRidged {
     /// rotates slowly even across sharp crests.
     #[inline]
     pub fn sample_with_steer(&self, x: f64, z: f64, fp: f64) -> (D2, D2) {
-        let mut f = self.inv_wavelength;
-        let mut spectral = 1.0f32;
         let mut weight = D2::c(1.0);
         let mut sum = D2::ZERO;
         let mut steer = D2::ZERO;
-        let mut eps = 0.10f32;
-        for &(ref s, c, sn) in &self.layers {
-            let fade = lod_fade(1.0 / f, fp);
+        for (k, o) in self.oct.iter().enumerate() {
+            let fade = if fp > 1.0 { o.fade(fp) } else { 1.0 };
             if fade <= 0.0 {
                 break;
             }
-            let (n, nx, nz) = s.n2d((x * c - z * sn) * f, (x * sn + z * c) * f);
-            let ff = f as f32;
-            let (cf, sf) = (c as f32, sn as f32);
-            let nd = D2::new(n, ff * (nx * cf + nz * sf), ff * (nz * cf - nx * sf));
-            if eps < 0.11 {
+            let (n, nx, nz) = o.eval(x, z);
+            let nd = D2::new(n, nx, nz);
+            let eps = if k == 0 {
                 steer = (1.0 - sabs_d(nd, 0.45)).maxf(0.0).sq() * (1.6 * self.inv_norm);
-            }
+                0.10
+            } else {
+                0.14
+            };
             let sig = (1.0 - sabs_d(nd, eps)).maxf(0.0).sq() * weight;
             weight = sig * (1.6 - sig * 0.6);
-            sum += sig * (fade * spectral);
-            spectral *= 0.5;
-            f *= 2.0;
-            eps = 0.14;
+            sum += sig * (fade * o.amp);
         }
         ((sum * self.inv_norm).clamp(0.0, 1.0), steer)
     }
@@ -526,54 +568,48 @@ impl DRidged {
 /// derivative needs the Hessian); the error is a few percent of the slope (test `slope_matches_fd`).
 #[derive(Clone, Debug)]
 pub struct DEroded {
-    inv_wavelength: f64,
-    gain: f32,
     steepness: f32,
-    layers: Vec<(FastSimplex, f64, f64)>,
     inv_amp: f32,
+    oct: Vec<Octave>,
 }
 
 impl DEroded {
     pub fn new(seed: u64, wavelength: f64, octaves: u32, gain: f32, steepness: f32) -> Self {
-        let layers = (0..octaves)
-            .map(|i| {
-                let a = GOLDEN_ANGLE * i as f64 + 2.1;
-                (FastSimplex::new(derive_seed(seed, 0xE0D + i as u64)), a.cos(), a.sin())
-            })
-            .collect();
         let mut amp = 0.0;
         let mut a = 1.0f32;
         for _ in 0..octaves {
             amp += a;
             a *= gain;
         }
-        DEroded { inv_wavelength: 1.0 / wavelength, gain, steepness, layers, inv_amp: 1.0 / amp }
+        let mut f = 1.0 / wavelength;
+        let mut a = 1.0f32;
+        let oct = (0..octaves)
+            .map(|i| {
+                let o = Octave::new(derive_seed(seed, 0xE0D + i as u64), GOLDEN_ANGLE * i as f64 + 2.1, f, a);
+                f *= 2.0;
+                a *= gain;
+                o
+            })
+            .collect();
+        DEroded { steepness, inv_amp: 1.0 / amp, oct }
     }
 
     #[inline]
     pub fn sample(&self, x: f64, z: f64, fp: f64) -> D2 {
-        let mut f = self.inv_wavelength;
-        let mut a = 1.0f32;
         let (mut gx, mut gz) = (0.0f32, 0.0f32);
         let (mut v, mut dx, mut dz) = (0.0f32, 0.0f32, 0.0f32);
-        for &(ref s, c, sn) in &self.layers {
-            let fade = lod_fade(1.0 / f, fp);
+        for o in &self.oct {
+            let fade = if fp > 1.0 { o.fade(fp) } else { 1.0 };
             if fade <= 0.0 {
                 break;
             }
-            let (n, nx, nz) = s.n2d((x * c - z * sn) * f, (x * sn + z * c) * f);
-            let (cf, sf) = (c as f32, sn as f32);
-            let wdx = nx * cf + nz * sf;
-            let wdz = nz * cf - nx * sf;
-            gx += wdx * a;
-            gz += wdz * a;
-            let damp = fade * a / (1.0 + self.steepness * (gx * gx + gz * gz));
-            let ff = f as f32;
+            let (n, wdx, wdz, f) = o.eval_ns(x, z);
+            gx += wdx * o.amp;
+            gz += wdz * o.amp;
+            let damp = fade * o.amp / (1.0 + self.steepness * (gx * gx + gz * gz));
             v += damp * n;
-            dx += damp * ff * wdx;
-            dz += damp * ff * wdz;
-            a *= self.gain;
-            f *= 2.0;
+            dx += damp * f * wdx;
+            dz += damp * f * wdz;
         }
         D2::new(v * self.inv_amp, dx * self.inv_amp, dz * self.inv_amp)
     }

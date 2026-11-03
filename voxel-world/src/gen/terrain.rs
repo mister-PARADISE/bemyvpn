@@ -522,7 +522,6 @@ impl TerrainShaper {
         }
 
         // --- rivers: lower envelope with a U-channel + valley walls
-        let h_pre_river = h;
         let gate = cd.river_gate;
         if gate > 0.0 && cd.c.v > -0.35 {
             let n = cd.river_n;

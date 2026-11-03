@@ -15,7 +15,7 @@
 use super::{Biome, Climate, ColumnInfo, BEDROCK_TOP, SEA_LEVEL};
 use super::terrain::Regions;
 use crate::materials::Material;
-use crate::noise::{derive_seed, hash2, hash3, hash_f01, salt, Simplex};
+use crate::noise::{derive_seed, hash2, hash3, salt, Simplex};
 
 const SEA: f32 = SEA_LEVEL as f32;
 
