@@ -2,11 +2,13 @@
 
 Goal: a block world whose generation is *pure mathematics* (noise fields, fractal sums, splines,
 implicit surfaces, point processes) — looking like a modern block-game world but richer — plus a
-CPU ray tracer that produces 1920×1080 screenshots with a **render distance of 8–16 km**
-(a typical block game tops out at ~0.5 km). No GPU is available, no player, no mobs, no weather.
+CPU ray tracer that produces 1920×1080 screenshots with a **render distance of 32 768 blocks**
+(radius; 65 536 for the orbital shot) — a typical block game tops out at ~0.5 km. No GPU is available, no player, no mobs, no weather.
 
 Hardware budget: **4 CPU cores, 15 GB RAM**. Always build with `--release`.
-Budgets per screenshot: world build ≤ 25 s, render ≤ 90 s (1920×1080 with AA).
+Budgets per screenshot: world build ≤ 30 s, render ≤ 90 s (1920×1080 with AA).
+Default clipmap: level 0 = 2048² voxels, heightfield levels k=1..5 (cells 2…32 blocks, 2048² cells each) → 32 768-block radius. Orbital: 6 levels.
+Earth curvature: the renderer drops geometry by d²/(2R), R = 6 371 000 m, relative to the camera (≈80 m at 32 km).
 
 ## Conventions
 
@@ -162,7 +164,7 @@ material) of the same point process — for far LOD.
 * **Heightfield levels** k = 1..=hf_levels via `HeightLevel::from_fn`: `column_lod(x,z,cell)`,
   `canopy_lod`, h = terrain + coverage·canopy height, water = `water_level` if above terrain,
   albedo = `materials::far_albedo` of the top material blended with leaves by coverage.
-* Log timings per stage; ≤ 25 s for defaults; memory ≤ 4 GB.
+* Log timings per stage; ≤ 30 s for defaults (5 heightfield levels); memory ≤ 4 GB.
 
 ## 7. Renderer (render, `render/*.rs`)
 
@@ -187,7 +189,7 @@ material) of the same point process — for far LOD.
   depth-based absorption/scattering for refraction, sun glint.
 * **Sky & atmosphere.** Single-scattering Rayleigh + Mie (+ optional ozone) integrated
   numerically; sky-view LUT per frame; sun disk; **aerial perspective** along every view ray
-  (in-scatter + transmittance) — this is what sells the 16 km distance. `haze` scales densities.
+  (in-scatter + transmittance) — this is what sells the 32 km distance. `haze` scales densities.
 * **Image.** ACES-style tone map, exposure, sRGB, light dithering. Adaptive AA: 1 spp, then
   4–8 extra samples on pixels with high local contrast. rayon over tiles/rows.
 * Budget ≤ 90 s for 1920×1080 on 4 cores.
@@ -206,7 +208,8 @@ locally, and choosing view directions by evaluating terrain along candidate rays
 6. `forest` — jungle / dark forest / old-growth taiga canopy from just above.
 7. `cutaway` — Diorama: a ~160–200 block square cut out of mountainous terrain with caves,
    viewed diagonally from outside; build with small l0 (256), `hf_levels` 0.
-8. `orbital` — from ~3 km altitude looking over continents and ocean (hf_levels 4).
+8. `orbital` — from ~3 km altitude looking over continents and ocean (hf_levels 6 → 65 km radius).
+Normal shots use hf_levels 5 (32 768-block radius).
 
 Shots ≥ ~1500 blocks apart where possible; camera never inside terrain.
 CLI (std only, no clap):

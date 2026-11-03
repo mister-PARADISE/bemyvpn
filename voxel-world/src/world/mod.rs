@@ -55,7 +55,7 @@ impl Default for BuildParams {
             center_z: 0,
             l0_size: 2048,
             hf_size: 2048,
-            hf_levels: 3,
+            hf_levels: 5,
             cave_radius: 384,
             feature_radius: 1024,
         }

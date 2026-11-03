@@ -89,7 +89,7 @@ impl Default for RenderSettings {
             exposure: 1.0,
             mode: ViewMode::Normal,
             haze: 1.0,
-            max_distance: 40_000.0,
+            max_distance: 100_000.0,
         }
     }
 }
