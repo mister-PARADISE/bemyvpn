@@ -1135,6 +1135,8 @@ pub struct Raster {
 
 impl Raster {
     pub fn new(r: i32, ylo: i32, yhi: i32, seed: u64) -> Self {
+        #[cfg(test)]
+        let (r, ylo, yhi) = if tests::FORCE_BIG_RASTER.with(|f| f.get()) { (MAX_FEATURE_RADIUS, ylo.min(-8), yhi.max(124)) } else { (r, ylo, yhi) };
         let r = r.clamp(1, MAX_FEATURE_RADIUS);
         let w = 2 * r + 2;
         let ny = (yhi - ylo).max(1);
@@ -1778,6 +1780,23 @@ struct Broad {
     dome: bool,
 }
 
+/// Horizontal displacement of the top of a spine of height `h` (lean + bend), an upper bound.
+fn lean_off(g: &Genome, h: f32) -> f32 {
+    h * g.lean.tan() + g.bend * h
+}
+
+/// Raster half-width that holds every voxel a [`broadleaf`] crown can produce (an upper bound
+/// over the limb / twig / cluster geometry; limbs are clamped only by `MAX_FEATURE_RADIUS`).
+fn broad_extent(g: &Genome, b: &Broad) -> i32 {
+    let lean = if b.n >= 2 { 0.0 } else { lean_off(g, b.trunk) };
+    let side = 1.0 + 2.0 * g.asym;
+    let limb = b.r * (b.len.1 * side * (1.0 + 0.5 * b.twigs.min(1) as f32) + b.blob.1);
+    let top = b.r * (0.5 * g.asym + b.top);
+    let curtain = if b.weep > 0.0 { b.r * 1.15 + 0.5 * g.asym * b.r } else { 0.0 };
+    let roots = if b.roots > 0 { b.n as f32 * 0.9 + 2.6 + 0.5 } else { 0.0 };
+    (lean + limb.max(top).max(curtain).max(roots) + 2.0).ceil() as i32
+}
+
 /// Metaball broadleaf: Bézier trunk, golden-angle limbs with clusters on their tips.
 fn broadleaf(rs: &mut Raster, rng: &mut Rng, g: &Genome, b: &Broad) -> [f32; 3] {
     let base = if b.n % 2 == 0 { [b.n as f32 * 0.5, b.n as f32 * 0.5] } else { [0.5, 0.5] };
@@ -1785,7 +1804,7 @@ fn broadleaf(rs: &mut Raster, rng: &mut Rng, g: &Genome, b: &Broad) -> [f32; 3] 
     let ty = b.trunk.ceil() as i32;
     rs.trunk_sq(&spine, b.n, 0, ty, b.wood);
     let top = spine.at(1.0);
-    let lim = (MAX_FEATURE_RADIUS as f32 - 0.8).min(rs.r as f32 - 0.5);
+    let lim = MAX_FEATURE_RADIUS as f32 - 0.8;
     let shift = 0.5 * g.asym * b.r;
     let c = [top[0] + shift * g.asym_dir.0, top[1] + b.top * b.r * b.top_flat * 0.3, top[2] + shift * g.asym_dir.1];
     let mut balls: Vec<[f32; 5]> = Vec::with_capacity(16);
@@ -1857,6 +1876,14 @@ fn broadleaf(rs: &mut Raster, rng: &mut Rng, g: &Genome, b: &Broad) -> [f32; 3] 
         rs.solid(a[0].floor() as i32, -1, a[2].floor() as i32, b.wood, true);
     }
     c
+}
+
+/// Raster half-width holding a cone crown on a (possibly leaning) spine plus its roots.
+fn cone_extent(g: &Genome, h: f32, c: &ConeSpec, n: i32) -> i32 {
+    let lean = if n >= 2 { 0.0 } else { lean_off(g, h) };
+    let crown = (c.r_max * 1.0 + 0.45).max(c.r_min) * (1.0 + c.lobes + c.asym) + 0.3;
+    let roots = if n >= 2 { n as f32 * 0.5 + 1.6 + 0.4 * n as f32 + 1.0 } else { 0.0 };
+    ((lean + crown.max(roots) + 2.0).ceil() as i32).min(5)
 }
 
 /// Parameters of the cone-crown conifer generator.
@@ -1977,8 +2004,7 @@ fn build_shape(sp: Species, rng: &mut Rng, g: &Genome, gr: &Growth, var: u64) ->
                 b.weep = 0.28;
                 b.limb_from = 0.7;
             }
-            let rr = (b.r * 1.9 + h * g.lean.tan() + 2.0).ceil() as i32;
-            let mut rs = Raster::new(rr.min(12), -1, (h * 1.4) as i32 + 6, var);
+            let mut rs = Raster::new(broad_extent(g, &b), -1, (h * 1.4) as i32 + 6, var);
             broadleaf(&mut rs, rng, g, &b);
             rs
         }
@@ -2006,7 +2032,7 @@ fn build_shape(sp: Species, rng: &mut Rng, g: &Genome, gr: &Growth, var: u64) ->
                 roots: if n == 2 { 3 } else { 0 },
                 dome: true,
             };
-            let mut rs = Raster::new(14, -2, (h * 1.3) as i32 + 8, var);
+            let mut rs = Raster::new(broad_extent(g, &b), -2, (h * 1.3) as i32 + 8, var);
             broadleaf(&mut rs, rng, g, &b);
             rs
         }
@@ -2032,7 +2058,7 @@ fn build_shape(sp: Species, rng: &mut Rng, g: &Genome, gr: &Growth, var: u64) ->
                 roots: 7,
                 dome: true,
             };
-            let mut rs = Raster::new(MAX_FEATURE_RADIUS, -2, 40, var);
+            let mut rs = Raster::new(broad_extent(g, &b), -2, 40, var);
             broadleaf(&mut rs, rng, g, &b);
             rs
         }
@@ -2058,7 +2084,7 @@ fn build_shape(sp: Species, rng: &mut Rng, g: &Genome, gr: &Growth, var: u64) ->
                 roots: 4,
                 dome: true,
             };
-            let mut rs = Raster::new(16, -2, 26, var);
+            let mut rs = Raster::new(broad_extent(g, &b), -2, 26, var);
             broadleaf(&mut rs, rng, g, &b);
             rs
         }
@@ -2087,7 +2113,7 @@ fn build_shape(sp: Species, rng: &mut Rng, g: &Genome, gr: &Growth, var: u64) ->
                 roots: 0,
                 dome: false,
             };
-            let mut rs = Raster::new(7, -1, (h * 1.4) as i32 + 6, var);
+            let mut rs = Raster::new(broad_extent(g, &b), -1, (h * 1.4) as i32 + 6, var);
             broadleaf(&mut rs, rng, g, &b);
             rs
         }
@@ -2114,7 +2140,7 @@ fn build_shape(sp: Species, rng: &mut Rng, g: &Genome, gr: &Growth, var: u64) ->
                 roots: 0,
                 dome: false,
             };
-            let mut rs = Raster::new(9, -1, (h * 1.3) as i32 + 6, var);
+            let mut rs = Raster::new(broad_extent(g, &b), -1, (h * 1.3) as i32 + 6, var);
             broadleaf(&mut rs, rng, g, &b);
             rs
         }
@@ -2143,7 +2169,7 @@ fn build_shape(sp: Species, rng: &mut Rng, g: &Genome, gr: &Growth, var: u64) ->
                 roots: 0,
                 dome: giant,
             };
-            let mut rs = Raster::new(if giant { MAX_FEATURE_RADIUS } else { 12 }, -4, (h * 1.15) as i32 + 8, var);
+            let mut rs = Raster::new(broad_extent(g, &b).max(if giant { 10 } else { 6 }), -4, (h * 1.15) as i32 + 8, var);
             broadleaf(&mut rs, rng, g, &b);
             // buttress roots: fins fanning out of the bole, tall at the trunk, low at the tips
             let fins = if giant { rng.int(5, 7) } else { 4 };
@@ -2221,7 +2247,7 @@ fn build_shape(sp: Species, rng: &mut Rng, g: &Genome, gr: &Growth, var: u64) ->
                     },
                 )
             };
-            let mut rs = Raster::new(9, -1, h + 4, var);
+            let mut rs = Raster::new(cone_extent(g, hf, &cone, 1), -1, h + 4, var);
             conifer(&mut rs, rng, g, &Conifer { h, n: 1, wood: M::SpruceLog, leaf: M::SpruceLeaves, base, cone, leader: 1, roots: 0 });
             if pine {
                 // a few dead stubs on the bare bole
@@ -2252,7 +2278,7 @@ fn build_shape(sp: Species, rng: &mut Rng, g: &Genome, gr: &Growth, var: u64) ->
             };
             let base = (hf * if colossal { rng.range(0.38, 0.5) } else { rng.range(0.3, 0.45) }) as i32;
             let n = if colossal { 3 } else { 2 };
-            let mut rs = Raster::new(if colossal { 16 } else { 12 }, -4, h + 5, var);
+            let mut rs = Raster::new(cone_extent(g, hf, &cone, n), -4, h + 5, var);
             let leader = if colossal { 3 } else { 2 };
             conifer(&mut rs, rng, g, &Conifer { h, n, wood: M::SpruceLog, leaf: M::SpruceLeaves, base, cone, leader, roots: if colossal { 7 } else { 4 } });
             rs
@@ -2261,7 +2287,7 @@ fn build_shape(sp: Species, rng: &mut Rng, g: &Genome, gr: &Growth, var: u64) ->
         Species::Baobab => baobab(rng, g, var),
         Species::Acacia => {
             let t1 = ((rng.range(3.0, 5.0) * s).round() as i32).max(2);
-            let mut rs = Raster::new(11, -1, t1 + 12, var);
+            let mut rs = Raster::new(14, -1, t1 + 12, var);
             let spine = Spine::new([0.5, 0.5], t1 as f32, g);
             rs.trunk_sq(&spine, 1, 0, t1, M::AcaciaLog);
             let top = spine.at(1.0);
@@ -2374,7 +2400,7 @@ fn build_shape(sp: Species, rng: &mut Rng, g: &Genome, gr: &Growth, var: u64) ->
         Species::Boulder => boulder(rng, biome, var),
         Species::IceSpire => {
             let h = rng.int(9, 22);
-            let mut rs = Raster::new(6, -2, h + 2, var);
+            let mut rs = Raster::new(9, -2, h + 2, var);
             let r0 = rng.range(1.6, 2.6);
             let (lx, lz) = (rng.range(-0.15, 0.15), rng.range(-0.15, 0.15));
             spire(&mut rs, 0.5, 0.5, h, r0, lx, lz);
@@ -2387,7 +2413,7 @@ fn build_shape(sp: Species, rng: &mut Rng, g: &Genome, gr: &Growth, var: u64) ->
         }
         Species::Palm => {
             let h = ((rng.range(7.0, 10.5) * s).round() as i32).max(5);
-            let mut rs = Raster::new(8, -1, h + 4, var);
+            let mut rs = Raster::new(10, -1, h + 4, var);
             let az = rng.range(0.0, TAU);
             let amp = rng.range(1.2, 2.8);
             let pt = |y: f32| {
@@ -2425,7 +2451,7 @@ fn build_shape(sp: Species, rng: &mut Rng, g: &Genome, gr: &Growth, var: u64) ->
             };
             let n = if rng.chance(thick) { 2 } else { 1 };
             let h = ((base_h * s.max(0.6) * rng.range(0.4, 0.8)).round() as i32).max(3);
-            let mut rs = Raster::new(5, -1, h + 3, var);
+            let mut rs = Raster::new((lean_off(g, h as f32) + 5.0).ceil() as i32, -1, h + 3, var);
             let base = if n == 2 { [1.0, 1.0] } else { [0.5, 0.5] };
             let spine = Spine::square(base, h as f32, g, n);
             rs.trunk_sq(&spine, n, 0, h, wood);
@@ -2530,13 +2556,15 @@ fn sequoia(rng: &mut Rng, g: &Genome, var: u64) -> Raster {
     let s = g.size;
     let h = 76.0 * s;
     let r0 = rng.range(1.9, 2.5);
-    let mut rs = Raster::new(14, -3, (h as i32) + 6, var);
-    let spine = Spine::new([0.5, 0.5], h, &Genome { lean: g.lean.min(0.05), bend: g.bend * 0.5, ..*g });
     let flare = rng.range(1.0, 1.6);
+    let gs = Genome { lean: g.lean.min(0.05), bend: g.bend * 0.5, ..*g };
+    let big_r = rng.range(5.6, 7.2) * s.sqrt();
+    let need = lean_off(&gs, h) + (r0 + flare + 3.5).max(r0 + big_r + 3.2) + 1.5;
+    let mut rs = Raster::new(need.ceil() as i32, -3, (h as i32) + 6, var);
+    let spine = Spine::new([0.5, 0.5], h, &gs);
     let rf = move |t: f32| r0 * (1.0 - 0.55 * t) + flare * (-t * h / 3.0).exp();
     rs.trunk_round(&spine, -3, h as i32 - 1, &rf, M::OakLog);
     let u0 = rng.range(0.42, 0.52);
-    let big_r = rng.range(5.6, 7.2) * s.sqrt();
     let nb = ((h * (1.0 - u0)) / 1.25) as i32;
     let mut balls: Vec<[f32; 5]> = Vec::with_capacity(nb as usize + 16);
     for k in 0..nb {
@@ -2585,8 +2613,10 @@ fn baobab(rng: &mut Rng, g: &Genome, var: u64) -> Raster {
     let s = g.size;
     let th_h = rng.range(10.0, 13.0) * s;
     let r0 = rng.range(2.3, 3.0) * s;
-    let mut rs = Raster::new(14, -2, th_h as i32 + 12, var);
-    let spine = Spine::new([0.5, 0.5], th_h, &Genome { lean: g.lean.min(0.06), ..*g });
+    let gs = Genome { lean: g.lean.min(0.06), ..*g };
+    let need = lean_off(&gs, th_h) + 0.6 * 1.22 * r0 + 7.0 * s + 1.8 + 2.5 + 2.0;
+    let mut rs = Raster::new(need.ceil() as i32, -2, th_h as i32 + 12, var);
+    let spine = Spine::new([0.5, 0.5], th_h, &gs);
     let rf = move |t: f32| r0 * (1.0 + 0.22 * (std::f32::consts::PI * t).sin() - 0.12 * t) + 0.5 * (-t * 8.0).exp();
     rs.trunk_round(&spine, -2, th_h.ceil() as i32, &rf, M::AcaciaLog);
     let top = spine.at(1.0);
@@ -2708,6 +2738,38 @@ fn boulder(rng: &mut Rng, biome: Biome, var: u64) -> Raster {
 mod tests {
     use super::*;
     use crate::gen::WorldGen;
+
+    thread_local! {
+        /// Test hook: every raster is allocated at the maximum size (radius 24, y ∈ [−8, 124)).
+        pub(super) static FORCE_BIG_RASTER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+
+    /// No crown is ever truncated by its raster: rasterising into the maximum-size raster gives
+    /// exactly the same runs (for leaning, wind-flagged, small and large instances).
+    #[test]
+    fn rasters_never_truncate() {
+        for (i, &sp) in ALL_SPECIES.iter().enumerate() {
+            let n = if sp.class() == Class::Giant { 10 } else { 60 };
+            for v in 0..n as u64 {
+                let mut gr = growth(sp, v);
+                if v % 2 == 0 {
+                    gr.wind = (0.6, -0.8);
+                    gr.windy = 1.0;
+                }
+                let var = mix64(v * 131 + i as u64 * 7);
+                let a = build_feature_with(sp, 0, 0, var, &gr);
+                FORCE_BIG_RASTER.with(|f| f.set(true));
+                let b = build_feature_with(sp, 0, 0, var, &gr);
+                FORCE_BIG_RASTER.with(|f| f.set(false));
+                let mut ca = a.columns.clone();
+                let mut cb = b.columns.clone();
+                let k = |c: &FeatureColumn| (c.dx, c.dz, c.y0);
+                ca.sort_by_key(k);
+                cb.sort_by_key(k);
+                assert!(ca == cb, "{} v{v}: raster truncated the shape ({} vs {} runs)", sp.name(), ca.len(), cb.len());
+            }
+        }
+    }
 
     fn key(f: &Feature) -> (i32, i32, u8, usize) {
         (f.root_x, f.root_z, f.kind as u8, f.columns.len())

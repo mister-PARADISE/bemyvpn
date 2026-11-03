@@ -423,7 +423,8 @@ vec3 surface(int m, int fk, ivec2 t, ivec3 bp, float foot, vec3 tint, out float 
     float pr = 0.26 * (1.0 - smoothstep(0.4, 1.1, foot));
     alpha = hole < pr ? 0.0 : 1.0;
     float dark = s < 0.22 ? -0.32 : 0.0;
-    c = base * tint * (1.0 + (g * 0.24 + dark) * wT + b * 0.2 * wB - 0.07 * (1.0 - wT));
+    c = base * tint * (1.0 + (g * 0.24 + dark) * wT + b * 0.2 * wB - 0.12 * (1.0 - wT));
+    blk *= 2.0;
   } else if (m == 36) {
     float rib = (fk == 1 && (t.x & 3) == 0) ? -0.28 : 0.0;
     c = base * (1.0 + (rib + g * 0.1) * wT + b * 0.06 * wB);

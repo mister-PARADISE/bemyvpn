@@ -169,7 +169,9 @@ fn offset_spline() -> Spline {
 
 /// Broad orogenic uplift (blocks) under the core of a mountain belt (`U·smoothstep(M)`): the
 /// elevated massif on which the ridged relief sits (valley floors of big ranges are high, too).
-const OROGENIC_UPLIFT: f32 = 110.0;
+const OROGENIC_UPLIFT: f32 = 75.0;
+/// Minimum ridged-relief amplitude in the core of an orogeny belt.
+const BELT_AMP: f32 = 250.0;
 
 /// Mountain amplitude A(C, E): uplift that multiplies the [0,1] mountain shape.
 fn amp_spline() -> Spline {
@@ -585,7 +587,11 @@ impl TerrainShaper {
         // the effective, orogeny-gated erosion.
         let inp = [cd.c, cd.e, cd.pv];
         let base = spline_d(&self.offset, &[cd.c, cd.e_raw, cd.pv]);
-        let amp = spline_d(&self.amp, &inp).maxf(0.0);
+        // Inside an orogeny belt the ridged relief is guaranteed: A ≥ 250·s(M; 0.15, 0.85) (smooth
+        // max). Without it the massif uplift alone lifted moderate-erosion parts of a belt into
+        // broad domes at the snow line — the flat snow caps of the old renders.
+        let belt = smoothstep_d(0.15, 0.85, cd.orogeny) * smoothstep_d(-0.12, 0.05, cd.c);
+        let amp = spline_d(&self.amp, &inp).maxf(0.0).smax(belt * BELT_AMP, 30.0).maxf(0.0);
 
         // --- mountains / hills
         let q = &cd.q;
@@ -600,10 +606,11 @@ impl TerrainShaper {
         let hills = self.hills.sample(x, z, fp);
         let hills01 = (hills * 1.3 + 0.45).clamp(0.0, 1.0);
         // Ridges dominate in high uplift and on pv-peaks; rounded eroded hills elsewhere.
-        let s_mix = (smoothstep_d(-0.5, 0.6, cd.pv) * 0.5 + smoothstep_d(40.0, 200.0, amp) * 0.5).clamp(0.0, 1.0);
+        let s_mix = (smoothstep_d(-0.5, 0.6, cd.pv) * 0.5 + smoothstep_d(40.0, 200.0, amp) * 0.5).max(belt).clamp(0.0, 1.0);
         let shape = lerp_d(hills01, ridge, s_mix);
         let vfac = smoothstep_d(-0.95, -0.35, cd.pv) * 0.65 + 0.35;
-        // Orogenic massif: broad dome over the belt core (land only).
+        // Orogenic massif: broad uplift under the belt core (land only) — raises the valley floors
+        // of big ranges; the summits come from the ridged relief above.
         let massif = smoothstep_d(0.05, 0.9, cd.orogeny) * smoothstep_d(-0.12, 0.05, cd.c) * OROGENIC_UPLIFT;
         let mountain = amp * shape * vfac + massif;
         // Smooth steering proxy for the gully filter (see `DRidged::sample_with_steer`): regional

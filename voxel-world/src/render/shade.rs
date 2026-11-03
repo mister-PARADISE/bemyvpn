@@ -1094,6 +1094,7 @@ mod tests {
         let mut f = Frame::new(&w, &cam, &Sun { azimuth_deg: 10.0, elevation_deg: 20.0 }, &s);
         f.kappa = 1.0 / 400_000.0; // exaggerated: tilt ρ/R′ of several degrees
         let mut worst = 0.0f64;
+        let mut n_tested = 0;
         for k in 0..200 {
             let a = k as f64 * 0.731;
             let e = -0.02 - 0.3 * ((k * 37 % 100) as f64 / 100.0);
@@ -1101,7 +1102,11 @@ mod tests {
             let ray = f.ray(cam.pos, d);
             // Hit the lowered sea: y(t) = 140 (bent-ray picture), smallest root.
             let (qa, qb, qc) = (ray.k2, ray.d[1] + ray.k1, ray.o[1] - 140.0);
-            let t = (-qb - (qb * qb - 4.0 * qa * qc).sqrt()) / (2.0 * qa);
+            let disc = qb * qb - 4.0 * qa * qc;
+            if disc < 0.0 {
+                continue; // bends away above the horizon of the exaggerated planet
+            }
+            let t = (-qb - disc.sqrt()) / (2.0 * qa);
             let p = ray.at(t);
             let dv = Vec3::new(d[0] as f32, d[1] as f32, d[2] as f32);
             let r = local_tangent(&ray, dv, t).reflect(Vec3::Y);
@@ -1113,7 +1118,9 @@ mod tests {
             let tilt = (2.0 * f.kappa * (qx * qx + qz * qz).sqrt()).atan();
             let err = (rs.dot(rr).clamp(-1.0, 1.0) as f64).acos();
             worst = worst.max(err / tilt.max(1e-9));
+            n_tested += 1;
         }
+        assert!(n_tested > 100);
         // First-order construction: error ≪ the tilt itself.
         assert!(worst < 0.05, "reflection error {worst} × tilt");
     }
