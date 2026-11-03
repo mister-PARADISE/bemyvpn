@@ -35,7 +35,8 @@ fn main() {
     };
     for (seed, cx, cz) in runs {
         let gen = WorldGen::new(seed);
-        let p = BuildParams { center_x: cx, center_z: cz, hf_levels: levels, ..Default::default() };
+        let cave: u32 = std::env::var("CAVE").ok().and_then(|s| s.parse().ok()).unwrap_or(384);
+        let p = BuildParams { center_x: cx, center_z: cz, hf_levels: levels, cave_radius: cave, ..Default::default() };
         let (w, st) = build_world_stats(&gen, &p);
         println!(
             "seed {seed} ({cx},{cz}) hf {levels}: total {:.2}s | l0 {:.2} feat {:.2} asm {:.2} levels {:?} | spans {} ({:.1}/col) features {} | mem {:.0} MB",

@@ -488,6 +488,8 @@ struct RayProfile {
     horizon: f32,
     /// Hidden → visible transitions beyond 300 m (ridge layers).
     layers: f32,
+    /// Distance of the last visible piece (the horizon-forming terrain).
+    hdist: f32,
 }
 
 /// Terrain oracle for the ray marcher.
@@ -500,8 +502,16 @@ impl Terrain<'_> {
     #[inline]
     fn sample(&self, x: f64, z: f64, d: f64) -> (f32, u16) {
         if d < NEAR_EXACT {
+            // exact column + expected canopy (near trees are the commonest occluders)
             let c = self.gen.column(x, z);
-            return (surface_of(&c), column_mask(&c));
+            let mut h = surface_of(&c);
+            if !is_wet(&c) {
+                let cl = self.gen.canopy_lod(x, z, &c, 1.0);
+                if cl.coverage > 0.15 {
+                    h += cl.height * (cl.coverage * 1.6).min(1.0);
+                }
+            }
+            return (h, column_mask(&c));
         }
         if let Some(s) = self.grid.sample(x, z) {
             return s;
@@ -517,6 +527,7 @@ impl Terrain<'_> {
         let mut d = d0;
         let mut hidden = false;
         let mut layers = 0.0f32;
+        let mut hdist = d0 as f32;
         let mut pieces = Vec::with_capacity(96);
         while d < dmax {
             let (h, m) = self.sample(o[0] + sa * d, o[2] + ca * d, d);
@@ -528,13 +539,14 @@ impl Terrain<'_> {
                 }
                 pieces.push(Piece { a0: amax, a1: a, d: d as f32, h, mask: m });
                 amax = a;
+                hdist = d as f32;
                 hidden = false;
             } else {
                 hidden = true;
             }
             d += (d * 0.022).max(3.0);
         }
-        RayProfile { pieces, horizon: amax, layers }
+        RayProfile { pieces, horizon: amax, layers, hdist }
     }
 }
 
@@ -565,6 +577,14 @@ pub struct ViewStats {
     pub layers: f32,
     /// Area covered by terrain closer than 150 blocks in the upper ~60 % of the frame.
     pub near_block: f32,
+    /// Area covered by terrain closer than 700 blocks in the upper ~40 % of the frame (a wall).
+    pub wall: f32,
+    /// Coverage of pieces at mid distance (250 … 8000 blocks).
+    pub mid: [f32; cat::COUNT],
+    /// Mean log₁₀ of the horizon distance over the central third of the image.
+    pub center_depth: f32,
+    /// Degrees by which the pitch rule had to be clamped.
+    pub clamped_deg: f32,
     pub far: f32,
     /// Mean horizon elevation (radians).
     pub horizon: f32,
@@ -593,12 +613,18 @@ fn frame_stats(cols: &[(&RayProfile, f64)], vfov: f64, rule: PitchRule) -> ViewS
     let t = (vfov * 0.5).tan();
     let k = cols.len() as f32;
     let horizon = cols.iter().map(|c| c.0.horizon as f64).sum::<f64>() / cols.len() as f64;
+    let want = match rule {
+        PitchRule::Fixed(p) => p,
+        PitchRule::Horizon { sy, .. } => horizon - (sy * t).atan(),
+        PitchRule::Target { angle, sy, .. } => angle - (sy * t).atan(),
+    };
     let pitch = match rule {
         PitchRule::Fixed(p) => p,
-        PitchRule::Horizon { sy, min, max } => (horizon - (sy * t).atan()).clamp(min, max),
-        PitchRule::Target { angle, sy, min, max } => (angle - (sy * t).atan()).clamp(min, max),
+        PitchRule::Horizon { min, max, .. } | PitchRule::Target { min, max, .. } => want.clamp(min, max),
     };
     let mut st = ViewStats { pitch, horizon: horizon as f32, ..Default::default() };
+    st.clamped_deg = ((want - pitch).abs() / DEG) as f32;
+    let mut ncenter = 0.0f32;
     let (mut sw, mut swh, mut swh2) = (0.0f64, 0.0f64, 0.0f64);
     let mut classes = [0.0f32; 6];
     for (idx, (ray, phi)) in cols.iter().enumerate() {
@@ -620,6 +646,9 @@ fn frame_stats(cols: &[(&RayProfile, f64)], vfov: f64, rule: PitchRule) -> ViewS
                     if center {
                         st.center[b] += w * 3.0;
                     }
+                    if p.d > 250.0 && p.d < 8000.0 {
+                        st.mid[b] += w;
+                    }
                 }
             }
             classes[cover_class(p.mask)] += w;
@@ -635,9 +664,22 @@ fn frame_stats(cols: &[(&RayProfile, f64)], vfov: f64, rule: PitchRule) -> ViewS
                     st.near_block += (c1 - c0) * 0.5 / k;
                 }
             }
+            if p.d < 700.0 {
+                let (c0, c1) = (s0.max(0.15), s1);
+                if c1 > c0 {
+                    st.wall += (c1 - c0) * 0.5 / k;
+                }
+            }
+        }
+        if center {
+            st.center_depth += ray.hdist.max(1.0).log10();
+            ncenter += 1.0;
         }
         st.sky += (1.0 - proj(ray.horizon)) * 0.5 / k;
         st.layers += ray.layers / k;
+    }
+    if ncenter > 0.0 {
+        st.center_depth /= ncenter;
     }
     if sw > 0.0 {
         let m = swh / sw;
@@ -897,6 +939,8 @@ fn landscape_score(v: &ViewStats, sky_target: f32) -> f32 {
     let far = (v.far / 0.25).min(1.0);
     0.9 * relief + 0.5 * layers + 0.5 * far + 0.6 * v.entropy
         - 3.0 * v.near_block
+        - 2.0 * v.wall
+        - 0.12 * v.clamped_deg.min(15.0)
         - 2.2 * (v.sky - sky_target).abs()
 }
 
@@ -973,7 +1017,7 @@ fn plan_panorama(s: &Scout) -> Vec<Candidate> {
         .map(|&(s0, k, _)| {
             let (x, z) = g.pos(k);
             let (sx, sz, h) = refine_summit(s.gen, x, z);
-            let y = camera_floor(s.gen, sx, sz, 6.0) as f64 + 7.0;
+            let y = camera_floor(s.gen, sx, sz, 8.0) as f64 + 12.0;
             let vs = s.viewshed([sx, y, sz]);
             let rule = |_| PitchRule::Horizon { sy: 0.36, min: -22.0 * DEG, max: -2.0 * DEG };
             let (yaw, st, vscore) = best_yaw(&vs, &yaws, vfov, rule, |_, v| {
@@ -1070,7 +1114,9 @@ fn plan_river(s: &Scout) -> Vec<Candidate> {
             };
             let rule = |_| PitchRule::Horizon { sy: 0.3, min: -18.0 * DEG, max: 0.0 };
             let (yaw, st, vscore) = best_yaw(&vs, &yaws, vfov, rule, |_, v| {
-                landscape_score(v, 0.3) + 2.5 * (v.center[cat::bit(cat::WATER)] / 0.12).min(1.0)
+                landscape_score(v, 0.3)
+                    + 2.0 * (v.center[cat::bit(cat::WATER)] / 0.12).min(1.0)
+                    + 1.2 * ((v.center_depth - 2.7) / 0.8).clamp(0.0, 1.0)
             });
             let side = if coin(s.gen, "scout.river.sun") { 1.0 } else { -1.0 };
             let sun = pick_sun(&vs, yaw, &[110.0 * side, -110.0 * side, 70.0 * side, -70.0 * side], 30.0);
@@ -1357,12 +1403,13 @@ fn plan_forest(s: &Scout) -> Vec<Candidate> {
                 let (x, z) = (x.floor() + 0.5, z.floor() + 0.5);
                 let col = s.gen.column(x, z);
                 let canopy = s.gen.canopy_lod(x, z, &col, 1.0);
-                let y = camera_floor(s.gen, x, z, 12.0).max(col.height + canopy.height) as f64 + 12.0;
+                let y = camera_floor(s.gen, x, z, 14.0).max(col.height + canopy.height) as f64 + 20.0;
                 let vs = s.viewshed([x, y, z]);
                 let rule = |_| PitchRule::Horizon { sy: 0.4, min: -25.0 * DEG, max: -3.0 * DEG };
                 let (yaw, st, vscore) = best_yaw(&vs, &yaws, vfov, rule, |_, v| {
                     landscape_score(v, 0.3)
-                        + 2.0 * (v.c(m) / 0.5).min(1.0)
+                        + 1.0 * (v.c(m) / 0.5).min(1.0)
+                        + 1.5 * (v.mid[cat::bit(m)] / 0.3).min(1.0)
                         + 0.4 * (v.c(cat::WATER) / 0.08).min(1.0)
                 });
                 let side = if coin(s.gen, "scout.forest.sun") { 1.0 } else { -1.0 };
@@ -1407,30 +1454,60 @@ fn project(cam: &Camera, p: [f64; 3], aspect: f64) -> Option<(f64, f64)> {
     Some((dot(r) / (zf * t * aspect), dot(u) / (zf * t)))
 }
 
-/// Distance at which a box (8 corners) just fits in the frame, by bisection on the projection.
-fn fit_distance(center: [f64; 3], dir: [f64; 3], corners: &[[f64; 3]], fov: f64, margin: f64) -> f64 {
-    let fits = |d: f64| {
-        let pos = [center[0] + dir[0] * d, center[1] + dir[1] * d, center[2] + dir[2] * d];
-        let cam = Camera::look_at(pos, center, fov);
-        corners.iter().all(|&c| match project(&cam, c, ASPECT) {
-            Some((x, y)) => x.abs() <= margin && y.abs() <= margin,
-            None => false,
-        })
+/// Frame a box: camera orientation fixed by (yaw, pitch); find the position whose projection of
+/// the 8 corners is centred on screen and just fits inside `margin` (NDC). Alternates a
+/// bisection on the distance along the view axis with a lateral shift (in the camera's right/up
+/// plane) that cancels the off-centre of the projected bounding rectangle — a fixed-point
+/// iteration that converges in a few steps because the projection is locally affine.
+fn frame_box(center: [f64; 3], yaw: f64, pitch: f64, corners: &[[f64; 3]], fov: f64, margin: f64) -> Camera {
+    let probe = Camera { pos: center, yaw, pitch, fov_y_deg: fov };
+    let (r, u, f) = probe.basis();
+    let v3 = |a: crate::math::Vec3| [a.x as f64, a.y as f64, a.z as f64];
+    let (r, u, f) = (v3(r), v3(u), v3(f));
+    let t = (fov.to_radians() * 0.5).tan();
+    let place = |d: f64, lx: f64, ly: f64| -> Camera {
+        let pos = [0, 1, 2].map(|i| center[i] - f[i] * d + r[i] * lx + u[i] * ly);
+        Camera { pos, yaw, pitch, fov_y_deg: fov }
     };
-    let (mut lo, mut hi) = (50.0, 200.0);
-    while !fits(hi) && hi < 1e5 {
-        lo = hi;
-        hi *= 1.6;
-    }
-    for _ in 0..40 {
-        let mid = 0.5 * (lo + hi);
-        if fits(mid) {
-            hi = mid;
-        } else {
-            lo = mid;
+    let bounds = |cam: &Camera| -> Option<(f64, f64, f64, f64)> {
+        let mut b = (f64::INFINITY, f64::NEG_INFINITY, f64::INFINITY, f64::NEG_INFINITY);
+        for &c in corners {
+            let (x, y) = project(cam, c, ASPECT)?;
+            b = (b.0.min(x), b.1.max(x), b.2.min(y), b.3.max(y));
+        }
+        Some(b)
+    };
+    let fits = |cam: &Camera| bounds(cam).is_some_and(|b| b.0 >= -margin && b.1 <= margin && b.2 >= -margin && b.3 <= margin);
+    let (mut lx, mut ly) = (0.0f64, 0.0f64);
+    let mut d = 400.0;
+    for _ in 0..6 {
+        let (mut lo, mut hi) = (20.0, 200.0);
+        while !fits(&place(hi, lx, ly)) && hi < 1e5 {
+            lo = hi;
+            hi *= 1.6;
+        }
+        for _ in 0..40 {
+            let mid = 0.5 * (lo + hi);
+            if fits(&place(mid, lx, ly)) {
+                hi = mid;
+            } else {
+                lo = mid;
+            }
+        }
+        d = hi;
+        if let Some(b) = bounds(&place(d, lx, ly)) {
+            lx += 0.5 * (b.0 + b.1) * d * t * ASPECT;
+            ly += 0.5 * (b.2 + b.3) * d * t;
         }
     }
-    hi
+    let mut cam = place(d, lx, ly);
+    let mut k = 0;
+    while !fits(&cam) && k < 60 {
+        d *= 1.02;
+        cam = place(d, lx, ly);
+        k += 1;
+    }
+    cam
 }
 
 fn plan_cutaway(s: &Scout) -> Vec<Candidate> {
@@ -1518,8 +1595,8 @@ fn plan_cutaway(s: &Scout) -> Vec<Candidate> {
             let top = tmax.ceil() as i32;
             let center = [cx as f64, (min_y as f64 + top as f64) * 0.5, cz as f64];
             let el = 35.0 * DEG;
+            // azimuth from the box centre toward the camera corner; the camera looks back at it
             let az = (sx as f64).atan2(sz as f64);
-            let dir = [az.sin() * el.cos(), el.sin(), az.cos() * el.cos()];
             let mut corners = Vec::new();
             for &xx in &[x0 as f64, x1 as f64] {
                 for &yy in &[min_y as f64, top as f64] {
@@ -1529,9 +1606,10 @@ fn plan_cutaway(s: &Scout) -> Vec<Candidate> {
                 }
             }
             let fov = 32.0;
-            let d = fit_distance(center, dir, &corners, fov, 0.86);
-            let pos = [center[0] + dir[0] * d, center[1] + dir[1] * d, center[2] + dir[2] * d];
-            let camera = Camera::look_at(pos, center, fov);
+            let mut camera = frame_box(center, (az + PI).rem_euclid(2.0 * PI), -el, &corners, fov, 0.84);
+            // never inside terrain (irrelevant in diorama mode, but keep the invariant)
+            let floor = camera_floor(s.gen, camera.pos[0], camera.pos[2], 4.0) as f64 + 4.0;
+            camera.pos[1] = camera.pos[1].max(floor);
             let sun_az = (camera.yaw / DEG + 180.0 + 38.0).rem_euclid(360.0);
             let sun = Sun { azimuth_deg: sun_az, elevation_deg: 42.0 };
             let mode = ViewMode::Diorama { min_x: x0, max_x: x1, min_z: z0, max_z: z1, min_y };
@@ -2179,7 +2257,7 @@ mod tests {
                     Piece { a0, a1, d, h: 0.0, mask: cat::LAND | cat::GRASS }
                 })
                 .collect();
-            let ray = RayProfile { pieces, horizon: (-100.0f32 / 1990.0).atan(), layers: 0.0 };
+            let ray = RayProfile { pieces, horizon: (-100.0f32 / 1990.0).atan(), layers: 0.0, hdist: 1990.0 };
             frame_stats(&[(&ray, 0.0)], 60.0 * DEG, PitchRule::Fixed(0.0))
         };
         // horizon at atan(−100/1990) ≈ −2.9° → s_y ≈ −0.088 → sky ≈ 0.544

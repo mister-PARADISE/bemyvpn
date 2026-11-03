@@ -44,12 +44,15 @@
 //! biomes and for lakes above the local snow line (with a ±8-block simplex-dithered margin →
 //! patchy shore ice near the line). Carved voxels take `cave_fill` (aquifer water / deep lava).
 //!
-//! **Exposure-aware material depth.** Inside the cave radius every solid block gets
-//! `surface_material` with its true depth in its solid run (cut-away views need real strata).
-//! Outside, a block can only be seen from above (top of each run) or from the side where a
-//! neighbour column is lower, so per-block materials are evaluated for depth < 24 and for
-//! `y ≥ e = min_{4-nbrs}(⌊H_nb − J_nb⌋) − 2` (cliffs, mesa walls, spires); deeper blocks are
-//! Stone / Deepslate (y < 64) / Bedrock (y = 0) in 3 spans.
+//! **Exposure-aware material depth.** A block can only be seen from above (top of each solid
+//! run), from the side where a neighbour column is lower, or from a cavity. So per-block
+//! `surface_material` (with the true depth inside its solid run) is evaluated for depth < 24, for
+//! `y ≥ e = min_{4-nbrs}(⌊H_nb − J_nb⌋) − 2` (cliffs, mesa walls, spires) and, inside the cave
+//! radius, where the interpolated cave field `F̂ > −3` — `F` is ≈ a signed distance in blocks, so
+//! this is a ≈3-block shell around every cavity, found for free from the lattice values the
+//! column already holds. Small builds (l0 ≤ 512, the cut-away dioramas whose box faces expose
+//! arbitrary interior blocks) evaluate every block inside the cave radius. All other blocks are
+//! invisible and get Stone / Deepslate (y < 64) / Bedrock (y = 0).
 //!
 //! **Feature compositing** is order-independent: every feature block gets the priority
 //! `(class, hash(root))`, class = replace_solid 3 > log 2 > other 1 > leaves 0; runs are applied
@@ -79,7 +82,13 @@ pub const CHUNK: i32 = 16;
 pub const LATTICE: i32 = 4;
 /// Outside the cave radius, blocks deeper than this in their solid run (and not side-exposed)
 /// get the plain deep fill instead of `surface_material`.
-pub const SURFACE_DEPTH: i32 = 2;
+pub const SURFACE_DEPTH: i32 = 24;
+/// Level-0 builds up to this size (cut-away / diorama builds) give every block inside the cave
+/// radius its true strata; larger builds only blocks that can be seen (see module docs).
+pub const FULL_STRATA_MAX_L0: u32 = 512;
+/// Inside the cave radius, solid blocks with interpolated cave field `F̂ > −CAVE_NEAR` (≈ within
+/// this many blocks of a cavity) are treated as potentially visible.
+const CAVE_NEAR: f32 = 3.0;
 /// Columns per level-0 work tile (8 chunks).
 const TILE_W: i32 = 128;
 /// Root tile size for feature generation.
@@ -130,6 +139,7 @@ pub fn build_world_stats(gen: &WorldGen, p: &BuildParams) -> (World, BuildStats)
         ccx: p.center_x as f64,
         ccz: p.center_z as f64,
         cave_r: p.cave_radius as f64,
+        full_strata: p.l0_size <= FULL_STRATA_MAX_L0,
         ice: Simplex::new(derive_seed(gen.seed, salt("worldbuild.ice"))),
     };
 
@@ -254,6 +264,7 @@ struct L0Ctx<'a> {
     ccx: f64,
     ccz: f64,
     cave_r: f64,
+    full_strata: bool,
     ice: Simplex,
 }
 
@@ -593,15 +604,17 @@ fn voxelise_column(
     }
 
     // ---- caves: F̂ = I₄[F − τ] > 0 carves
+    let mut jt = -1; // bcav[0..=jt] holds the column's bilinear cave field per lattice level
     if let Some(cf) = cav {
         let wet = col.water_level != i32::MIN && col.water_level as f32 > h;
         let guard = if wet { (top - WET_GUARD).max(0) } else { WH };
         let ymax = top.min(guard);
+        jt = (top.max(1) - 1) / LATTICE + 1;
+        for j in 0..=jt {
+            b.bcav[j as usize] = cf.bilerp(corners, wts, j);
+        }
         if ymax > MIN_CARVE_Y {
             let jb = (ymax - 1) / LATTICE + 1;
-            for j in 0..=jb {
-                b.bcav[j as usize] = cf.bilerp(corners, wts, j);
-            }
             for j in (MIN_CARVE_Y / LATTICE)..jb {
                 let (f0, f1) = (b.bcav[j as usize], b.bcav[j as usize + 1]);
                 if f0 <= 0.0 && f1 <= 0.0 {
@@ -644,7 +657,13 @@ fn voxelise_column(
                 let d = if in_run { depth } else { 0 };
                 in_run = true;
                 depth = d + 1;
-                if in_caves || d < SURFACE_DEPTH || yi >= expo {
+                // visible candidates: top of the run, side-exposed, near a cavity (or every
+                // block of a small cut-away build)
+                let near_cave = in_caves && {
+                    let j = yi / LATTICE;
+                    c.full_strata || (j < jt && b.bcav[j as usize].max(b.bcav[j as usize + 1]) > -CAVE_NEAR)
+                };
+                if near_cave || d < SURFACE_DEPTH || yi >= expo {
                     gen.surface_material(x, yi, z, d, col)
                 } else {
                     deep_fill(yi)
