@@ -79,7 +79,7 @@ pub const CHUNK: i32 = 16;
 pub const LATTICE: i32 = 4;
 /// Outside the cave radius, blocks deeper than this in their solid run (and not side-exposed)
 /// get the plain deep fill instead of `surface_material`.
-pub const SURFACE_DEPTH: i32 = 2;
+pub const SURFACE_DEPTH: i32 = 24;
 /// Columns per level-0 work tile (8 chunks).
 const TILE_W: i32 = 128;
 /// Root tile size for feature generation.
