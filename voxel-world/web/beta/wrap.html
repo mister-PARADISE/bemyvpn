@@ -471,7 +471,8 @@ function distBox(L, sx, sz) {
   const size = 32 << L, x0 = sx * size, z0 = sz * size;
   const dx = Math.max(x0 - st.x, 0, st.x - (x0 + size));
   const dz = Math.max(z0 - st.z, 0, st.z - (z0 + size));
-  const dy = Math.max(0, st.y - 420);
+  const nd = nodes.get(nkey(L, sx, sz));
+  const dy = Math.max(0, st.y - (nd ? nd.ymax : 420));   // (terrain top of the node once known)
   return Math.sqrt(dx * dx + dz * dz + dy * dy);
 }
 // every node on the split path is "wanted" (leaves to draw + their ancestors as fallbacks);
@@ -791,7 +792,7 @@ function renderCSM(lt, force) {
     const every = [1, 2, 6, 20][i];
     if (!stale && !(force && i <= 1)) return;
     if (!sunMoved && (frameNo - c.frame) < every) return;            // stagger far cascades
-    const depth = Math.max(1200, R * 3);
+    const depth = Math.max(2600, R * 3);                       // tall peaks cast long shadows
     const lz = lv[2] * st.x + lv[6] * st.y + lv[10] * st.z;
     const proj = ortho(sx - R, sx + R, sy - R, sy + R, -lz - depth, -lz + depth);
     c.vp = mul(proj, lv); c.key = key; c.frame = frameNo;
@@ -955,4 +956,5 @@ function frame(now) {
 })();
 })();
 </script>
+
 </body></html>

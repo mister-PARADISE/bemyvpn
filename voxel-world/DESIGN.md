@@ -12,6 +12,20 @@ Earth curvature: the renderer drops geometry by d²/(2R), R = 6 371 000 m, relat
 
 ## 0. LATEST USER REQUIREMENTS — HIGHEST PRIORITY (critics: check these; engineers: implement)
 
+**Alpine pass (user, after viewer v5: "mountains rise monotonously like a function graph, no
+caves, mountains not even tall, lakes are all too round").** Implemented:
+* `WORLD_HEIGHT` 1024; orogeny belts carry amplitude 560 × a per-massif factor 0.6–1.25 (λ 2.6 km)
+  → dominant summits 800–950, neighbours lower; ridged field λ 2000, 6 octaves (detail to λ 62)
+  on an alpine domain warp (λ 900, ±130) → curved arêtes, spurs, multi-peak massifs.
+* Mountains must not be striped by level contours: snow line / treeline wander ±40 at λ 420/140;
+  slope ledges only on half of the slopes; mountain ledges 15 blocks at reduced strength; crags (3D
+  band) on steep faces up to 16 blocks.
+* Volcanoes: warped cone (lobed base, off-centre summit) with radial V-gullies (barrancos).
+* Lakes and ponds: shoreline `ρ = d/(R·s(θ,p))`, `s ∈ [0.56, 1]` from low harmonics with per-lake
+  phases + size-scaled noise (bays, points, kidney shapes); `s ≤ 1` keeps the containment theorem.
+* Caves exist in the web viewer's exact chunks with surface entrances, and the camera can fly
+  into them (voxel collision instead of a heightfield floor).
+
 **Playability: walkable terrain and natural building spots.** The user (who will later play in
 this world) says: "a character will struggle to run around, there is no place to build a base or a
 house, everything is crooked. I'm not asking for flat things, but improve it."

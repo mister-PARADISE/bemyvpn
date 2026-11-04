@@ -31,6 +31,8 @@ fn main() {
         .collect();
     eprintln!("grid {}² in {:.2}s", n, t.elapsed().as_secs_f64());
     let hmax = cols.iter().map(|c| c.0).fold(0.0f32, f32::max);
+    let im = cols.iter().position(|c| c.0 == hmax).unwrap();
+    eprintln!("peak {:.0} at ({:.0}, {:.0})", hmax, x0 + (im % n) as f64 * cell, z0 + (im / n) as f64 * cell);
     let land = cols.iter().filter(|c| c.0 > SEA_LEVEL as f32).count();
     let mut hs: Vec<f32> = cols.iter().map(|c| c.0).collect();
     hs.sort_by(|a, b| a.partial_cmp(b).unwrap());
