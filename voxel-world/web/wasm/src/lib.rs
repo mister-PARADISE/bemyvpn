@@ -106,6 +106,24 @@ pub extern "C" fn vw_build_chunk(cx: i32, cz: i32) -> u32 {
     })
 }
 
+/// Build + mesh a Voxy-style LOD section (level ≥ 1; 2^level blocks per voxel). Same outputs as
+/// `vw_build_chunk`; vertex positions and `vw_chunk_ymin/ymax` are in LOD-voxel units.
+#[no_mangle]
+pub extern "C" fn vw_build_lod(level: u32, sx: i32, sz: i32) -> u32 {
+    with(|s| match &s.gen {
+        Some(g) => {
+            s.chunk.build_lod(g, level, sx, sz);
+            0
+        }
+        None => {
+            for o in s.chunk.out.iter_mut() {
+                o.clear();
+            }
+            1
+        }
+    })
+}
+
 /// kind 0 opaque, 1 water, 2 foliage.
 #[no_mangle]
 pub extern "C" fn vw_mesh_ptr(kind: u32) -> u32 {

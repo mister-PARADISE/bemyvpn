@@ -113,10 +113,11 @@ const cv = $('cv');
 const gl = cv.getContext('webgl2', { antialias: true, powerPreference: 'high-performance' });
 if (!gl) { fail('WebGL2 недоступен', 'Нужен браузер с поддержкой WebGL2 (Safari 15+, Chrome). Напиши в чат, какой у тебя браузер.'); return; }
 
+// K: split distance in node sizes (bigger = finer far detail), range: view distance in blocks
 const QUALITY = [
-  { R: 8, shadow: 1024, scale: 1.0 },
-  { R: 12, shadow: 2048, scale: 1.25 },
-  { R: 16, shadow: 2048, scale: 1.5 },
+  { K: 3.5, range: 20000, shadow: 1024, scale: 1.0 },
+  { K: 5, range: 30000, shadow: 2048, scale: 1.25 },
+  { K: 7, range: 40000, shadow: 2048, scale: 1.5 },
 ];
 const st = { seed: 42, x: 0, y: 200, z: 0, yaw: 0, pitch: -0.2, tod: 35, sunAz: 210, q: 1, fast: false, sens: 8 };
 let bookmarks = {}, wasmBytes = null, ready = false;
@@ -158,18 +159,23 @@ vec3 tonemap(vec3 c){
 // ---------- voxel chunks: 12-byte vertices (see web/API.md)
 const VS = `#version 300 es
 layout(location=0) in uvec4 a0; layout(location=1) in uvec4 a1; layout(location=2) in uvec4 a2;
-uniform mat4 uVP; uniform vec3 uOrg;
+uniform mat4 uVP; uniform vec3 uOrg; uniform float uScale; uniform float uCurv; uniform vec3 uCamV; uniform int uKind;
 out vec3 vW; flat out uint vN; flat out uint vMat; out float vAO; out vec3 vTint; out float vSky;
 void main(){
-  vec3 p = vec3(float(a0.x), float(a0.z + a0.w * 256u), float(a0.y));
+  vec3 p = vec3(float(a0.x), float(a0.z + a0.w * 256u), float(a0.y)) * uScale;
+  if (uKind == 1 && a1.x == 2u) {                      // exact water surface at every LOD level
+    int wd = int((a1.w >> 1) & 127u); if (wd >= 64) wd -= 128;
+    p.y += float(wd);
+  }
   vW = p + uOrg; vN = a1.x; vMat = a1.y; vAO = float(a1.z);
   vTint = pow(vec3(a2.xyz) / 255.0, vec3(2.2)); vSky = float(a2.w) / 255.0;
-  gl_Position = uVP * vec4(vW, 1.0);
+  vec3 q = vW; vec2 dxz = q.xz - uCamV.xz; q.y -= dot(dxz, dxz) * uCurv;   // earth curvature
+  gl_Position = uVP * vec4(q, 1.0);
 }`;
 const FS = `#version 300 es
 precision highp float; precision highp int; precision highp sampler2DShadow;
 in vec3 vW; flat in uint vN; flat in uint vMat; in float vAO; in vec3 vTint; in float vSky;
-uniform vec4 uMat[48]; uniform int uKind; uniform float uTime;
+uniform vec4 uMat[48]; uniform int uKind; uniform float uTime; uniform float uScale;
 uniform sampler2DShadow uShadow; uniform mat4 uShadowVP; uniform float uShadowOn; uniform float uShadowTexel;
 out vec4 o;
 ${COMMON_GLSL}
@@ -251,7 +257,7 @@ void main(){
   float holes;
   vec3 alb = surface(vMat, mt.rgb, vTint, vW, n, holes);
   float d = length(vW - uCam);
-  if (uKind == 2 && holes < 0.5 && d < 120.0) discard;
+  if (uKind == 2 && holes < 0.5 && d < 120.0 && uScale < 1.5) discard;
   float ao = 0.35 + 0.65 * vAO / 3.0;
   float sh = shadowAt(vW, n);
   float lam = max(dot(n, uSun), 0.0);
@@ -263,7 +269,8 @@ void main(){
   if (uKind == 1) {
     vec3 V = normalize(vW - uCam);
     vec2 w1 = vW.xz * 0.28 + uTime * vec2(0.33, 0.21), w2 = vW.xz * 0.61 - uTime * vec2(0.17, 0.29);
-    vec3 wn = normalize(vec3(sin(w1.x) * 0.05 + sin(w2.y) * 0.035, 1.0, cos(w1.y) * 0.05 + cos(w2.x) * 0.035));
+    float rip = clamp(1.0 - d / 350.0, 0.0, 1.0) / max(uScale * 0.5, 1.0);
+    vec3 wn = normalize(vec3((sin(w1.x) * 0.05 + sin(w2.y) * 0.035) * rip, 1.0, (cos(w1.y) * 0.05 + cos(w2.x) * 0.035) * rip));
     float fr = 0.02 + 0.98 * pow(1.0 - max(dot(-V, wn), 0.0), 5.0);
     vec3 refl = skyCol(reflect(V, wn));
     float spec = pow(max(dot(reflect(V, wn), uSun), 0.0), 220.0) * sh * 4.0;
@@ -275,66 +282,10 @@ void main(){
   o = vec4(tonemap(col), alpha);
 }`;
 
-// ---------- blocky LOD rings: 16-byte vertices [f32 x, f32 y, f32 z, u8 r,g,b, u8 nrm|wet<<3|cell(log2)<<4]
-const LVS = `#version 300 es
-layout(location=0) in vec3 aP; layout(location=1) in uvec4 aC;
-uniform mat4 uVP; uniform vec3 uCamL; uniform float uCurv;
-out vec3 vW; flat out uint vN; flat out float vWet; out vec3 vC; flat out float vCell;
-void main(){
-  vec3 p = aP;
-  vec2 dxz = p.xz - uCamL.xz;
-  vW = p;
-  p.y -= dot(dxz, dxz) * uCurv;                 // earth curvature d²/2R
-  vN = aC.w & 7u; vWet = float((aC.w >> 3) & 1u); vCell = exp2(float(aC.w >> 4));
-  vC = pow(vec3(aC.xyz) / 255.0, vec3(2.2));
-  gl_Position = uVP * vec4(p, 1.0);
-}`;
-const LFS = `#version 300 es
-precision highp float; precision highp sampler2DShadow;
-in vec3 vW; flat in uint vN; flat in float vWet; in vec3 vC; flat in float vCell;
-uniform vec4 uHole; uniform float uTime;
-uniform sampler2DShadow uShadow; uniform mat4 uShadowVP; uniform float uShadowOn;
-uniform sampler2D uMask; uniform vec3 uMaskO;
-out vec4 o;
-${COMMON_GLSL}
-const vec3 NRM[6] = vec3[6](vec3(1,0,0),vec3(-1,0,0),vec3(0,1,0),vec3(0,-1,0),vec3(0,0,1),vec3(0,0,-1));
-void main(){
-  vec2 rel = vW.xz - uHole.xy;
-  if (uHole.w > 0.5 && max(abs(rel.x), abs(rel.y)) < uHole.z) discard;   // a finer ring covers this
-  vec2 mc = (vW.xz - uMaskO.xy) / 32.0;                                    // loaded voxel chunk here?
-  if (mc.x >= 0.0 && mc.y >= 0.0 && mc.x < uMaskO.z && mc.y < uMaskO.z && texelFetch(uMask, ivec2(mc), 0).r > 0.5) discard;
-  vec3 n = NRM[vN];
-  vec3 cellId = floor((vW - n * 0.25) / vCell);
-  float jit = h3(cellId * 1.31 + 5.0);
-  vec3 col;
-  if (vWet > 0.5) {
-    vec3 V = normalize(vW - uCam);
-    vec2 w = vW.xz * 0.05 + uTime * 0.06;
-    vec3 wn = normalize(vec3(sin(w.x) * 0.02 + sin(w.y * 1.7) * 0.015, 1.0, cos(w.y) * 0.02));
-    float fr = 0.02 + 0.98 * pow(1.0 - max(dot(-V, wn), 0.0), 5.0);
-    vec3 refl = skyCol(reflect(V, wn));
-    float spec = pow(max(dot(reflect(V, wn), uSun), 0.0), 300.0) * 3.0;
-    col = mix(vec3(0.015, 0.075, 0.13) * (0.6 + 0.4 * uSunC.r), refl, fr) + uSunC * spec;
-  } else {
-    vec3 alb = vC * (0.86 + 0.28 * jit);
-    float lam = max(dot(n, uSun), 0.0);
-    if (n.y < 0.5) lam = 0.35 + 0.65 * lam;                                // soften terrace edges
-    float sh = 1.0;
-    if (uShadowOn > 0.5) {
-      vec4 s = uShadowVP * vec4(vW + n * 0.5, 1.0); vec3 c = s.xyz / s.w * 0.5 + 0.5;
-      if (c.x > 0.0 && c.x < 1.0 && c.y > 0.0 && c.y < 1.0 && c.z < 1.0) sh = texture(uShadow, c);
-    }
-    vec3 sky = mix(uSkyH, uSkyZ, 0.5 + 0.5 * n.y);
-    col = alb * (uSunC * lam * sh * 1.9 + sky * 0.6 + vec3(0.015));
-  }
-  col = aerial(col, vW);
-  o = vec4(tonemap(col), 1.0);
-}`;
-
 // ---------- depth-only shadow pass for voxel chunks
 const SVS = `#version 300 es
-layout(location=0) in uvec4 a0; uniform mat4 uVP; uniform vec3 uOrg;
-void main(){ vec3 p = vec3(float(a0.x), float(a0.z + a0.w * 256u), float(a0.y)); gl_Position = uVP * vec4(p + uOrg, 1.0); }`;
+layout(location=0) in uvec4 a0; uniform mat4 uVP; uniform vec3 uOrg; uniform float uScale;
+void main(){ vec3 p = vec3(float(a0.x), float(a0.z + a0.w * 256u), float(a0.y)) * uScale; gl_Position = uVP * vec4(p + uOrg, 1.0); }`;
 const SFS = `#version 300 es
 precision mediump float; out vec4 o; void main(){ o = vec4(1.0); }`;
 
@@ -359,8 +310,8 @@ function prog(vs, fs) {
   for (let i = 0; i < n; i++) { const nm = gl.getActiveUniform(p, i).name.replace('[0]', ''); u[nm] = gl.getUniformLocation(p, nm); }
   return { p, u };
 }
-let P, L, SH, SK;
-try { P = prog(VS, FS); L = prog(LVS, LFS); SH = prog(SVS, SFS); SK = prog(SKY_VS, SKY_FS); }
+let P, SH, SK;
+try { P = prog(VS, FS); SH = prog(SVS, SFS); SK = prog(SKY_VS, SKY_FS); }
 catch (e) { fail('Ошибка шейдера', String(e.message || e)); return; }
 const skyVao = gl.createVertexArray();
 
@@ -391,11 +342,12 @@ function ensureShadow(size) {
 }
 
 // =====================================================================================
-// Worker pool: each worker has its own wasm instance; jobs = voxel chunks and LOD rings
+// Worker pool: each worker owns a wasm instance; a job = one node of the LOD quadtree
+// (level 0 = exact 32×32 chunk, level L = 32×32 voxels of 2^L blocks, built from the same generator)
 // =====================================================================================
 const WORKER_SRC = `
 let ex = null, q = Promise.resolve();
-onmessage = (e) => { q = q.then(() => handle(e.data)).catch((err) => postMessage({ type: 'err', id: e.data.id, msg: String(err && err.stack || err) })); };
+onmessage = (e) => { q = q.then(() => handle(e.data)).catch((err) => postMessage({ type: 'err', id: e.data.id, key: e.data.key, msg: String(err && err.stack || err) })); };
 function copy(ptr, len) { return new Uint8Array(ex.memory.buffer, ptr, len).slice().buffer; }
 async function handle(m) {
   if (m.type === 'init') {
@@ -404,104 +356,39 @@ async function handle(m) {
     if (ex.vw_set_merge) ex.vw_set_merge(7);
     postMessage({ type: 'ready' }); return;
   }
-  if (m.type === 'chunk') {
-    ex.vw_build_chunk(m.cx, m.cz);
+  if (m.type === 'node') {
+    const t0 = performance.now();
+    if (m.L === 0) ex.vw_build_chunk(m.sx, m.sz); else ex.vw_build_lod(m.L, m.sx, m.sz);
     const bufs = []; for (let k = 0; k < 3; k++) { const len = ex.vw_mesh_len(k); bufs.push(len ? copy(ex.vw_mesh_ptr(k), len) : null); }
-    postMessage({ type: 'chunk', id: m.id, gen: m.gen, cx: m.cx, cz: m.cz, bufs, ymin: ex.vw_chunk_ymin(), ymax: ex.vw_chunk_ymax() }, bufs.filter(Boolean));
-    return;
-  }
-  if (m.type === 'ring') {
-    const n = m.n, c = m.cell, S = n + 3;               // samples with a 1-cell margin
-    ex.vw_build_far(c, m.x0 - c, m.z0 - c, n + 2);
-    const dv = new DataView(ex.memory.buffer, ex.vw_far_ptr(), S * S * 16);
-    const top = new Float32Array(S * S), wet = new Uint8Array(S * S), col = new Uint8Array(S * S * 3);
-    for (let k = 0; k < S * S; k++) {
-      const h = dv.getFloat32(k * 16, true), w = dv.getFloat32(k * 16 + 4, true);
-      const isW = w > h + 0.2; wet[k] = isW ? 1 : 0;
-      top[k] = Math.round(isW ? w : h);
-      col[k*3] = dv.getUint8(k*16+8); col[k*3+1] = dv.getUint8(k*16+9); col[k*3+2] = dv.getUint8(k*16+10);
-    }
-    // count quads
-    const L2 = Math.round(Math.log2(c));
-    let quads = 0;
-    const nb = [[1, 0, 0], [-1, 0, 1], [0, 1, 4], [0, -1, 5]];
-    for (let j = 1; j <= n + 1; j++) for (let i = 1; i <= n + 1; i++) {
-      const k = j * S + i; quads++;
-      for (const [dx, dz] of nb) { const t2 = top[k + dz * S + dx]; if (t2 < top[k]) quads++; }
-    }
-    const buf = new ArrayBuffer(quads * 4 * 16), f = new Float32Array(buf), u = new Uint8Array(buf);
-    let v = 0;
-    const put = (x, y, z, r, g, b, nrm, w) => { const o = v * 4; f[o] = x; f[o+1] = y; f[o+2] = z; const ob = v * 16 + 12; u[ob] = r; u[ob+1] = g; u[ob+2] = b; u[ob+3] = nrm | (w << 3) | (L2 << 4); v++; };
-    const half = c / 2;
-    for (let j = 1; j <= n + 1; j++) for (let i = 1; i <= n + 1; i++) {
-      const k = j * S + i, y = top[k], w = wet[k];
-      const cx = m.x0 + (i - 1) * c, cz = m.z0 + (j - 1) * c;
-      const x0 = cx - half, x1 = cx + half, z0 = cz - half, z1 = cz + half;
-      let r = col[k*3], g = col[k*3+1], b = col[k*3+2];
-      // top (CCW seen from +Y)
-      put(x0, y, z0, r, g, b, 2, w); put(x0, y, z1, r, g, b, 2, w); put(x1, y, z1, r, g, b, 2, w); put(x1, y, z0, r, g, b, 2, w);
-      // sides toward lower neighbours: cliffs read as rock
-      for (const [dx, dz, nrm] of nb) {
-        const y2 = top[k + dz * S + dx]; if (!(y2 < y)) continue;
-        const drop = y - y2;
-        let sr = r, sg = g, sb = b;
-        if (!w && drop > c * 0.8) { sr = (r * 0.4 + 120 * 0.6) | 0; sg = (g * 0.4 + 112 * 0.6) | 0; sb = (b * 0.4 + 104 * 0.6) | 0; }
-        if (w) { sr = r; sg = g; sb = b; }
-        if (dx === 1)  { put(x1, y2, z0, sr, sg, sb, nrm, w); put(x1, y, z0, sr, sg, sb, nrm, w); put(x1, y, z1, sr, sg, sb, nrm, w); put(x1, y2, z1, sr, sg, sb, nrm, w); }
-        if (dx === -1) { put(x0, y2, z1, sr, sg, sb, nrm, w); put(x0, y, z1, sr, sg, sb, nrm, w); put(x0, y, z0, sr, sg, sb, nrm, w); put(x0, y2, z0, sr, sg, sb, nrm, w); }
-        if (dz === 1)  { put(x1, y2, z1, sr, sg, sb, nrm, w); put(x1, y, z1, sr, sg, sb, nrm, w); put(x0, y, z1, sr, sg, sb, nrm, w); put(x0, y2, z1, sr, sg, sb, nrm, w); }
-        if (dz === -1) { put(x0, y2, z0, sr, sg, sb, nrm, w); put(x0, y, z0, sr, sg, sb, nrm, w); put(x1, y, z0, sr, sg, sb, nrm, w); put(x1, y2, z0, sr, sg, sb, nrm, w); }
-      }
-    }
-    postMessage({ type: 'ring', id: m.id, gen: m.gen, ri: m.ri, cx: m.cx, cz: m.cz, buf, quads }, [buf]);
+    postMessage({ type: 'node', key: m.key, gen: m.gen, L: m.L, sx: m.sx, sz: m.sz, bufs, ymin: ex.vw_chunk_ymin(), ymax: ex.vw_chunk_ymax(), ms: performance.now() - t0 }, bufs.filter(Boolean));
   }
 }`;
 const workers = [];
-let gen = 0, jobId = 0;
+let gen = 0;
 function makeWorkers(bytes) {
-  const n = Math.max(2, Math.min(4, (navigator.hardwareConcurrency || 4) - 1));
+  const n = Math.max(2, Math.min(5, (navigator.hardwareConcurrency || 4) - 1));
   const url = URL.createObjectURL(new Blob([WORKER_SRC], { type: 'text/javascript' }));
   for (let i = 0; i < n; i++) {
     const w = new Worker(url);
-    const slot = { w, busy: false, ready: false, job: null };
+    const slot = { w, busy: true, ready: false, job: null };
     w.onmessage = (e) => onWorker(slot, e.data);
     w.onerror = (e) => { console.error('worker', e.message); slot.busy = false; };
-    w.postMessage({ type: 'init', bytes: bytes.slice(0), seedLo: st.seed >>> 0, seedHi: 0 });
-    slot.busy = true; slot.job = { type: 'init' };
+    w.postMessage({ type: 'init', bytes: bytes.slice(0), seedLo: st.seed >>> 0, seedHi: Math.floor(st.seed / 4294967296) >>> 0 });
     workers.push(slot);
   }
 }
 
 // =====================================================================================
-// Voxel chunks
+// LOD quadtree (Voxy-style): node L covers 32·2^L blocks; split while closer than K node sizes,
+// so every voxel stays around 1–3 pixels from the near blocks out to the horizon
 // =====================================================================================
-const MASK = 41;                                             // chunks per side around the camera
-const maskTex = gl.createTexture(), maskData = new Uint8Array(MASK * MASK);
-gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
-gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, maskTex);
-gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, MASK, MASK, 0, gl.RED, gl.UNSIGNED_BYTE, maskData);
-gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-gl.activeTexture(gl.TEXTURE0);
-let maskOX = 0, maskOZ = 0, maskDirty = true;
-function updateMask() {
-  const ccx = Math.floor(st.x / 32), ccz = Math.floor(st.z / 32), h = (MASK - 1) / 2;
-  const ox = ccx - h, oz = ccz - h;
-  if (!maskDirty && ox === maskOX && oz === maskOZ) return;
-  maskData.fill(0);
-  for (const c of chunks.values()) {
-    const i = c.cx - ox, j = c.cz - oz;
-    if (i >= 0 && j >= 0 && i < MASK && j < MASK && (c.kinds[0] || c.kinds[1] || c.kinds[2])) maskData[j * MASK + i] = 255;
-  }
-  gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, maskTex);
-  gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, MASK, MASK, gl.RED, gl.UNSIGNED_BYTE, maskData);
-  gl.activeTexture(gl.TEXTURE0);
-  maskOX = ox; maskOZ = oz; maskDirty = false;
-}
-const chunks = new Map(), inflight = new Set();
-let chunkMsAvg = 0;
-function chunkKey(cx, cz) { return cx + ',' + cz; }
-function freeChunk(c) { for (const k of c.kinds) if (k) { gl.deleteBuffer(k.vb); gl.deleteVertexArray(k.vao); } }
-function uploadChunk(m) {
+const LMAX = 7;
+const nodes = new Map();          // key → { L, sx, sz, kinds, ymin, ymax (blocks), used }
+const inflight = new Set();
+let nodeMsAvg = 0, desired = [], drawList = [], lastSelect = 0, selCam = [NaN, NaN, NaN, NaN];
+const nkey = (L, sx, sz) => L + ':' + sx + ':' + sz;
+function freeNode(n) { for (const k of n.kinds) if (k) { gl.deleteBuffer(k.vb); gl.deleteVertexArray(k.vao); } }
+function uploadNode(m) {
   const kinds = m.bufs.map((b) => {
     if (!b) return null;
     const quads = Math.min(b.byteLength / 48, MAXQ);
@@ -512,83 +399,112 @@ function uploadChunk(m) {
     gl.bindVertexArray(null);
     return { vao, vb, n: quads * 6 };
   });
-  const key = chunkKey(m.cx, m.cz);
-  const old = chunks.get(key); if (old) freeChunk(old);
-  chunks.set(key, { cx: m.cx, cz: m.cz, kinds, ymin: m.ymin, ymax: m.ymax });
-  shadowDirty = true; maskDirty = true;
+  const old = nodes.get(m.key); if (old) freeNode(old);
+  const sc = 1 << m.L;
+  nodes.set(m.key, { L: m.L, sx: m.sx, sz: m.sz, kinds, ymin: m.ymin * sc, ymax: (m.ymax + 1) * sc, used: performance.now() });
+  if (m.L <= 1) shadowDirty = true;
 }
-
-// =====================================================================================
-// LOD rings: blocky heightfield boxes, cell size doubling outward
-// =====================================================================================
-const RING_N = 192;
-const RINGS = [4, 8, 16, 32, 64, 128, 256].map((cell) => ({ cell, mesh: null, pending: false, cx: NaN, cz: NaN, quads: 0 }));
-function freeRing(r) { if (r.mesh) { gl.deleteBuffer(r.mesh.vb); gl.deleteVertexArray(r.mesh.vao); r.mesh = null; } }
-function uploadRing(m) {
-  const r = RINGS[m.ri]; r.pending = false;
-  freeRing(r);
-  const vao = gl.createVertexArray(); gl.bindVertexArray(vao);
-  const vb = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, vb); gl.bufferData(gl.ARRAY_BUFFER, m.buf, gl.STATIC_DRAW);
-  gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 16, 0);
-  gl.enableVertexAttribArray(1); gl.vertexAttribIPointer(1, 4, gl.UNSIGNED_BYTE, 16, 12);
-  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, quadIB);
-  gl.bindVertexArray(null);
-  r.mesh = { vao, vb }; r.quads = Math.min(m.quads, MAXQ); r.cx = m.cx; r.cz = m.cz;
+function distBox(L, sx, sz) {
+  const size = 32 << L, x0 = sx * size, z0 = sz * size;
+  const dx = Math.max(x0 - st.x, 0, st.x - (x0 + size));
+  const dz = Math.max(z0 - st.z, 0, st.z - (z0 + size));
+  const dy = Math.max(0, st.y - 420);
+  return Math.sqrt(dx * dx + dz * dz + dy * dy);
 }
-function ringWanted(r) {
-  const span = r.cell * RING_N, snap = r.cell * 16;
-  const cx = Math.round(st.x / snap) * snap, cz = Math.round(st.z / snap) * snap;
-  const moved = !(Math.abs(cx - r.cx) < span * 0.15 && Math.abs(cz - r.cz) < span * 0.15);
-  return { cx, cz, span, moved };
+function select() {
+  const Q = QUALITY[st.q], K = Q.K, RMAX = Q.range;
+  const out = [];
+  const topSize = 32 << LMAX;
+  const tx0 = Math.floor((st.x - RMAX) / topSize), tx1 = Math.floor((st.x + RMAX) / topSize);
+  const tz0 = Math.floor((st.z - RMAX) / topSize), tz1 = Math.floor((st.z + RMAX) / topSize);
+  const visit = (L, sx, sz) => {
+    const d = distBox(L, sx, sz);
+    if (d > RMAX) return;
+    if (L > 0 && d < K * (32 << L)) { for (const [a, b] of [[0, 0], [1, 0], [0, 1], [1, 1]]) visit(L - 1, sx * 2 + a, sz * 2 + b); return; }
+    out.push({ L, sx, sz, d });
+  };
+  for (let tz = tz0; tz <= tz1; tz++) for (let tx = tx0; tx <= tx1; tx++) visit(LMAX, tx, tz);
+  return out;
 }
-
-// =====================================================================================
-// Scheduling
-// =====================================================================================
+function buildDrawList(pl) {
+  // fallback: a missing node is covered by its nearest ready ancestor (drawn once);
+  // nodes inside a fallback ancestor are skipped so no area is drawn twice
+  const now = performance.now();
+  const fallback = new Set(), list = [];
+  for (const n of desired) {
+    const k = nkey(n.L, n.sx, n.sz);
+    const nd = nodes.get(k);
+    if (nd) continue;
+    for (let L = n.L + 1, sx = n.sx >> 1, sz = n.sz >> 1; L <= LMAX; L++, sx >>= 1, sz >>= 1) {
+      const ak = nkey(L, sx, sz); if (nodes.has(ak)) { fallback.add(ak); break; }
+    }
+  }
+  const inFallback = (n) => { for (let L = n.L + 1, sx = n.sx >> 1, sz = n.sz >> 1; L <= LMAX; L++, sx >>= 1, sz >>= 1) if (fallback.has(nkey(L, sx, sz))) return true; return false; };
+  for (const n of desired) {
+    const nd = nodes.get(nkey(n.L, n.sx, n.sz));
+    if (!nd || inFallback(n)) continue;
+    nd.used = now; list.push(nd);
+  }
+  for (const k of fallback) { const nd = nodes.get(k); nd.used = now; list.push(nd); }
+  return list;
+}
 function schedule() {
-  const free = workers.filter((s) => s.ready && !s.busy);
-  if (!free.length) return 0;
-  const jobs = [];
-  // rings first when missing (they fill the whole view), nearest first
-  RINGS.forEach((r, ri) => {
-    if (r.pending) return;
-    const w = ringWanted(r);
-    if (!r.mesh || w.moved) jobs.push({ pri: r.mesh ? 50 + ri : -100 + ri, type: 'ring', ri, cell: r.cell, n: RING_N, x0: w.cx - w.span / 2, z0: w.cz - w.span / 2, cx: w.cx, cz: w.cz });
-  });
-  const R = QUALITY[st.q].R;
-  const ccx = Math.floor(st.x / 32), ccz = Math.floor(st.z / 32);
+  const now = performance.now();
+  if (now - lastSelect > 120 || Math.abs(st.x - selCam[0]) + Math.abs(st.z - selCam[2]) > 8 || Math.abs(st.y - selCam[1]) > 8 || selCam[3] !== st.q) {
+    desired = select(); lastSelect = now; selCam = [st.x, st.y, st.z, st.q];
+    // keep everything that is desired (or an ancestor used as fallback); evict the rest after a while
+    for (const n of desired) {
+      const nd = nodes.get(nkey(n.L, n.sx, n.sz)); if (nd) nd.used = now;
+      for (let L = n.L + 1, sx = n.sx >> 1, sz = n.sz >> 1; L <= LMAX; L++, sx >>= 1, sz >>= 1) { const a = nodes.get(nkey(L, sx, sz)); if (a) { a.used = now; break; } }
+    }
+    if (nodes.size > desired.length + 200) for (const [k, n] of nodes) if (now - n.used > 8000) { freeNode(n); nodes.delete(k); }
+  }
+  // rebuild the sorted job queue (cheap) and feed every idle worker; workers also pull the next
+  // job themselves when they finish, so loading never waits for slow frames
+  let missing = 0;
   const fx = Math.sin(st.yaw), fz = Math.cos(st.yaw);
-  for (const [key, c] of chunks) if (Math.hypot(c.cx - ccx, c.cz - ccz) > R + 2.5) { freeChunk(c); chunks.delete(key); shadowDirty = true; maskDirty = true; }
-  for (let dz = -R; dz <= R; dz++) for (let dx = -R; dx <= R; dx++) {
-    const dist = Math.hypot(dx, dz); if (dist > R + 0.5) continue;
-    const key = chunkKey(ccx + dx, ccz + dz);
-    if (chunks.has(key) || inflight.has(key)) continue;
-    const ahead = dist > 0 ? (dx * fx + dz * fz) / dist : 1;
-    jobs.push({ pri: dist - ahead * 2.0, type: 'chunk', cx: ccx + dx, cz: ccz + dz, key });
+  const jobs = [];
+  // base coverage first: the top-level ancestor of every desired node (so nothing is ever a hole)
+  const base = new Set();
+  for (const n of desired) {
+    const sh = LMAX - n.L, tk = nkey(LMAX, n.sx >> sh, n.sz >> sh);
+    if (!nodes.has(tk) && !inflight.has(tk) && !base.has(tk)) {
+      base.add(tk);
+      jobs.push({ k: tk, n: { L: LMAX, sx: n.sx >> sh, sz: n.sz >> sh, d: 0 }, pri: -1000 + distBox(LMAX, n.sx >> sh, n.sz >> sh) / 4096 });
+    }
+  }
+  for (const n of desired) {
+    const k = nkey(n.L, n.sx, n.sz);
+    if (nodes.has(k) || inflight.has(k) || base.has(k)) continue;
+    missing++;
+    const size = 32 << n.L, cx = (n.sx + 0.5) * size - st.x, cz = (n.sz + 0.5) * size - st.z, cl = Math.hypot(cx, cz) || 1;
+    const ahead = (cx * fx + cz * fz) / cl;                       // in front of the camera first
+    jobs.push({ k, n, pri: n.d / size - ahead * 0.8 - (n.L >= 5 ? 2 : 0) });
   }
   jobs.sort((a, b) => a.pri - b.pri);
-  let pending = jobs.length;
-  for (const s of free) {
-    const j = jobs.shift(); if (!j) break;
-    j.id = ++jobId; j.gen = gen;
-    if (j.type === 'chunk') inflight.add(j.key); else RINGS[j.ri].pending = true;
-    s.busy = true; s.job = j; s.t0 = performance.now();
-    s.w.postMessage(j);
+  queue = jobs; qi = 0;
+  for (const w of workers) if (w.ready && !w.busy) dispatch(w);
+  return missing;
+}
+let queue = [], qi = 0;
+function dispatch(w) {
+  while (qi < queue.length) {
+    const j = queue[qi++];
+    if (nodes.has(j.k) || inflight.has(j.k)) continue;
+    inflight.add(j.k); w.busy = true;
+    w.w.postMessage({ type: 'node', key: j.k, gen, L: j.n.L, sx: j.n.sx, sz: j.n.sz });
+    return;
   }
-  return pending;
 }
 function onWorker(slot, m) {
-  const job = slot.job; slot.busy = false; slot.job = null;
-  if (m.type === 'ready') { slot.ready = true; return; }
-  if (m.type === 'err') { console.error(m.msg); if (job && job.type === 'chunk') inflight.delete(job.key); if (job && job.type === 'ring') RINGS[job.ri].pending = false; return; }
-  if (m.type === 'chunk') {
-    inflight.delete(chunkKey(m.cx, m.cz));
-    const ms = performance.now() - slot.t0; chunkMsAvg = chunkMsAvg ? chunkMsAvg * 0.9 + ms * 0.1 : ms;
-    if (m.gen !== gen) return;
-    uploadChunk(m);
-  } else if (m.type === 'ring') {
-    if (m.gen !== gen) { RINGS[m.ri].pending = false; return; }
-    uploadRing(m);
+  slot.busy = false;
+  if (m.type === 'ready') { slot.ready = true; dispatch(slot); return; }
+  if (m.type === 'err') { console.error(m.msg); inflight.delete(m.key); dispatch(slot); return; }
+  if (m.type === 'node') {
+    inflight.delete(m.key);
+    nodeMsAvg = nodeMsAvg ? nodeMsAvg * 0.9 + m.ms * 0.1 : m.ms;
+    if (m.gen === gen) uploadNode(m);
+    dispatch(slot);
   }
 }
 
@@ -598,8 +514,7 @@ function onWorker(slot, m) {
 let mainEx = null;
 function setSeed(seed, spotIndex) {
   st.seed = seed; gen++;
-  for (const c of chunks.values()) freeChunk(c); chunks.clear(); inflight.clear(); maskDirty = true;
-  for (const r of RINGS) { freeRing(r); r.pending = false; r.cx = NaN; r.cz = NaN; }
+  for (const n of nodes.values()) freeNode(n); nodes.clear(); inflight.clear(); desired = []; selCam = [NaN, NaN, NaN, NaN];
   for (const s of workers) { s.busy = true; s.ready = false; s.job = { type: 'init' }; s.w.postMessage({ type: 'init', seedLo: seed >>> 0, seedHi: Math.floor(seed / 4294967296) >>> 0 }); }
   mainEx.vw_init(seed >>> 0, Math.floor(seed / 4294967296) >>> 0);
   const list = bookmarks[String(seed)] || [];
@@ -765,13 +680,24 @@ function setCommon(pp, lt) {
   gl.uniform3fv(pp.u.uSun, lt.sun); gl.uniform3fv(pp.u.uSunC, lt.sunC); gl.uniform3fv(pp.u.uSkyZ, lt.skyZ); gl.uniform3fv(pp.u.uSkyH, lt.skyH);
   gl.uniform1f(pp.u.uHaze, 34000); gl.uniform3f(pp.u.uCam, st.x, st.y, st.z);
 }
+function drawNode(nd, k, pp) {
+  const m = nd.kinds[k]; if (!m) return;
+  const sc = 1 << nd.L, size = 32 << nd.L;
+  gl.uniform3f(pp.u.uOrg, nd.sx * size, 0, nd.sz * size);
+  gl.uniform1f(pp.u.uScale, sc);
+  gl.bindVertexArray(m.vao); gl.drawElements(gl.TRIANGLES, m.n, gl.UNSIGNED_INT, 0);
+}
+function nodeVisible(pl, nd) {
+  const size = 32 << nd.L, x0 = nd.sx * size, z0 = nd.sz * size;
+  return boxVisible(pl, x0, nd.ymin - 2, z0, x0 + size, nd.ymax + 2, z0 + size);
+}
 function renderShadow(lt) {
-  const R = QUALITY[st.q].R * 32 * 0.75;
+  const R = Math.min(380, QUALITY[st.q].K * 64);
   const c = [Math.round(st.x / 16) * 16, Math.round(st.y / 16) * 16, Math.round(st.z / 16) * 16];
-  const e = [c[0] + lt.sun[0] * 800, c[1] + lt.sun[1] * 800, c[2] + lt.sun[2] * 800];
+  const e = [c[0] + lt.sun[0] * 900, c[1] + lt.sun[1] * 900, c[2] + lt.sun[2] * 900];
   const f = [-lt.sun[0], -lt.sun[1], -lt.sun[2]];
   const up = Math.abs(f[1]) > 0.99 ? [1, 0, 0] : [0, 1, 0];
-  shadowVP = mul(ortho(-R, R, -R, R, 1, 1700), lookAt(e, f, up));
+  shadowVP = mul(ortho(-R, R, -R, R, 1, 1900), lookAt(e, f, up));
   shadowRadius = R; shadowCenter = c;
   gl.bindFramebuffer(gl.FRAMEBUFFER, shadowFbo);
   gl.viewport(0, 0, shadowSize, shadowSize);
@@ -779,22 +705,24 @@ function renderShadow(lt) {
   gl.enable(gl.POLYGON_OFFSET_FILL); gl.polygonOffset(1.5, 3.0);
   gl.useProgram(SH.p); gl.uniformMatrix4fv(SH.u.uVP, false, shadowVP);
   const pl = frustum(shadowVP);
-  for (const ch of chunks.values()) {
-    if (!boxVisible(pl, ch.cx * 32, ch.ymin, ch.cz * 32, ch.cx * 32 + 32, ch.ymax + 1, ch.cz * 32 + 32)) continue;
-    gl.uniform3f(SH.u.uOrg, ch.cx * 32, 0, ch.cz * 32);
-    for (const k of [0, 2]) { const m = ch.kinds[k]; if (!m) continue; gl.bindVertexArray(m.vao); gl.drawElements(gl.TRIANGLES, m.n, gl.UNSIGNED_INT, 0); }
+  for (const nd of drawList) {
+    if (nd.L > 1 || !nodeVisible(pl, nd)) continue;
+    for (const k of [0, 2]) drawNode(nd, k, SH);
   }
   gl.disable(gl.POLYGON_OFFSET_FILL);
   gl.bindFramebuffer(gl.FRAMEBUFFER, null);
   shadowDirty = false;
 }
+// three depth ranges (exact blocks / mid LOD / far LOD), each with a projection matched to its
+// distances, so a 24-bit depth buffer never z-fights anywhere between 10 cm and 40 km
+const GROUPS = [[3, LMAX], [1, 2], [0, 0]];
 function frame(now) {
-  const dt = Math.min(0.1, (now - last) / 1000); last = now;
-  fps = fps * 0.94 + (1 / Math.max(dt, 1e-3)) * 0.06;
+  const rawDt = (now - last) / 1000, dt = Math.min(0.1, rawDt); last = now;
+  fps = fps * 0.9 + (1 / Math.max(rawDt, 1e-3)) * 0.1;
   if (fps < 22 && ++slow > 120 && scale > 0.55) { scale *= 0.85; slow = 0; } else if (fps >= 22) slow = 0;
   resize();
   // movement
-  const sp = (st.fast ? 160 : 30) * (keys.has('ShiftLeft') || keys.has('ShiftRight') ? 4 : 1);
+  const sp = (st.fast ? 180 : 30) * (keys.has('ShiftLeft') || keys.has('ShiftRight') ? 4 : 1);
   let mf = -stick.y, ms = stick.x, mv = vert;
   if (keys.has('KeyW') || keys.has('ArrowUp')) mf += 1;
   if (keys.has('KeyS') || keys.has('ArrowDown')) mf -= 1;
@@ -812,71 +740,56 @@ function frame(now) {
   st.y = Math.min(st.y, 6000);
   if (Math.hypot(st.x - shadowCenter[0], st.z - shadowCenter[2]) > 24 || Math.abs(st.y - shadowCenter[1]) > 48) shadowDirty = true;
   pendingJobs = schedule();
-  updateMask();
 
   const lt = lighting();
-  if (shadowDirty && now - shadowT > 250) { renderShadow(lt); shadowT = now; }
-
   const cpf = Math.cos(st.pitch);
   const f = [Math.sin(st.yaw) * cpf, Math.sin(st.pitch), Math.cos(st.yaw) * cpf];
   const view = lookAt([st.x, st.y, st.z], f, [0, 1, 0]);
   const fov = 70 * Math.PI / 180, asp = cv.width / cv.height;
   const agl = Math.max(0, st.y - ground);
-  const vpFar = mul(persp(fov, asp, Math.max(40, agl * 0.3), Math.max(70000, st.y * 30)), view);
-  const vp = mul(persp(fov, asp, Math.max(0.12, agl * 0.004), agl + QUALITY[st.q].R * 32 * 2 + 600), view);
+  const K = QUALITY[st.q].K, RMAX = QUALITY[st.q].range;
+  const ranges = [
+    [Math.max(40, agl * 0.4), RMAX * 1.6 + st.y * 2],            // far LOD
+    [Math.max(2, agl * 0.05), K * 32 * 8 * 2.5 + agl * 1.5],      // levels 1–2
+    [Math.max(0.12, agl * 0.004), K * 64 * 1.8 + agl * 1.5],      // exact blocks
+  ];
+  const vps = ranges.map(([n, fa]) => mul(persp(fov, asp, n, fa), view));
+  const plAll = frustum(mul(persp(fov, asp, 0.1, RMAX * 2 + st.y * 2), view));
+  drawList = buildDrawList(plAll);
+  if (shadowDirty && now - shadowT > 250) { renderShadow(lt); shadowT = now; }
+
   gl.bindFramebuffer(gl.FRAMEBUFFER, null);
   gl.viewport(0, 0, cv.width, cv.height);
   gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
-  // sky
   gl.disable(gl.DEPTH_TEST); gl.useProgram(SK.p); gl.bindVertexArray(skyVao);
-  setCommon(SK, lt); gl.uniformMatrix4fv(SK.u.uInvVP, false, invert(vpFar));
+  setCommon(SK, lt); gl.uniformMatrix4fv(SK.u.uInvVP, false, invert(vps[0]));
   gl.drawArrays(gl.TRIANGLES, 0, 3);
   gl.enable(gl.DEPTH_TEST);
   gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, shadowTex);
-  // LOD rings: coarse to fine, each ring cuts a hole where the next finer ready ring takes over
-  gl.useProgram(L.p); setCommon(L, lt);
-  gl.uniformMatrix4fv(L.u.uVP, false, vpFar); gl.uniform3f(L.u.uCamL, st.x, st.y, st.z);
-  gl.uniform1f(L.u.uCurv, 1 / (2 * 6371000)); gl.uniform1f(L.u.uTime, now / 1000);
-  gl.uniform1i(L.u.uShadow, 0); gl.uniformMatrix4fv(L.u.uShadowVP, false, shadowVP); gl.uniform1f(L.u.uShadowOn, 1);
-  gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, maskTex); gl.uniform1i(L.u.uMask, 1);
-  gl.uniform3f(L.u.uMaskO, maskOX * 32, maskOZ * 32, MASK); gl.activeTexture(gl.TEXTURE0);
-  gl.enable(gl.CULL_FACE); gl.cullFace(gl.BACK); gl.frontFace(gl.CCW);
-  const Rb = QUALITY[st.q].R;
-  for (let ri = RINGS.length - 1; ri >= 0; ri--) {
-    const r = RINGS[ri]; if (!r.mesh) continue;
-    let inner = null;
-    for (let k = ri - 1; k >= 0; k--) if (RINGS[k].mesh) { inner = RINGS[k]; break; }
-    if (inner) gl.uniform4f(L.u.uHole, inner.cx, inner.cz, inner.cell * RING_N / 2 - inner.cell * 2, 1);
-    else gl.uniform4f(L.u.uHole, 0, 0, 0, 0);
-    gl.bindVertexArray(r.mesh.vao); gl.drawElements(gl.TRIANGLES, r.quads * 6, gl.UNSIGNED_INT, 0);
-  }
-  // voxel chunks in their own (near) depth range
-  gl.clear(gl.DEPTH_BUFFER_BIT);
   gl.useProgram(P.p); setCommon(P, lt);
-  gl.uniformMatrix4fv(P.u.uVP, false, vp); gl.uniform1f(P.u.uTime, now / 1000);
+  gl.uniform1f(P.u.uTime, now / 1000);
   gl.uniform1i(P.u.uShadow, 0); gl.uniformMatrix4fv(P.u.uShadowVP, false, shadowVP); gl.uniform1f(P.u.uShadowOn, 1); gl.uniform1f(P.u.uShadowTexel, 1 / shadowSize);
-  const pl = frustum(vp);
-  for (const k of [0, 2, 1]) {
-    gl.uniform1i(P.u.uKind, k);
-    if (k === 0) { gl.enable(gl.CULL_FACE); gl.cullFace(gl.BACK); }
-    else gl.disable(gl.CULL_FACE);
-    if (k === 1) { gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA); gl.depthMask(false); }
-    for (const c of chunks.values()) {
-      const m = c.kinds[k]; if (!m) continue;
-      if (!boxVisible(pl, c.cx * 32, c.ymin, c.cz * 32, c.cx * 32 + 32, c.ymax + 1, c.cz * 32 + 32)) continue;
-      gl.uniform3f(P.u.uOrg, c.cx * 32, 0, c.cz * 32);
-      gl.bindVertexArray(m.vao); gl.drawElements(gl.TRIANGLES, m.n, gl.UNSIGNED_INT, 0);
+  gl.uniform1f(P.u.uCurv, 1 / (2 * 6371000)); gl.uniform3f(P.u.uCamV, st.x, st.y, st.z);
+  let drawn = 0;
+  GROUPS.forEach(([l0, l1], gi) => {
+    if (gi > 0) gl.clear(gl.DEPTH_BUFFER_BIT);
+    gl.uniformMatrix4fv(P.u.uVP, false, vps[gi]);
+    const group = drawList.filter((nd) => nd.L >= l0 && nd.L <= l1 && nodeVisible(plAll, nd));
+    for (const k of [0, 2, 1]) {
+      gl.uniform1i(P.u.uKind, k);
+      if (k === 0) { gl.enable(gl.CULL_FACE); gl.cullFace(gl.BACK); } else gl.disable(gl.CULL_FACE);
+      if (k === 1) { gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA); gl.depthMask(false); }
+      for (const nd of group) { drawNode(nd, k, P); if (k === 0) drawn++; }
+      gl.depthMask(true); gl.disable(gl.BLEND);
     }
-    gl.depthMask(true); gl.disable(gl.BLEND);
-  }
+  });
   gl.bindVertexArray(null);
 
   if (!frame.hudT || now - frame.hudT > 300) {
     frame.hudT = now;
     const b = mainEx.vw_biome_at(st.x, st.z);
-    const ringsReady = RINGS.filter((r) => r.mesh).length;
     $('hBiome').textContent = BIOMES[b] || ('Биом ' + b);
-    $('hNums').textContent = `высота ${Math.round(st.y)} · ${Math.round(fps)} к/с · блоки ${chunks.size} · дальние ${ringsReady}/${RINGS.length}${pendingJobs ? ' · грузится ' + pendingJobs : ''}`;
+    $('hNums').textContent = `высота ${Math.round(st.y)} · ${Math.round(fps)} к/с · секций ${drawn}/${desired.length}${pendingJobs ? ' · грузится ' + pendingJobs : ''}`;
   }
   requestAnimationFrame(frame);
 }
@@ -886,7 +799,7 @@ function frame(now) {
 // =====================================================================================
 (async () => {
   try {
-    $('lText').textContent = 'Загружаю генератор (≈280 КБ)…';
+    $('lText').textContent = 'Загружаю генератор (≈290 КБ)…';
     const resp = await fetch('gen.wasm');
     if (!resp.ok) throw new Error('gen.wasm: HTTP ' + resp.status);
     wasmBytes = await resp.arrayBuffer();
@@ -902,15 +815,15 @@ function frame(now) {
     ensureShadow(QUALITY[st.q].shadow);
     setSeed(42, 0);
     makeWorkers(wasmBytes);
-    $('lText').textContent = 'Строю ближайшие блоки и дальние кольца…';
+    $('lText').textContent = 'Строю мир от горизонта к ногам…';
     resize();
     const t0 = performance.now();
     await new Promise((res) => {
       const tick = () => {
-        schedule();
-        const near = chunks.size, rings = RINGS.filter((r) => r.mesh).length;
-        $('lText').textContent = `Блоков вокруг: ${near} · дальних колец: ${rings}/${RINGS.length}`;
-        if ((near >= 60 && rings >= 2) || performance.now() - t0 > 15000) res(); else setTimeout(tick, 50);
+        const missing = schedule();
+        const have = desired.length - missing;
+        $('lText').textContent = `Секций мира готово: ${have} из ${desired.length}`;
+        if ((desired.length && have >= desired.length * 0.35) || performance.now() - t0 > 15000) res(); else setTimeout(tick, 50);
       };
       tick();
     });
@@ -919,7 +832,7 @@ function frame(now) {
     const hint = $('hint'); hint.hidden = false;
     hint.innerHTML = IS_TOUCH ? 'Левый палец — полёт, правый — обзор.<br>▲▼ — высота, ⚡ — скорость' : 'Кликни по миру, чтобы управлять мышью.<br>WASD — полёт, Пробел/Q — вверх/вниз, Shift — быстро, Esc — отпустить мышь';
     setTimeout(hideHint, 9000);
-    window.__vw = { st, chunks, RINGS, get fps() { return fps; } };
+    window.__vw = { st, nodes, workers, inflight, get desired() { return desired; }, get fps() { return fps; }, get ms() { return nodeMsAvg; } };
     requestAnimationFrame(frame);
   } catch (e) {
     fail('Не получилось запустить', String((e && e.message) || e));

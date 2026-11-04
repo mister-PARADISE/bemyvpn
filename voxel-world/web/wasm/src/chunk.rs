@@ -132,6 +132,14 @@ pub struct ChunkBuilder {
     pub out: [Vec<u8>; 3],
     pub ymin: i32,
     pub ymax: i32,
+    /// Blocks per voxel edge: 1 for exact chunks, 2^level for LOD sections.
+    scale: i32,
+    lod_floor: Vec<i32>,
+    lod_leaf: Vec<u16>,
+    lod_log: Vec<u16>,
+    lod_mat: Vec<u8>,
+    /// Exact water surface minus the LOD-quantised one, in blocks (sent in vertex flag bits 1..7).
+    lod_wdiff: Vec<i8>,
 }
 
 impl Default for ChunkBuilder {
@@ -198,6 +206,12 @@ impl ChunkBuilder {
             out: [Vec::new(), Vec::new(), Vec::new()],
             ymin: 0,
             ymax: 0,
+            scale: 1,
+            lod_floor: vec![0; LAYER],
+            lod_leaf: Vec::new(),
+            lod_log: Vec::new(),
+            lod_mat: Vec::new(),
+            lod_wdiff: vec![0; LAYER],
         }
     }
 
@@ -222,6 +236,8 @@ impl ChunkBuilder {
         for o in self.out.iter_mut() {
             o.clear();
         }
+        self.scale = 1;
+        self.lod_wdiff.fill(0);
         let rx0 = cx * CS - 1;
         let rz0 = cz * CS - 1;
         self.nodes.trim(6000);
@@ -450,7 +466,7 @@ impl ChunkBuilder {
             }
             self.tint_f[c]
         } else if m == Material::Terracotta {
-            self.terra[y.clamp(0, WH - 1) as usize]
+            self.terra[(y * self.scale + self.scale / 2).clamp(0, WH - 1) as usize]
         } else {
             0xFF_FFFF
         }
@@ -549,7 +565,10 @@ impl ChunkBuilder {
         let mat = Material::from_u8(m);
         let tint = self.tint(c, mat, y);
         let top_exposed = self.cls[self.vox[vi + LAYER] as usize] != C_FULL;
-        let flags = top_exposed as u8;
+        let mut flags = top_exposed as u8;
+        if cl == C_WATER && d == 2 {
+            flags |= ((self.lod_wdiff[c] as u8) & 0x7F) << 1;
+        }
         let kind = match cl {
             C_WATER => KIND_WATER,
             C_LEAF => KIND_FOLIAGE,
@@ -671,5 +690,274 @@ impl ChunkBuilder {
 
     pub fn quad_count(&self, kind: usize) -> usize {
         self.out[kind].len() / QB
+    }
+}
+
+// =====================================================================================
+// LOD sections (Voxy-style): the same generator sampled at 2^level blocks per voxel, the same
+// mesher and vertex format (positions in LOD-voxel units; the viewer scales by 2^level).
+// =====================================================================================
+impl ChunkBuilder {
+    /// Build + mesh LOD section (level ≥ 1) covering LOD cells [32·sx, 32·sx + 32) (likewise z),
+    /// i.e. blocks [32·sx·2^level, 32·(sx+1)·2^level).
+    pub fn build_lod(&mut self, gen: &WorldGen, level: u32, sx: i32, sz: i32) {
+        use voxel_world::gen::MAX_FEATURE_RADIUS;
+        use voxel_world::noise::{hash2, hash_f01};
+        if self.liquids.as_ref().map(|l| l.0) != Some(gen.seed) {
+            self.reset();
+            self.liquids = Some((gen.seed, Liquids::new(gen.seed)));
+        }
+        for o in self.out.iter_mut() {
+            o.clear();
+        }
+        let s = 1i32 << level.min(10);
+        self.scale = s;
+        let sf = s as f64;
+        let nly = WH / s;
+        let rx0 = sx * CS - 1;
+        let rz0 = sz * CS - 1;
+
+        // ---- 1. columns at LOD cell centres (band-limited to the cell footprint)
+        for lz in 0..W {
+            for lx in 0..W {
+                let c = (lz * W + lx) as usize;
+                let wx = ((rx0 + lx) as f64 + 0.5) * sf;
+                let wz = ((rz0 + lz) as f64 + 0.5) * sf;
+                self.cols[c] = gen.column_lod(wx, wz, sf);
+                self.tint_g[c] = u32::MAX;
+                self.tint_f[c] = u32::MAX;
+            }
+        }
+        // ---- 2. vertical profile per column (in LOD voxels)
+        //   below `floor` solid; [floor, hi) evaluated (3D density at voxel centres); ≥ hi air
+        let mut yb = nly;
+        let mut yt = 1;
+        let mut lo_hi = vec![(0i32, 0i32, 0i32); LAYER];
+        for c in 0..LAYER {
+            let col = self.cols[c];
+            let jag = if s <= 8 { col.jaggedness.max(0.0) } else { 0.0 };
+            let lo = (((col.height - jag - 1.0) / s as f32).floor() as i32).clamp(1, nly);
+            let hi = (((col.height + jag + 1.0) / s as f32).ceil() as i32).clamp(lo, nly);
+            let wl = if col.water_level == i32::MIN { 0 } else { ((col.water_level + s / 2) / s).clamp(0, nly) };
+            self.lod_wdiff[c] = if col.water_level == i32::MIN { 0 } else { (col.water_level - wl * s).clamp(-64, 63) as i8 };
+            lo_hi[c] = (lo, hi, wl);
+            self.lod_floor[c] = lo;
+            yb = yb.min(lo - 1);
+            yt = yt.max(hi).max(wl);
+        }
+        // ---- 3. trees: exact features rasterised for small voxels, canopy statistics beyond
+        let feat_detail = s <= 4;
+        let mut ftop = 0;
+        if feat_detail {
+            let n = LAYER * nly as usize;
+            self.lod_leaf.clear();
+            self.lod_leaf.resize(n, 0);
+            self.lod_log.clear();
+            self.lod_log.resize(n, 0);
+            self.lod_mat.clear();
+            self.lod_mat.resize(n * 2, 0);
+            let (bx0, bz0) = (rx0 * s, rz0 * s);
+            let (bx1, bz1) = ((rx0 + W) * s, (rz0 + W) * s);
+            let r = MAX_FEATURE_RADIUS;
+            for f in gen.features_in(bx0 - r, bz0 - r, bx1 + r, bz1 + r) {
+                let root = gen.column(f.root_x as f64 + 0.5, f.root_z as f64 + 0.5);
+                if root.water_level != i32::MIN && root.water_level as f32 > root.height + 0.5 {
+                    continue;
+                }
+                let ground = ((root.height - 0.5).ceil() as i32).clamp(1, WH - 1);
+                for fc in &f.columns {
+                    let bx = f.root_x + fc.dx as i32;
+                    let bz = f.root_z + fc.dz as i32;
+                    let lx = bx.div_euclid(s) - rx0;
+                    let lz = bz.div_euclid(s) - rz0;
+                    if lx < 0 || lz < 0 || lx >= W || lz >= W {
+                        continue;
+                    }
+                    let c = (lz * W + lx) as usize;
+                    let is_log = fc.mat.is_log();
+                    let is_leaf = fc.mat.is_leaves();
+                    if !is_log && !is_leaf {
+                        continue;
+                    }
+                    for y in (ground + fc.y0 as i32).max(0)..(ground + fc.y1 as i32).min(WH) {
+                        let j = (y / s) as usize;
+                        let i = j * LAYER + c;
+                        if is_log {
+                            self.lod_log[i] = self.lod_log[i].saturating_add(1);
+                            self.lod_mat[i * 2] = fc.mat as u8;
+                        } else {
+                            self.lod_leaf[i] = self.lod_leaf[i].saturating_add(1);
+                            self.lod_mat[i * 2 + 1] = fc.mat as u8;
+                        }
+                        ftop = ftop.max(j as i32 + 1);
+                    }
+                }
+            }
+        }
+        let canopy_seed = gen.seed ^ 0xC4A0_9E37;
+        if !feat_detail {
+            ftop = 0;
+            for c in 0..LAYER {
+                let (_, hi, _) = lo_hi[c];
+                ftop = ftop.max(hi + 4);
+            }
+        }
+        yt = yt.max(ftop).min(nly) + 1;
+        let yb = yb.max(0);
+        let yt = yt.min(nly);
+        self.yb = yb;
+        self.yt = yt;
+        let nl = (yt - yb + 2) as usize;
+        self.vox.clear();
+        self.vox.resize(nl * LAYER, Material::Air as u8);
+        self.vox[..LAYER].fill(Material::Stone as u8);
+
+        for c in 0..LAYER {
+            let lx = c as i32 % W;
+            let lz = c as i32 / W;
+            let mut lo = self.lod_floor[c] - 1;
+            if lx > 0 && lz > 0 && lx < W - 1 && lz < W - 1 {
+                for nc in [c - 1, c + 1, c - WU, c + WU] {
+                    lo = lo.min(self.lod_floor[nc] - 1);
+                }
+            }
+            self.y_lo[c] = lo.max(yb);
+        }
+
+        // ---- 4. voxelise
+        let liq = &self.liquids.as_ref().unwrap().1;
+        for lz in 0..W {
+            for lx in 0..W {
+                let c = (lz * W + lx) as usize;
+                let interior = lx > 0 && lz > 0 && lx < W - 1 && lz < W - 1;
+                let col = self.cols[c];
+                let (lo, hi, wl) = lo_hi[c];
+                let bx = (rx0 + lx) * s + s / 2;
+                let bz = (rz0 + lz) * s + s / 2;
+                let wx = bx as f64 + 0.5 * ((s & 1) as f64);
+                let wz = bz as f64 + 0.5 * ((s & 1) as f64);
+                let liquid = liq.liquid(&col);
+                let base = c + LAYER;
+                let mut depth_vox = 0i32;
+                let mut in_run = false;
+                let mat_lo = if interior { self.y_lo[c] } else { nly };
+                for j in (yb..yt).rev() {
+                    let yc = j * s + s / 2;
+                    let solid = if j < lo {
+                        true
+                    } else if j >= hi {
+                        false
+                    } else if col.jaggedness > 0.0 && s <= 8 {
+                        gen.density(wx, yc as f64 + 0.5, wz, &col) > 0.0
+                    } else {
+                        (yc as f32 + 0.5) < col.height
+                    };
+                    let m = if solid {
+                        let d = if in_run { depth_vox } else { 0 };
+                        in_run = true;
+                        depth_vox = d + 1;
+                        if j >= mat_lo {
+                            // representative block: the top block of the voxel for the exposed face
+                            let by = if d == 0 { j * s + s - 1 } else { yc };
+                            gen.surface_material(bx, by.min(WH - 1), bz, d * s, &col)
+                        } else {
+                            deep_fill(yc)
+                        }
+                    } else {
+                        in_run = false;
+                        depth_vox = 0;
+                        if j < wl {
+                            liquid
+                        } else {
+                            Material::Air
+                        }
+                    };
+                    let mut mm = m;
+                    if mm == Material::Air && feat_detail {
+                        let i = j as usize * LAYER + c;
+                        let thr_leaf = (s * s / 2).max(1) as u16;
+                        let thr_log = s.max(1) as u16;
+                        if self.lod_log[i] >= thr_log {
+                            mm = Material::from_u8(self.lod_mat[i * 2]);
+                        } else if self.lod_leaf[i] >= thr_leaf {
+                            mm = Material::from_u8(self.lod_mat[i * 2 + 1]);
+                        }
+                    }
+                    self.vox[base + (j - yb) as usize * LAYER] = mm as u8;
+                }
+                // statistical canopy for big voxels: dithered blocky tree tops
+                if !feat_detail && (wl as f32) * (s as f32) < col.height + 0.5 {
+                    let cp = gen.canopy_lod(wx, wz, &col, sf);
+                    if cp.coverage > 0.05 && cp.leaf != Material::Air {
+                        let hsh = hash_f01(hash2(canopy_seed ^ level as u64, rx0 + lx, rz0 + lz));
+                        if hsh < cp.coverage * 1.15 {
+                            let top = ((col.height - 0.5) / s as f32).ceil() as i32;
+                            let layers = ((cp.height / s as f32) * (0.6 + 0.8 * hsh)).round().max(1.0) as i32;
+                            for k in 0..layers {
+                                let j = top + k;
+                                if j >= yb && j < yt {
+                                    let i = base + (j - yb) as usize * LAYER;
+                                    if self.vox[i] == Material::Air as u8 {
+                                        self.vox[i] = cp.leaf as u8;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                // ice on the top liquid voxel
+                if wl > yb && wl <= yt && liquid == Material::Water {
+                    let i = base + (wl - 1 - yb) as usize * LAYER;
+                    if self.vox[i] == Material::Water as u8 && liq.freezes(gen, wx, wz, &col) {
+                        self.vox[i] = Material::Ice as u8;
+                    }
+                }
+            }
+        }
+        // ---- 5. skirts: opaque margin voxels count as air so section borders always get walls
+        //        (closes cracks against neighbours drawn at a different level)
+        for lz in 0..W {
+            for lx in 0..W {
+                if lx > 0 && lz > 0 && lx < W - 1 && lz < W - 1 {
+                    continue;
+                }
+                let c = (lz * W + lx) as usize;
+                for l in (1..nl).rev() {
+                    let i = c + l * LAYER;
+                    let k = self.cls[self.vox[i] as usize];
+                    if k == C_FULL {
+                        self.vox[i] = Material::Air as u8;
+                    }
+                }
+            }
+        }
+        // ---- 6. heights for sky light / meshing ranges (same as exact chunks)
+        for c in 0..LAYER {
+            let mut tn = yb - 1;
+            let mut ta = yb - 1;
+            let mut to = yb - 1;
+            let mut y = yt - 1;
+            while y >= yb {
+                let m = self.vox[c + (y - yb + 1) as usize * LAYER];
+                let k = self.cls[m as usize];
+                if k != C_AIR {
+                    if tn < yb {
+                        tn = y;
+                    }
+                    if k != C_WATER && ta < yb {
+                        ta = y;
+                    }
+                    if k == C_FULL {
+                        to = y;
+                        break;
+                    }
+                }
+                y -= 1;
+            }
+            self.top_nonair[c] = tn;
+            self.top_any[c] = ta.max(to);
+            self.top_opq[c] = to;
+        }
+        self.mesh(gen, rx0, rz0);
     }
 }
