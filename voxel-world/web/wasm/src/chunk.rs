@@ -907,8 +907,25 @@ impl ChunkBuilder {
         let tint = self.tint(c, mat, y);
         let top_exposed = self.cls[self.vox[vi + LAYER] as usize] != C_FULL;
         let mut flags = top_exposed as u8;
+        let mut tint = tint;
         if cl == C_WATER && d == 2 {
             flags |= ((self.lod_wdiff[c] as u8) & 0x7F) << 1;
+            // water depth below this surface (blocks, bucketed so open water still merges) in the
+            // tint's red byte: the shader fades the bottom out with depth (no sand halos)
+            // (LOD: + half a voxel — band-limited coasts smear into wide flats a few blocks deep,
+            // which must still read as water from afar, not as a sand halo)
+            let depth = ((y - self.top_opq[c]) * self.scale + self.lod_wdiff[c] as i32 + self.scale / 2).max(1);
+            let q = match depth {
+                0..=5 => depth,
+                6..=7 => 6,
+                8..=11 => 8,
+                12..=15 => 12,
+                16..=23 => 16,
+                24..=31 => 24,
+                32..=47 => 32,
+                _ => 64,
+            };
+            tint = 0xFF_FF00 | q as u32;
         }
         let kind = match cl {
             C_WATER => KIND_WATER,
@@ -1042,8 +1059,14 @@ impl ChunkBuilder {
     /// Build + mesh LOD section (level ≥ 1) covering LOD cells [32·sx, 32·sx + 32) (likewise z),
     /// i.e. blocks [32·sx·2^level, 32·(sx+1)·2^level).
     pub fn build_lod(&mut self, gen: &WorldGen, level: u32, sx: i32, sz: i32) {
+        // band-limited surface materials for voxels of 2^level blocks (reset at the end)
+        voxel_world::gen::biome::set_material_footprint((1u32 << level.min(10)) as f32);
+        self.build_lod_inner(gen, level, sx, sz);
+        voxel_world::gen::biome::set_material_footprint(0.0);
+    }
+
+    fn build_lod_inner(&mut self, gen: &WorldGen, level: u32, sx: i32, sz: i32) {
         use voxel_world::gen::MAX_FEATURE_RADIUS;
-        use voxel_world::noise::{hash2, hash_f01};
         if self.liquids.as_ref().map(|l| l.0) != Some(gen.seed) {
             self.reset();
             self.liquids = Some((gen.seed, Liquids::new(gen.seed)));
@@ -1184,9 +1207,15 @@ impl ChunkBuilder {
                 let mut depth_vox = 0i32;
                 let mut in_run = false;
                 let mat_lo = if interior { self.y_lo[c] } else { nly };
+                // wet column: the voxel just below the (rounded) water level is always water — else
+                // a seabed a few blocks under the surface rounds up into that voxel and shows as a
+                // dry sand flat at sea level (wide beige halos around every coast at high levels)
+                let wet = col.water_level != i32::MIN && (col.water_level as f32) > col.height + 0.5 && wl > 0;
                 for j in (yb..yt).rev() {
                     let yc = j * s + s / 2;
-                    let solid = if j < lo {
+                    let solid = if wet && j == wl - 1 {
+                        false
+                    } else if j < lo {
                         true
                     } else if j >= hi {
                         false
@@ -1232,10 +1261,13 @@ impl ChunkBuilder {
                 if !feat_detail && (wl as f32) * (s as f32) < col.height + 0.5 {
                     let cp = gen.canopy_lod(wx, wz, &col, sf);
                     if cp.coverage > 0.05 && cp.leaf != Material::Air {
-                        let hsh = hash_f01(hash2(canopy_seed ^ level as u64, rx0 + lx, rz0 + lz));
-                        if hsh < cp.coverage * 1.15 {
+                        // coherent world-space clump pattern (the same at every level, fading to
+                        // its mean once the voxels outgrow it) instead of per-voxel white noise:
+                        // no salt-and-pepper speckle, no flicker when a node changes level
+                        let pat = canopy_pattern(canopy_seed, wx, wz, s);
+                        if pat < cp.coverage * 1.05 {
                             let top = ((col.height - 0.5) / s as f32).ceil() as i32;
-                            let layers = ((cp.height / s as f32) * (0.6 + 0.8 * hsh)).round().max(1.0) as i32;
+                            let layers = ((cp.height / s as f32) * (0.8 + 0.4 * pat)).round().max(1.0) as i32;
                             for k in 0..layers {
                                 let j = top + k;
                                 if j >= yb && j < yt {
@@ -1306,4 +1338,27 @@ impl ChunkBuilder {
         }
         self.mesh(gen, rx0, rz0);
     }
+}
+
+/// Coherent canopy clump pattern in [0, 1] at world (x, z) for voxels of `s` blocks: two octaves
+/// of value noise (λ 36 + 15 blocks) faded toward 0.5 as the voxels outgrow them.
+fn canopy_pattern(seed: u64, x: f64, z: f64, s: i32) -> f32 {
+    use voxel_world::noise::{hash2, hash_f01};
+    let vn = |l: f64, salt: u64| -> f32 {
+        let (gx, gz) = (x / l, z / l);
+        let (ix, iz) = (gx.floor(), gz.floor());
+        let (fx, fz) = ((gx - ix) as f32, (gz - iz) as f32);
+        let (ix, iz) = (ix as i32, iz as i32);
+        let h = |a: i32, b: i32| hash_f01(hash2(seed ^ salt, a, b));
+        let (ux, uz) = (fx * fx * (3.0 - 2.0 * fx), fz * fz * (3.0 - 2.0 * fz));
+        let a = h(ix, iz) + (h(ix + 1, iz) - h(ix, iz)) * ux;
+        let b = h(ix, iz + 1) + (h(ix + 1, iz + 1) - h(ix, iz + 1)) * ux;
+        a + (b - a) * uz
+    };
+    let k = 1.0 - voxel_world::math::smoothstep(12.0, 40.0, s as f32);
+    if k <= 0.0 {
+        return 0.5;
+    }
+    let raw = 0.65 * vn(36.0, 0xC1) + 0.35 * vn(15.0, 0xC2);
+    0.5 + (raw - 0.5) * 1.6 * k
 }

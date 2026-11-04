@@ -209,7 +209,10 @@ fn vertex_format_and_winding() {
                 }
                 let m = Material::from_u8(q[0].mat);
                 assert_eq!(kind_of(cls(m)), k, "material {m:?} in kind {k}");
-                if !(m.grass_tinted() || m.foliage_tinted() || m == Material::Terracotta) {
+                if k == 1 && n == 2 {
+                    // water surface: red byte = bucketed depth below it, green/blue 255
+                    assert!(q[0].tint[0] >= 1 && q[0].tint[1] == 255 && q[0].tint[2] == 255, "water tint {:?}", q[0].tint);
+                } else if !(m.grass_tinted() || m.foliage_tinted() || m == Material::Terracotta) {
                     assert_eq!(q[0].tint, [255, 255, 255]);
                 }
                 // CCW from outside: (v1 − v0) × (v2 − v0) along the normal; quad is a rectangle

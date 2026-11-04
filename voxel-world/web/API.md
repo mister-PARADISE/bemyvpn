@@ -58,7 +58,7 @@ panic = "abort", strip). rayon must never be called inside wasm (no threads): do
 | 5 | material id (`Material as u8`) |
 | 6 | ambient occlusion 0..3 (3 = fully lit), voxel corner AO |
 | 7 | flags: bit0 = top-of-column surface, bits1.. reserved |
-| 8–10 | tint sRGB8 (grass/foliage biome tint or 255,255,255) |
+| 8–10 | tint sRGB8 (grass/foliage biome tint or 255,255,255); **water top faces**: byte 8 = bucketed water depth below the surface in blocks (1–5, 6, 8, 12, 16, 24, 32, 64; LOD adds half a voxel), bytes 9–10 = 255 |
 | 11 | sky light 0..255 (cheap: open sky above = 255; under overhang/canopy lower; under rock 38 fading to 0 between 4 and 16 blocks below the column's top opaque block → cave interiors 0) |
 
 JS uses one shared index buffer (quad q → 4q+0,1,2, 4q+0,2,3). Faces between two opaque blocks

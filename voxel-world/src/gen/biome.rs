@@ -90,6 +90,12 @@ pub fn snow_line(seed: u64, x: f64, z: f64, temperature: f32) -> f32 {
     SnowLine::new(seed).at(x, z, temperature)
 }
 
+/// Set the voxel footprint (blocks) for the surface rules of this thread: LOD builders pass
+/// their voxel size so sub-voxel material patterns are filtered out; 0 restores exact blocks.
+pub fn set_material_footprint(fp: f32) {
+    MAT_FP.with(|c| c.set(fp.max(0.0)));
+}
+
 /// Slope below which snow sticks at height `rel` above the snow line (rise over run).
 #[inline]
 pub fn snow_slope_limit(rel: f32) -> f32 {
@@ -481,12 +487,15 @@ struct ColGeo {
     facies: f32,
     patch: f32,
     soil: f32,
+    fp: f32,
 }
 
 thread_local! {
     static GEO: std::cell::Cell<ColGeo> = const { std::cell::Cell::new(ColGeo {
-        seed: 0, x: 0, z: 0, valid: false, offset: 0.0, facies: 0.0, patch: 0.0, soil: 0.0,
+        seed: 0, x: 0, z: 0, valid: false, offset: 0.0, facies: 0.0, patch: 0.0, soil: 0.0, fp: 0.0,
     }) };
+    /// Footprint (blocks) of the voxels the caller is building (LOD); 0 = exact blocks.
+    static MAT_FP: std::cell::Cell<f32> = const { std::cell::Cell::new(0.0) };
     /// (seed, x bits, z bits) → (macro slope, height − macro height) of the last column asked.
     static MACRO: std::cell::Cell<(u64, u64, u64, f32, f32)> = const { std::cell::Cell::new((u64::MAX, 0, 0, 0.0, 0.0)) };
 }
@@ -541,13 +550,19 @@ impl SurfaceRules {
     #[inline]
     fn geo(&self, x: i32, z: i32) -> ColGeo {
         let g = GEO.with(|c| c.get());
-        if g.valid && g.x == x && g.z == z && g.seed == self.seed {
+        let fp = MAT_FP.with(|c| c.get());
+        if g.valid && g.x == x && g.z == z && g.seed == self.seed && g.fp == fp {
             return g;
         }
         let (xf, zf) = (x as f64 + 0.5, z as f64 + 0.5);
+        // LOD: octaves finer than the voxel footprint fade out (band-limited materials — one
+        // point sample per big voxel of a λ 13 / 44 field is white noise: salt-and-pepper speckle
+        // that flickers whenever the level changes)
+        let fade = |l: f32| 1.0 - crate::math::smoothstep(0.2 * l, 0.5 * l, fp);
+        let (fa, fb, fs) = if fp > 0.0 { (fade(44.0), fade(13.0), fade(31.0)) } else { (1.0, 1.0, 1.0) };
         // patch field: two octaves (λ 44 + λ 13) → coherent patches with fringed edges
-        let p = (0.8 * self.patch_a.n2d(xf * (1.0 / 44.0), zf * (1.0 / 44.0)).0
-            + 0.45 * self.patch_b.n2d(xf * (1.0 / 13.0), zf * (1.0 / 13.0)).0)
+        let p = (if fa > 0.0 { 0.8 * fa * self.patch_a.n2d(xf * (1.0 / 44.0), zf * (1.0 / 44.0)).0 } else { 0.0 }
+            + if fb > 0.0 { 0.45 * fb * self.patch_b.n2d(xf * (1.0 / 13.0), zf * (1.0 / 13.0)).0 } else { 0.0 })
             * (1.0 / 0.92);
         let g = ColGeo {
             seed: self.seed,
@@ -557,7 +572,8 @@ impl SurfaceRules {
             offset: self.strata.offset(xf, zf),
             facies: self.strata.facies(xf, zf),
             patch: p,
-            soil: self.soil.n2d(xf * (1.0 / 31.0), zf * (1.0 / 31.0)).0,
+            soil: if fs > 0.0 { fs * self.soil.n2d(xf * (1.0 / 31.0), zf * (1.0 / 31.0)).0 } else { 0.0 },
+            fp,
         };
         GEO.with(|c| c.set(g));
         g
