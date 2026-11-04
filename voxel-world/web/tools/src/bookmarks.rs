@@ -103,7 +103,7 @@ fn main() {
             );
             let _ = k;
         }
-        // world tree: the nearest one to the origin, seen from 1.3 tree heights away
+        // world tree: the nearest one to the origin, seen from ≈ one tree height away
         let mut best: Option<(f64, std::rc::Rc<voxel_world::gen::worldtree::WorldTree>)> = None;
         for iz in -3..3 {
             for ix in -3..3 {
@@ -119,8 +119,8 @@ fn main() {
             use voxel_world::gen::worldtree::WtKind;
             use voxel_world::materials::Material;
             let h = t.height as f64;
-            let dist = 1.3 * h + 60.0;
-            let cy = t.y0 as f64 + 0.42 * h;
+            let dist = 0.95 * h + 40.0;
+            let cy = t.y0 as f64 + 0.3 * h;
             // pick the azimuth whose camera spot is clear of terrain with the most margin
             let mut pick = (f64::MIN, 0.0f64, 0.0f64, 0.0f64);
             for k in 0..16 {

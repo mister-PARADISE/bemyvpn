@@ -21,7 +21,7 @@
 //! Logs override everything; leaves fill air only (done by the caller).
 use super::{Biome, WorldGen, WORLD_HEIGHT};
 use crate::materials::Material;
-use crate::noise::{hash2, hash3, hash_f01, mix64};
+use crate::noise::{hash2, hash_f01, mix64};
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -347,7 +347,7 @@ impl WorldTree {
     }
 
     /// Sample the solid at world point (x, y, z) (voxel centre). `e` inflates thin parts for
-    /// coarse LOD voxels (≈ 0.35 × voxel size); `fine` enables leaf porosity and the doorway.
+    /// coarse LOD voxels (≈ 0.35 × voxel size); `fine` enables the doorway and the hollow.
     pub fn sample(&self, x: f32, y: f32, z: f32, prims: &[u16], e: f32, fine: bool) -> u8 {
         let p = [x - (self.x as f32 + 0.5), y - self.y0, z - (self.z as f32 + 0.5)];
         // --- trunk
@@ -445,12 +445,8 @@ impl WorldTree {
             }
         }
         if leaf {
-            if fine {
-                let (ix, iy, iz) = (x.floor() as i32, y.floor() as i32, z.floor() as i32);
-                if hash_f01(hash3(self.seed, ix, iy, iz)) < 0.07 {
-                    return WT_NONE;
-                }
-            }
+            // (no porosity holes: inside a crown this big every hole would expose six leaf faces —
+            // the alpha-tested leaf texture already makes the surface lacy)
             return WT_LEAF;
         }
         WT_NONE

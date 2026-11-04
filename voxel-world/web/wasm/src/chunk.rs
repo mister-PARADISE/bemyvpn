@@ -276,6 +276,9 @@ impl ChunkBuilder {
         self.runs.clear();
         let ftop = if self.features { self.feats.collect_runs(gen, &mut self.nodes, rx0, rz0, W, &mut self.runs) } else { 0 };
 
+        // world trees (ultra-rare colossal landmarks) touching the region
+        let wts = crate::worldtree::trees_for(gen, rx0, rz0, W, 1);
+
         // ---- 4. vertical range
         let mut min_floor = WH;
         let mut yt = 1;
@@ -283,7 +286,7 @@ impl ChunkBuilder {
             min_floor = min_floor.min(s.floor);
             yt = yt.max(s.hi).max(s.wl);
         }
-        yt = yt.max(ftop).min(WH);
+        yt = yt.max(ftop).max(crate::worldtree::top(&wts, 1)).min(WH);
         let yb = (min_floor - 1).max(0);
         self.yb = yb;
         self.yt = yt;
@@ -362,6 +365,7 @@ impl ChunkBuilder {
 
         // ---- 6. composite features (runs sorted by column, decreasing priority)
         self.composite();
+        crate::worldtree::stamp(&wts, &mut self.vox, yb, yt, rx0, rz0, W, 1);
 
         // ---- 7. per-column heights for sky light and meshing ranges
         for c in 0..LAYER {
@@ -861,6 +865,8 @@ impl ChunkBuilder {
                 ftop = ftop.max(hi + 4);
             }
         }
+        let wts = crate::worldtree::trees_for(gen, rx0, rz0, W, s);
+        ftop = ftop.max(crate::worldtree::top(&wts, s));
         yt = yt.max(ftop).min(nly) + 1;
         let yb = yb.max(0);
         let yt = yt.min(nly);
@@ -973,6 +979,7 @@ impl ChunkBuilder {
                 }
             }
         }
+        crate::worldtree::stamp(&wts, &mut self.vox, yb, yt, rx0, rz0, W, s);
         // ---- 5. skirts: opaque margin voxels count as air so section borders always get walls
         //        (closes cracks against neighbours drawn at a different level)
         for lz in 0..W {

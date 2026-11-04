@@ -9,6 +9,7 @@ pub mod chunk;
 pub mod far;
 pub mod features;
 pub mod terrain;
+pub mod worldtree;
 
 #[cfg(test)]
 mod tests;
