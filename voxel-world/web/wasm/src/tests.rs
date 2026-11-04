@@ -1,10 +1,10 @@
 //! Native tests: `cargo test --release -- --nocapture` (timings are printed).
 use crate::chunk::{ChunkBuilder, CORNERS, CS, KIND_FOLIAGE, KIND_OPAQUE, KIND_WATER, NORMALS, QB, VB};
 use crate::far::{build_far, FAR_VB};
-use crate::terrain::{column_top, Liquids, Nodes};
+use crate::terrain::{block_solid, cave_level, column_top, node_cave_level, Liquids, Nodes, Shape, WH};
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
-use voxel_world::gen::{Biome, WorldGen};
+use voxel_world::gen::{Biome, CaveFill, WorldGen};
 use voxel_world::materials::{Material, MATERIAL_COUNT};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -120,7 +120,7 @@ fn expected_faces(b: &ChunkBuilder, cx: i32, cz: i32) -> HashMap<(i32, i32, i32,
     let _ = ylo;
     for x in x0..x0 + CS {
         for z in z0..z0 + CS {
-            for y in 0..512 {
+            for y in 0..WH {
                 let m = b.block_at(cx, cz, x, y, z).unwrap();
                 let ci = cls(m);
                 if ci == Cls::Air {
@@ -200,7 +200,7 @@ fn vertex_format_and_winding() {
                 assert!(n < 6);
                 for v in q {
                     assert_eq!(v.n, n);
-                    assert!(v.x <= 32 && v.z <= 32 && v.y <= 512);
+                    assert!(v.x <= 32 && v.z <= 32 && v.y <= WH);
                     assert!((v.mat as usize) < MATERIAL_COUNT);
                     assert!(v.ao <= 3);
                     assert!(v.flags <= 1);
@@ -281,7 +281,7 @@ fn chunk_border_seams() {
             for t in 0..CS {
                 for side in [CS - 1, CS] {
                     let (x, z) = if dx == 1 { (cx * CS + side, cz * CS + t) } else { (cx * CS + t, cz * CS + side) };
-                    for y in 0..512 {
+                    for y in 0..WH {
                         let ma = a.block_at(cx, cz, x, y, z).unwrap();
                         let mb = b.block_at(cx + dx, cz + dz, x, y, z).unwrap();
                         // margin columns carry deep-fill rock: compare visibility classes
@@ -299,7 +299,7 @@ fn chunk_border_seams() {
             let d_out = if dx == 1 { 0 } else { 4 };
             let d_in = if dx == 1 { 1 } else { 5 };
             for t in 0..CS {
-                for y in 0..511 {
+                for y in 0..WH - 1 {
                     let (xa, za) = if dx == 1 { (cx * CS + CS - 1, cz * CS + t) } else { (cx * CS + t, cz * CS + CS - 1) };
                     let (xb, zb) = (xa + dx, za + dz);
                     let ia = cls(a.block_at(cx, cz, xa, y, za).unwrap());
@@ -367,6 +367,7 @@ fn trees_are_rooted_and_heights_consistent() {
     let mut b = ChunkBuilder::new();
     let mut bare = ChunkBuilder::new();
     bare.features = false;
+    bare.caves = false; // the camera-height query (column_top) ignores caves
     let mut nodes = Nodes::new();
     let mut logs = 0;
     let mut cols = 0;
@@ -378,7 +379,7 @@ fn trees_are_rooted_and_heights_consistent() {
             for z in cz * CS..cz * CS + CS {
                 // terrain (+ liquid) top of the feature-less build equals the point query used
                 // for camera collision / spawn
-                let mut y = 511;
+                let mut y = WH - 1;
                 while bare.block_at(cx, cz, x, y, z).unwrap() == Material::Air {
                     y -= 1;
                 }
@@ -387,7 +388,7 @@ fn trees_are_rooted_and_heights_consistent() {
                 cols += 1;
                 // trunks stand on the ground: the lowest log block of a column that holds the
                 // feature root sits on solid terrain or on another feature block
-                for yy in 1..511 {
+                for yy in 1..WH - 1 {
                     let m = b.block_at(cx, cz, x, yy, z).unwrap();
                     if m.is_log() && !b.block_at(cx, cz, x, yy - 1, z).unwrap().is_log() {
                         logs += 1;
@@ -422,8 +423,8 @@ fn far_tile_sanity() {
         for v in a.chunks_exact(FAR_VB) {
             let top = f32::from_le_bytes([v[0], v[1], v[2], v[3]]);
             let water = f32::from_le_bytes([v[4], v[5], v[6], v[7]]);
-            assert!(top.is_finite() && (0.0..600.0).contains(&top), "top {top}");
-            assert!(water == -1.0e9 || (water > top && water < 512.0), "water {water} top {top}");
+            assert!(top.is_finite() && (0.0..WH as f32 + 64.0).contains(&top), "top {top}");
+            assert!(water == -1.0e9 || (water > top && water < WH as f32), "water {water} top {top}");
             assert!((v[11] as usize) < MATERIAL_COUNT);
             assert!((v[13] as usize) < voxel_world::gen::BIOME_COUNT && v[15] == 0);
             if water > top {
@@ -448,6 +449,8 @@ fn far_tile_sanity() {
 fn timings_per_chunk() {
     // cold: fresh caches per chunk; warm: streaming a 4×4 block around each spot (the viewer's
     // pattern, features/nodes memoised across neighbours)
+    // VW_NO_CAVES=1 measures the same binary without caves (baseline for the cave cost)
+    let caves = std::env::var("VW_NO_CAVES").map(|v| v != "1").unwrap_or(true);
     let mut lines = Vec::new();
     let mut tot_cold = 0.0;
     let mut tot_warm = 0.0;
@@ -460,10 +463,12 @@ fn timings_per_chunk() {
         let mix = terrain_mix(&g);
         for &(name, cx, cz) in &mix {
             let mut cold = ChunkBuilder::new();
+            cold.caves = caves;
             let t = Instant::now();
             cold.build(&g, cx, cz);
             let tc = t.elapsed().as_secs_f64() * 1e3;
             let mut warm = ChunkBuilder::new();
+            warm.caves = caves;
             let t = Instant::now();
             let mut k = 0;
             for dz in -2..2 {
@@ -497,7 +502,8 @@ fn timings_per_chunk() {
         eprintln!("{l}");
     }
     eprintln!(
-        "AVERAGE cold {:.2} ms, warm {:.2} ms per chunk; {:.0} quads, {:.1} KB per chunk",
+        "AVERAGE (caves {}) cold {:.2} ms, warm {:.2} ms per chunk; {:.0} quads, {:.1} KB per chunk",
+        if caves { "on" } else { "off" },
         tot_cold / n_cold as f64,
         tot_warm / n_warm as f64,
         quads as f64 / n_warm as f64,
@@ -527,3 +533,146 @@ fn merge_reduces_quads() {
     let _ = HashSet::<u8>::new();
 }
 
+fn is_fill(m: Material) -> bool {
+    matches!(m, Material::Air | Material::Water | Material::Lava)
+}
+
+#[test]
+fn cave_level_skip_keeps_signs() {
+    // the odd-level skip (`node_cave_level`) may only replace values that are rock anyway
+    let g = WorldGen::new(42);
+    let (mut levels, mut skipped, mut flipped) = (0usize, 0usize, 0usize);
+    for i in 0..1500i32 {
+        let (nx, nz) = ((i * 37) % 997 - 500, (i * 61) % 991 - 495);
+        let col = g.column((nx * 4) as f64 + 0.5, (nz * 4) as f64 + 0.5);
+        for j in 1..WH / 4 {
+            let exact = cave_level(&g, &col, j);
+            let memo = node_cave_level(&g, &col, j);
+            levels += 1;
+            skipped += (exact != memo) as usize;
+            flipped += ((exact > 0.0) != (memo > 0.0)) as usize;
+        }
+    }
+    eprintln!("cave lattice skip: {skipped} of {levels} levels interpolated, {flipped} sign flips");
+    assert!(skipped > levels / 20, "skip never used");
+    assert!(flipped * 1000 <= skipped, "{flipped} sign flips");
+}
+
+/// Chunks with caves: the terrain mix plus a row near the origin and the seed-42 entrances
+/// found by `find_cave_entrances`.
+fn cave_chunks(g: &WorldGen) -> Vec<(i32, i32)> {
+    let mut list: Vec<(i32, i32)> = terrain_mix(g).iter().map(|&(_, a, b)| (a, b)).collect();
+    for i in -3..3 {
+        list.push((i, 3));
+    }
+    list
+}
+
+#[test]
+fn caves_carved_and_point_queries_agree() {
+    // caves only ever turn terrain rock into air / water / lava, and the point query used for
+    // camera collision (`vw_solid_at`) agrees with the chunk voxels block by block
+    let g = WorldGen::new(42);
+    let mut cav = ChunkBuilder::new();
+    cav.features = false;
+    let mut bare = ChunkBuilder::new();
+    bare.features = false;
+    bare.caves = false;
+    let mut nodes = Nodes::new();
+    let (mut carved, mut water, mut lava, mut breach, mut queries) = (0usize, 0usize, 0usize, 0usize, 0usize);
+    for (cx, cz) in cave_chunks(&g) {
+        cav.build(&g, cx, cz);
+        bare.build(&g, cx, cz);
+        for x in cx * CS..cx * CS + CS {
+            for z in cz * CS..cz * CS + CS {
+                let col = g.column(x as f64 + 0.5, z as f64 + 0.5);
+                let s = Shape::new(&mut nodes, &g, x, z, &col, &|_, _| None);
+                let (mut top_c, mut top_b) = (-1, -1);
+                for y in 0..WH {
+                    let mc = cav.block_at(cx, cz, x, y, z).unwrap();
+                    let mb = bare.block_at(cx, cz, x, y, z).unwrap();
+                    if mc != Material::Air {
+                        top_c = y;
+                    }
+                    if mb != Material::Air {
+                        top_b = y;
+                    }
+                    if is_fill(mb) {
+                        assert_eq!(mc, mb, "caves changed a non-rock block at ({x},{y},{z})");
+                    } else if is_fill(mc) {
+                        let want = match g.cave_fill(x, y, z, &col) {
+                            CaveFill::Air => Material::Air,
+                            CaveFill::Water => Material::Water,
+                            CaveFill::Lava => Material::Lava,
+                        };
+                        assert_eq!(mc, want, "cave fill at ({x},{y},{z})");
+                        carved += 1;
+                        water += (mc == Material::Water) as usize;
+                        lava += (mc == Material::Lava) as usize;
+                    }
+                    let q = block_solid(&g, &mut nodes, x, y, z, &col, &s);
+                    assert_eq!(q, mc != Material::Air, "vw_solid_at disagrees with the chunk at ({x},{y},{z}): {mc:?}");
+                    queries += 1;
+                }
+                if top_c < top_b {
+                    breach += 1;
+                }
+            }
+        }
+    }
+    eprintln!("caves: {carved} carved blocks ({water} water, {lava} lava), {breach} columns with a carved top, {queries} point queries agree");
+    assert!(carved > 2000, "no caves carved");
+}
+
+/// Helper for the viewer smoke test (not run by default):
+/// `VW_SEED=42 VW_CX=0 VW_CZ=0 cargo test --release find_cave_entrances -- --ignored --nocapture`
+/// prints surface cave entrances (dry columns whose top is carved ≥ 6 blocks deep) near a chunk.
+#[test]
+#[ignore]
+fn find_cave_entrances() {
+    let env = |k: &str, d: i64| std::env::var(k).ok().and_then(|s| s.parse::<i64>().ok()).unwrap_or(d);
+    let seed = env("VW_SEED", 42) as u64;
+    let (cx0, cz0) = (env("VW_CX", 0) as i32, env("VW_CZ", 0) as i32);
+    let g = WorldGen::new(seed);
+    let mut cav = ChunkBuilder::new();
+    cav.features = false;
+    let mut nodes = Nodes::new();
+    let mut found = 0;
+    'outer: for r in 0..48i32 {
+        for dz in -r..=r {
+            for dx in -r..=r {
+                if dx.abs() != r && dz.abs() != r {
+                    continue;
+                }
+                let (cx, cz) = (cx0 + dx, cz0 + dz);
+                cav.build(&g, cx, cz);
+                nodes.trim(20000);
+                let mut best = (0, 0, 0, 0);
+                for x in cx * CS + 2..cx * CS + CS - 2 {
+                    for z in cz * CS + 2..cz * CS + CS - 2 {
+                        let tb = column_top(&mut nodes, &g, x, z);
+                        if tb.wl > tb.top + 1 {
+                            continue;
+                        }
+                        let mut y = tb.top;
+                        while y > 0 && cav.block_at(cx, cz, x, y, z).unwrap() == Material::Air {
+                            y -= 1;
+                        }
+                        if tb.top - y > best.0 {
+                            best = (tb.top - y, x, z, tb.top);
+                        }
+                    }
+                }
+                let (depth, x, z, top) = best;
+                if depth >= 6 {
+                    let b = g.column(x as f64 + 0.5, z as f64 + 0.5).biome;
+                    eprintln!("ENTRANCE seed {seed} chunk ({cx},{cz}) column ({x},{z}) top {top} open {depth} deep {b:?}");
+                    found += 1;
+                    if found >= 8 {
+                        break 'outer;
+                    }
+                }
+            }
+        }
+    }
+}

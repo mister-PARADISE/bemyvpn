@@ -15,7 +15,8 @@ The module has **no imports**. After every call, re-create typed-array views on 
 | `vw_build_chunk` | 0 ok, 1 = `vw_init` not called |
 | `vw_build_far` | 0 ok, 1 = not initialised, 2 = bad size (`n` 1..1024, `cell` ≥ 1) |
 | `vw_find_spawn` | 0 ok (6×f32 at `vw_spawn_ptr`: x, y, z, yaw, pitch, 0 — y is the eye, ≈ 32 above ground), 1 = not initialised |
-| `vw_height_at` | first free y above terrain + liquid (no trees), exactly matching the chunk voxels |
+| `vw_height_at` | first free y above terrain + liquid (no trees, no caves), matching the chunk voxels except at cave mouths |
+| `vw_solid_at(x, y, z)` | 1 = the block holds rock / water / lava / ice exactly as the exact chunk voxelises it (caves carved, trees ignored), 0 = air or not initialised. Caches the last 16 block columns |
 | `vw_set_merge(mask)` | *extension*: bit k = merge coplanar +Y faces of kind k. Default `0b110` (water + foliage). `7` also merges opaque tops (−10…20 % quads on land, but T-junction sparkles possible) |
 | `vw_chunk_quads()` | *extension*: total quads of the last chunk |
 
@@ -30,8 +31,13 @@ The module has **no imports**. After every call, re-create typed-array views on 
   render foliage double-sided** with alpha test.
 * AO 0..3: voxel corner AO; opaque blocks and leaves occlude.
 * Sky 0..255 per vertex: mean openness of the 2×2 columns around the vertex at the air-side
-  height (sky 1.0, under leaves only 0.55, under rock 0.15) → open ground 255, cliff walls ≈ 147,
-  forest floor ≈ 140, overhang undersides ≈ 38.
+  height (sky 1.0, under leaves only 0.55, under rock 0.15 fading to 0 from 4 to 16 blocks below
+  the column's top opaque block) → open ground 255, cliff walls ≈ 147, forest floor ≈ 140,
+  overhang undersides ≈ 38, cave interiors 0.
+* Caves (exact chunks only, depth-limited ≈ 90–120 blocks below the surface): see `src/terrain.rs`
+  and `src/chunk.rs`. `cargo test --release find_cave_entrances -- --ignored --nocapture`
+  (`VW_SEED`, `VW_CX`, `VW_CZ`) lists surface entrances near a chunk; `VW_NO_CAVES=1` makes
+  `timings_per_chunk` measure the same binary without caves.
 * Flags bit0: the block's top neighbour is not opaque (exposed top) — set on all faces of that
   block (grass side fringe, snow caps …).
 * Tint: grass/foliage biome tint (surface temperature + humidity); **Terracotta: per-y strata

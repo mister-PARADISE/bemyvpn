@@ -41,7 +41,8 @@ panic = "abort", strip). rayon must never be called inside wasm (no threads): do
 | `vw_chunk_ymin() / vw_chunk_ymax() -> i32` | vertical bounds of the last chunk (for culling) |
 | `vw_build_far(cell: u32, x0: i32, z0: i32, n: u32) -> u32` | heightfield tile: (n+1)² vertices at world (x0 + i·cell, z0 + j·cell), band-limited by `column_lod(footprint = cell)` + `canopy_lod`. |
 | `vw_far_ptr() -> u32`, `vw_far_len() -> u32` | far tile bytes |
-| `vw_height_at(x: f64, z: f64) -> f32` | top of terrain+water at a column (camera collision / spawn) |
+| `vw_height_at(x: f64, z: f64) -> f32` | top of terrain+water at a column, caves ignored (spawn, HUD, "pop out of rock" safety) |
+| `vw_solid_at(x: f64, y: f64, z: f64) -> u32` | 1 if the block containing the point is not air — rock, surface water / lava / ice, cave water / lava — exactly as the exact chunks voxelise it (3D band + caves), trees ignored; 0 for air (sky or cave). Camera collision; recent columns are cached, a few dozen calls per frame are cheap |
 | `vw_biome_at(x: f64, z: f64) -> u32` | `Biome as u8` (HUD shows the name) |
 | `vw_material_table_ptr() -> u32`, `vw_material_count() -> u32` | per material 4×f32: linear albedo r,g,b + flags (bit0 grass-tinted, bit1 foliage-tinted, bit2 emissive, bit3 leaves) |
 | `vw_find_spawn(x: f64, z: f64) -> u32` + `vw_spawn_ptr()` | 6×f32 (x,y,z,yaw,pitch,0): a nice dry viewpoint near (x,z) (for custom seeds) |
@@ -58,14 +59,25 @@ panic = "abort", strip). rayon must never be called inside wasm (no threads): do
 | 6 | ambient occlusion 0..3 (3 = fully lit), voxel corner AO |
 | 7 | flags: bit0 = top-of-column surface, bits1.. reserved |
 | 8–10 | tint sRGB8 (grass/foliage biome tint or 255,255,255) |
-| 11 | sky light 0..255 (cheap: open sky above = 255; under overhang/canopy lower) |
+| 11 | sky light 0..255 (cheap: open sky above = 255; under overhang/canopy lower; under rock 38 fading to 0 between 4 and 16 blocks below the column's top opaque block → cave interiors 0) |
 
 JS uses one shared index buffer (quad q → 4q+0,1,2, 4q+0,2,3). Faces between two opaque blocks
 are culled; water faces only where water meets air (top surface) — no water side walls inside water.
 Meshing rules: build the chunk with a 1-column margin so border faces are culled correctly;
-3D density band (overhangs, arches, shelters) INCLUDED; caves NOT carved (performance), except cave
-entrances are optional; trees from `features_in(chunk ± MAX_FEATURE_RADIUS)` included (logs opaque,
-leaves → kind 2). Target: ≤ 40 ms per chunk on a phone (≈ ≤ 15 ms on this x86 machine, measure).
+3D density band (overhangs, arches, shelters) INCLUDED; trees from
+`features_in(chunk ± MAX_FEATURE_RADIUS)` included (logs opaque, leaves → kind 2; a tree whose root
+or trunk base block is carved by a cave mouth is dropped). Target: ≤ 40 ms per chunk on a phone
+(≈ ≤ 15 ms on this x86 machine, measure).
+
+Caves: exact chunks (`vw_build_chunk`) carve them — `cave_field` on the 4×4×4 lattice with
+trilinear interpolation as `world/build.rs` (`F̂ > 0` carves solid blocks at y ≥ MIN_CARVE_Y, never
+within 6 blocks below a water-covered column's top), carved blocks filled by `cave_fill` (air /
+aquifer water as kind 1 / lava as an emissive opaque block). Surface entrances appear where the
+carver breaks the surface. Depth-limited for speed: passages taper shut ≈ 90–120 blocks below the
+local surface (see `web/wasm/src/terrain.rs`). LOD sections (`vw_build_lod`, level ≥ 1) and far
+tiles have NO caves, so entrances appear when the exact chunks load. Cave faces are ordinary kind
+0/1 quads (walls, floors, ceilings incl. −Y), faces only where rock meets a cavity; layers are
+emitted top-down so seen from above the surface faces of a chunk come first in its buffer.
 
 ### Far tile vertex format: 16 bytes per vertex
 
@@ -85,6 +97,14 @@ f32 terrain_top (incl. expected canopy), f32 water_level (or −1e9 when dry), u
   + sun disk, water with Fresnel sky reflection, waves, depth tint. Time-of-day slider moves the sun.
 * Controls: phone — left virtual joystick (move), drag on right half (look), ▲/▼ buttons (up/down),
   speed toggle; desktop — WASD/QE + mouse drag (pointer lock optional), Shift = fast.
+* Collision (caves are enterable): the camera is a 0.7-block box moved axis by axis (sliding along
+  walls) in sub-steps of ≤ 0.45 blocks; a step is rejected when a corner of the box's leading face
+  is `vw_solid_at` (water / lava count as solid: no flying under water). If the box starts inside
+  rock (bookmark, teleport, seed change) the camera pops up to `vw_height_at + 2.5`.
+* Cave lighting: where the vertex sky light is ≈ 0 the sky ambient gives way to a faint cool cave
+  ambient plus a warm headlamp around the camera (falls off over ≈ 25 blocks); direct sun stays
+  with the shadow map (sun patches through a cave mouth) and is cut only deep inside; cave pools
+  reflect the cave, not the sky; lava (material flag bit2) glows.
 * UI: seed selector (1, 42, 2026, custom), bookmarks list (from bookmarks.json: per seed the 8
   scouted shots with Russian titles), time of day, view distance, HUD: biome name, altitude, FPS.
   Russian UI text. Loading indicator while the first chunks build.

@@ -15,8 +15,21 @@ mod tests;
 
 use chunk::ChunkBuilder;
 use std::cell::RefCell;
-use terrain::{Liquids, Nodes};
-use voxel_world::gen::WorldGen;
+use terrain::{block_solid, Liquids, Nodes, Shape, WH};
+use voxel_world::gen::{ColumnInfo, WorldGen};
+
+/// Point-query column cache entry (block column, its `ColumnInfo` and `Shape` in `qnodes`).
+pub struct QCol {
+    pub x: i32,
+    pub z: i32,
+    pub col: ColumnInfo,
+    pub shape: Shape,
+}
+
+/// Columns kept for `vw_solid_at` (a camera box touches ≤ 4 columns per frame).
+const QCOLS: usize = 16;
+/// `qnodes` is dropped (with the column cache that indexes it) past this many lattice nodes.
+const QNODES_CAP: usize = 4096;
 
 /// Global state of one module instance (one per worker).
 pub struct State {
@@ -24,18 +37,31 @@ pub struct State {
     pub liq: Option<Liquids>,
     pub chunk: ChunkBuilder,
     pub qnodes: Nodes,
+    pub qcols: Vec<QCol>,
+    pub qnext: usize,
     pub far: Vec<u8>,
     pub spawn: [f32; 6],
     pub mats: Vec<f32>,
 }
 
 impl State {
+    /// Bound the point-query memo; the column cache holds indices into it, so it goes too.
+    fn trim_q(&mut self) {
+        if self.qnodes.nodes.len() > QNODES_CAP {
+            self.qnodes.clear();
+            self.qcols.clear();
+            self.qnext = 0;
+        }
+    }
+
     fn new() -> Self {
         State {
             gen: None,
             liq: None,
             chunk: ChunkBuilder::new(),
             qnodes: Nodes::new(),
+            qcols: Vec::new(),
+            qnext: 0,
             far: Vec::new(),
             spawn: [0.0; 6],
             mats: far::material_table(),
@@ -66,6 +92,8 @@ pub extern "C" fn vw_init(seed_lo: u32, seed_hi: u32) {
         s.liq = Some(Liquids::new(seed));
         s.chunk.reset();
         s.qnodes.clear();
+        s.qcols.clear();
+        s.qnext = 0;
     });
 }
 
@@ -178,11 +206,53 @@ pub extern "C" fn vw_far_len() -> u32 {
 #[no_mangle]
 pub extern "C" fn vw_height_at(x: f64, z: f64) -> f32 {
     with(|s| match &s.gen {
-        Some(g) => {
-            s.qnodes.trim(4096);
-            far::height_at(g, &mut s.qnodes, x, z)
+        Some(_) => {
+            s.trim_q();
+            far::height_at(s.gen.as_ref().unwrap(), &mut s.qnodes, x, z)
         }
         None => 0.0,
+    })
+}
+
+/// 1 if the block containing (x, y, z) is not air — terrain rock, surface water / lava / ice, or
+/// cave water / lava — exactly as the exact chunks voxelise it (caves carved), trees ignored;
+/// 0 for air (open sky or a cave) and when not initialised. For camera collision: a handful of
+/// calls per frame (recent columns are cached).
+#[no_mangle]
+pub extern "C" fn vw_solid_at(x: f64, y: f64, z: f64) -> u32 {
+    with(|s| {
+        if s.gen.is_none() || !(x.is_finite() && y.is_finite() && z.is_finite()) {
+            return 0;
+        }
+        let (bx, by, bz) = (x.floor() as i32, y.floor() as i32, z.floor() as i32);
+        if by >= WH {
+            return 0;
+        }
+        if by < 0 {
+            return 1;
+        }
+        s.trim_q();
+        let State { gen, qnodes, qcols, qnext, .. } = s;
+        let g = gen.as_ref().unwrap();
+        let qi = match qcols.iter().position(|q| q.x == bx && q.z == bz) {
+            Some(i) => i,
+            None => {
+                let col = g.column(bx as f64 + 0.5, bz as f64 + 0.5);
+                let shape = Shape::new(qnodes, g, bx, bz, &col, &|_, _| None);
+                let q = QCol { x: bx, z: bz, col, shape };
+                if qcols.len() < QCOLS {
+                    qcols.push(q);
+                    qcols.len() - 1
+                } else {
+                    let i = *qnext % QCOLS;
+                    *qnext = (i + 1) % QCOLS;
+                    qcols[i] = q;
+                    i
+                }
+            }
+        };
+        let q = &qcols[qi];
+        block_solid(g, qnodes, bx, by, bz, &q.col, &q.shape) as u32
     })
 }
 
@@ -212,9 +282,9 @@ pub extern "C" fn vw_material_count() -> u32 {
 #[no_mangle]
 pub extern "C" fn vw_find_spawn(x: f64, z: f64) -> u32 {
     with(|s| match &s.gen {
-        Some(g) => {
-            s.qnodes.trim(4096);
-            s.spawn = far::find_spawn(g, &mut s.qnodes, x, z);
+        Some(_) => {
+            s.trim_q();
+            s.spawn = far::find_spawn(s.gen.as_ref().unwrap(), &mut s.qnodes, x, z);
             0
         }
         None => 1,
