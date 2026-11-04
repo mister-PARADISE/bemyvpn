@@ -52,13 +52,13 @@ use crate::noise::{derive_seed, hash3, hash_f01, mix64, salt, Simplex};
 const SEA: f32 = SEA_LEVEL as f32;
 
 /// Mean snow line (world y).
-pub const SNOW_LINE: f32 = 330.0;
+pub const SNOW_LINE: f32 = 450.0;
 /// Height above the local snow line from which glaciers / permanent ice cover everything.
-pub const GLACIER_REL: f32 = 90.0;
-/// No snow line is ever below this (330 − 12 − 15).
-pub const SNOW_LINE_MIN: f32 = SNOW_LINE - 27.0;
+pub const GLACIER_REL: f32 = 140.0;
+/// No snow line is ever below this (450 − 12 − 40 − 15).
+pub const SNOW_LINE_MIN: f32 = SNOW_LINE - 67.0;
 
-/// The local snow line `S(x,z) = 330 + 12·n(x,z) − 15·T` (see module docs).
+/// The local snow line `S(x,z) = 450 + 12·n(x,z) − 15·T` (see module docs).
 #[derive(Clone, Copy, Debug)]
 pub struct SnowLine {
     a: FastSimplex,
@@ -75,7 +75,12 @@ impl SnowLine {
     pub fn at(&self, x: f64, z: f64, temperature: f32) -> f32 {
         const F: f64 = 1.0 / 2600.0;
         let n = (self.a.n2d(x * F, z * F).0 + 0.5 * self.b.n2d(z * 2.13 * F + 17.3, x * 2.13 * F - 4.1).0) * (1.0 / 1.5);
-        SNOW_LINE + 12.0 * n.clamp(-1.0, 1.0) - 15.0 * temperature.clamp(-1.0, 1.0)
+        // alpine pass: a mid-frequency term (λ 420 + 140, ±40) so the snow line, the treeline and
+        // the bare-rock zone wander across a face (snow tongues, lower on some spurs, higher on
+        // others) instead of ringing every mountain in level contour bands
+        let m = 0.7 * self.a.n2d(x * (1.0 / 420.0) + 71.3, z * (1.0 / 420.0) - 9.4).0
+            + 0.3 * self.b.n2d(x * (1.0 / 140.0) - 3.3, z * (1.0 / 140.0) + 57.1).0;
+        SNOW_LINE + 12.0 * n.clamp(-1.0, 1.0) + 40.0 * m.clamp(-1.0, 1.0) - 15.0 * temperature.clamp(-1.0, 1.0)
     }
 }
 

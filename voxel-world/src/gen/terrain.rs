@@ -197,9 +197,9 @@ fn offset_spline() -> Spline {
 
 /// Broad orogenic uplift (blocks) under the core of a mountain belt (`U·smoothstep(M)`): the
 /// elevated massif on which the ridged relief sits (valley floors of big ranges are high, too).
-const OROGENIC_UPLIFT: f32 = 75.0;
+const OROGENIC_UPLIFT: f32 = 100.0;
 /// Minimum ridged-relief amplitude in the core of an orogeny belt.
-const BELT_AMP: f32 = 250.0;
+const BELT_AMP: f32 = 560.0;
 
 /// Mountain amplitude A(C, E): uplift that multiplies the [0,1] mountain shape.
 fn amp_spline() -> Spline {
@@ -616,6 +616,11 @@ pub struct TerrainShaper {
     amp: Spline,
     wall: Spline,
     ridged: DRidged,
+    /// Per-massif summit height variation (λ 2.6 km) inside the orogeny belts.
+    peaks: DFbm,
+    /// Alpine domain warp of the ridged field (λ 900, ±130 blocks): curved arêtes, spurs.
+    alp_a: FastSimplex,
+    alp_b: FastSimplex,
     hills: DEroded,
     rough: DFbm,
     jag: DFbm,
@@ -677,10 +682,10 @@ struct LakeLayer {
 
 /// Big lakes: ≤ 1 per 1.4 km cell, R 90–300, centres in the middle third (≥ 924 apart > 2 ×
 /// max reach 446).
-const LAKES: LakeLayer = LakeLayer { cell: 1400.0, p: 0.8, r0: 90.0, r1: 300.0, jit0: 0.333, jit: 0.334, salt: 0x1A4E_5EED, tent_a: 0.35, tent_b: 0.02, reach: 110.0, d0: 7.0, dk: 0.07 };
+const LAKES: LakeLayer = LakeLayer { cell: 1400.0, p: 0.8, r0: 110.0, r1: 310.0, jit0: 0.333, jit: 0.334, salt: 0x1A4E_5EED, tent_a: 0.35, tent_b: 0.02, reach: 110.0, d0: 7.0, dk: 0.07 };
 /// Ponds: ≤ 1 per 420-block cell, R 16–62, centres in the middle 28 % (≥ 302 apart > 2 × max
 /// reach 104), steeper sill; never within reach of a big lake (see `probe_lake_why`).
-const PONDS: LakeLayer = LakeLayer { cell: 420.0, p: 0.9, r0: 16.0, r1: 62.0, jit0: 0.36, jit: 0.28, salt: 0x90D_5EED, tent_a: 0.7, tent_b: 0.06, reach: 34.0, d0: 4.5, dk: 0.07 };
+const PONDS: LakeLayer = LakeLayer { cell: 420.0, p: 0.9, r0: 20.0, r1: 80.0, jit0: 0.36, jit: 0.28, salt: 0x90D_5EED, tent_a: 0.7, tent_b: 0.06, reach: 34.0, d0: 4.5, dk: 0.07 };
 const LAKE_RIM_SAMPLES: usize = 12;
 const LAKE_CACHE_SIZE: usize = 1024;
 
@@ -735,8 +740,8 @@ const WALL_MAX: f32 = 1.8;
 const PLAIN_RISE: f32 = 3.5;
 /// Soft summit ceiling: `h' = C + A·ln(1 + (h − C)/A)` above C (slope factor 1/(1 + (h − C)/A),
 /// ≥ 0.2 for every reachable h: summits are compressed, never flattened into caps).
-const CEIL_START: f32 = 430.0;
-const CEIL_A: f32 = 45.0;
+const CEIL_START: f32 = 860.0;
+const CEIL_A: f32 = 55.0;
 /// Rock-shelter notches: max horizontal depth (blocks) and reach factor of the 3D band.
 const NOTCH_D: f32 = 6.0;
 const NOTCH_REACH: f32 = 1.6;
@@ -759,7 +764,10 @@ impl TerrainShaper {
             offset: offset_spline(),
             amp: amp_spline(),
             wall: wall_spline(),
-            ridged: DRidged::new(s("terrain.ridged"), 1500.0, 4),
+            ridged: DRidged::new(s("terrain.ridged"), 2000.0, 6),
+            peaks: DFbm::new(s("terrain.peaks"), 2600.0, 2, 2.0, 0.5),
+            alp_a: FastSimplex::new(s("terrain.alp_a")),
+            alp_b: FastSimplex::new(s("terrain.alp_b")),
             hills: DEroded::new(s("terrain.hills"), 900.0, 4, 0.5, 0.12),
             rough: DFbm::new(s("terrain.rough"), 40.0, 1, 2.0, 0.5),
             jag: DFbm::new(s("terrain.jag"), 800.0, 2, 2.0, 0.5),
@@ -1144,7 +1152,10 @@ impl TerrainShaper {
         // max). Without it the massif uplift alone lifted moderate-erosion parts of a belt into
         // broad domes at the snow line — the flat snow caps of the old renders.
         let belt = smoothstep_d(0.15, 0.85, cd.orogeny) * smoothstep_d(-0.12, 0.05, cd.c);
-        let amp = spline_d(&self.amp, &inp).maxf(0.0).smax(belt * BELT_AMP, 30.0).maxf(0.0);
+        // Alpine pass: the belt amplitude varies per massif (λ 2.6 km, ×0.6 … ×1.25) — dominant
+        // summits nearly twice as high as their neighbours instead of an even saw-tooth range.
+        let pk = if belt.v > 0.0 { smoothstep_d(-0.5, 0.5, self.peaks.sample(x, z, fp)) * 0.65 + 0.6 } else { D2::c(0.6) };
+        let amp = spline_d(&self.amp, &inp).maxf(0.0).smax(belt * pk * BELT_AMP, 30.0).maxf(0.0);
 
         // --- mountains / hills
         let q = &cd.q;
@@ -1153,15 +1164,24 @@ impl TerrainShaper {
         // amplitude the rounded hills take over smoothly and the ridged octaves are skipped)
         let ridge_w = smoothstep_d(8.0, 18.0, amp);
         let (ridge, steer) = if ridge_w.v > 0.0 {
-            let (r, st) = self.ridged.sample_with_steer(q.x, q.z, fp);
-            (q.chain(r), q.chain(st))
+            // alpine domain warp w = q + A·(a, b)(q/λ) (λ 900, A 130): curved arêtes, side
+            // spurs and multi-peak massifs instead of straight noise ridges. Jacobian
+            // ∂w/∂q = I + k·∇(a, b), k = A/λ ≈ 0.14 (no fold-over); ∇_q = (∂w/∂q)ᵀ ∇_w.
+            const FA: f64 = 1.0 / 900.0;
+            const AW: f32 = 130.0;
+            let (a, ax, az) = self.alp_a.n2d(q.x * FA, q.z * FA);
+            let (b, bx, bz) = self.alp_b.n2d(q.x * FA + 53.1, q.z * FA - 27.4);
+            let k = AW * FA as f32;
+            let (r, st) = self.ridged.sample_with_steer(q.x + (AW * a) as f64, q.z + (AW * b) as f64, fp);
+            let tr = |n: D2| D2::new(n.v, n.dx * (1.0 + k * ax) + n.dz * (k * bx), n.dx * (k * az) + n.dz * (1.0 + k * bz));
+            (q.chain(tr(r)), q.chain(tr(st)))
         } else {
             (D2::ZERO, D2::ZERO)
         };
         let ridge = ((ridge - 0.12) * 1.25).clamp(0.0, 1.0);
         // Gameplay pass: sharper summits inside the belts (r^1.6: narrow peaks and arêtes, broad
         // walkable valley floors) instead of uniform domes.
-        let ridge = lerp_d(ridge, ridge.powf(1.6), belt);
+        let ridge = lerp_d(ridge, ridge.powf(1.25), belt);
         let hills = self.hills.sample(x, z, fp);
         let hills01 = (hills * 1.3 + 0.45).clamp(0.0, 1.0);
         // Ridges dominate in high uplift and on pv-peaks; rounded eroded hills elsewhere.
@@ -1432,12 +1452,14 @@ impl TerrainShaper {
         //     separated by walkable shelves instead of "stadium seating" on long valley walls
         let land_w = g_land_d * (1.0 - mtn_w) * water_fade;
         let tk_patch = smoothstep_d(0.15, 0.4, pm.p[P_TERR] * (mask * 0.65 + 0.35)) * land_w;
-        let tk_slope = (1.0 - tk_patch) * land_w * (0.6 * tk_s);
+        // (alpine pass: only on the masked half of the slopes — the other half keeps its
+        // gullies and crags, so hillsides are not all striped the same way)
+        let tk_slope = (1.0 - tk_patch) * land_w * mask * (0.6 * tk_s);
         let tk_land = tk_patch + tk_slope;
         // mountains: ledge systems on the masked half of the flanks (the other half keeps its
         // gullies and couloirs), none on the summit cones (shape → 1) — no stepped pyramids
         let summit = smoothstep_d(0.55, 0.85, shape);
-        let tk_mtn = mask * ((1.0 - summit) * mtn_w * water_fade * 0.6);
+        let tk_mtn = mask * ((1.0 - summit) * mtn_w * water_fade * 0.4);
         if tk_land.v > 0.01 || tk_mtn.v > 0.01 {
             let delta = ell.grad_len() * fp.max(0.0) as f32;
             let t0 = 0.55 + 0.35 * lerp(saturate(pm.p[P_SHARP].v), 0.6, mtn_w.v);
@@ -1462,7 +1484,7 @@ impl TerrainShaper {
                 let (tn, tnx, tnz) = self.step_n.n2d(x * FT as f64 + 5.3, z * FT as f64 - 8.8);
                 let tilt = D2::new(tn, tnx * FT, tnz * FT) * 220.0;
                 let em = ell + tilt;
-                dh += (terrace_irr(em, 11.0, delta, t0.min(1.0 - 2.2 * em.grad_len() / 11.0).max(0.45), self.seed ^ 0x7E5B) - em) * tk_mtn;
+                dh += (terrace_irr(em, 15.0, delta, t0.min(1.0 - 2.2 * em.grad_len() / 15.0).max(0.45), self.seed ^ 0x7E5B) - em) * tk_mtn;
             }
             h = h + dh;
             reg.terrace = tk_land.v + tk_mtn.v;
@@ -1561,9 +1583,9 @@ impl TerrainShaper {
             let r = 1.0 + (h.v - CEIL_START) / CEIL_A;
             h = h.map(CEIL_START + CEIL_A * r.ln(), 1.0 / r);
         }
-        if h.v > 500.0 {
-            let t = ((h.v - 500.0) / 6.0).tanh();
-            h = h.map(500.0 + 6.0 * t, 1.0 - t * t);
+        if h.v > 990.0 {
+            let t = ((h.v - 990.0) / 8.0).tanh();
+            h = h.map(990.0 + 8.0 * t, 1.0 - t * t);
         }
         h = h.maxf(6.0);
 
@@ -1580,7 +1602,7 @@ impl TerrainShaper {
         let j_m = if mountain.v > 60.0 {
             let jg = smoothstep(-0.15, 0.30, self.jag.value(x, z, fp));
             // crags on steep faces only (gentle snow fields and alpine meadows stay clean)
-            11.0 * smoothstep(60.0, 230.0, mountain.v) * (0.3 + 0.7 * jg) * smoothstep(0.45, 1.1, slope)
+            16.0 * smoothstep(60.0, 260.0, mountain.v) * (0.3 + 0.7 * jg) * smoothstep(0.45, 1.1, slope)
         } else {
             0.0
         };
@@ -1593,7 +1615,7 @@ impl TerrainShaper {
         let tame = (1.0 - reg.badlands) * (1.0 - reg.desert) * (1.0 - 0.8 * reg.volcanic) * (1.0 - reg.swamp) * if lake_free { 1.0 } else { 0.0 };
         let j_notch = if lake_free && water_level == i32::MIN && reg.hoodoo < 0.05 { self.notch_reach(x, z, slope) } else { 0.0 };
         let mut jag = j_m.max(j_c).max(j_s) * tame + j_notch;
-        jag = jag.min(28.0).min((WORLD_HEIGHT as f32 - 3.0 - h.v).max(0.0));
+        jag = jag.min(34.0).min((WORLD_HEIGHT as f32 - 3.0 - h.v).max(0.0));
         if h.v >= SEA {
             // A dry column's 3D band must stay above the sea: otherwise the overhang noise
             // hollows out air pockets below sea level next to river/sea water columns, which the
@@ -1839,7 +1861,7 @@ impl TerrainShaper {
         if level - rim_lo > if pond { 4.0 } else { 10.0 } {
             return Err("notch");
         }
-        if level < SEA + if pond { 1.0 } else { 2.0 } || level > 440.0 {
+        if level < SEA + if pond { 1.0 } else { 2.0 } || level > 900.0 {
             return Err("level");
         }
         if rim_hi - rim_lo > 0.35 * r + 12.0 {
@@ -1937,8 +1959,7 @@ impl TerrainShaper {
                 }
                 let Some(level) = self.lake_level_cached(l, cs, ix + dx, iz + dz, cx, cz, r) else { continue };
                 let dist = d2.sqrt().max(1e-3);
-                let n = self.dune_phase.sample(x * 1.7 + 911.0, z * 1.7 - 377.0, 0.0);
-                let rho = D2::new((dist / r as f64) as f32, (ddx / dist) as f32 / r, (ddz / dist) as f32 / r) + n * 0.12;
+                let rho = self.lake_rho(l, ix + dx, iz + dz, ddx, ddz, dist, r);
                 if rho.v < 1.0 {
                     // flat-bottomed basin: full depth for ρ < 0.45, C¹ rise to the rim
                     *h = *h - smoothstep_d(1.0, 0.45, rho) * depth;
@@ -1957,6 +1978,33 @@ impl TerrainShaper {
             }
         }
         None
+    }
+
+    /// Irregular normalised lake radius `ρ = d / (R·s(θ, p))` (shore where ρ = 1) with a shape
+    /// factor `s = 0.78 + 0.09·cos(2θ + φ₂) + 0.05·cos(3θ + φ₃) + 0.08·n(p/0.9R) ∈ [0.56, 1]`:
+    /// elongated / kidney-shaped basins with bays and points (low harmonics with per-lake phases)
+    /// plus a noise scaled to the lake size, so ponds get lobes too. `s ≤ 1` keeps the whole
+    /// shoreline inside the probed circle and makes ρ ≥ d/R, so the influence cut-off and the
+    /// containment sill of [`apply_lake`] stay valid unchanged.
+    #[allow(clippy::too_many_arguments)]
+    fn lake_rho(&self, l: &LakeLayer, ix: i32, iz: i32, ddx: f64, ddz: f64, dist: f64, r: f32) -> D2 {
+        let id = mix64(hash2(self.seed ^ l.salt ^ 0x5A4E, ix, iz));
+        let p2 = hash_f01(id) * std::f32::consts::TAU;
+        let p3 = hash_f01(mix64(id ^ 9)) * std::f32::consts::TAU;
+        let inv2 = (1.0 / (dist * dist)) as f32;
+        // θ = atan2(Δz, Δx): ∇θ = (−Δz, Δx)/d²
+        let (tx, tz) = (-(ddz as f32) * inv2, ddx as f32 * inv2);
+        let th = (ddz as f32).atan2(ddx as f32);
+        let harm = |k: f32, ph: f32| -> D2 {
+            let (sn, cs) = (k * th + ph).sin_cos();
+            D2::new(cs, -k * sn * tx, -k * sn * tz)
+        };
+        let m = 380.0 / (0.9 * r as f64);
+        let n = self.dune_phase.sample(ddx * m + 911.0 + p2 as f64 * 37.0, ddz * m - 377.0, 0.0);
+        let n = D2::new(n.v, n.dx * m as f32, n.dz * m as f32).clamp(-1.0, 1.0);
+        let s = harm(2.0, p2) * 0.09 + harm(3.0, p3) * 0.05 + n * 0.08 + 0.78;
+        let d = D2::new(dist as f32, (ddx / dist) as f32, (ddz / dist) as f32);
+        d / (s * r)
     }
 
     /// Volcano cone (dual) + optional lava lake level, if a volcano cell is near.
@@ -1995,23 +2043,51 @@ impl TerrainShaper {
         let (list, n) = self.volcano_list(cx, cz);
         {
             for &(id, px, pz) in &list[..n] {
-                let (ddx, ddz) = (x - px, z - pz);
+                let (ddx0, ddz0) = (x - px, z - pz);
                 let r_cone = 620.0 + 380.0 * hash_f01(mix64(id ^ 1)) as f64;
-                let d2 = ddx * ddx + ddz * ddz;
-                if d2 > (2.0 * r_cone) * (2.0 * r_cone) {
+                let av = 0.10 * r_cone;
+                let d2 = ddx0 * ddx0 + ddz0 * ddz0;
+                if d2 > (2.0 * r_cone + av * 1.5) * (2.0 * r_cone + av * 1.5) {
                     continue;
                 }
-                let dist = d2.sqrt().max(1e-3);
-                let d = D2::new(dist as f32, (ddx / dist) as f32, (ddz / dist) as f32);
+                // alpine pass: no perfect cones. Domain-warped distance (λ 420, ±0.1 R: lobed
+                // base, off-centre summit, irregular caldera) with its Jacobian, plus radial
+                // barrancos (V-shaped erosion gullies, slightly spiralling) on the flanks.
+                const FV: f64 = 1.0 / 420.0;
+                let o = (hash_f01(mix64(id ^ 5)) * 97.0) as f64;
+                let (a, ax, az) = self.alp_a.n2d(x * FV + o, z * FV - o);
+                let (b, bx, bz) = self.alp_b.n2d(x * FV - o, z * FV + 13.7);
+                let k = (av * FV) as f32;
+                let (ddx, ddz) = (ddx0 + av * a as f64, ddz0 + av * b as f64);
+                let (jxx, jxz, jzx, jzz) = (1.0 + k * ax, k * az, k * bx, 1.0 + k * bz);
+                let dist = (ddx * ddx + ddz * ddz).sqrt().max(1e-3);
+                let (ux, uz) = ((ddx / dist) as f32, (ddz / dist) as f32);
+                let d = D2::new(dist as f32, ux * jxx + uz * jzx, ux * jxz + uz * jzz);
                 let r = r_cone as f32;
-                let hv = 160.0 + 150.0 * hash_f01(mix64(id ^ 2));
+                let hv = 200.0 + 260.0 * hash_f01(mix64(id ^ 2));
                 let apex = SEA + hv;
                 let kk = (hv + 40.0) / r.powf(0.62);
                 let rc = 0.12 * r + 20.0;
                 let depth = 0.16 * hv + 10.0;
                 let rim = apex - kk * rc.powf(0.62);
                 let (cone, lava) = if d.v >= rc {
-                    (D2::c(apex) - d.powf(0.62) * kk, None)
+                    let mut c = D2::c(apex) - d.powf(0.62) * kk;
+                    let env = smoothstep_d(rc * 1.2, rc * 2.4, d) * (1.0 - smoothstep_d(0.75 * r, 1.6 * r, d));
+                    if env.v > 0.0 {
+                        // θ in warped coordinates, chained through the warp Jacobian
+                        let inv = (1.0 / dist) as f32;
+                        let (tqx, tqz) = (-uz * inv, ux * inv);
+                        let (tx, tz) = (tqx * jxx + tqz * jzx, tqx * jxz + tqz * jzz);
+                        let nb = (14.0 + 10.0 * hash_f01(mix64(id ^ 7))).floor();
+                        let spin = if hash_f01(mix64(id ^ 8)) < 0.5 { 0.0035 } else { -0.0035 };
+                        let ph = D2::new(nb * (ddz as f32).atan2(ddx as f32), nb * tx, nb * tz) + d * spin + o as f32;
+                        let v = ph.sin();
+                        let g = (1.0 - sabs_d(v, 0.15)).maxf(0.0);
+                        // depth ≤ 3 % of the radius: gully walls stay ≲ 1.5 steep near the summit
+                        let amp_g = (d * 0.03).minf(0.07 * hv);
+                        c = c - g.sq() * env * amp_g;
+                    }
+                    (c, None)
                 } else {
                     let t = d * (1.0 / rc);
                     let t4 = t.sq().sq();
@@ -2249,7 +2325,9 @@ mod tests {
                     }
                     let dh = (c1.height - c0.height).abs();
                     worst = worst.max(dh);
-                    if dh > 6.0 {
+                    // (alpine pass: genuine cliffs — arêtes, canyon walls — have an honest analytic
+                    // slope; only a jump the gradient does not explain is a discontinuity)
+                    if dh > 6.0 && dh > 1.5 * c0.slope.max(c1.slope) + 2.0 {
                         n_big += 1;
                         eprintln!("seed {seed} jump {dh} at ({x},{z}) biome {:?} slope {}", c0.biome, c0.slope);
                     }
@@ -2335,7 +2413,7 @@ mod tests {
                 let z = ((rnd(i * 2 + 1 + seed * 77) - 0.5) * 40_000.0).floor() + 0.5;
                 let c = g.column(x, z);
                 let s = snow_line(seed, x, z, c.climate.temperature);
-                assert!((300.0..=360.0).contains(&s), "snow line {s}");
+                assert!((SNOW_LINE_MIN..=crate::gen::biome::SNOW_LINE + 67.0).contains(&s), "snow line {s}");
                 let y = c.height.floor() as i32;
                 for d in 0..3 {
                     let m = g.surface_material(x.floor() as i32, y - d, z.floor() as i32, d, &c);

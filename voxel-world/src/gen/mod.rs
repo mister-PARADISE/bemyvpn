@@ -26,7 +26,7 @@ pub use features::FeaturePlacer;
 pub use terrain::TerrainShaper;
 
 /// World height in blocks (exclusive upper bound for y).
-pub const WORLD_HEIGHT: i32 = 512;
+pub const WORLD_HEIGHT: i32 = 1024;
 /// Water surface of oceans/rivers: water occupies y < SEA_LEVEL (the block y = SEA_LEVEL-1 is the top water block).
 pub const SEA_LEVEL: i32 = 140;
 /// Bottom layers y < BEDROCK_TOP are bedrock-ish floor.
