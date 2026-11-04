@@ -40,6 +40,8 @@ pub const DEFAULT_MERGE: u32 = 0b110;
 pub const KIND_OPAQUE: usize = 0;
 pub const KIND_WATER: usize = 1;
 pub const KIND_FOLIAGE: usize = 2;
+/// Cross-quad plants (grass tufts, tall grass, flowers): normal index 6, plant type in flag bits 1..3.
+pub const KIND_PLANT: usize = 3;
 
 /// Bytes per vertex / per quad.
 pub const VB: usize = 12;
@@ -129,7 +131,7 @@ pub struct ChunkBuilder {
     band: Vec<bool>,
     mask: Vec<u64>,
     // output
-    pub out: [Vec<u8>; 3],
+    pub out: [Vec<u8>; 4],
     pub ymin: i32,
     pub ymax: i32,
     /// Blocks per voxel edge: 1 for exact chunks, 2^level for LOD sections.
@@ -203,7 +205,7 @@ impl ChunkBuilder {
             runs: Vec::new(),
             band: vec![false; WH as usize + 2],
             mask: vec![0; (CS * CS) as usize],
-            out: [Vec::new(), Vec::new(), Vec::new()],
+            out: [Vec::new(), Vec::new(), Vec::new(), Vec::new()],
             ymin: 0,
             ymax: 0,
             scale: 1,
@@ -391,6 +393,63 @@ impl ChunkBuilder {
 
         // ---- 8. mesh
         self.mesh(gen, rx0, rz0);
+        self.plants(gen, rx0, rz0);
+    }
+
+    /// Grass tufts, tall grass and flowers on exposed grass blocks (exact chunks only): two
+    /// diagonal quads per plant (an "X"), integer corners so the 12-byte format still fits.
+    fn plants(&mut self, gen: &WorldGen, rx0: i32, rz0: i32) {
+        use voxel_world::gen::Biome;
+        use voxel_world::noise::{hash2, hash_f01, mix64};
+        let seed = gen.seed ^ 0x9A55_7EED;
+        for lz in 1..W - 1 {
+            for lx in 1..W - 1 {
+                let c = (lz * W + lx) as usize;
+                let y = self.top_opq[c];
+                if y < self.yb || y + 2 >= self.yt {
+                    continue;
+                }
+                let vi = self.vidx(lx, y, lz);
+                if self.vox[vi] != Material::Grass as u8 || self.cls[self.vox[vi + LAYER] as usize] != C_AIR {
+                    continue;
+                }
+                let col = self.cols[c];
+                let (dens, flowers) = match col.biome {
+                    Biome::Plains | Biome::Meadow => (0.55, 0.06),
+                    Biome::Savanna => (0.6, 0.0),
+                    Biome::Forest | Biome::BirchForest => (0.4, 0.03),
+                    Biome::DarkForest | Biome::Jungle => (0.45, 0.01),
+                    Biome::Taiga | Biome::OldGrowthTaiga | Biome::AlpineGrove => (0.25, 0.01),
+                    Biome::Swamp => (0.5, 0.0),
+                    _ => (0.3, 0.02),
+                };
+                let (x, z) = (rx0 + lx, rz0 + lz);
+                let h = hash2(seed, x, z);
+                let r = hash_f01(h);
+                if r >= dens {
+                    continue;
+                }
+                let r2 = hash_f01(mix64(h));
+                // plant type: 0 short grass, 1 tall grass (2 blocks), 2..7 flowers
+                let tall_ok = self.cls[self.vox[vi + 2 * LAYER] as usize] == C_AIR;
+                let kind: u8 = if r2 < flowers / dens { 2 + (mix64(h ^ 0x51) % 6) as u8 } else if tall_ok && r2 > 0.86 { 1 } else { 0 };
+                let hgt = if kind == 1 { 2 } else { 1 };
+                let tint = self.tint(c, Material::Grass, y);
+                let sky = (self.sky_open(c, y + 1) * 255.0) as u8;
+                let (bx, bz) = ((lx - 1) as u8, (lz - 1) as u8);
+                let (y0, y1) = ((y + 1) as u16, (y + 1 + hgt) as u16);
+                let out = &mut self.out[KIND_PLANT];
+                for (ax, az, bx2, bz2) in [(bx, bz, bx + 1, bz + 1), (bx + 1, bz, bx, bz + 1)] {
+                    for (vx, vz, vy) in [(ax, az, y0), (ax, az, y1), (bx2, bz2, y1), (bx2, bz2, y0)] {
+                        out.extend_from_slice(&[
+                            vx, vz, vy as u8, (vy >> 8) as u8, 6, Material::Grass as u8, 3, kind << 1,
+                            tint as u8, (tint >> 8) as u8, (tint >> 16) as u8, sky,
+                        ]);
+                    }
+                }
+                self.ymax = self.ymax.max(y + 1 + hgt);
+            }
+        }
     }
 
     fn composite(&mut self) {

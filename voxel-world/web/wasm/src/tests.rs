@@ -338,7 +338,7 @@ fn deterministic_and_cache_independent() {
     let g = WorldGen::new(2026);
     let mix = terrain_mix(&g);
     let mut warm = ChunkBuilder::new();
-    let mut first: Vec<[Vec<u8>; 3]> = Vec::new();
+    let mut first: Vec<[Vec<u8>; 4]> = Vec::new();
     for &(_, cx, cz) in &mix {
         // warm the caches with neighbours in a different order
         for (dx, dz) in [(1, 1), (-1, 0), (0, -1)] {

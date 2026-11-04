@@ -22,6 +22,8 @@
   #hud b { font-weight: 700; }
   #hud .num { font-family: var(--font-num); font-variant-numeric: tabular-nums; color: var(--ink-dim); font-size: 12px; }
   #menuBtn { position: fixed; top: calc(env(safe-area-inset-top, 0px) + 10px); right: max(12px, env(safe-area-inset-right, 0px)); }
+  #fsBtn { position: fixed; top: calc(env(safe-area-inset-top, 0px) + 10px); right: calc(max(12px, env(safe-area-inset-right, 0px)) + 116px); font-size: 20px; padding: 0; width: 48px; }
+  #toast { position: fixed; left: 50%; top: calc(env(safe-area-inset-top, 0px) + 66px); transform: translateX(-50%); padding: 10px 14px; font-size: 13px; max-width: calc(100vw - 32px); text-align: center; pointer-events: none; line-height: 1.45; }
   button, select { font: inherit; color: var(--ink); background: var(--panel); border: 1px solid var(--panel-edge); border-radius: 12px; min-height: 44px; min-width: 44px; padding: 0 14px; }
   button:active { background: rgba(60, 90, 110, 0.85); }
   button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
@@ -56,6 +58,7 @@
 <div id="cross" hidden></div>
 <div id="hud" class="panel" hidden><b id="hBiome">—</b><br><span class="num" id="hNums"></span></div>
 <button id="menuBtn" aria-expanded="false" aria-controls="menu" hidden>☰ Меню</button>
+<button id="fsBtn" aria-label="На весь экран" hidden>⛶</button>
 <div id="menu" class="panel" hidden>
   <label for="seedSel">Мир
     <select id="seedSel">
@@ -95,6 +98,7 @@
   <button id="fast" aria-label="Быстро">⚡</button>
 </div>
 <div class="panel" id="hint" hidden></div>
+<div class="panel" id="toast" hidden></div>
 <div id="loader"><div><h1 id="lTitle">Строю мир…</h1><p id="lText">Генератор запускается прямо на устройстве.</p></div></div>
 
 <script>
@@ -119,7 +123,8 @@ const QUALITY = [
   { K: 5, range: 30000, shadow: 2048, scale: 1.25 },
   { K: 7, range: 40000, shadow: 2048, scale: 1.5 },
 ];
-const st = { seed: 42, x: 0, y: 200, z: 0, yaw: 0, pitch: -0.2, tod: 35, sunAz: 210, q: 1, fast: false, sens: 8 };
+const QS = new URLSearchParams(location.search);
+const st = { seed: 42, x: 0, y: 200, z: 0, yaw: 0, pitch: -0.2, tod: 35, sunAz: 210, q: Math.min(2, Math.max(0, parseInt(QS.get('q') ?? '1', 10) || 0)), fast: false, sens: 8 };
 let bookmarks = {}, wasmBytes = null, ready = false;
 
 // =====================================================================================
@@ -160,9 +165,23 @@ vec3 tonemap(vec3 c){
 const VS = `#version 300 es
 layout(location=0) in uvec4 a0; layout(location=1) in uvec4 a1; layout(location=2) in uvec4 a2;
 uniform mat4 uVP; uniform vec3 uOrg; uniform float uScale; uniform float uCurv; uniform vec3 uCamV; uniform int uKind;
-out vec3 vW; flat out uint vN; flat out uint vMat; out float vAO; out vec3 vTint; out float vSky;
+uniform float uTimeV;
+out vec3 vW; flat out uint vN; flat out uint vMat; out float vAO; out vec3 vTint; out float vSky; out vec2 vUV; flat out uint vPlant;
 void main(){
   vec3 p = vec3(float(a0.x), float(a0.z + a0.w * 256u), float(a0.y)) * uScale;
+  vUV = vec2(0.0); vPlant = 0u;
+  if (a1.x == 6u) {                                    // cross-quad plant: corner from vertex order
+    int cI = gl_VertexID & 3;
+    vUV = vec2(cI >= 2 ? 1.0 : 0.0, (cI == 1 || cI == 2) ? 1.0 : 0.0);
+    vPlant = ((a1.w >> 1) & 7u) + 1u;
+    float hb = vPlant == 2u ? 2.0 : 1.0;
+    vUV.y *= hb;
+    if (vUV.y > 0.0) {
+      vec3 wp = p + uOrg;
+      float sway = sin(uTimeV * 1.9 + wp.x * 0.37 + wp.z * 0.23) * 0.11 + sin(uTimeV * 3.1 + wp.x * 0.9) * 0.04;
+      p.x += sway * hb; p.z += sway * 0.6 * hb;
+    }
+  }
   if (uKind == 1 && a1.x == 2u) {                      // exact water surface at every LOD level
     int wd = int((a1.w >> 1) & 127u); if (wd >= 64) wd -= 128;
     p.y += float(wd);
@@ -174,24 +193,32 @@ void main(){
 }`;
 const FS = `#version 300 es
 precision highp float; precision highp int; precision highp sampler2DShadow;
-in vec3 vW; flat in uint vN; flat in uint vMat; in float vAO; in vec3 vTint; in float vSky;
+in vec3 vW; flat in uint vN; flat in uint vMat; in float vAO; in vec3 vTint; in float vSky; in vec2 vUV; flat in uint vPlant;
 uniform vec4 uMat[48]; uniform int uKind; uniform float uTime; uniform float uScale;
-uniform sampler2DShadow uShadow; uniform mat4 uShadowVP; uniform float uShadowOn; uniform float uShadowTexel;
+uniform highp sampler2DArrayShadow uShadow; uniform mat4 uCSM[4]; uniform vec4 uCSMTexel; uniform float uShadowOn;
 out vec4 o;
 ${COMMON_GLSL}
 const vec3 NRM[6] = vec3[6](vec3(1,0,0),vec3(-1,0,0),vec3(0,1,0),vec3(0,-1,0),vec3(0,0,1),vec3(0,0,-1));
 const vec3 TERRA[8] = vec3[8](vec3(0.31,0.11,0.06), vec3(0.36,0.09,0.02), vec3(0.64,0.44,0.36), vec3(0.50,0.24,0.02), vec3(0.27,0.05,0.03), vec3(0.24,0.15,0.12), vec3(0.07,0.03,0.02), vec3(0.31,0.11,0.06));
 float shadowAt(vec3 wp, vec3 n){
   if (uShadowOn < 0.5) return 1.0;
-  vec4 s = uShadowVP * vec4(wp + n * 0.08 + uSun * 0.05, 1.0);
-  vec3 c = s.xyz / s.w * 0.5 + 0.5;
-  if (c.x <= 0.0 || c.x >= 1.0 || c.y <= 0.0 || c.y >= 1.0 || c.z >= 1.0) return 1.0;
-  float t = uShadowTexel, r = 0.0;
-  r += texture(uShadow, vec3(c.xy + vec2(-0.6, -0.6) * t, c.z));
-  r += texture(uShadow, vec3(c.xy + vec2( 0.6, -0.6) * t, c.z));
-  r += texture(uShadow, vec3(c.xy + vec2(-0.6,  0.6) * t, c.z));
-  r += texture(uShadow, vec3(c.xy + vec2( 0.6,  0.6) * t, c.z));
-  return r * 0.25;
+  for (int i = 0; i < 4; i++) {
+    float tx = uCSMTexel[i];
+    vec4 sp = uCSM[i] * vec4(wp + n * tx * 1.5 + uSun * tx * 0.5, 1.0);
+    vec3 c = sp.xyz * 0.5 + 0.5;
+    if (c.x > 0.01 && c.x < 0.99 && c.y > 0.01 && c.y < 0.99 && c.z < 1.0) {
+      if (i == 0) {
+        float t = 1.0 / float(textureSize(uShadow, 0).x), r = 0.0;
+        r += texture(uShadow, vec4(c.xy + vec2(-0.7, -0.7) * t, float(i), c.z));
+        r += texture(uShadow, vec4(c.xy + vec2( 0.7, -0.7) * t, float(i), c.z));
+        r += texture(uShadow, vec4(c.xy + vec2(-0.7,  0.7) * t, float(i), c.z));
+        r += texture(uShadow, vec4(c.xy + vec2( 0.7,  0.7) * t, float(i), c.z));
+        return r * 0.25;
+      }
+      return texture(uShadow, vec4(c.xy, float(i), c.z));
+    }
+  }
+  return 1.0;
 }
 // procedural 16x16 pixel textures: returns albedo multiplier/colour for this texel
 vec3 surface(uint mat, vec3 base, vec3 tint, vec3 wp, vec3 n, out float holes){
@@ -205,6 +232,12 @@ vec3 surface(uint mat, vec3 base, vec3 tint, vec3 wp, vec3 n, out float holes){
   bool top = n.y > 0.5, side = abs(n.y) < 0.5;
   vec3 c = base * tint;
   float m = 1.0;
+  float fw0 = max(length(fwidth(uv * 16.0)), 1e-4);
+  if (fw0 > 1.5) {                                          // texels smaller than a pixel: average colour only
+    if ((mat == 8u || mat == 11u) && side) c = mix(uMat[7].rgb, c, 0.3);
+    if (mat == 23u) { int bi = int(mod(floor(wp.y / 3.0) * 5.0 + floor(h3(vec3(floor(wp.y / 3.0), 1.0, 2.0)) * 8.0), 8.0)); c = TERRA[bi]; }
+    return c * (0.96 + 0.08 * h3(blk + 11.0));
+  }
   if (mat == 8u || mat == 11u) {                            // grass / moss
     if (side) {
       float fringe = 3.0 + floor(h3(vec3(tx.x, 5.0, 0.0) + blk) * 2.5);
@@ -251,7 +284,32 @@ vec3 surface(uint mat, vec3 base, vec3 tint, vec3 wp, vec3 n, out float holes){
   m = mix(1.0, m, detail);
   return c * m * (0.96 + 0.08 * h3(blk + 11.0));
 }
+vec4 plant(){
+  float d = length(vW - uCam);
+  float tx = floor(vUV.x * 16.0), ty = floor(vUV.y * 16.0);
+  vec3 cellP = floor(vW * vec3(1.0, 0.0, 1.0) + vec3(0.001));
+  float bh = (5.0 + 10.0 * h3(vec3(tx, 3.0, 0.0) + cellP)) * (vPlant == 2u ? 1.9 : 1.0);
+  bool blade = mod(tx + floor(h3(cellP + 7.0) * 3.0), 3.0) < 1.0 + step(0.6, h3(vec3(tx, 9.0, 1.0) + cellP));
+  float a = (blade && ty < bh) ? 1.0 : 0.0;
+  vec3 col = vTint * mix(0.5, 1.1, clamp(ty / 16.0, 0.0, 1.0)) * (0.85 + 0.3 * h3(vec3(tx, ty, 4.0) + cellP));
+  if (vPlant >= 3u) {                                       // flowers: stem + coloured head
+    const vec3 FL[6] = vec3[6](vec3(0.85,0.08,0.06), vec3(0.95,0.75,0.05), vec3(0.75,0.25,0.85), vec3(0.95,0.95,0.92), vec3(0.2,0.35,0.95), vec3(1.0,0.45,0.1));
+    vec3 fc = FL[int(vPlant - 3u) % 6];
+    bool stem = (tx == 7.0 || tx == 8.0) && ty < 11.0;
+    bool head = abs(tx - 7.5) < 2.6 && ty >= 10.0 && ty < 14.0;
+    a = (stem || head) ? 1.0 : 0.0;
+    col = head ? fc : vTint * 0.6;
+  }
+  float fade = clamp((d - 34.0) / 26.0, 0.0, 1.0);
+  if (a < 0.5 || h3(floor(gl_FragCoord.xyz)) < fade) discard;
+  float sh = shadowAt(vW, vec3(0.0, 1.0, 0.0));
+  float lam = max(uSun.y, 0.0) * 0.8 + 0.2;
+  vec3 sky = mix(uSkyH, uSkyZ, 0.7);
+  vec3 c = col * (uSunC * lam * sh * 1.7 + sky * 0.75 * (0.4 + 0.6 * vSky));
+  return vec4(c, 1.0);
+}
 void main(){
+  if (vN == 6u) { vec4 pc = plant(); o = vec4(tonemap(aerial(pc.rgb, vW)), 1.0); return; }
   vec3 n = NRM[vN];
   vec4 mt = uMat[vMat];
   float holes;
@@ -326,19 +384,23 @@ const quadIB = (() => {
 // =====================================================================================
 // Shadow map
 // =====================================================================================
-let shadowTex = null, shadowFbo = null, shadowSize = 0, shadowVP = new Float32Array(16), shadowDirty = true, shadowCenter = [0, 0, 0], shadowRadius = 0;
+// 4 cascades (half-sizes in blocks); texel-snapped so shadows never swim, re-rendered only when
+// the camera moved a texel or the sun moved; the far cascades refresh less often
+const CSM_R = [40, 220, 1300, 9000];
+let csmTex = null, csmFbo = [], csmSize = 0, shadowDirty = true;
+const csm = CSM_R.map(() => ({ vp: new Float32Array(16), key: '', frame: -99, texel: 1 }));
+let lastSun = '';
 function ensureShadow(size) {
-  if (shadowSize === size) return;
-  if (shadowTex) { gl.deleteTexture(shadowTex); gl.deleteFramebuffer(shadowFbo); }
-  shadowTex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, shadowTex);
-  gl.texStorage2D(gl.TEXTURE_2D, 1, gl.DEPTH_COMPONENT24, size, size);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_COMPARE_MODE, gl.COMPARE_REF_TO_TEXTURE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_COMPARE_FUNC, gl.LEQUAL);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-  shadowFbo = gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER, shadowFbo);
-  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.TEXTURE_2D, shadowTex, 0);
+  if (csmSize === size) return;
+  if (csmTex) { gl.deleteTexture(csmTex); csmFbo.forEach((f) => gl.deleteFramebuffer(f)); }
+  csmTex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D_ARRAY, csmTex);
+  gl.texStorage3D(gl.TEXTURE_2D_ARRAY, 1, gl.DEPTH_COMPONENT16, size, size, CSM_R.length);
+  gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_COMPARE_MODE, gl.COMPARE_REF_TO_TEXTURE); gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_COMPARE_FUNC, gl.LEQUAL);
+  gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  csmFbo = CSM_R.map((_, i) => { const f = gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER, f); gl.framebufferTextureLayer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, csmTex, 0, i); return f; });
   gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-  shadowSize = size; shadowDirty = true;
+  csmSize = size; csm.forEach((c) => { c.key = ''; });
 }
 
 // =====================================================================================
@@ -359,7 +421,7 @@ async function handle(m) {
   if (m.type === 'node') {
     const t0 = performance.now();
     if (m.L === 0) ex.vw_build_chunk(m.sx, m.sz); else ex.vw_build_lod(m.L, m.sx, m.sz);
-    const bufs = []; for (let k = 0; k < 3; k++) { const len = ex.vw_mesh_len(k); bufs.push(len ? copy(ex.vw_mesh_ptr(k), len) : null); }
+    const bufs = []; for (let k = 0; k < 4; k++) { const len = ex.vw_mesh_len(k); bufs.push(len ? copy(ex.vw_mesh_ptr(k), len) : null); }
     postMessage({ type: 'node', key: m.key, gen: m.gen, L: m.L, sx: m.sx, sz: m.sz, bufs, ymin: ex.vw_chunk_ymin(), ymax: ex.vw_chunk_ymax(), ms: performance.now() - t0 }, bufs.filter(Boolean));
   }
 }`;
@@ -402,7 +464,7 @@ function uploadNode(m) {
   const old = nodes.get(m.key); if (old) freeNode(old);
   const sc = 1 << m.L;
   nodes.set(m.key, { L: m.L, sx: m.sx, sz: m.sz, kinds, ymin: m.ymin * sc, ymax: (m.ymax + 1) * sc, used: performance.now() });
-  if (m.L <= 1) shadowDirty = true;
+  if (m.L === 0 && distBox(m.L, m.sx, m.sz) < CSM_R[1]) shadowDirty = true;
 }
 function distBox(L, sx, sz) {
   const size = 32 << L, x0 = sx * size, z0 = sz * size;
@@ -411,75 +473,79 @@ function distBox(L, sx, sz) {
   const dy = Math.max(0, st.y - 420);
   return Math.sqrt(dx * dx + dz * dz + dy * dy);
 }
-function select() {
+// every node on the split path is "wanted" (leaves to draw + their ancestors as fallbacks);
+// loading by d/size naturally brings parents in before their children
+function select(px = st.x, py = st.y, pz = st.z) {
   const Q = QUALITY[st.q], K = Q.K, RMAX = Q.range;
   const out = [];
+  const sv = [st.x, st.y, st.z]; st.x = px; st.y = py; st.z = pz;
   const topSize = 32 << LMAX;
   const tx0 = Math.floor((st.x - RMAX) / topSize), tx1 = Math.floor((st.x + RMAX) / topSize);
   const tz0 = Math.floor((st.z - RMAX) / topSize), tz1 = Math.floor((st.z + RMAX) / topSize);
   const visit = (L, sx, sz) => {
     const d = distBox(L, sx, sz);
     if (d > RMAX) return;
-    if (L > 0 && d < K * (32 << L)) { for (const [a, b] of [[0, 0], [1, 0], [0, 1], [1, 1]]) visit(L - 1, sx * 2 + a, sz * 2 + b); return; }
-    out.push({ L, sx, sz, d });
+    const split = L > 0 && d < K * (32 << L);
+    out.push({ L, sx, sz, d, leaf: !split });
+    if (split) for (const [a, b] of [[0, 0], [1, 0], [0, 1], [1, 1]]) visit(L - 1, sx * 2 + a, sz * 2 + b);
   };
   for (let tz = tz0; tz <= tz1; tz++) for (let tx = tx0; tx <= tx1; tx++) visit(LMAX, tx, tz);
+  st.x = sv[0]; st.y = sv[1]; st.z = sv[2];
   return out;
 }
-function buildDrawList(pl) {
-  // fallback: a missing node is covered by its nearest ready ancestor (drawn once);
-  // nodes inside a fallback ancestor are skipped so no area is drawn twice
-  const now = performance.now();
-  const fallback = new Set(), list = [];
-  for (const n of desired) {
-    const k = nkey(n.L, n.sx, n.sz);
-    const nd = nodes.get(k);
-    if (nd) continue;
-    for (let L = n.L + 1, sx = n.sx >> 1, sz = n.sz >> 1; L <= LMAX; L++, sx >>= 1, sz >>= 1) {
-      const ak = nkey(L, sx, sz); if (nodes.has(ak)) { fallback.add(ak); break; }
-    }
-  }
-  const inFallback = (n) => { for (let L = n.L + 1, sx = n.sx >> 1, sz = n.sz >> 1; L <= LMAX; L++, sx >>= 1, sz >>= 1) if (fallback.has(nkey(L, sx, sz))) return true; return false; };
-  for (const n of desired) {
-    const nd = nodes.get(nkey(n.L, n.sx, n.sz));
-    if (!nd || inFallback(n)) continue;
-    nd.used = now; list.push(nd);
-  }
-  for (const k of fallback) { const nd = nodes.get(k); nd.used = now; list.push(nd); }
-  return list;
+let vel = [0, 0, 0], prefetch = [], arriving = 0;
+// what to draw: recurse; if all children of a split node are covered draw them, otherwise fall back
+// to the node itself — so a coarse stand-in only ever covers the smallest incomplete parent
+function buildDrawList() {
+  const Q = QUALITY[st.q], K = Q.K, RMAX = Q.range, now = performance.now();
+  const out = [];
+  const choose = (L, sx, sz, acc) => {
+    const d = distBox(L, sx, sz);
+    if (d > RMAX) return true;
+    const nd = nodes.get(nkey(L, sx, sz));
+    if (!(L > 0 && d < K * (32 << L))) { if (nd) { acc.push(nd); return true; } return false; }
+    const tmp = []; let all = true;
+    for (const [a, b] of [[0, 0], [1, 0], [0, 1], [1, 1]]) if (!choose(L - 1, sx * 2 + a, sz * 2 + b, tmp)) all = false;
+    if (all) { for (const t of tmp) acc.push(t); return true; }
+    if (nd) { acc.push(nd); return true; }
+    for (const t of tmp) acc.push(t);
+    return false;
+  };
+  const topSize = 32 << LMAX;
+  const tx0 = Math.floor((st.x - RMAX) / topSize), tx1 = Math.floor((st.x + RMAX) / topSize);
+  const tz0 = Math.floor((st.z - RMAX) / topSize), tz1 = Math.floor((st.z + RMAX) / topSize);
+  for (let tz = tz0; tz <= tz1; tz++) for (let tx = tx0; tx <= tx1; tx++) choose(LMAX, tx, tz, out);
+  for (const nd of out) nd.used = now;
+  return out;
 }
 function schedule() {
   const now = performance.now();
   if (now - lastSelect > 120 || Math.abs(st.x - selCam[0]) + Math.abs(st.z - selCam[2]) > 8 || Math.abs(st.y - selCam[1]) > 8 || selCam[3] !== st.q) {
     desired = select(); lastSelect = now; selCam = [st.x, st.y, st.z, st.q];
+    const sp = Math.hypot(vel[0], vel[2]);
+    prefetch = sp > 4 ? select(st.x + vel[0] * 2.5, st.y + vel[1] * 2.5, st.z + vel[2] * 2.5) : [];
     // keep everything that is desired (or an ancestor used as fallback); evict the rest after a while
     for (const n of desired) {
       const nd = nodes.get(nkey(n.L, n.sx, n.sz)); if (nd) nd.used = now;
       for (let L = n.L + 1, sx = n.sx >> 1, sz = n.sz >> 1; L <= LMAX; L++, sx >>= 1, sz >>= 1) { const a = nodes.get(nkey(L, sx, sz)); if (a) { a.used = now; break; } }
     }
-    if (nodes.size > desired.length + 200) for (const [k, n] of nodes) if (now - n.used > 8000) { freeNode(n); nodes.delete(k); }
+    for (const n of prefetch) { const nd = nodes.get(nkey(n.L, n.sx, n.sz)); if (nd) nd.used = now; }
+    if (nodes.size > desired.length + 300) for (const [k, n] of nodes) if (now - n.used > 8000) { freeNode(n); nodes.delete(k); }
   }
   // rebuild the sorted job queue (cheap) and feed every idle worker; workers also pull the next
   // job themselves when they finish, so loading never waits for slow frames
   let missing = 0;
   const fx = Math.sin(st.yaw), fz = Math.cos(st.yaw);
   const jobs = [];
-  // base coverage first: the top-level ancestor of every desired node (so nothing is ever a hole)
-  const base = new Set();
-  for (const n of desired) {
-    const sh = LMAX - n.L, tk = nkey(LMAX, n.sx >> sh, n.sz >> sh);
-    if (!nodes.has(tk) && !inflight.has(tk) && !base.has(tk)) {
-      base.add(tk);
-      jobs.push({ k: tk, n: { L: LMAX, sx: n.sx >> sh, sz: n.sz >> sh, d: 0 }, pri: -1000 + distBox(LMAX, n.sx >> sh, n.sz >> sh) / 4096 });
-    }
-  }
-  for (const n of desired) {
+  const seen = new Set();
+  for (const [list, bias] of [[desired, 0], [prefetch, 2]]) for (const n of list) {
     const k = nkey(n.L, n.sx, n.sz);
-    if (nodes.has(k) || inflight.has(k) || base.has(k)) continue;
-    missing++;
+    if (nodes.has(k) || inflight.has(k) || seen.has(k)) continue;
+    seen.add(k);
+    if (bias === 0 && n.leaf) missing++;
     const size = 32 << n.L, cx = (n.sx + 0.5) * size - st.x, cz = (n.sz + 0.5) * size - st.z, cl = Math.hypot(cx, cz) || 1;
     const ahead = (cx * fx + cz * fz) / cl;                       // in front of the camera first
-    jobs.push({ k, n, pri: n.d / size - ahead * 0.8 - (n.L >= 5 ? 2 : 0) });
+    jobs.push({ k, n, pri: n.d / size - ahead * 0.6 + bias });
   }
   jobs.sort((a, b) => a.pri - b.pri);
   queue = jobs; qi = 0;
@@ -531,6 +597,7 @@ function setSeed(seed, spotIndex) {
 }
 function goBookmark(b) {
   Object.assign(st, { x: b.x, y: b.y, z: b.z, yaw: b.yaw, pitch: b.pitch });
+  arriving = performance.now();
   if (b.sun_el !== undefined) { st.tod = Math.max(4, Math.min(85, b.sun_el)); $('tod').value = st.tod; st.sunAz = b.sun_az; }
   shadowDirty = true;
 }
@@ -601,6 +668,19 @@ document.addEventListener('gesturestart', (e) => e.preventDefault());
 document.addEventListener('touchmove', (e) => { if (e.target === cv) e.preventDefault(); }, { passive: false });
 function hideHint() { $('hint').style.opacity = 0; setTimeout(() => { $('hint').hidden = true; }, 700); }
 
+function toast(t, ms = 5000) { const el = $('toast'); el.textContent = t; el.hidden = false; clearTimeout(toast.t); toast.t = setTimeout(() => { el.hidden = true; }, ms); }
+$('fsBtn').addEventListener('click', async () => {
+  const d = document, el = d.documentElement;
+  try {
+    if (d.fullscreenElement || d.webkitFullscreenElement) { await (d.exitFullscreen || d.webkitExitFullscreen).call(d); return; }
+    const req = el.requestFullscreen || el.webkitRequestFullscreen;
+    if (!req) throw new Error('no api');
+    await req.call(el, { navigationUI: 'hide' });
+    try { await screen.orientation.lock('landscape'); } catch (e) {}
+  } catch (e) {
+    toast('Этот браузер не даёт странице полный экран (так ведёт себя iPhone). Поверни телефон горизонтально — интерфейс подстроится.');
+  }
+});
 $('menuBtn').addEventListener('click', () => { const m = $('menu'); m.hidden = !m.hidden; $('menuBtn').setAttribute('aria-expanded', String(!m.hidden)); });
 $('seedSel').addEventListener('change', (e) => { const v = e.target.value; $('customRow').hidden = v !== 'custom'; if (v !== 'custom') setSeed(parseInt(v, 10)); });
 $('customGo').addEventListener('click', () => { const v = parseInt($('customSeed').value, 10); if (Number.isFinite(v)) setSeed(Math.abs(v)); });
@@ -657,7 +737,7 @@ function boxVisible(pl, x0, y0, z0, x1, y1, z1) {
 // =====================================================================================
 // Frame
 // =====================================================================================
-let last = performance.now(), fps = 60, scale = QUALITY[st.q].scale, slow = 0, pendingJobs = 0, shadowT = 0;
+let last = performance.now(), fps = 60, scale = QUALITY[st.q].scale, slow = 0, pendingJobs = 0, prevPos = null;
 function resize() {
   const dpr = Math.min(devicePixelRatio || 1, scale);
   const w = Math.max(1, Math.round(innerWidth * dpr)), h = Math.max(1, Math.round(innerHeight * dpr));
@@ -691,26 +771,44 @@ function nodeVisible(pl, nd) {
   const size = 32 << nd.L, x0 = nd.sx * size, z0 = nd.sz * size;
   return boxVisible(pl, x0, nd.ymin - 2, z0, x0 + size, nd.ymax + 2, z0 + size);
 }
-function renderShadow(lt) {
-  const R = Math.min(380, QUALITY[st.q].K * 64);
-  const c = [Math.round(st.x / 16) * 16, Math.round(st.y / 16) * 16, Math.round(st.z / 16) * 16];
-  const e = [c[0] + lt.sun[0] * 900, c[1] + lt.sun[1] * 900, c[2] + lt.sun[2] * 900];
+let frameNo = 0;
+function renderCSM(lt, force) {
+  const sunKey = lt.sun.map((v) => v.toFixed(4)).join(',');
+  const sunMoved = sunKey !== lastSun; lastSun = sunKey;
   const f = [-lt.sun[0], -lt.sun[1], -lt.sun[2]];
   const up = Math.abs(f[1]) > 0.99 ? [1, 0, 0] : [0, 1, 0];
-  shadowVP = mul(ortho(-R, R, -R, R, 1, 1900), lookAt(e, f, up));
-  shadowRadius = R; shadowCenter = c;
-  gl.bindFramebuffer(gl.FRAMEBUFFER, shadowFbo);
-  gl.viewport(0, 0, shadowSize, shadowSize);
-  gl.clear(gl.DEPTH_BUFFER_BIT); gl.enable(gl.DEPTH_TEST); gl.disable(gl.CULL_FACE);
-  gl.enable(gl.POLYGON_OFFSET_FILL); gl.polygonOffset(1.5, 3.0);
-  gl.useProgram(SH.p); gl.uniformMatrix4fv(SH.u.uVP, false, shadowVP);
-  const pl = frustum(shadowVP);
-  for (const nd of drawList) {
-    if (nd.L > 1 || !nodeVisible(pl, nd)) continue;
-    for (const k of [0, 2]) drawNode(nd, k, SH);
-  }
-  gl.disable(gl.POLYGON_OFFSET_FILL);
-  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  const lv = lookAt([0, 0, 0], f, up);                      // light view (rotation only)
+  let rendered = false;
+  CSM_R.forEach((R, i) => {
+    const c = csm[i];
+    const texel = (2 * R) / csmSize; c.texel = texel;
+    // camera position in light space, snapped to whole texels → stable, non-swimming shadows
+    const lx = lv[0] * st.x + lv[4] * st.y + lv[8] * st.z, ly = lv[1] * st.x + lv[5] * st.y + lv[9] * st.z;
+    const sx = Math.round(lx / texel) * texel, sy = Math.round(ly / texel) * texel;
+    const key = sunKey + '|' + sx.toFixed(2) + '|' + sy.toFixed(2);
+    const stale = c.key !== key;
+    const every = [1, 2, 6, 20][i];
+    if (!stale && !(force && i <= 1)) return;
+    if (!sunMoved && (frameNo - c.frame) < every) return;            // stagger far cascades
+    const depth = Math.max(1200, R * 3);
+    const lz = lv[2] * st.x + lv[6] * st.y + lv[10] * st.z;
+    const proj = ortho(sx - R, sx + R, sy - R, sy + R, -lz - depth, -lz + depth);
+    c.vp = mul(proj, lv); c.key = key; c.frame = frameNo;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, csmFbo[i]);
+    gl.viewport(0, 0, csmSize, csmSize);
+    gl.clear(gl.DEPTH_BUFFER_BIT); gl.enable(gl.DEPTH_TEST); gl.disable(gl.CULL_FACE);
+    gl.enable(gl.POLYGON_OFFSET_FILL); gl.polygonOffset(1.2, 2.0);
+    gl.useProgram(SH.p); gl.uniformMatrix4fv(SH.u.uVP, false, c.vp);
+    const pl = frustum(c.vp);
+    const maxL = [0, 1, 3, LMAX][i], minL = [0, 0, 0, 2][i];
+    for (const nd of drawList) {
+      if (nd.L > maxL || nd.L < minL || !nodeVisible(pl, nd)) continue;
+      for (const k of [0, 2]) drawNode(nd, k, SH);
+    }
+    gl.disable(gl.POLYGON_OFFSET_FILL);
+    rendered = true;
+  });
+  if (rendered) gl.bindFramebuffer(gl.FRAMEBUFFER, null);
   shadowDirty = false;
 }
 // three depth ranges (exact blocks / mid LOD / far LOD), each with a projection matched to its
@@ -738,7 +836,8 @@ function frame(now) {
   const ground = mainEx.vw_height_at(st.x, st.z);
   if (st.y < ground + 2.5) st.y = ground + 2.5;
   st.y = Math.min(st.y, 6000);
-  if (Math.hypot(st.x - shadowCenter[0], st.z - shadowCenter[2]) > 24 || Math.abs(st.y - shadowCenter[1]) > 48) shadowDirty = true;
+  if (prevPos && rawDt > 0) { const k = Math.min(1, rawDt * 3); for (let i = 0; i < 3; i++) vel[i] += (([st.x, st.y, st.z][i] - prevPos[i]) / rawDt - vel[i]) * k; }
+  prevPos = [st.x, st.y, st.z]; frameNo++;
   pendingJobs = schedule();
 
   const lt = lighting();
@@ -755,8 +854,8 @@ function frame(now) {
   ];
   const vps = ranges.map(([n, fa]) => mul(persp(fov, asp, n, fa), view));
   const plAll = frustum(mul(persp(fov, asp, 0.1, RMAX * 2 + st.y * 2), view));
-  drawList = buildDrawList(plAll);
-  if (shadowDirty && now - shadowT > 250) { renderShadow(lt); shadowT = now; }
+  drawList = buildDrawList();
+  renderCSM(lt, shadowDirty);
 
   gl.bindFramebuffer(gl.FRAMEBUFFER, null);
   gl.viewport(0, 0, cv.width, cv.height);
@@ -765,26 +864,40 @@ function frame(now) {
   setCommon(SK, lt); gl.uniformMatrix4fv(SK.u.uInvVP, false, invert(vps[0]));
   gl.drawArrays(gl.TRIANGLES, 0, 3);
   gl.enable(gl.DEPTH_TEST);
-  gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, shadowTex);
+  gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D_ARRAY, csmTex);
   gl.useProgram(P.p); setCommon(P, lt);
   gl.uniform1f(P.u.uTime, now / 1000);
-  gl.uniform1i(P.u.uShadow, 0); gl.uniformMatrix4fv(P.u.uShadowVP, false, shadowVP); gl.uniform1f(P.u.uShadowOn, 1); gl.uniform1f(P.u.uShadowTexel, 1 / shadowSize);
+  gl.uniform1i(P.u.uShadow, 0); gl.uniform1f(P.u.uShadowOn, 1);
+  const csmAll = new Float32Array(64); csm.forEach((c, i) => csmAll.set(c.vp, i * 16));
+  gl.uniformMatrix4fv(P.u.uCSM, false, csmAll); gl.uniform4f(P.u.uCSMTexel, csm[0].texel, csm[1].texel, csm[2].texel, csm[3].texel);
+  gl.uniform1f(P.u.uTimeV, now / 1000);
   gl.uniform1f(P.u.uCurv, 1 / (2 * 6371000)); gl.uniform3f(P.u.uCamV, st.x, st.y, st.z);
   let drawn = 0;
   GROUPS.forEach(([l0, l1], gi) => {
     if (gi > 0) gl.clear(gl.DEPTH_BUFFER_BIT);
     gl.uniformMatrix4fv(P.u.uVP, false, vps[gi]);
     const group = drawList.filter((nd) => nd.L >= l0 && nd.L <= l1 && nodeVisible(plAll, nd));
-    for (const k of [0, 2, 1]) {
+    for (const nd of group) nd.dd = distBox(nd.L, nd.sx, nd.sz);
+    group.sort((a, b) => a.dd - b.dd);                      // front to back: early-z skips hidden pixels
+    for (const k of [0, 3, 2, 1]) {
       gl.uniform1i(P.u.uKind, k);
       if (k === 0) { gl.enable(gl.CULL_FACE); gl.cullFace(gl.BACK); } else gl.disable(gl.CULL_FACE);
       if (k === 1) { gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA); gl.depthMask(false); }
-      for (const nd of group) { drawNode(nd, k, P); if (k === 0) drawn++; }
+      for (const nd of group) {
+        if (k === 3 && (nd.L > 0 || nd.dd > 70)) continue;    // grass only near the player
+        drawNode(nd, k, P); if (k === 0) drawn++;
+      }
       gl.depthMask(true); gl.disable(gl.BLEND);
     }
   });
   gl.bindVertexArray(null);
 
+  if (arriving) {
+    const near = desired.filter((n) => n.leaf && n.L === 0 && n.d < 112);
+    const ready = near.filter((n) => nodes.has(nkey(0, n.sx, n.sz))).length;
+    if (ready >= near.length || now - arriving > 12000) { arriving = 0; $('toast').hidden = true; }
+    else { const el = $('toast'); el.hidden = false; el.textContent = `Строю это место… ${ready}/${near.length}`; }
+  }
   if (!frame.hudT || now - frame.hudT > 300) {
     frame.hudT = now;
     const b = mainEx.vw_biome_at(st.x, st.z);
@@ -812,7 +925,7 @@ function frame(now) {
     const mtPtr = mainEx.vw_material_table_ptr(), mtN = mainEx.vw_material_count();
     const mt = new Float32Array(mainEx.memory.buffer.slice(mtPtr, mtPtr + mtN * 16));
     gl.useProgram(P.p); gl.uniform4fv(P.u.uMat, mt);
-    ensureShadow(QUALITY[st.q].shadow);
+    ensureShadow(QUALITY[st.q].shadow); $('quality').value = String(st.q); scale = QUALITY[st.q].scale;
     setSeed(42, 0);
     makeWorkers(wasmBytes);
     $('lText').textContent = 'Строю мир от горизонта к ногам…';
@@ -821,13 +934,14 @@ function frame(now) {
     await new Promise((res) => {
       const tick = () => {
         const missing = schedule();
-        const have = desired.length - missing;
-        $('lText').textContent = `Секций мира готово: ${have} из ${desired.length}`;
-        if ((desired.length && have >= desired.length * 0.35) || performance.now() - t0 > 15000) res(); else setTimeout(tick, 50);
+        const leaves = desired.filter((n) => n.leaf).length, have = leaves - missing;
+        const nearLeft = desired.filter((n) => n.leaf && n.L === 0 && n.d < 112 && !nodes.has(nkey(0, n.sx, n.sz))).length;
+        $('lText').textContent = `Секций мира готово: ${have} из ${leaves}`;
+        if ((leaves && have >= leaves * 0.3 && nearLeft === 0) || performance.now() - t0 > 20000) res(); else setTimeout(tick, 50);
       };
       tick();
     });
-    $('loader').hidden = true; $('hud').hidden = false; $('menuBtn').hidden = false;
+    $('loader').hidden = true; $('hud').hidden = false; $('menuBtn').hidden = false; $('fsBtn').hidden = false;
     resetStick();
     const hint = $('hint'); hint.hidden = false;
     hint.innerHTML = IS_TOUCH ? 'Левый палец — полёт, правый — обзор.<br>▲▼ — высота, ⚡ — скорость' : 'Кликни по миру, чтобы управлять мышью.<br>WASD — полёт, Пробел/Q — вверх/вниз, Shift — быстро, Esc — отпустить мышь';
