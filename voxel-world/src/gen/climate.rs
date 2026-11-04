@@ -1039,6 +1039,9 @@ fn erosion_raw(n: D2) -> D2 {
 /// half-width ≈ 600 blocks and foothills out to ≈ 2 200 blocks from the crest line. Plus the raw
 /// gate thresholds that cut the belts into ranges of finite length.
 pub const OROGENY_BAND: (f32, f32) = (0.07, 0.25);
+/// Wider band of the same crest lines for the *terrain* ramp (foothills): `M_w` reaches 0 at
+/// |b| = 0.42 instead of 0.25, so ranges rise through ≈ 2 km of foothills (climate keeps `M`).
+pub const OROGENY_WIDE: (f32, f32) = (0.08, 0.42);
 pub const OROGENY_GATE: (f32, f32) = (0.02, 0.16);
 /// Continentalness added in the core of a belt (crustal thickening).
 const OROGENY_LAND: f32 = 0.28;
@@ -1073,6 +1076,8 @@ pub struct ClimateD {
     pub h: D2,
     /// Orogeny belt mask M ∈ [0, 1] (1 = core of a mountain range).
     pub orogeny: D2,
+    /// Wide-band orogeny (terrain foothill ramp, see [`OROGENY_WIDE`]).
+    pub orogeny_wide: D2,
     /// Upwind mountain mass (rain shadow strength, 0..1) and upwind ocean fraction.
     pub shadow: f32,
     pub maritime: f32,
@@ -1130,7 +1135,7 @@ const NODE_SPACING: f64 = 32.0;
 /// Continentalness octaves stored in the lattice (λ 5200 … 325); octaves 5, 6 (λ 162, 81) are
 /// evaluated per column.
 const C_NODE_OCT: usize = 5;
-const NF: usize = 13;
+const NF: usize = 14;
 const NODE_CACHE_SIZE: usize = 2048;
 
 /// Node fields in structure-of-arrays layout (values, ∂x, ∂z): the interpolation loops over
@@ -1302,6 +1307,17 @@ impl ClimateSampler {
         Self::belt(b, g)
     }
 
+    /// Wide-band orogeny `M_w` for the terrain's foothill ramp (same crest lines and gate).
+    #[inline]
+    pub fn orogeny_wide(&self, q: &P2, x: f64, z: f64, fp: f64) -> D2 {
+        let b = q.chain(self.fbm_o.sample(q.x, q.z, fp));
+        let core = 1.0 - smoothstep_d(OROGENY_WIDE.0, OROGENY_WIDE.1, b.abs());
+        if core.v <= 0.0 {
+            return D2::ZERO;
+        }
+        core * smoothstep_d(OROGENY_GATE.0, OROGENY_GATE.1, self.fbm_og.sample(x, z, fp))
+    }
+
     #[inline]
     fn belt(b: D2, g: D2) -> D2 {
         // |b| has a kink on the crest line, but M is flat (≡ core) there: C¹ overall.
@@ -1429,6 +1445,7 @@ impl ClimateSampler {
             self.fbm_chi.sample(x, z, fp),
             D2::new((mw.x - x) as f32, mw.jxx - 1.0, mw.jxz),
             D2::new((mw.z - z) as f32, mw.jzx, mw.jzz - 1.0),
+            self.orogeny_wide(&q, x, z, fp),
         ]
     }
 
@@ -1511,6 +1528,7 @@ impl ClimateSampler {
         let he = self.cal_h.eval_d(h_raw) - sh * K_SHADOW + m * (1.0 - sh) * K_ORO + (mar - 0.5) * K_MARITIME;
         let mut cd = self.finish_d(c_raw, e_raw, n_r, t_raw, he, g_raw, m, sh, mar, q);
         cd.character = nd[10];
+        cd.orogeny_wide = nd[13];
         cd
     }
 
@@ -1540,6 +1558,7 @@ impl ClimateSampler {
         let g_raw = self.fbm_g.value(x, z, fp);
         let mut cd = self.finish_d(c_raw, e_raw, n_r, t_raw, he, g_raw, m, sh, mar, q);
         cd.character = self.fbm_chi.sample(x, z, fp);
+        cd.orogeny_wide = self.orogeny_wide(&q, x, z, fp);
         cd
     }
 
@@ -1580,6 +1599,7 @@ impl ClimateSampler {
             t,
             h,
             orogeny: m,
+            orogeny_wide: m,
             shadow: sh.v,
             maritime: mar.v,
             river_n: n_r,

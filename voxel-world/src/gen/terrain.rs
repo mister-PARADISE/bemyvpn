@@ -512,6 +512,9 @@ const TOR: RockKind = RockKind { r0: 4.0, r1: 8.0, h0: 4.0, h1: 10.0, k: 2.5, e:
 const KARST: RockKind = RockKind { r0: 9.0, r1: 15.0, h0: 20.0, h1: 38.0, k: 6.0, e: 0.3 };
 /// Butte / small mesa: flat top, cliff walls, 14–38 radius, 7–23 tall.
 const BUTTE: RockKind = RockKind { r0: 14.0, r1: 24.0, h0: 7.0, h1: 16.0, k: 10.0, e: 0.15 };
+/// Mountain crag / rock buttress on steep flanks: 10–24 radius, 16–50 tall, steep walls.
+const CRAG: RockKind = RockKind { r0: 10.0, r1: 14.0, h0: 16.0, h1: 34.0, k: 4.5, e: 0.28 };
+const CRAG_CELL: f64 = 70.0;
 /// Mountain spire / needle on high ridges: 4–10 radius, 18–50 tall.
 const SPIRE: RockKind = RockKind { r0: 4.0, r1: 6.0, h0: 18.0, h1: 32.0, k: 1.8, e: 0.9 };
 
@@ -1155,7 +1158,12 @@ impl TerrainShaper {
         // Alpine pass: the belt amplitude varies per massif (λ 2.6 km, ×0.6 … ×1.25) — dominant
         // summits nearly twice as high as their neighbours instead of an even saw-tooth range.
         let pk = if belt.v > 0.0 { smoothstep_d(-0.5, 0.5, self.peaks.sample(x, z, fp)) * 0.65 + 0.6 } else { D2::c(0.6) };
-        let amp = spline_d(&self.amp, &inp).maxf(0.0).smax(belt * pk * BELT_AMP, 30.0).maxf(0.0);
+        // (foothills: the belt amplitude follows a convex ramp M^1.7 across the wide orogeny band —
+        // low ridges far out, the big walls only toward the core — instead of rising to full
+        // height within a few hundred blocks of the plain)
+        let coast_gate = smoothstep_d(-0.12, 0.05, cd.c);
+        let ramp = if cd.orogeny_wide.v > 1e-4 { cd.orogeny_wide.minf(1.0).powf(1.7) * coast_gate } else { D2::ZERO };
+        let amp = spline_d(&self.amp, &inp).maxf(0.0).smax(ramp * pk * BELT_AMP, 30.0).maxf(0.0);
 
         // --- mountains / hills
         let q = &cd.q;
@@ -1193,7 +1201,7 @@ impl TerrainShaper {
         let vfac = smoothstep_d(-0.95, -0.35, cd.pv) * 0.65 + 0.35;
         // Orogenic massif: broad uplift under the belt core (land only) — raises the valley floors
         // of big ranges; the summits come from the ridged relief above.
-        let massif = smoothstep_d(0.05, 0.9, cd.orogeny) * smoothstep_d(-0.12, 0.05, cd.c) * OROGENIC_UPLIFT;
+        let massif = smoothstep_d(0.15, 1.0, cd.orogeny) * smoothstep_d(-0.12, 0.05, cd.c) * OROGENIC_UPLIFT;
         let mountain = amp * shape * vfac + massif;
         // Smooth steering proxy for the gully filter (see `DRidged::sample_with_steer`): regional
         // slope + rounded main crests. Sharp crests must not steer the gully phase.
@@ -1506,6 +1514,17 @@ impl TerrainShaper {
                     reg.rock = smoothstep(0.5, 2.0, r.v);
                 }
             }
+            // mountain flanks (alpine pass): rock buttresses / crag towers sticking out of the
+            // slopes — vertical walls on the downhill side, merging into the slope uphill
+            let slope_here = h.grad_len();
+            let pc = 0.42 * smoothstep(45.0, 160.0, mountain.v) * smoothstep(0.25, 0.75, slope_here) * (1.0 - reg.channel);
+            if pc > 0.0 {
+                let r = self.point_rocks(x, z, fp, CRAG_CELL, 0xC4A6, &[(CRAG, pc)]);
+                if r.v > 0.0 {
+                    h = h + r;
+                    reg.rock = reg.rock.max(smoothstep(0.5, 2.0, r.v));
+                }
+            }
             let ps = 0.32 * smoothstep(110.0, 230.0, mountain.v) * smoothstep(0.0, 0.5, cd.pv.v);
             if ps > 0.0 {
                 let r = self.point_rocks(x, z, fp, SPIRE_CELL, 0x5917E, &[(SPIRE, ps)]);
@@ -1599,10 +1618,10 @@ impl TerrainShaper {
         stage("final", h);
         // --- jaggedness (3D detail band) = crag noise + rock-shelter notches (see `density`)
         let slope = h.grad_len();
-        let j_m = if mountain.v > 60.0 {
+        let j_m = if mountain.v > 50.0 {
             let jg = smoothstep(-0.15, 0.30, self.jag.value(x, z, fp));
             // crags on steep faces only (gentle snow fields and alpine meadows stay clean)
-            16.0 * smoothstep(60.0, 260.0, mountain.v) * (0.3 + 0.7 * jg) * smoothstep(0.45, 1.1, slope)
+            22.0 * smoothstep(50.0, 220.0, mountain.v) * (0.35 + 0.65 * jg) * smoothstep(0.35, 0.95, slope)
         } else {
             0.0
         };
@@ -1615,7 +1634,7 @@ impl TerrainShaper {
         let tame = (1.0 - reg.badlands) * (1.0 - reg.desert) * (1.0 - 0.8 * reg.volcanic) * (1.0 - reg.swamp) * if lake_free { 1.0 } else { 0.0 };
         let j_notch = if lake_free && water_level == i32::MIN && reg.hoodoo < 0.05 { self.notch_reach(x, z, slope) } else { 0.0 };
         let mut jag = j_m.max(j_c).max(j_s) * tame + j_notch;
-        jag = jag.min(34.0).min((WORLD_HEIGHT as f32 - 3.0 - h.v).max(0.0));
+        jag = jag.min(40.0).min((WORLD_HEIGHT as f32 - 3.0 - h.v).max(0.0));
         if h.v >= SEA {
             // A dry column's 3D band must stay above the sea: otherwise the overhang noise
             // hollows out air pockets below sea level next to river/sea water columns, which the

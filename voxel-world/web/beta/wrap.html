@@ -120,9 +120,9 @@ if (!gl) { fail('WebGL2 недоступен', 'Нужен браузер с п�
 
 // K: split distance in node sizes (bigger = finer far detail), range: view distance in blocks
 const QUALITY = [
-  { K: 3.5, range: 20000, shadow: 1024, scale: 1.0 },
-  { K: 5, range: 30000, shadow: 2048, scale: 1.25 },
-  { K: 7, range: 40000, shadow: 2048, scale: 1.5 },
+  { K: 3.8, range: 14000, shadow: 1024, scale: 1.0 },
+  { K: 5.4, range: 20000, shadow: 2048, scale: 1.25 },
+  { K: 7.5, range: 26000, shadow: 2048, scale: 1.5 },
 ];
 const QS = new URLSearchParams(location.search);
 const st = { seed: 42, x: 0, y: 200, z: 0, yaw: 0, pitch: -0.2, tod: 35, sunAz: 210, q: Math.min(2, Math.max(0, parseInt(QS.get('q') ?? '1', 10) || 0)), fast: false, sens: 8 };
@@ -132,7 +132,7 @@ let bookmarks = {}, wasmBytes = null, ready = false;
 // Shaders
 // =====================================================================================
 const COMMON_GLSL = `
-uniform vec3 uSun; uniform vec3 uSkyH; uniform vec3 uSkyZ; uniform vec3 uSunC; uniform float uHaze; uniform vec3 uCam;
+uniform vec3 uSun; uniform vec3 uSkyH; uniform vec3 uSkyZ; uniform vec3 uSunC; uniform float uHaze; uniform vec3 uCam; uniform float uRange;
 float h3(vec3 p){ p = fract(p * 0.3183099 + vec3(0.71, 0.113, 0.419)); p *= 17.0; return fract(p.x * p.y * p.z * (p.x + p.y + p.z)); }
 float h2(vec2 p){ return h3(vec3(p, 3.17)); }
 vec3 skyCol(vec3 d){
@@ -149,6 +149,7 @@ vec3 aerial(vec3 col, vec3 wpos){
   float hAvg = max(0.0, 0.5 * (wpos.y + uCam.y) - 140.0);
   float dens = exp(-hAvg / 900.0);
   float f = 1.0 - exp(-d * dens / uHaze);
+  if (uRange > 0.0) f = max(f, smoothstep(uRange * 0.72, uRange * 0.98, length(V.xz)));   // soft world edge
   vec3 fogc = skyCol(normalize(vec3(vd.x, max(vd.y, 0.015), vd.z)));
   float s = max(dot(vd, uSun), 0.0);
   fogc += uSunC * pow(s, 10.0) * 0.25;
@@ -777,7 +778,7 @@ function lighting() {
 }
 function setCommon(pp, lt) {
   gl.uniform3fv(pp.u.uSun, lt.sun); gl.uniform3fv(pp.u.uSunC, lt.sunC); gl.uniform3fv(pp.u.uSkyZ, lt.skyZ); gl.uniform3fv(pp.u.uSkyH, lt.skyH);
-  gl.uniform1f(pp.u.uHaze, 34000); gl.uniform3f(pp.u.uCam, st.x, st.y, st.z);
+  gl.uniform1f(pp.u.uHaze, 34000); if (pp.u.uRange) gl.uniform1f(pp.u.uRange, QUALITY[st.q].range); gl.uniform3f(pp.u.uCam, st.x, st.y, st.z);
 }
 function drawNode(nd, k, pp) {
   const m = nd.kinds[k]; if (!m) return;
