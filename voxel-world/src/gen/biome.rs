@@ -19,9 +19,14 @@
 //! * −90 ≤ r < −30 on mountain flanks (sparse stunted conifers): `AlpineGrove`, cold:
 //!   `SnowyTaiga` (−60 ≤ r), steep: `StonyPeaks`.
 //!
-//! Lowland biomes partition the (T_s, H) plane (Whittaker-style) so that neighbours are climatic
-//! neighbours: desert ↔ savanna ↔ jungle, plains ↔ forest ↔ dark forest, taiga ↔ old-growth
-//! taiga; the cold end is snow-free tundra/taiga (grass, podzol, moss, gravel).
+//! Lowland biomes (gameplay pass) are decided per *landform patch* (≈ 520-block warped Voronoi
+//! cells, see `terrain::TerrainShaper::patch_mix`) by [`lowland_biome`]: a Whittaker partition of
+//! the patch's sea-level climate (jittered per patch → contrasty mosaics along climate
+//! transitions; the λ 7 km / 5.6 km temperature / humidity fields keep neighbouring patches
+//! climatic neighbours: desert ↔ savanna ↔ jungle, plains ↔ forest ↔ dark forest, taiga ↔
+//! old-growth taiga), plus hashed clearings and groves; the cold end is snow-free tundra/taiga
+//! (grass, podzol, moss, gravel). Each biome has its own landform styles (dune seas, mesa country,
+//! tower karst in jungles, crags in taiga, terraced highlands, buttes in savanna, …).
 //!
 //! Drylands are ordered by one scalar, the aridity `α = hot·dry` ([`aridity`]): savanna/steppe
 //! ring (α > 0.2) → desert (α ≳ 0.36) → red desert → badlands mesa country (α ≳ 0.65, low/mid
@@ -124,61 +129,69 @@ pub fn lowland_biome(t: f32, hu: f32, arid: f32, plain: f32, swampy: bool, mesa:
         return Swamp;
     }
     let open = plain > 0.5;
+    // weighted pick among the climate-compatible biomes of a zone (u ∈ [0,1))
+    let pick = |opts: &[(Biome, f32)]| -> Biome {
+        let total: f32 = opts.iter().map(|o| o.1).sum();
+        let mut acc = 0.0;
+        for &(b, w) in opts {
+            acc += w / total;
+            if u < acc {
+                return b;
+            }
+        }
+        opts[opts.len() - 1].0
+    };
     if t < -0.22 {
         // boreal / tundra (snow-free)
         if open {
-            return if hu > 0.55 { Taiga } else if u < 0.3 { Meadow } else { Plains };
+            return if hu > 0.55 { pick(&[(Taiga, 0.6), (Meadow, 0.25), (Plains, 0.15)]) } else { pick(&[(Plains, 0.55), (Meadow, 0.3), (Taiga, 0.15)]) };
         }
         if hu > 0.45 {
-            return if u < 0.12 { Meadow } else { OldGrowthTaiga };
+            return pick(&[(OldGrowthTaiga, 0.55), (Taiga, 0.3), (Meadow, 0.15)]);
         }
         if hu > -0.35 {
-            return if u < 0.15 { Meadow } else { Taiga };
+            return pick(&[(Taiga, 0.6), (Meadow, 0.2), (Plains, 0.1), (OldGrowthTaiga, 0.1)]);
         }
-        return if u < 0.25 { Taiga } else { Plains };
+        return pick(&[(Plains, 0.6), (Taiga, 0.25), (Meadow, 0.15)]);
     }
     if t < 0.42 {
         if open {
             if hu > 0.6 {
-                return if u < 0.35 { Meadow } else { Forest };
+                return pick(&[(Forest, 0.45), (Meadow, 0.35), (BirchForest, 0.2)]);
             }
             if hu > 0.1 {
-                return if u < 0.2 { Forest } else if u < 0.6 { Meadow } else { Plains };
+                return pick(&[(Meadow, 0.4), (Plains, 0.3), (Forest, 0.18), (BirchForest, 0.12)]);
             }
-            return if u < 0.12 { BirchForest } else { Plains };
+            return pick(&[(Plains, 0.7), (Meadow, 0.18), (BirchForest, 0.12)]);
         }
         if hu > 0.5 {
-            return if u < 0.18 { Forest } else { DarkForest };
+            return pick(&[(DarkForest, 0.6), (Forest, 0.25), (Meadow, 0.15)]);
         }
         if hu > 0.05 {
-            return if u < 0.12 { Meadow } else if u < 0.45 { BirchForest } else { Forest };
+            return pick(&[(Forest, 0.4), (BirchForest, 0.3), (Meadow, 0.18), (DarkForest, 0.12)]);
         }
         if hu > -0.35 {
-            return if u < 0.3 { Forest } else if u < 0.5 { Meadow } else { Plains };
+            return pick(&[(Plains, 0.4), (Forest, 0.3), (Meadow, 0.2), (BirchForest, 0.1)]);
         }
-        return if t > 0.25 { Savanna } else { Plains };
+        return if t > 0.25 { pick(&[(Savanna, 0.7), (Plains, 0.3)]) } else { pick(&[(Plains, 0.75), (Meadow, 0.25)]) };
     }
     // hot
     if open {
         return if hu > 0.55 {
-            Jungle
+            pick(&[(Jungle, 0.7), (Forest, 0.15), (Meadow, 0.15)])
         } else if hu > -0.15 {
-            if u < 0.3 {
-                Forest
-            } else {
-                Plains
-            }
+            pick(&[(Plains, 0.45), (Savanna, 0.3), (Forest, 0.25)])
         } else {
-            Savanna
+            pick(&[(Savanna, 0.8), (Plains, 0.2)])
         };
     }
     if hu > 0.35 {
-        return if u < 0.12 { Forest } else { Jungle };
+        return pick(&[(Jungle, 0.75), (Forest, 0.15), (Meadow, 0.1)]);
     }
     if hu > 0.1 {
-        return if u < 0.35 { Savanna } else { Forest };
+        return pick(&[(Forest, 0.45), (Savanna, 0.35), (Jungle, 0.2)]);
     }
-    Savanna
+    pick(&[(Savanna, 0.75), (Plains, 0.25)])
 }
 
 /// Retained for compatibility: surface temperature of the *old* isotherm snow line. Snow is now
@@ -781,7 +794,8 @@ impl SurfaceRules {
                     return if steep { self.rock(x, y, z, col) } else { Snow };
                 }
                 if depth < 9 + dirt_depth && !steep {
-                    return if depth < 3 { Snow } else { PackedIce };
+                    // snow on the sides of ledges, glacier ice only in deeper ice cliffs
+                    return if depth < 6 { Snow } else { PackedIce };
                 }
                 return self.rock(x, y, z, col);
             }

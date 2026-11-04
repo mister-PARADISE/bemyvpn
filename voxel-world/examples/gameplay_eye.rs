@@ -35,7 +35,14 @@ fn main() {
         };
         let c = g.column(x, z);
         let ground = c.height.max(c.water_level as f32).max(SEA_LEVEL as f32) as f64;
-        let eye = [6.0, 3.0, 14.0][ki % 3];
+        let eye = match kind.as_str() {
+            "forest" => 22.0,
+            k if k.starts_with("style:") => 7.0,
+            "mtn" => 8.0,
+            "open" => 5.0,
+            "river" => 12.0,
+            _ => 9.0,
+        };
         // most varied direction
         let mut best = (f32::MIN, 0.0f64);
         for k in 0..12 {
@@ -67,10 +74,18 @@ fn main() {
     }
 }
 
-fn want(kind: &str, c: &ColumnInfo) -> bool {
+fn want(g: &WorldGen, kind: &str, c: &ColumnInfo) -> bool {
     use Biome::*;
     let dry = c.water_level == i32::MIN;
     let sea = SEA_LEVEL as f32;
+    if let Some(st) = kind.strip_prefix("style:") {
+        if !dry || c.height < sea + 3.0 {
+            return false;
+        }
+        let cd = g.climate.sample_d(c.x, c.z, 0.0);
+        let r = g.terrain.shape(&cd, c.x, c.z, 0.0).regions;
+        return format!("{:?}", r.style) == st && r.plain < 0.5 && cd.orogeny.v < 0.3;
+    }
     match kind {
         "open" => dry && matches!(c.biome, Plains | Meadow | Savanna) && c.height < sea + 80.0,
         "forest" => dry && matches!(c.biome, Forest | BirchForest | DarkForest | Taiga | OldGrowthTaiga | Jungle),
@@ -78,6 +93,7 @@ fn want(kind: &str, c: &ColumnInfo) -> bool {
         "mtn" => dry && c.height > sea + 140.0 && c.slope < 0.5,
         "coast" => dry && matches!(c.biome, Beach | StonyShore),
         "river" => dry && c.climate.river > 0.6 && c.height < sea + 3.0,
+        "snow" => dry && matches!(c.biome, SnowySlopes | SnowyPlains | Glacier) && c.slope < 0.6,
         _ => dry && c.height > sea + 1.0,
     }
 }
@@ -88,9 +104,9 @@ fn find(g: &WorldGen, kind: &str, cx: f64, cz: f64, salt: u64) -> Option<(f64, f
         let x = (cx + (hash_f01(h) as f64 - 0.5) * 6000.0).floor() + 0.5;
         let z = (cz + (hash_f01(mix64(h)) as f64 - 0.5) * 6000.0).floor() + 0.5;
         let c = g.column_lod(x, z, 4.0);
-        if want(kind, &c) {
+        if want(g, kind, &c) {
             let c = g.column(x, z);
-            if want(kind, &c) {
+            if want(g, kind, &c) {
                 return Some((x, z));
             }
         }
@@ -103,10 +119,10 @@ fn shoot(g: &WorldGen, cam: [f64; 3], tgt: [f64; 3], path: &std::path::Path) {
         center_x: cam[0] as i32,
         center_z: cam[2] as i32,
         l0_size: 512,
-        hf_size: 1024,
+        hf_size: 512,
         hf_levels: 4,
         cave_radius: 160,
-        feature_radius: 256,
+        feature_radius: if std::env::var("BARE").is_ok() { 0 } else { 256 },
     };
     let t = std::time::Instant::now();
     let w = build_world(g, &p);

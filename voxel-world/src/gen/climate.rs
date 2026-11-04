@@ -19,7 +19,7 @@
 //!   `W = Q_W(n_r)`, `pv = 1 − sabs(3·sabs(W) − 2)` (smooth folds). Because the river centre-lines
 //!   are the zero set `n_r = 0` and valleys are `pv → −1 ⇔ W → 0`, **rivers always run along valley
 //!   floors** and ridges (`pv = 1 ⇔ |W| = ⅔`) sit between neighbouring rivers — interfluves.
-//! * temperature `T = Q_T(fBm₃(λ4200))`, base humidity `H₀ = Q_H(fBm₃(λ3200))` on half-warped
+//! * temperature `T = Q_T(fBm₃(λ7000))`, base humidity `H₀ = Q_H(fBm₃(λ5600))` on half-warped
 //!   coords; river gate `fBm₁(λ2600)` (≈70 % of valleys carry water, the rest are dry valleys).
 //! * **orogeny** (DESIGN §2a, "mountains rarer but bigger"): `M = (1 − smoothstep(b₀, b₁, |b|))
 //!   · smoothstep(g₀, g₁, g)` — tubular neighbourhoods of the zero set of a λ 30 km field `b`
@@ -37,6 +37,14 @@
 //!
 //! All octaves run on [`FastSimplex`] (branch-free 2D simplex with analytic gradient) with
 //! precomputed per-octave rotation×frequency matrices.
+//!
+//! **Climate lattice** (gameplay pass, performance): all fields with wavelengths ≥ 325 blocks
+//! (both warps, C without its two finest octaves, E, T, H, M, gate, shadow, maritime, the
+//! terrain's character χ and the river meander warp) are evaluated with exact gradients only at
+//! the vertices of a 32-block lattice (coarser for far footprints) and reconstructed per column
+//! by C¹ bicubic Hermite interpolation (zero twist) — memoised per thread, pure functions of
+//! (seed, vertex). The river-noise octaves and the fine C octaves stay per column (the valley-wall
+//! distance |n|/|∇n| is sensitive to gradient ripple). ≈ 3× cheaper than direct evaluation.
 //!
 //! **Calibration** (`Q_*`): raw fBm is bell shaped. Each `Q` is the monotone cubic Hermite
 //! interpolant (Fritsch–Carlson) through `(q_raw(pᵢ), target(pᵢ))`, where `q_raw(pᵢ)` are the
@@ -931,14 +939,14 @@ const Q_W: [f32; 25] = [
     0.5005, 0.5780, 0.6569, 0.7444, 0.8536,
 ];
 const Q_T: [f32; 25] = [
-    -0.8393, -0.7236, -0.6319, -0.5520, -0.4739, -0.3967, -0.3317, -0.2722, -0.2164, -0.1621,
-    -0.1096, -0.0577, -0.0045, 0.0495, 0.1036, 0.1579, 0.2125, 0.2684, 0.3285, 0.3947,
-    0.4716, 0.5493, 0.6303, 0.7250, 0.8457,
+    -0.8331, -0.7278, -0.6398, -0.5620, -0.4850, -0.4084, -0.3442, -0.2844, -0.2263, -0.1698,
+    -0.1157, -0.0612, -0.0073, 0.0472, 0.1001, 0.1521, 0.2063, 0.2620, 0.3223, 0.3887,
+    0.4656, 0.5457, 0.6317, 0.7317, 0.8524,
 ];
 const Q_H: [f32; 25] = [
-    -0.8386, -0.7290, -0.6357, -0.5538, -0.4740, -0.3956, -0.3295, -0.2695, -0.2129, -0.1593,
-    -0.1065, -0.0534, -0.0000, 0.0525, 0.1050, 0.1586, 0.2117, 0.2674, 0.3264, 0.3921,
-    0.4695, 0.5484, 0.6315, 0.7259, 0.8424,
+    -0.8417, -0.7327, -0.6391, -0.5572, -0.4780, -0.4001, -0.3330, -0.2732, -0.2166, -0.1624,
+    -0.1078, -0.0520, 0.0028, 0.0566, 0.1094, 0.1629, 0.2160, 0.2700, 0.3279, 0.3936,
+    0.4718, 0.5499, 0.6322, 0.7275, 0.8333,
 ];
 const Q_G: [f32; 25] = [
     -0.9773, -0.9237, -0.8794, -0.8235, -0.7499, -0.6573, -0.5649, -0.4716, -0.3780, -0.2843,
@@ -948,9 +956,9 @@ const Q_G: [f32; 25] = [
 
 // Effective humidity (rain shadow + orographic + maritime terms), before re-calibration.
 const Q_H2: [f32; 25] = [
-    -2.2216, -1.6122, -1.2339, -1.0243, -0.8975, -0.7793, -0.6785, -0.5796, -0.4759, -0.3731,
-    -0.2687, -0.1649, -0.0626, 0.0403, 0.1424, 0.2444, 0.3483, 0.4515, 0.5569, 0.6700,
-    0.7889, 0.9014, 1.0149, 1.1563, 1.4642,
+    -2.2923, -1.5923, -1.2001, -1.0131, -0.8859, -0.7703, -0.6702, -0.5697, -0.4680, -0.3693,
+    -0.2693, -0.1684, -0.0641, 0.0381, 0.1398, 0.2436, 0.3471, 0.4516, 0.5586, 0.6640,
+    0.7817, 0.8931, 1.0041, 1.1444, 1.4542,
 ];
 
 /// Target quantile function of continentalness (piecewise linear in p).
@@ -1080,6 +1088,9 @@ pub struct ClimateD {
     pub river: f32,
     /// Continental warp point (reused by the terrain for curved mountain ranges).
     pub q: P2,
+    /// Regional terrain character χ (λ 8 km; the terrain's plains / plateau-country selector),
+    /// carried by the climate lattice because it is low-frequency.
+    pub character: D2,
 }
 
 impl ClimateD {
@@ -1109,7 +1120,7 @@ struct ShadowEntry {
 const SHADOW_CACHE_SIZE: usize = 4096;
 
 /// Climate lattice (performance): every climate field except the two finest continentalness
-/// octaves has wavelengths ≥ 325 blocks, so it is evaluated (with exact gradients) only at the
+/// octaves and the river noise has wavelengths ≥ 325 blocks, so it is evaluated (with exact gradients) only at the
 /// vertices of a square lattice and reconstructed per column by C¹ bicubic Hermite
 /// interpolation from vertex values + gradients (zero twist). Spacing 32 blocks for footprints
 /// ≤ 16 (relative error ≲ 10⁻⁴ for λ ≥ 500), `2^⌈log₂ fp⌉·2` beyond (≥ 4 columns per lattice edge).
@@ -1119,8 +1130,12 @@ const NODE_SPACING: f64 = 32.0;
 /// Continentalness octaves stored in the lattice (λ 5200 … 325); octaves 5, 6 (λ 162, 81) are
 /// evaluated per column.
 const C_NODE_OCT: usize = 5;
-const NF: usize = 11;
+const NF: usize = 13;
 const NODE_CACHE_SIZE: usize = 2048;
+
+/// Node fields in structure-of-arrays layout (values, ∂x, ∂z): the interpolation loops over
+/// contiguous lanes.
+type NodeSoa = [[f32; NF]; 3];
 
 #[derive(Clone, Copy)]
 struct NodeEntry {
@@ -1128,12 +1143,60 @@ struct NodeEntry {
     key: u64,
     level: u8,
     valid: bool,
-    f: [D2; NF],
+    f: NodeSoa,
+}
+
+/// Bicubic Hermite interpolation (zero twist) of node fields `lo..hi` over one lattice cell,
+/// corners [00, 10, 01, 11]; `(u, w)` local coordinates, `h` spacing. Exact derivative of the
+/// interpolant.
+#[inline(always)]
+fn hermite_cell(n: &[NodeSoa; 4], u: f32, w: f32, h: f32, lo: usize, hi: usize) -> [D2; NF] {
+    #[inline(always)]
+    fn basis(t: f32) -> ([f32; 2], [f32; 2], [f32; 2], [f32; 2]) {
+        let t2 = t * t;
+        let t3 = t2 * t;
+        (
+            [1.0 - 3.0 * t2 + 2.0 * t3, 3.0 * t2 - 2.0 * t3],
+            [t - 2.0 * t2 + t3, t3 - t2],
+            [6.0 * t2 - 6.0 * t, 6.0 * t - 6.0 * t2],
+            [1.0 - 4.0 * t + 3.0 * t2, 3.0 * t2 - 2.0 * t],
+        )
+    }
+    let (vu, du, vu_, du_) = basis(u);
+    let (vw, dw, vw_, dw_) = basis(w);
+    let ih = 1.0 / h;
+    let (mut ov, mut ox, mut oz) = ([0.0f32; NF], [0.0f32; NF], [0.0f32; NF]);
+    for (c, (a, b)) in [(0usize, 0usize), (1, 0), (0, 1), (1, 1)].into_iter().enumerate() {
+        // value / x-slope / z-slope basis products and their u-, w-derivatives
+        let pv = vu[a] * vw[b];
+        let pv_u = vu_[a] * vw[b] * ih;
+        let pv_w = vu[a] * vw_[b] * ih;
+        let px = du[a] * vw[b] * h;
+        let px_u = du_[a] * vw[b];
+        let px_w = du[a] * vw_[b];
+        let pz = vu[a] * dw[b] * h;
+        let pz_u = vu_[a] * dw[b];
+        let pz_w = vu[a] * dw_[b];
+        let [fv, fx, fz] = &n[c];
+        for k in lo..hi {
+            ov[k] += fv[k] * pv + fx[k] * px + fz[k] * pz;
+            ox[k] += fv[k] * pv_u + fx[k] * px_u + fz[k] * pz_u;
+            oz[k] += fv[k] * pv_w + fx[k] * px_w + fz[k] * pz_w;
+        }
+    }
+    let mut out = [D2::ZERO; NF];
+    for k in lo..hi {
+        out[k] = D2::new(ov[k], ox[k], oz[k]);
+    }
+    out
 }
 
 thread_local! {
+    /// Corner nodes of the last lattice cell interpolated: ((seed, level, ix, iz), nodes).
+    static LAST_CELL: std::cell::RefCell<((u64, u8, i32, i32), [NodeSoa; 4])> =
+        std::cell::RefCell::new(((u64::MAX, 255, i32::MIN, i32::MIN), [[[0.0; NF]; 3]; 4]));
     static NODE_CACHE: std::cell::RefCell<Vec<NodeEntry>> = std::cell::RefCell::new(vec![
-        NodeEntry { seed: 0, key: 0, level: 0, valid: false, f: [D2::ZERO; NF] };
+        NodeEntry { seed: 0, key: 0, level: 0, valid: false, f: [[0.0; NF]; 3] };
         NODE_CACHE_SIZE
     ]);
 }
@@ -1161,6 +1224,7 @@ pub struct ClimateSampler {
     fbm_o: DFbm,
     fbm_og: DFbm,
     fbm_psi: DFbm,
+    fbm_chi: DFbm,
     cal_c: MonoMap,
     cal_e: MonoMap,
     cal_w: MonoMap,
@@ -1180,12 +1244,13 @@ impl ClimateSampler {
             fbm_e: DFbm::new(s("climate.erosion"), 4800.0, 4, 2.0, 0.5),
             warp_m: DWarp::new(s("climate.meander"), 700.0, 1, 45.0),
             fbm_r: DFbm::new(s("climate.river"), 2100.0, 3, 2.0, 0.42),
-            fbm_t: DFbm::new(s("climate.temperature"), 4200.0, 3, 2.0, 0.5),
-            fbm_h: DFbm::new(s("climate.humidity"), 3200.0, 3, 2.0, 0.5),
+            fbm_t: DFbm::new(s("climate.temperature"), 7000.0, 3, 2.0, 0.5),
+            fbm_h: DFbm::new(s("climate.humidity"), 5600.0, 3, 2.0, 0.5),
             fbm_g: DFbm::new(s("climate.river_gate"), 2600.0, 1, 2.0, 0.5),
             fbm_o: DFbm::new(s("climate.orogeny"), 30000.0, 2, 2.0, 0.4),
             fbm_og: DFbm::new(s("climate.orogeny_gate"), 16000.0, 2, 2.0, 0.5),
             fbm_psi: DFbm::new(s("climate.pressure"), 36000.0, 2, 2.0, 0.5),
+            fbm_chi: DFbm::new(s("terrain.character"), 8000.0, 2, 2.0, 0.5),
             cal_c: build_map(&Q_C, target_c),
             cal_e: build_map(&Q_E, uniform_target),
             cal_w: build_map(&Q_W, uniform_target),
@@ -1343,7 +1408,8 @@ impl ClimateSampler {
     }
 
     /// The low-frequency climate fields at a lattice vertex (see [`NODE_SPACING`]):
-    /// [q.x − x, q.z − z, C (octaves 0..5), E_raw, n_r, T_raw, H_raw, M, gate, shadow, maritime].
+    /// [q.x − x, q.z − z, C (octaves 0..5), E_raw, T_raw, H_raw, M, gate, shadow, maritime, χ,
+    /// m.x − x, m.z − z] (m = meander-warped point of the river noise).
     fn node_eval(&self, x: f64, z: f64, fp: f64) -> [D2; NF] {
         let q = self.warp_c.warp(&P2::identity(x, z), fp);
         let hp = q.half_from(x, z);
@@ -1354,17 +1420,19 @@ impl ClimateSampler {
             D2::new((q.z - z) as f32, q.jzx, q.jzz - 1.0),
             q.chain(self.fbm_c.sample_range(q.x, q.z, fp, 0, C_NODE_OCT)),
             q.chain(erosion_raw(self.fbm_e.sample(q.x + 7313.0, q.z - 3511.0, fp))),
-            mw.chain(self.fbm_r.sample(mw.x, mw.z, fp)),
             hp.chain(self.fbm_t.sample(hp.x, hp.z, fp)),
             hp.chain(self.fbm_h.sample(hp.x - 5101.0, hp.z + 2909.0, fp)),
             self.orogeny(&q, x, z, fp),
             self.fbm_g.sample(x, z, fp),
             sh,
             mar,
+            self.fbm_chi.sample(x, z, fp),
+            D2::new((mw.x - x) as f32, mw.jxx - 1.0, mw.jxz),
+            D2::new((mw.z - z) as f32, mw.jzx, mw.jzz - 1.0),
         ]
     }
 
-    fn node_cached(&self, level: u8, ix: i32, iz: i32, h: f64, fp: f64) -> [D2; NF] {
+    fn node_cached(&self, level: u8, ix: i32, iz: i32, h: f64, fp: f64) -> NodeSoa {
         let key = ((ix as u32 as u64) << 32) | iz as u32 as u64;
         let slot = (((ix as u32).wrapping_mul(0x9E37_79B1) ^ (iz as u32).wrapping_mul(0x85EB_CA77) ^ (level as u32).wrapping_mul(0xC2B2_AE3D))
             >> 21) as usize
@@ -1377,7 +1445,13 @@ impl ClimateSampler {
         if let Some(f) = hit {
             return f;
         }
-        let f = self.node_eval(ix as f64 * h, iz as f64 * h, fp);
+        let d = self.node_eval(ix as f64 * h, iz as f64 * h, fp);
+        let mut f = [[0.0f32; NF]; 3];
+        for k in 0..NF {
+            f[0][k] = d[k].v;
+            f[1][k] = d[k].dx;
+            f[2][k] = d[k].dz;
+        }
         NODE_CACHE.with(|c| c.borrow_mut()[slot] = NodeEntry { seed: self.seed, key, level, valid: true, f });
         f
     }
@@ -1385,6 +1459,11 @@ impl ClimateSampler {
     /// Lattice-interpolated low-frequency fields at (x, z) (bicubic Hermite, C¹, exact derivative
     /// of the interpolant).
     fn nodes(&self, x: f64, z: f64, fp: f64) -> [D2; NF] {
+        self.nodes_range(x, z, fp, 0, NF)
+    }
+
+    /// Lattice-interpolated fields `lo..hi` (others zero).
+    fn nodes_range(&self, x: f64, z: f64, fp: f64, lo: usize, hi: usize) -> [D2; NF] {
         let (level, h, nfp) = if fp <= 16.0 {
             (0u8, NODE_SPACING, 0.0)
         } else {
@@ -1397,46 +1476,23 @@ impl ClimateSampler {
         let (fx0, fz0) = (gx.floor(), gz.floor());
         let (ix, iz) = (fx0 as i32, fz0 as i32);
         let (u, w) = ((gx - fx0) as f32, (gz - fz0) as f32);
-        let n00 = self.node_cached(level, ix, iz, h, nfp);
-        let n10 = self.node_cached(level, ix + 1, iz, h, nfp);
-        let n01 = self.node_cached(level, ix, iz + 1, h, nfp);
-        let n11 = self.node_cached(level, ix + 1, iz + 1, h, nfp);
-        // Hermite basis: value weights V0, V1, slope weights D0, D1 (× h) and their derivatives.
-        #[inline(always)]
-        fn basis(t: f32) -> ([f32; 2], [f32; 2], [f32; 2], [f32; 2]) {
-            let t2 = t * t;
-            let t3 = t2 * t;
-            (
-                [1.0 - 3.0 * t2 + 2.0 * t3, 3.0 * t2 - 2.0 * t3],
-                [t - 2.0 * t2 + t3, t3 - t2],
-                [6.0 * t2 - 6.0 * t, 6.0 * t - 6.0 * t2],
-                [1.0 - 4.0 * t + 3.0 * t2, 3.0 * t2 - 2.0 * t],
-            )
+        // the 4 corner nodes of the last lattice cell asked (raster-order callers stay in a cell
+        // for ≈ 32 columns): interpolate in place, no copy
+        let key = (self.seed, level, ix, iz);
+        if let Some(out) = LAST_CELL.with(|c| {
+            let c = c.borrow();
+            (c.0 == key).then(|| hermite_cell(&c.1, u, w, h as f32, lo, hi))
+        }) {
+            return out;
         }
-        let (vu, du, vu_, du_) = basis(u);
-        let (vw, dw, vw_, dw_) = basis(w);
-        let hf = h as f32;
-        let ih = 1.0 / hf;
-        let mut out = [D2::ZERO; NF];
-        let corners = [(&n00, 0usize, 0usize), (&n10, 1, 0), (&n01, 0, 1), (&n11, 1, 1)];
-        for (n, a, b) in corners {
-            // value / x-slope / z-slope basis products and their u-, w-derivatives
-            let pv = vu[a] * vw[b];
-            let pv_u = vu_[a] * vw[b] * ih;
-            let pv_w = vu[a] * vw_[b] * ih;
-            let px = du[a] * vw[b] * hf;
-            let px_u = du_[a] * vw[b];
-            let px_w = du[a] * vw_[b];
-            let pz = vu[a] * dw[b] * hf;
-            let pz_u = vu_[a] * dw[b];
-            let pz_w = vu[a] * dw_[b];
-            for k in 0..NF {
-                let f = n[k];
-                out[k].v += f.v * pv + f.dx * px + f.dz * pz;
-                out[k].dx += f.v * pv_u + f.dx * px_u + f.dz * pz_u;
-                out[k].dz += f.v * pv_w + f.dx * px_w + f.dz * pz_w;
-            }
-        }
+        let n = [
+            self.node_cached(level, ix, iz, h, nfp),
+            self.node_cached(level, ix + 1, iz, h, nfp),
+            self.node_cached(level, ix, iz + 1, h, nfp),
+            self.node_cached(level, ix + 1, iz + 1, h, nfp),
+        ];
+        let out = hermite_cell(&n, u, w, h as f32, lo, hi);
+        LAST_CELL.with(|c| *c.borrow_mut() = (key, n));
         out
     }
 
@@ -1446,10 +1502,30 @@ impl ClimateSampler {
         let nd = self.nodes(x, z, fp);
         let q = P2 { x: x + nd[0].v as f64, z: z + nd[1].v as f64, jxx: 1.0 + nd[0].dx, jxz: nd[0].dz, jzx: nd[1].dx, jzz: 1.0 + nd[1].dz };
         let c_raw = nd[2] + q.chain(self.fbm_c.sample_range(q.x, q.z, fp, C_NODE_OCT, usize::MAX));
-        let (e_raw, n_r, t_raw, h_raw, m, sh, mar) = (nd[3], nd[4], nd[5], nd[6], nd[7], nd[9], nd[10]);
-        let g_raw = nd[8].v;
+        // The river noise octaves are evaluated per column (only its meander warp is
+        // interpolated): the valley walls use the distance |n|/|∇n|, whose dropped Hessian term
+        // would amplify the lattice's small gradient ripple far from the channel.
+        let n_r = self.river_from_nodes(&nd, x, z, fp);
+        let (e_raw, t_raw, h_raw, m, sh, mar) = (nd[3], nd[4], nd[5], nd[6], nd[8], nd[9]);
+        let g_raw = nd[7].v;
         let he = self.cal_h.eval_d(h_raw) - sh * K_SHADOW + m * (1.0 - sh) * K_ORO + (mar - 0.5) * K_MARITIME;
-        self.finish_d(c_raw, e_raw, n_r, t_raw, he, g_raw, m, sh, mar, q)
+        let mut cd = self.finish_d(c_raw, e_raw, n_r, t_raw, he, g_raw, m, sh, mar, q);
+        cd.character = nd[10];
+        cd
+    }
+
+    /// The raw river noise `n_r` alone (zero set = river centre-lines), with gradient.
+    pub fn river_noise(&self, x: f64, z: f64, fp: f64) -> D2 {
+        let nd = self.nodes_range(x, z, fp, 11, 13);
+        self.river_from_nodes(&nd, x, z, fp)
+    }
+
+    /// River noise from the (interpolated) meander-warped point: the octaves themselves are
+    /// evaluated per column (see `sample_d`).
+    #[inline]
+    fn river_from_nodes(&self, nd: &[D2; NF], x: f64, z: f64, fp: f64) -> D2 {
+        let mw = P2 { x: x + nd[11].v as f64, z: z + nd[12].v as f64, jxx: 1.0 + nd[11].dx, jxz: nd[11].dz, jzx: nd[12].dx, jzz: 1.0 + nd[12].dz };
+        mw.chain(self.fbm_r.sample(mw.x, mw.z, fp))
     }
 
     /// Reference implementation of [`ClimateSampler::sample_d`] without the lattice (tests).
@@ -1462,7 +1538,9 @@ impl ClimateSampler {
         let hp = q.half_from(x, z);
         let t_raw = hp.chain(self.fbm_t.sample(hp.x, hp.z, fp));
         let g_raw = self.fbm_g.value(x, z, fp);
-        self.finish_d(c_raw, e_raw, n_r, t_raw, he, g_raw, m, sh, mar, q)
+        let mut cd = self.finish_d(c_raw, e_raw, n_r, t_raw, he, g_raw, m, sh, mar, q);
+        cd.character = self.fbm_chi.sample(x, z, fp);
+        cd
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1510,6 +1588,7 @@ impl ClimateSampler {
             river_width,
             river,
             q,
+            character: D2::ZERO,
         }
     }
 }

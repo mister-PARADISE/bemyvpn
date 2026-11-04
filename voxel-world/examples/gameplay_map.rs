@@ -43,7 +43,7 @@ fn main() {
             let (lx, ly, lz) = (-0.6f32, 0.7f32, -0.4f32);
             let nl = (1.0 + dx * dx + dz * dz).sqrt();
             let sh = ((-dx * lx + ly - dz * lz) / nl).max(0.0);
-            let shade = 0.35 + 0.8 * sh;
+            let shade = 0.15 + 1.05 * sh;
             let mut col = b.map_color().map(|v| v as f32 / 255.0);
             let wet = wl != i32::MIN && wl as f32 > h;
             if wet {
@@ -56,7 +56,12 @@ fn main() {
                 col = [0.45, 0.43, 0.42];
             }
             if !wet && jag > 0.5 {
-                col = [col[0] * 0.85 + 0.1, col[1] * 0.85, col[2] * 0.85 + 0.1];
+                col = [col[0] * 0.9 + 0.05, col[1] * 0.9, col[2] * 0.9 + 0.08];
+            }
+            if !wet {
+                // desaturate so the relief reads first
+                let l = 0.3 * col[0] + 0.55 * col[1] + 0.15 * col[2];
+                col = [0.55 * col[0] + 0.45 * l, 0.55 * col[1] + 0.45 * l, 0.55 * col[2] + 0.45 * l];
             }
             let k = if wet { 0.85 + 0.15 * shade } else { shade };
             // faint contour lines every 10 blocks
