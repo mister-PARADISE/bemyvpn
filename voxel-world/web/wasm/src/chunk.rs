@@ -9,14 +9,28 @@
 //! * kind 1 water: faces toward air / leaves only (no walls inside water, none against ground);
 //! * kind 2 leaves: faces toward air / water (leaf–leaf faces culled; draw double-sided).
 //!
+//! Caves (exact chunks only, see `terrain.rs`): the cave lattice `F̂` of every column is blended
+//! from memoised node columns before voxelisation (only at levels where some corner node is
+//! positive, ± 1); the dense grid reaches down to the lowest block with `F̂ > 0` in the region;
+//! carved solid blocks take `cave_fill` (air / aquifer water / lava). Below the terrain surface
+//! band the voxel pass writes the cheap deep fill, then every such block next to a carved one
+//! (cave wall, floor, ceiling) gets its real `surface_material`. Each column is meshed
+//! over two y intervals: the surface band and the carved range of itself and its 4 neighbours
+//! (± 1), so solid rock between a cave and the surface is never scanned and no face is emitted
+//! inside it. Layers are meshed top-down: seen from above, a chunk's surface faces come first in
+//! its buffers and its cave faces fail the early depth test.
+//!
 //! Per vertex: voxel corner AO (opaque + leaves occlude) and a sky-light estimate: the mean
 //! "openness" of the 2×2 columns around the vertex at the air-side height (open sky 1, below
-//! leaves only 0.55, below rock 0.15) → flat open ground 255, cliff walls ≈ 145, overhang
-//! undersides and forest floors darker. Quads are rotated so the AO interpolation diagonal
-//! follows the darker corners (no anisotropy). Coplanar +Y faces with identical attributes are
-//! greedily merged (per kind, see `merge_mask`; default water + foliage).
+//! leaves only 0.55, below rock 0.15 fading to 0 between 4 and 16 blocks under the column's top
+//! opaque block) → flat open ground 255, cliff walls ≈ 145, overhang undersides and forest
+//! floors darker, cave interiors 0 (the viewer adds a faint cave ambient and a headlamp).
+//! Quads are rotated so the AO interpolation diagonal follows the darker corners (no
+//! anisotropy). Coplanar +Y faces with identical attributes are greedily merged (per kind, see
+//! `merge_mask`; default water + foliage).
 use crate::features::{FeatureCache, Run};
-use crate::terrain::{deep_fill, Liquids, Nodes, Shape, WH};
+use crate::terrain::{carves, deep_fill, Liquids, Nodes, Shape, CAVE_OUT, LAT, MW, WET_GUARD, WH};
+use voxel_world::gen::caves::{LAVA_LEVEL, MIN_CARVE_Y};
 use voxel_world::gen::{ColumnInfo, WorldGen};
 use voxel_world::materials::{foliage_tint, grass_tint, linear_to_srgb, srgb8, terracotta_band, Material, MATERIAL_COUNT};
 use voxel_world::math::Vec3;
@@ -111,6 +125,8 @@ pub struct ChunkBuilder {
     pub merge_mask: u32,
     /// Composite trees/boulders (tests switch this off to inspect bare terrain).
     pub features: bool,
+    /// Carve caves in exact chunks (tests switch this off to compare with the bare heightfield).
+    pub caves: bool,
     liquids: Option<(u64, Liquids)>,
     pub nodes: Nodes,
     pub feats: FeatureCache,
@@ -130,6 +146,19 @@ pub struct ChunkBuilder {
     runs: Vec<Run>,
     band: Vec<bool>,
     mask: Vec<u64>,
+    // caves: per column bilinear lattice field for levels [cave_j0, cave_j0 + cave_n) at
+    // `cpool[cave_off..]`; lowest y with F̂ > 0 (bound, WH = none); carved y range after
+    // voxelisation (cav_lo > cav_hi = none); lowest y written per column
+    cave_j0: Vec<i32>,
+    cave_n: Vec<i32>,
+    cave_off: Vec<u32>,
+    cpool: Vec<f32>,
+    cave_lo_b: Vec<i32>,
+    cav_lo: Vec<i32>,
+    cav_hi: Vec<i32>,
+    wlo: Vec<i32>,
+    /// Run depth (saturated) of every solid block below the surface band (`vox` layout).
+    dep: Vec<u8>,
     // output
     pub out: [Vec<u8>; 4],
     pub ymin: i32,
@@ -154,6 +183,12 @@ impl Default for ChunkBuilder {
 fn pack_srgb(c: Vec3) -> u32 {
     let q = |v: f32| ((linear_to_srgb(v.clamp(0.0, 1.0)) * 255.0 + 0.5) as u32).min(255);
     q(c.x) | (q(c.y) << 8) | (q(c.z) << 16)
+}
+
+/// The materials `deep_fill` writes (invisible rock placeholders below the surface band).
+#[inline]
+fn is_deep_fill(m: u8) -> bool {
+    m == Material::Stone as u8 || m == Material::Deepslate as u8 || m == Material::Bedrock as u8
 }
 
 /// Terracotta: the material table stores the palest band; the tint carries band / palest.
@@ -187,6 +222,7 @@ impl ChunkBuilder {
             occ,
             merge_mask: DEFAULT_MERGE,
             features: true,
+            caves: true,
             liquids: None,
             nodes: Nodes::new(),
             feats: FeatureCache::new(),
@@ -205,6 +241,15 @@ impl ChunkBuilder {
             runs: Vec::new(),
             band: vec![false; WH as usize + 2],
             mask: vec![0; (CS * CS) as usize],
+            cave_j0: vec![0; LAYER],
+            cave_n: vec![0; LAYER],
+            cave_off: vec![0; LAYER],
+            cpool: Vec::new(),
+            cave_lo_b: vec![WH; LAYER],
+            cav_lo: vec![WH; LAYER],
+            cav_hi: vec![-1; LAYER],
+            wlo: vec![0; LAYER],
+            dep: Vec::new(),
             out: [Vec::new(), Vec::new(), Vec::new(), Vec::new()],
             ymin: 0,
             ymax: 0,
@@ -271,10 +316,13 @@ impl ChunkBuilder {
                 }
             }
         }
+        // ---- 2b. cave lattice: per column F̂ at its lattice levels + lowest carvable y
+        let cave_min = self.cave_lattice(gen);
+
         // ---- 3. features touching the region
         self.feats.trim_around(cx, cz);
         self.runs.clear();
-        let ftop = if self.features { self.feats.collect_runs(gen, &mut self.nodes, rx0, rz0, W, &mut self.runs) } else { 0 };
+        let ftop = if self.features { self.feats.collect_runs(gen, &mut self.nodes, rx0, rz0, W, self.caves, &mut self.runs) } else { 0 };
 
         // world trees (ultra-rare colossal landmarks) touching the region
         let wts = crate::worldtree::trees_for(gen, rx0, rz0, W, 1);
@@ -287,25 +335,37 @@ impl ChunkBuilder {
             yt = yt.max(s.hi).max(s.wl);
         }
         yt = yt.max(ftop).max(crate::worldtree::top(&wts, 1)).min(WH);
-        let yb = (min_floor - 1).max(0);
+        let yb = (min_floor - 1).min(cave_min - 1).max(0);
         self.yb = yb;
         self.yt = yt;
         let nl = (yt - yb + 2) as usize;
         self.vox.clear();
-        self.vox.resize(nl * LAYER, Material::Air as u8);
-        self.vox[..LAYER].fill(Material::Stone as u8); // pad layer y = yb − 1: solid
+        // solid by default: below its lowest written y (`wlo`) every column is uncarved rock,
+        // so its class is right without touching it (this includes the pad layer y = yb − 1);
+        // the top layer y = yt is air
+        self.vox.resize(nl * LAYER, Material::Stone as u8);
+        self.vox[(nl - 1) * LAYER..].fill(Material::Air as u8);
+        if self.dep.len() < nl * LAYER {
+            self.dep.resize(nl * LAYER, 0);
+        }
 
-        // per-column lowest y that may carry a visible face
+        // per-column lowest y that may carry a visible terrain-surface face, and lowest y written
+        // (which also covers the block under the lowest carvable one and the carvable range of
+        // the 4 neighbours, whose cave walls this column's blocks form)
         for lz in 0..W {
             for lx in 0..W {
                 let c = (lz * W + lx) as usize;
+                let interior = lx > 0 && lz > 0 && lx < W - 1 && lz < W - 1;
                 let mut lo = self.shapes[c].floor - 1;
-                if lx > 0 && lz > 0 && lx < W - 1 && lz < W - 1 {
+                let mut wl = self.cave_lo_b[c] - 1;
+                if interior {
                     for nc in [c - 1, c + 1, c - WU, c + WU] {
                         lo = lo.min(self.shapes[nc].floor);
+                        wl = wl.min(self.cave_lo_b[nc]);
                     }
                 }
                 self.y_lo[c] = lo.max(yb);
+                self.wlo[c] = wl.min(lo).max(yb);
             }
         }
 
@@ -325,7 +385,19 @@ impl ChunkBuilder {
                 let mut depth = 0i32;
                 let mut in_run = false;
                 let base = c + LAYER; // layer index for y = yb
-                for y in (yb..yt).rev() {
+                // caves: this column's lattice levels; no carving within WET_GUARD blocks of the
+                // top of a water-covered column (set at its top solid block)
+                let (cj0, cn, coff) = (self.cave_j0[c], self.cave_n[c], self.cave_off[c] as usize);
+                let wet = col.water_level != i32::MIN && col.water_level as f32 > col.height;
+                let mut carve_max = WH;
+                let mut seen_solid = false;
+                let (mut clo, mut chi) = (WH, -1);
+                // `cave_fill` depends on (x, z) only through the aquifer cell: lava at
+                // y ≤ LAVA_LEVEL, water below the cell's table (≤ AQ_MAX_LEVEL), else air — one
+                // table lookup per column (test `caves_carved_and_point_queries_agree` checks
+                // this against `WorldGen::cave_fill`)
+                let mut table: Option<Option<f32>> = None;
+                for y in (self.wlo[c]..yt).rev() {
                     let solid = if y < s.floor {
                         true
                     } else if y < s.hi {
@@ -334,13 +406,49 @@ impl ChunkBuilder {
                         false
                     };
                     let m = if solid {
-                        let d = if in_run { depth } else { 0 };
-                        in_run = true;
-                        depth = d + 1;
-                        if y >= mat_lo {
-                            gen.surface_material(x, y, z, d, &col)
+                        if !seen_solid {
+                            seen_solid = true;
+                            if wet {
+                                carve_max = y + 1 - WET_GUARD;
+                            }
+                        }
+                        // lattice cell of y: levels j, j + 1 (both inside the column's range
+                        // whenever the cell can carve, see `cave_lattice`)
+                        let j = y.div_euclid(LAT);
+                        let k = j - cj0;
+                        let (f0, f1) = if k >= 0 && k + 1 < cn {
+                            (self.cpool[coff + k as usize], self.cpool[coff + k as usize + 1])
                         } else {
-                            deep_fill(y)
+                            (CAVE_OUT, CAVE_OUT)
+                        };
+                        let fy = (y - j * LAT) as f32 / LAT as f32;
+                        if y >= MIN_CARVE_Y && y < carve_max && carves(f0, f1, fy) {
+                            in_run = false;
+                            depth = 0;
+                            clo = y;
+                            chi = chi.max(y);
+                            if y <= LAVA_LEVEL {
+                                Material::Lava
+                            } else {
+                                let t = *table.get_or_insert_with(|| gen.caves.water_table(x as f64 + 0.5, z as f64 + 0.5));
+                                match t {
+                                    Some(l) if (y as f32) < l => Material::Water,
+                                    _ => Material::Air,
+                                }
+                            }
+                        } else {
+                            let d = if in_run { depth } else { 0 };
+                            in_run = true;
+                            depth = d + 1;
+                            if y >= mat_lo {
+                                gen.surface_material(x, y, z, d, &col)
+                            } else {
+                                // deep rock; the cave walls among it get their real material in
+                                // step 5b (run depth kept in `dep`; every rule of
+                                // `surface_material` saturates far below 127)
+                                self.dep[base + (y - yb) as usize * LAYER] = d.min(127) as u8;
+                                deep_fill(y)
+                            }
                         }
                     } else {
                         in_run = false;
@@ -353,6 +461,8 @@ impl ChunkBuilder {
                     };
                     self.vox[base + (y - yb) as usize * LAYER] = m as u8;
                 }
+                self.cav_lo[c] = clo;
+                self.cav_hi[c] = chi;
                 // ice on the top liquid block
                 if s.wl > yb && s.wl <= yt && liquid == Material::Water {
                     let i = base + (s.wl - 1 - yb) as usize * LAYER;
@@ -361,6 +471,11 @@ impl ChunkBuilder {
                     }
                 }
             }
+        }
+
+        // ---- 5b. cave walls: deep-fill rock next to a cavity gets its real material
+        if self.caves {
+            self.cave_walls(gen, rx0, rz0);
         }
 
         // ---- 6. composite features (runs sorted by column, decreasing priority)
@@ -398,6 +513,153 @@ impl ChunkBuilder {
         // ---- 8. mesh
         self.mesh(gen, rx0, rz0);
         self.plants(gen, rx0, rz0);
+    }
+
+    /// Step 2b: cave lattice of the region. Evaluates (memoised) every corner node's cave column,
+    /// blends each column's levels [ja, jb] (ja = lowest evaluated corner level, jb = the level
+    /// above the cell of the column's highest possibly-solid block `hi − 1`) into `cpool` and
+    /// finds the lowest y with `F̂ > 0` (`cave_lo_b`, a bound for the dense grid; carving also
+    /// needs a solid block below the wet guard). Returns the region minimum (WH = no caves).
+    fn cave_lattice(&mut self, gen: &WorldGen) -> i32 {
+        self.cpool.clear();
+        if !self.caves {
+            self.cave_n.fill(0);
+            self.cave_lo_b.fill(WH);
+            return WH;
+        }
+        for c in 0..LAYER {
+            for k in 0..4 {
+                if self.shapes[c].w[k] != 0.0 {
+                    self.nodes.ensure_cave(gen, self.shapes[c].nodes[k]);
+                }
+            }
+        }
+        let mut cmin = WH;
+        for c in 0..LAYER {
+            let s = self.shapes[c];
+            self.cave_lo_b[c] = WH;
+            self.cave_n[c] = 0;
+            // levels where some corner node is > 0, dilated by one level: both ends of every
+            // cell that can carve. Any other level is stored as CAVE_OUT (its cells have all
+            // corner values ≤ 0 at both ends, so they cannot carve either way).
+            let mut m = [0u64; MW];
+            let mut ja = WH;
+            for k in 0..4 {
+                if s.w[k] != 0.0 {
+                    let cc = &self.nodes.cave[s.nodes[k] as usize];
+                    for (mw, pw) in m.iter_mut().zip(cc.pos.iter()) {
+                        *mw |= pw;
+                    }
+                    ja = ja.min(cc.j0);
+                }
+            }
+            if m.iter().all(|&w| w == 0) {
+                continue;
+            }
+            let mut need = m;
+            for w in 0..MW {
+                need[w] |= (m[w] << 1) | (m[w] >> 1);
+                if w > 0 {
+                    need[w] |= m[w - 1] >> 63;
+                }
+                if w + 1 < MW {
+                    need[w] |= m[w + 1] << 63;
+                }
+            }
+            let ja = ja.max(MIN_CARVE_Y / LAT);
+            let jb = (s.hi - 1).div_euclid(LAT) + 1;
+            self.cave_j0[c] = ja;
+            if jb <= ja {
+                continue;
+            }
+            let off = self.cpool.len();
+            self.cave_off[c] = off as u32;
+            self.cave_n[c] = jb - ja + 1;
+            for j in ja..=jb {
+                let v = if (need[j as usize >> 6] >> (j & 63)) & 1 != 0 { self.nodes.bcave(gen, &s.nodes, &s.w, j) } else { CAVE_OUT };
+                self.cpool.push(v);
+            }
+            // (cells below ja cannot carve: their lower level is CAVE_OUT = −64 and F ≤ ≈ 15)
+            'find: for j in ja..jb {
+                let k = off + (j - ja) as usize;
+                let (f0, f1) = (self.cpool[k], self.cpool[k + 1]);
+                if f0 <= 0.0 && f1 <= 0.0 {
+                    continue;
+                }
+                for y in (j * LAT).max(MIN_CARVE_Y)..((j + 1) * LAT).min(s.hi) {
+                    if carves(f0, f1, (y - j * LAT) as f32 / LAT as f32) {
+                        self.cave_lo_b[c] = y;
+                        break 'find;
+                    }
+                }
+            }
+            cmin = cmin.min(self.cave_lo_b[c]);
+        }
+        cmin
+    }
+
+    /// Step 5b: below its surface band (`y_lo`) an interior column holds only deep-fill rock and
+    /// cave fill. Every carved block marks its deep-fill 6-neighbours (bit 7 of `dep`) — exactly
+    /// the rock that can show a face toward a cavity (wall, floor, ceiling) — then each column is
+    /// resolved bottom-up with `surface_material` and the run depth kept in `dep` (column order
+    /// keeps the generator's per-column geology cache warm).
+    fn cave_walls(&mut self, gen: &WorldGen, rx0: i32, rz0: i32) {
+        let yb = self.yb;
+        // 1. mark from every carved / non-opaque block of every column (margins expose too)
+        for lz in 0..W {
+            for lx in 0..W {
+                let c = (lz * W + lx) as usize;
+                if self.cav_lo[c] > self.cav_hi[c] {
+                    continue;
+                }
+                for y in self.cav_lo[c]..=self.cav_hi[c] {
+                    let vi = self.vidx(lx, y, lz);
+                    let m = self.vox[vi];
+                    if self.cls[m as usize] == C_FULL && m != Material::Lava as u8 {
+                        continue;
+                    }
+                    for (d, &o) in self.tab.nb.iter().enumerate() {
+                        let n = NORMALS[d];
+                        let (nx, ny, nz) = (lx + n[0], y + n[1], lz + n[2]);
+                        if nx < 1 || nz < 1 || nx > W - 2 || nz > W - 2 || ny < yb {
+                            continue;
+                        }
+                        let nc = (nz * W + nx) as usize;
+                        let ni = (vi as isize + o) as usize;
+                        if ny < self.y_lo[nc] && ny >= self.wlo[nc] && is_deep_fill(self.vox[ni]) {
+                            self.dep[ni] |= 0x80;
+                        }
+                    }
+                }
+            }
+        }
+        // 2. resolve the marked blocks column by column
+        for lz in 1..W - 1 {
+            for lx in 1..W - 1 {
+                let c = (lz * W + lx) as usize;
+                let (mut a, mut b) = (WH, -1);
+                for cc in [c, c - 1, c + 1, c - WU, c + WU] {
+                    if self.cav_lo[cc] <= self.cav_hi[cc] {
+                        a = a.min(self.cav_lo[cc]);
+                        b = b.max(self.cav_hi[cc]);
+                    }
+                }
+                let a = (a - 1).max(self.wlo[c]);
+                let b = (b + 1).min(self.y_lo[c] - 1);
+                if a > b {
+                    continue;
+                }
+                let col = self.cols[c];
+                let (x, z) = (rx0 + lx, rz0 + lz);
+                for y in a..=b {
+                    let vi = self.vidx(lx, y, lz);
+                    let dp = self.dep[vi];
+                    if dp & 0x80 != 0 && is_deep_fill(self.vox[vi]) {
+                        self.vox[vi] = gen.surface_material(x, y, z, (dp & 0x7F) as i32, &col) as u8;
+                    }
+                }
+            }
+        }
     }
 
     /// Grass tufts, tall grass and flowers on exposed grass blocks (exact chunks only): two
@@ -503,7 +765,10 @@ impl ChunkBuilder {
         } else if ys > self.top_opq[c] {
             0.55
         } else {
-            0.15
+            // under rock: overhang undersides 0.15, fading to 0 from 4 to 16 blocks below the
+            // column's top opaque block (cave interiors)
+            let t = ((self.top_opq[c] - ys) * self.scale) as f32;
+            0.15 * ((16.0 - t) * (1.0 / 12.0)).clamp(0.0, 1.0)
         }
     }
 
@@ -539,33 +804,46 @@ impl ChunkBuilder {
         let (yb, yt) = (self.yb, self.yt);
         let mut ylo_all = i32::MAX;
         let mut yhi_all = i32::MIN;
-        for lz in 1..W - 1 {
-            for lx in 1..W - 1 {
-                let c = (lz * W + lx) as usize;
-                ylo_all = ylo_all.min(self.y_lo[c]);
-                yhi_all = yhi_all.max(self.top_nonair[c]);
-            }
-        }
         self.ymin = i32::MAX;
         self.ymax = i32::MIN;
-        let mut ylo = vec![0i32; (CS * CS) as usize];
-        let mut yhi = vec![0i32; (CS * CS) as usize];
+        // per column two y intervals: the terrain surface band [y_lo, top_nonair] and the carved
+        // range of the column and its 4 neighbours, ± 1 (cave floors, ceilings and side walls)
+        let n2 = (CS * CS) as usize;
+        let (mut ylo, mut yhi) = (vec![0i32; n2], vec![0i32; n2]);
+        let (mut clo, mut chi) = (vec![WH; n2], vec![-1i32; n2]);
         for lz in 1..W - 1 {
             for lx in 1..W - 1 {
                 let c = (lz * W + lx) as usize;
                 let k = ((lz - 1) * CS + lx - 1) as usize;
                 ylo[k] = self.y_lo[c];
                 yhi[k] = self.top_nonair[c];
+                ylo_all = ylo_all.min(ylo[k]);
+                yhi_all = yhi_all.max(yhi[k]);
+                let (mut a, mut b) = (WH, -1);
+                for cc in [c, c - 1, c + 1, c - WU, c + WU] {
+                    if self.cav_lo[cc] <= self.cav_hi[cc] {
+                        a = a.min(self.cav_lo[cc]);
+                        b = b.max(self.cav_hi[cc]);
+                    }
+                }
+                if a <= b {
+                    clo[k] = (a - 1).max(yb);
+                    chi[k] = b + 1;
+                    ylo_all = ylo_all.min(clo[k]);
+                    yhi_all = yhi_all.max(chi[k]);
+                }
             }
         }
-        let mut y = ylo_all.max(yb);
-        let yend = yhi_all.min(yt - 1);
-        while y <= yend {
+        // top-down: surface faces come first in the buffers, so seen from above the cave faces of
+        // the same chunk fail the early depth test instead of being shaded and overdrawn
+        let ystart = ylo_all.max(yb);
+        let mut y = yhi_all.min(yt - 1);
+        while y >= ystart {
             let mut any_mask = false;
             for lz in 1..W - 1 {
                 for lx in 1..W - 1 {
                     let k = ((lz - 1) * CS + lx - 1) as usize;
-                    if y < ylo[k] || y > yhi[k] {
+                    if (y < ylo[k] || y > yhi[k]) && (y < clo[k] || y > chi[k]) {
                         continue;
                     }
                     let vi = self.vidx(lx, y, lz);
@@ -594,7 +872,7 @@ impl ChunkBuilder {
             if any_mask {
                 self.flush_mask(y);
             }
-            y += 1;
+            y -= 1;
         }
         if self.ymin > self.ymax {
             self.ymin = yb;
@@ -997,6 +1275,8 @@ impl ChunkBuilder {
                 }
             }
         }
+        self.cav_lo.fill(WH);
+        self.cav_hi.fill(-1);
         // ---- 6. heights for sky light / meshing ranges (same as exact chunks)
         for c in 0..LAYER {
             let mut tn = yb - 1;

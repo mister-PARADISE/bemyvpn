@@ -2,6 +2,10 @@
 //! builds), anchored on the root column's top solid block exactly like the world builder, and
 //! turned into per-column runs with the builder's order-independent priorities
 //! (class replace_solid 3 > log 2 > other 1 > leaves 0, then a hash of the root).
+//!
+//! With caves, a feature whose root block or trunk base block is carved (a cave entrance under
+//! it) is dropped — decided from the cave lattice at those blocks, a pure function of the world,
+//! so every chunk that sees the tree agrees (no half trees, no trees floating over a hole).
 use crate::terrain::{column_top, Nodes, WH};
 use std::collections::HashMap;
 use voxel_world::gen::{FeatureColumn, WorldGen, MAX_FEATURE_RADIUS};
@@ -17,6 +21,30 @@ pub struct Placed {
     pub radius: i32,
     pub key: u32,
     pub cols: Vec<FeatureColumn>,
+    /// Cave check (lazily evaluated): false when a cave entrance carved the ground under it.
+    pub grounded: Option<bool>,
+}
+
+/// Is the ground under the feature's root column and trunk bases intact (not carved)?
+fn grounded(gen: &WorldGen, nodes: &mut Nodes, p: &Placed) -> bool {
+    let y = p.base_y - 1;
+    let mut seen: [(i16, i16); 8] = [(i16::MIN, 0); 8];
+    let mut ns = 0;
+    for fc in &p.cols {
+        let base = (fc.dx == 0 && fc.dz == 0) || (fc.mat.is_log() && fc.y0 <= 0);
+        if !base || seen[..ns].contains(&(fc.dx, fc.dz)) {
+            continue;
+        }
+        if ns < seen.len() {
+            seen[ns] = (fc.dx, fc.dz);
+            ns += 1;
+        }
+        let (ids, w) = nodes.corners(gen, p.rx + fc.dx as i32, p.rz + fc.dz as i32);
+        if nodes.carved_at(gen, &ids, &w, y) {
+            return false;
+        }
+    }
+    true
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -113,6 +141,7 @@ impl FeatureCache {
                 radius,
                 key: (hash2(self.key_seed, f.root_x, f.root_z) >> 32) as u32,
                 cols: f.columns,
+                grounded: None,
             });
         }
         self.tiles.insert((tx, tz), v);
@@ -120,7 +149,9 @@ impl FeatureCache {
 
     /// Runs of every feature touching the region [rx0, rx0+w) × [rz0, rz0+w), sorted by
     /// (column, decreasing priority, y0, y1, material). Returns the highest run top (y1).
-    pub fn collect_runs(&mut self, gen: &WorldGen, nodes: &mut Nodes, rx0: i32, rz0: i32, w: i32, runs: &mut Vec<Run>) -> i32 {
+    /// `caves`: drop features standing over a carved block (see module docs).
+    #[allow(clippy::too_many_arguments)]
+    pub fn collect_runs(&mut self, gen: &WorldGen, nodes: &mut Nodes, rx0: i32, rz0: i32, w: i32, caves: bool, runs: &mut Vec<Run>) -> i32 {
         let r = MAX_FEATURE_RADIUS;
         let (ta, tb) = ((rx0 - r).div_euclid(TILE), (rx0 + w - 1 + r).div_euclid(TILE));
         let (sa, sb) = ((rz0 - r).div_euclid(TILE), (rz0 + w - 1 + r).div_euclid(TILE));
@@ -128,10 +159,23 @@ impl FeatureCache {
         for tz in sa..=sb {
             for tx in ta..=tb {
                 self.tile(gen, nodes, tx, tz);
-                let placed = &self.tiles[&(tx, tz)];
-                for p in placed {
+                let placed = self.tiles.get_mut(&(tx, tz)).unwrap();
+                for p in placed.iter_mut() {
                     if p.rx + p.radius < rx0 || p.rz + p.radius < rz0 || p.rx - p.radius >= rx0 + w || p.rz - p.radius >= rz0 + w {
                         continue;
+                    }
+                    if caves {
+                        let g = match p.grounded {
+                            Some(g) => g,
+                            None => {
+                                let g = grounded(gen, nodes, p);
+                                p.grounded = Some(g);
+                                g
+                            }
+                        };
+                        if !g {
+                            continue;
+                        }
                     }
                     for fc in &p.cols {
                         if fc.mat == Material::Air {
