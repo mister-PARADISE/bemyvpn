@@ -16,6 +16,7 @@ pub mod caves;
 pub mod climate;
 pub mod features;
 pub mod terrain;
+pub mod worldtree;
 
 use crate::materials::Material;
 

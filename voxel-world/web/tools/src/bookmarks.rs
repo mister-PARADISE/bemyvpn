@@ -99,8 +99,76 @@ fn main() {
                 num(s.sun.elevation_deg, 2),
                 num(c.fov_y_deg, 1),
                 s.index,
-                if k + 1 < kept.len() { "," } else { "" }
+                ","
             );
+            let _ = k;
+        }
+        // world tree: the nearest one to the origin, seen from 1.3 tree heights away
+        let mut best: Option<(f64, std::rc::Rc<voxel_world::gen::worldtree::WorldTree>)> = None;
+        for iz in -3..3 {
+            for ix in -3..3 {
+                if let Some(t) = voxel_world::gen::worldtree::tree_of_cell(&gen, ix, iz) {
+                    let d = (t.x as f64).hypot(t.z as f64);
+                    if best.as_ref().map_or(true, |b| d < b.0) {
+                        best = Some((d, t));
+                    }
+                }
+            }
+        }
+        if let Some((_, t)) = best {
+            use voxel_world::gen::worldtree::WtKind;
+            use voxel_world::materials::Material;
+            let h = t.height as f64;
+            let dist = 1.3 * h + 60.0;
+            let cy = t.y0 as f64 + 0.42 * h;
+            // pick the azimuth whose camera spot is clear of terrain with the most margin
+            let mut pick = (f64::MIN, 0.0f64, 0.0f64, 0.0f64);
+            for k in 0..16 {
+                let a = k as f64 * std::f64::consts::TAU / 16.0;
+                let (px, pz) = (t.x as f64 + dist * a.sin(), t.z as f64 + dist * a.cos());
+                let mut clear = f64::MAX;
+                for q in 1..=8 {
+                    let f = q as f64 / 8.0;
+                    let c = gen.column(t.x as f64 + (px - t.x as f64) * f, t.z as f64 + (pz - t.z as f64) * f);
+                    let top = (c.height as f64).max(c.water_level as f64);
+                    clear = clear.min(cy - top);
+                }
+                if clear > pick.0 {
+                    pick = (clear, px, pz, a);
+                }
+            }
+            let (_, px, pz, a) = pick;
+            let py = cy.max(gen.column(px, pz).height as f64 + 25.0);
+            // look back at the crown (yaw0 = +Z)
+            let yaw = (a + std::f64::consts::PI).rem_euclid(std::f64::consts::TAU);
+            let pitch = ((t.y0 as f64 + 0.6 * h - py) / dist).atan();
+            let what = match (t.kind, t.log) {
+                (WtKind::Conifer, _) => "исполинская ель",
+                (WtKind::Umbrella, Material::AcaciaLog) => "исполинская акация",
+                (WtKind::Umbrella, _) => "древо-зонтик над джунглями",
+                (_, Material::BirchLog) => "исполинская берёза",
+                (_, Material::DarkOakLog) => "исполинский тёмный дуб",
+                _ => "исполинский дуб",
+            };
+            let title = format!("Мировое древо: {what}, {:.0} м", h);
+            eprintln!("  #9 world_tree   ({:.0}, {:.0}, {:.0}) yaw {:.1}°  {}", px, py, pz, yaw.to_degrees(), title);
+            let _ = write!(
+                j,
+                "    {{\"name\": \"world_tree\", \"title\": {}, \"x\": {}, \"y\": {}, \"z\": {}, \"yaw\": {}, \"pitch\": {}, \"sun_az\": {}, \"sun_el\": {}, \"fov\": 60, \"index\": 9}},\n",
+                json_str(&title),
+                num(px, 1),
+                num(py, 1),
+                num(pz, 1),
+                num(yaw, 5),
+                num(pitch, 5),
+                num((a.to_degrees() + 140.0).rem_euclid(360.0), 2),
+                num(28.0, 2),
+            );
+        }
+        // (drop the trailing comma of the last entry)
+        if j.ends_with(",\n") {
+            j.truncate(j.len() - 2);
+            j.push('\n');
         }
         let _ = write!(j, "  ]{}\n", if si + 1 < seeds.len() { "," } else { "" });
     }
