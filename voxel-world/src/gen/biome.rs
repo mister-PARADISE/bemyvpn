@@ -105,6 +105,82 @@ pub struct BiomeInput {
     pub water_level: i32,
 }
 
+/// Lowland biome of a landform patch (gameplay pass): a Whittaker partition of the patch's
+/// (jittered) sea-level climate, so neighbouring patches are climatic neighbours, plus a hashed
+/// `u ∈ [0,1)` that drops clearings (meadows) into forests and groves into grassland.
+/// `plain` = open-plains weight at the patch, `swampy`, `mesa` = swamp / mesa-country gates.
+pub fn lowland_biome(t: f32, hu: f32, arid: f32, plain: f32, swampy: bool, mesa: bool, u: f32) -> Biome {
+    use Biome::*;
+    if mesa && arid > 0.6 {
+        return Badlands;
+    }
+    if arid > 0.36 {
+        return Desert;
+    }
+    if arid > 0.18 {
+        return if t > 0.25 { Savanna } else { Plains };
+    }
+    if swampy {
+        return Swamp;
+    }
+    let open = plain > 0.5;
+    if t < -0.22 {
+        // boreal / tundra (snow-free)
+        if open {
+            return if hu > 0.55 { Taiga } else if u < 0.3 { Meadow } else { Plains };
+        }
+        if hu > 0.45 {
+            return if u < 0.12 { Meadow } else { OldGrowthTaiga };
+        }
+        if hu > -0.35 {
+            return if u < 0.15 { Meadow } else { Taiga };
+        }
+        return if u < 0.25 { Taiga } else { Plains };
+    }
+    if t < 0.42 {
+        if open {
+            if hu > 0.6 {
+                return if u < 0.35 { Meadow } else { Forest };
+            }
+            if hu > 0.1 {
+                return if u < 0.2 { Forest } else if u < 0.6 { Meadow } else { Plains };
+            }
+            return if u < 0.12 { BirchForest } else { Plains };
+        }
+        if hu > 0.5 {
+            return if u < 0.18 { Forest } else { DarkForest };
+        }
+        if hu > 0.05 {
+            return if u < 0.12 { Meadow } else if u < 0.45 { BirchForest } else { Forest };
+        }
+        if hu > -0.35 {
+            return if u < 0.3 { Forest } else if u < 0.5 { Meadow } else { Plains };
+        }
+        return if t > 0.25 { Savanna } else { Plains };
+    }
+    // hot
+    if open {
+        return if hu > 0.55 {
+            Jungle
+        } else if hu > -0.15 {
+            if u < 0.3 {
+                Forest
+            } else {
+                Plains
+            }
+        } else {
+            Savanna
+        };
+    }
+    if hu > 0.35 {
+        return if u < 0.12 { Forest } else { Jungle };
+    }
+    if hu > 0.1 {
+        return if u < 0.35 { Savanna } else { Forest };
+    }
+    Savanna
+}
+
 /// Retained for compatibility: surface temperature of the *old* isotherm snow line. Snow is now
 /// altitude-driven ([`SnowLine`]); this constant only separates cold from temperate lowlands.
 pub const SNOW_T: f32 = -0.5;
@@ -144,6 +220,10 @@ pub fn classify(b: &BiomeInput) -> Biome {
         }
         if c.continentalness > -0.12 && h > SEA - 5.0 && b.river_dist < b.river_width * 2.5 + 6.0 {
             // shallow inland water (rivers' flanks, lagoons)
+            return River;
+        }
+        if c.continentalness > -0.06 && h > SEA - 14.0 {
+            // inland sea-level ponds in lowland hollows: fresh water, not ocean
             return River;
         }
         if h < 92.0 {
@@ -220,59 +300,25 @@ pub fn classify(b: &BiomeInput) -> Biome {
     if r.swamp > 0.5 && alt < 7.0 {
         return Swamp;
     }
-    // semi-arid ecotone around the deserts: dry grassland (savanna when hot, steppe otherwise)
-    if r.arid > 0.2 {
-        return if st > 0.25 { Savanna } else { Plains };
+    // lowlands: the nearest landform patch decides (contrasty 300–1500 block patches, see
+    // `lowland_biome`); its dryland/swamp labels need their landform weight to hold
+    match r.patch {
+        Desert | Badlands | Hoodoos => {
+            if st > 0.25 {
+                Savanna
+            } else {
+                Plains
+            }
+        }
+        Swamp => {
+            if alt < 9.0 {
+                Swamp
+            } else {
+                Forest
+            }
+        }
+        p => p,
     }
-    // open plains: grassland / meadows, forest only where very wet
-    let hu = c.humidity;
-    if r.plain > 0.5 {
-        if st < -0.2 {
-            return if hu > 0.6 { Taiga } else { Plains };
-        }
-        if st > 0.42 {
-            return if hu > 0.55 { Jungle } else if hu > -0.15 { Plains } else { Savanna };
-        }
-        return if hu > 0.62 {
-            Forest
-        } else if hu > 0.12 {
-            Meadow
-        } else {
-            Plains
-        };
-    }
-
-    // ---------------- lowlands: Whittaker partition of (T_s, H), snow-free
-    if st < -0.2 {
-        // boreal / tundra
-        if hu > 0.45 {
-            return OldGrowthTaiga;
-        }
-        if hu > -0.35 {
-            return Taiga;
-        }
-        return Plains;
-    }
-    if st < 0.42 {
-        if hu > 0.5 {
-            return DarkForest;
-        }
-        if hu > 0.05 {
-            return if c.weirdness > 0.3 { BirchForest } else { Forest };
-        }
-        if hu > -0.35 {
-            return if c.weirdness < -0.55 { Forest } else { Plains };
-        }
-        return if st > 0.25 { Savanna } else { Plains };
-    }
-    // hot
-    if hu > 0.35 {
-        return Jungle;
-    }
-    if hu > 0.1 {
-        return Forest;
-    }
-    Savanna
 }
 
 // =====================================================================================
@@ -331,6 +377,20 @@ impl Strata {
         const F1: f64 = 1.0 / 3200.0;
         const F2: f64 = 1.0 / 260.0;
         34.0 * self.fold.n2d(x * F1, z * F1).0 + 3.5 * self.warp.n2d(x * F2, z * F2).0
+    }
+
+    /// [`Strata::offset`] with its horizontal gradient (terrace treads follow the bedding).
+    #[inline]
+    pub fn offset_d(&self, x: f64, z: f64) -> super::climate::D2 {
+        const F1: f64 = 1.0 / 3200.0;
+        const F2: f64 = 1.0 / 260.0;
+        let (a, ax, az) = self.fold.n2d(x * F1, z * F1);
+        let (b, bx, bz) = self.warp.n2d(x * F2, z * F2);
+        super::climate::D2::new(
+            34.0 * a + 3.5 * b,
+            34.0 * ax * F1 as f32 + 3.5 * bx * F2 as f32,
+            34.0 * az * F1 as f32 + 3.5 * bz * F2 as f32,
+        )
     }
 
     #[inline]

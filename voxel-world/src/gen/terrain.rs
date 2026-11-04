@@ -51,9 +51,9 @@
 //!   gentle apron) joined with smooth-max, caldera `rim − D(1 − (d/r_c)⁴)` with a lava lake level.
 //! * 3D density `ρ = (H − y) + J·N₃(x, 1.4y, z)` with |N₃| ≤ 1 ⇒ sign(ρ) = sign(H − y) exactly
 //!   outside `[H − J, H + J]`; above the surface N₃ is biased downward to suppress floating blobs.
-use super::biome::{aridity, classify, BiomeInput, SnowLine, Strata};
-use super::climate::{lerp_d, river_distance, smoothstep_d, ClimateD, ClimateSampler, DEroded, DFbm, DRidged, FastSimplex, D2};
-use super::{ColumnInfo, SEA_LEVEL, WORLD_HEIGHT};
+use super::biome::{aridity, classify, lowland_biome, BiomeInput, SnowLine, Strata};
+use super::climate::{lerp_d, river_distance, sabs_d, smoothstep_d, ClimateD, ClimateSampler, DEroded, DFbm, DRidged, FastSimplex, D2};
+use super::{Biome, ColumnInfo, SEA_LEVEL, WORLD_HEIGHT};
 use crate::math::{lerp, saturate, smoothstep};
 use crate::noise::{derive_seed, hash2, hash_f01, mix64, salt, Fbm, Worley2};
 use crate::spline::{Spline, SplineValue};
@@ -268,6 +268,231 @@ fn fast_sin_cos(x: f32) -> (f32, f32) {
 /// Mean of the dune profile (1 − |sin πt|)^1.5 over a period (numerically ≈ 0.2788).
 const DUNE_MEAN: f32 = 0.2788;
 
+/// Generalised smooth terrace τ(u) = ⌊u⌋ + smoothstep(t0, 1, frac u) (riser = last 1 − t0 of
+/// each period) with step `s`, box-filtered over a height window `delta` for LOD (closed-form
+/// antiderivative of the periodic part, see [`terrace_d`]).
+fn terrace_gen(h: D2, s: f32, delta: f32, t0: f32) -> D2 {
+    let w = 1.0 - t0;
+    let u = h.v / s;
+    if delta < 0.05 * s {
+        let fl = u.floor();
+        let f = u - fl;
+        let t = saturate((f - t0) / w);
+        return h.map((fl + t * t * (3.0 - 2.0 * t)) * s, 6.0 * t * (1.0 - t) / w);
+    }
+    let anti = |u: f32| -> f32 {
+        let fl = u.floor();
+        let f = u - fl;
+        let sm = if f <= t0 {
+            0.0
+        } else {
+            let t = (f - t0) / w;
+            w * (t * t * t - 0.5 * t * t * t * t)
+        };
+        fl * (0.5 - 0.5 * w) + (0.5 * f * f - sm)
+    };
+    let per = |u: f32| -> f32 {
+        let f = u - u.floor();
+        let t = saturate((f - t0) / w);
+        f - t * t * (3.0 - 2.0 * t)
+    };
+    let du = delta / s;
+    let (a, b) = (u - 0.5 * du, u + 0.5 * du);
+    let mean_g = (anti(b) - anti(a)) / du;
+    let dmean = (per(b) - per(a)) / du;
+    h.map(h.v - s * mean_g, 1.0 - dmean)
+}
+
+// =====================================================================================
+// Landform patches (gameplay pass)
+// =====================================================================================
+
+/// Patch lattice: Voronoi cells on domain-warped coordinates, nominal size 520 blocks, points
+/// jittered in the middle half of their lattice cell (so the 3×3 search sees every cell whose
+/// distance is within 0.19·L = 99 blocks of the nearest one — more than the blend width).
+pub const PATCH_CELL: f64 = 520.0;
+/// Blend widths in `d_k − d_1` (blocks): soft (relief parameters) and sharp (patch level offset →
+/// escarpments between neighbouring patches).
+const PATCH_SOFT: f32 = 90.0;
+const PATCH_SHARP: f32 = 28.0;
+const PATCH_CACHE_SIZE: usize = 512;
+
+/// Number of blended style parameters, and their indices.
+pub const NP: usize = 13;
+/// Relief amplitude (blocks).
+pub const P_AMP: usize = 0;
+/// Spectrum: 0 = broad swells (λ 600–300) … 1 = hummocks (λ 150–75).
+pub const P_FINE: usize = 1;
+/// Profile: −1 billowy (rounded knolls, creased hollows) … 0 plain … +1 ridged (sharp crests).
+pub const P_SHAPE: usize = 2;
+/// Terrace strength 0..1, step (blocks), riser sharpness 0..1.
+pub const P_TERR: usize = 3;
+pub const P_STEP: usize = 4;
+pub const P_SHARP: usize = 5;
+/// Point-landform densities: rock tors, karst towers, buttes.
+pub const P_TOR: usize = 6;
+pub const P_KARST: usize = 7;
+pub const P_BUTTE: usize = 8;
+/// Dune sea, mesa country, hoodoo field, swamp flats.
+pub const P_DUNE: usize = 9;
+pub const P_MESA: usize = 10;
+pub const P_HOODOO: usize = 11;
+pub const P_SWAMP: usize = 12;
+
+/// Landform style of a patch (its shape identity).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[repr(u8)]
+pub enum Style {
+    /// Flat steppe / plains: tiny swells, rare tors.
+    #[default]
+    Flat = 0,
+    /// Rolling meadow: hummocks and hollows (ponds).
+    Rolling,
+    /// Forest hills: mid hills with stepped flanks and occasional outcrops.
+    Hills,
+    /// Crags: ridged knolls, rock tors everywhere, stepped ledges.
+    Craggy,
+    /// Terraced highland: grassy steps on every slope.
+    Terraced,
+    /// Steppe with buttes and small mesas.
+    Buttes,
+    /// Tower karst: steep limestone towers on a flat floor.
+    Karst,
+    /// Dune sea.
+    Dunes,
+    /// Rocky desert: inselbergs, buttes, thin dunes.
+    RockyDesert,
+    /// Mesa country (badlands).
+    Mesa,
+    /// Hoodoo field (badlands).
+    Hoodoo,
+    /// Swamp flats.
+    Swamp,
+    /// Raised tableland with escarpment edges.
+    Plateau,
+}
+
+impl Style {
+    /// Base parameters [amp, fine, shape, terr, step, sharp, tor, karst, butte, dune, mesa, hoodoo,
+    /// swamp] and level offset.
+    fn params(self) -> ([f32; NP], f32) {
+        use Style::*;
+        match self {
+            Flat => ([2.2, 0.3, -0.3, 0.0, 6.0, 0.7, 0.10, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], 0.0),
+            Rolling => ([6.5, 0.8, -0.75, 0.0, 6.0, 0.5, 0.05, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], 1.0),
+            Hills => ([17.0, 0.35, 0.25, 0.5, 7.0, 0.75, 0.16, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], 4.0),
+            Craggy => ([13.0, 0.6, 0.6, 0.6, 6.0, 0.85, 0.6, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], 3.0),
+            Terraced => ([22.0, 0.2, 0.0, 0.95, 7.0, 0.88, 0.06, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], 8.0),
+            Buttes => ([3.5, 0.3, -0.2, 0.35, 8.0, 0.9, 0.05, 0.0, 0.6, 0.0, 0.0, 0.0, 0.0], 0.0),
+            Karst => ([5.0, 0.5, -0.4, 0.15, 6.0, 0.8, 0.0, 0.8, 0.0, 0.0, 0.0, 0.0, 0.0], 0.0),
+            Dunes => ([2.0, 0.3, 0.0, 0.0, 6.0, 0.5, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0], 0.0),
+            RockyDesert => ([6.0, 0.35, 0.2, 0.45, 8.0, 0.9, 0.18, 0.0, 0.4, 0.35, 0.0, 0.0, 0.0], 2.0),
+            Mesa => ([3.0, 0.3, 0.0, 0.0, 9.0, 0.8, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0], 0.0),
+            Hoodoo => ([3.0, 0.3, 0.0, 0.0, 9.0, 0.8, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0], 0.0),
+            Swamp => ([1.5, 0.6, -0.3, 0.0, 6.0, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0], 0.0),
+            Plateau => ([9.0, 0.3, 0.1, 0.75, 8.0, 0.9, 0.12, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], 26.0),
+        }
+    }
+}
+
+/// The decision of one patch cell (pure function of (seed, cell); memoised per thread).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct PatchCell {
+    pub biome: Biome,
+    pub style: Style,
+    pub p: [f32; NP],
+    pub off: f32,
+}
+
+/// Blended patch parameters at a column (with gradients) + the nearest cell's labels.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct PatchMix {
+    pub p: [D2; NP],
+    pub off: D2,
+    pub biome: Biome,
+    pub style: Style,
+    /// d₂ − d₁: distance-like measure to the nearest patch border.
+    pub edge: f32,
+}
+
+#[derive(Clone, Copy)]
+struct PatchEntry {
+    seed: u64,
+    ix: i32,
+    iz: i32,
+    valid: bool,
+    cell: PatchCell,
+}
+
+thread_local! {
+    static PATCH_CACHE: std::cell::RefCell<Vec<PatchEntry>> = std::cell::RefCell::new(vec![
+        PatchEntry { seed: 0, ix: 0, iz: 0, valid: false, cell: PatchCell::default() };
+        PATCH_CACHE_SIZE
+    ]);
+}
+
+/// Rock landform point process (tors, karst towers, buttes, mountain spires): jittered grid.
+const ROCK_CELL: f64 = 64.0;
+const SPIRE_CELL: f64 = 90.0;
+
+/// Size/shape of a rock landform kind: radius r0 + r1·a, height h0 + h1·b (a, b hashed), dome
+/// exponents k (wall steepness) and e (crown roundness), see [`TerrainShaper::point_rocks`].
+#[derive(Clone, Copy, Debug)]
+struct RockKind {
+    r0: f32,
+    r1: f32,
+    h0: f32,
+    h1: f32,
+    k: f32,
+    e: f32,
+}
+/// Granite-like tor: squat, rounded, 4–12 radius, 4–14 tall.
+const TOR: RockKind = RockKind { r0: 4.0, r1: 8.0, h0: 4.0, h1: 10.0, k: 2.5, e: 0.45 };
+/// Tower karst: near-vertical walls, domed top, 9–24 radius, 20–58 tall.
+const KARST: RockKind = RockKind { r0: 9.0, r1: 15.0, h0: 20.0, h1: 38.0, k: 6.0, e: 0.3 };
+/// Butte / small mesa: flat top, cliff walls, 14–38 radius, 7–23 tall.
+const BUTTE: RockKind = RockKind { r0: 14.0, r1: 24.0, h0: 7.0, h1: 16.0, k: 10.0, e: 0.15 };
+/// Mountain spire / needle on high ridges: 4–10 radius, 18–50 tall.
+const SPIRE: RockKind = RockKind { r0: 4.0, r1: 6.0, h0: 18.0, h1: 32.0, k: 1.8, e: 0.9 };
+
+/// Landform style of a patch with lowland biome `b` (`u` hashed in [0,1)).
+fn pick_style(b: Biome, open: bool, u: f32, hoodoo: bool) -> Style {
+    use Style::*;
+    let pick = |opts: &[(Style, f32)]| -> Style {
+        let mut acc = 0.0;
+        for &(s, w) in opts {
+            acc += w;
+            if u < acc {
+                return s;
+            }
+        }
+        opts[opts.len() - 1].0
+    };
+    match b {
+        Biome::Plains if open => pick(&[(Flat, 0.5), (Rolling, 0.25), (Buttes, 0.15), (Terraced, 0.1)]),
+        Biome::Plains => pick(&[(Flat, 0.2), (Rolling, 0.25), (Terraced, 0.25), (Buttes, 0.15), (Plateau, 0.15)]),
+        Biome::Meadow if open => pick(&[(Rolling, 0.6), (Terraced, 0.25), (Craggy, 0.15)]),
+        Biome::Meadow => pick(&[(Rolling, 0.4), (Terraced, 0.3), (Craggy, 0.15), (Plateau, 0.15)]),
+        Biome::Forest => pick(&[(Hills, 0.5), (Craggy, 0.25), (Terraced, 0.15), (Plateau, 0.1)]),
+        Biome::BirchForest => pick(&[(Rolling, 0.5), (Hills, 0.5)]),
+        Biome::DarkForest => pick(&[(Hills, 0.5), (Craggy, 0.3), (Rolling, 0.2)]),
+        Biome::Taiga => pick(&[(Craggy, 0.45), (Hills, 0.35), (Terraced, 0.1), (Plateau, 0.1)]),
+        Biome::OldGrowthTaiga => pick(&[(Craggy, 0.6), (Hills, 0.4)]),
+        Biome::Jungle => pick(&[(Karst, 0.6), (Hills, 0.4)]),
+        Biome::Savanna => pick(&[(Buttes, 0.4), (Flat, 0.25), (Terraced, 0.2), (Plateau, 0.15)]),
+        Biome::Desert => pick(&[(Dunes, 0.7), (RockyDesert, 0.3)]),
+        Biome::Badlands => {
+            if hoodoo {
+                Hoodoo
+            } else {
+                Mesa
+            }
+        }
+        Biome::Swamp => Swamp,
+        _ => Hills,
+    }
+}
+
 // =====================================================================================
 // TerrainShaper
 // =====================================================================================
@@ -300,6 +525,15 @@ pub struct Regions {
     pub plain: f32,
     /// 1 where a sea stack raised the column (intended vertical walls).
     pub stack: f32,
+    /// Lowland biome of the nearest landform patch (see [`PatchCell`]).
+    pub patch: Biome,
+    /// Landform style of the nearest patch.
+    pub style: Style,
+    /// 1 where a rock landform (tor, karst tower, butte, spire) raised the column (intended
+    /// vertical walls).
+    pub rock: f32,
+    /// Terrace strength applied to the column (stepped relief).
+    pub terrace: f32,
 }
 
 /// Everything computed for a column (public for debug tools).
@@ -346,6 +580,15 @@ pub struct TerrainShaper {
     /// Gate of the rock-shelter notches along cliffs (λ 85).
     notch_gate: FastSimplex,
     stacks: Worley2,
+    /// Climate sampler for patch decisions (climate at the patch point).
+    clim: ClimateSampler,
+    /// Domain warp of the patch lattice (two octaves per axis).
+    pw_a: FastSimplex,
+    pw_b: FastSimplex,
+    /// Patch relief spectrum: 4 equal-amplitude octaves λ 600 … 75, re-weighted per patch.
+    relief: DFbm,
+    /// Terrace step modulation and terrace mask (λ 700 / 330).
+    step_n: FastSimplex,
 }
 
 /// Inland lakes: cell size, candidate probability, max radius, rim probes.
@@ -445,7 +688,211 @@ impl TerrainShaper {
             strata: Strata::new(seed),
             notch_gate: FastSimplex::new(s("terrain.notch")),
             stacks: Worley2::new(s("terrain.stacks"), STACK_CELL, 0.8),
+            clim: ClimateSampler::new(seed),
+            pw_a: FastSimplex::new(s("terrain.patch_warp_a")),
+            pw_b: FastSimplex::new(s("terrain.patch_warp_b")),
+            relief: DFbm::new(s("terrain.relief"), 600.0, 4, 2.0, 1.0),
+            step_n: FastSimplex::new(s("terrain.step")),
         }
+    }
+
+    // ---------------------------------------------------------------- landform patches
+
+    /// Warped patch-lattice coordinates q(p) = p + 85·n(p/360) + 20·n(p/120) and the warp
+    /// Jacobian [∂qx/∂x, ∂qx/∂z, ∂qz/∂x, ∂qz/∂z] (|∇ warp| < 1: no fold-over).
+    #[inline]
+    fn patch_warp(&self, x: f64, z: f64, fp: f64) -> (f64, f64, [f32; 4]) {
+        const F1: f64 = 1.0 / 360.0;
+        const A1: f32 = 85.0;
+        const F2: f64 = 1.0 / 120.0;
+        const A2: f32 = 20.0;
+        let (a, ax, az) = self.pw_a.n2d(x * F1, z * F1);
+        let (b, bx, bz) = self.pw_b.n2d(x * F1 + 31.7, z * F1 - 17.3);
+        let k1 = A1 * F1 as f32;
+        let mut qx = x + (A1 * a) as f64;
+        let mut qz = z + (A1 * b) as f64;
+        let mut j = [1.0 + k1 * ax, k1 * az, k1 * bx, 1.0 + k1 * bz];
+        let fade = if fp > 1.0 { saturate(((120.0 / fp - 2.0) * 0.5) as f32) } else { 1.0 };
+        if fade > 0.0 {
+            let (c, cx, cz) = self.pw_a.n2d(x * F2 - 7.1, z * F2 + 3.3);
+            let (d, dx, dz) = self.pw_b.n2d(x * F2 + 11.9, z * F2 + 5.4);
+            let k2 = A2 * F2 as f32 * fade;
+            qx += (A2 * fade * c) as f64;
+            qz += (A2 * fade * d) as f64;
+            j[0] += k2 * cx;
+            j[1] += k2 * cz;
+            j[2] += k2 * dx;
+            j[3] += k2 * dz;
+        }
+        (qx, qz, j)
+    }
+
+    /// Hash and (warped-space) point of patch cell (ix, iz).
+    #[inline]
+    fn patch_point(&self, ix: i32, iz: i32) -> (u64, f64, f64) {
+        let id = hash2(self.seed ^ 0x9A7C_4E11, ix, iz);
+        let jx = 0.25 + 0.5 * hash_f01(mix64(id ^ 0x11)) as f64;
+        let jz = 0.25 + 0.5 * hash_f01(mix64(id ^ 0x22)) as f64;
+        (id, (ix as f64 + jx) * PATCH_CELL, (iz as f64 + jz) * PATCH_CELL)
+    }
+
+    /// Decision of patch cell (ix, iz): climate at the patch point (jittered by ±0.15 in T and
+    /// ±0.2 in H → contrasty mosaics along climate transitions) → lowland biome
+    /// ([`super::biome::lowland_biome`]) → landform style (hashed among the biome's styles) →
+    /// parameters (style table × per-patch random scale).
+    pub fn patch_decide(&self, ix: i32, iz: i32) -> PatchCell {
+        let (id, px, pz) = self.patch_point(ix, iz);
+        let r = |k: u64| hash_f01(mix64(id ^ k));
+        let cd = self.clim.sample_d_direct(px, pz, 64.0);
+        let t = cd.t.v + (r(1) - 0.5) * 0.3;
+        let hu = cd.h.v + (r(2) - 0.5) * 0.4;
+        let arid = aridity(t, hu);
+        let chi = self.character.sample(px, pz, 64.0);
+        let plain = if cd.c.v > -0.12 { self.plain_weight(&cd, chi).v } else { 0.0 };
+        let (e, c) = (cd.e.v, cd.c.v);
+        let swamp = (1.0 - smoothstep(0.2, 0.55, cd.orogeny.v))
+            * smoothstep(0.30, 0.48, hu)
+            * smoothstep(-0.20, 0.02, t)
+            * smoothstep(-0.10, 0.30, e)
+            * smoothstep(0.40, 0.22, c);
+        // mesa country: coherent groups of patches (λ 2.7 km selector), always inside deserts
+        let mesa = self.select.value(px * 0.4 + 3100.0, pz * 0.4 - 1700.0, 25.6) > -0.05 && e < 0.55;
+        let biome = lowland_biome(t, hu, arid, plain, swamp > 0.5, mesa, r(3));
+        let hoodoo = self.select.value(px + 3100.0, pz - 1700.0, 64.0) > 0.3;
+        let style = pick_style(biome, plain > 0.5, r(4), hoodoo);
+        let (mut p, mut off) = style.params();
+        p[P_AMP] *= 0.65 + 0.7 * r(5);
+        p[P_STEP] *= 0.8 + 0.45 * r(6);
+        off *= 0.5 + r(7);
+        PatchCell { biome, style, p, off }
+    }
+
+    fn patch_cell(&self, ix: i32, iz: i32) -> PatchCell {
+        let slot = (((ix as u32).wrapping_mul(0x9E37_79B1) ^ (iz as u32).wrapping_mul(0x85EB_CA77)) >> 23) as usize % PATCH_CACHE_SIZE;
+        let hit = PATCH_CACHE.with(|c| {
+            let e = c.borrow()[slot];
+            (e.valid && e.seed == self.seed && e.ix == ix && e.iz == iz).then_some(e.cell)
+        });
+        if let Some(c) = hit {
+            return c;
+        }
+        let cell = self.patch_decide(ix, iz);
+        PATCH_CACHE.with(|c| c.borrow_mut()[slot] = PatchEntry { seed: self.seed, ix, iz, valid: true, cell });
+        cell
+    }
+
+    /// Blended patch parameters at (x, z): Voronoi distances `d_k` on the warped lattice, weights
+    /// `w_k = 1 − smoothstep(0, W, d_k − d₁)` (C¹ across bisectors, compact: only cells within W
+    /// of the nearest contribute), parameters `Σ w_k P_k / Σ w_k` with exact gradients. The level
+    /// offset uses a sharper blend (W 28) → escarpments between patches at different levels.
+    pub fn patch_mix(&self, x: f64, z: f64, fp: f64) -> PatchMix {
+        let (qx, qz, j) = self.patch_warp(x, z, fp);
+        let (ix, iz) = ((qx / PATCH_CELL).floor() as i32, (qz / PATCH_CELL).floor() as i32);
+        let mut cand = [(0.0f32, 0.0f32, 0.0f32, 0i32, 0i32); 9];
+        let mut best = 0usize;
+        let mut k = 0;
+        for dz in -1..=1 {
+            for dx in -1..=1 {
+                let (_, px, pz) = self.patch_point(ix + dx, iz + dz);
+                let (ddx, ddz) = ((qx - px) as f32, (qz - pz) as f32);
+                let d = (ddx * ddx + ddz * ddz).sqrt().max(1e-3);
+                let (ux, uz) = (ddx / d, ddz / d);
+                cand[k] = (d, ux * j[0] + uz * j[2], ux * j[1] + uz * j[3], ix + dx, iz + dz);
+                if d < cand[best].0 {
+                    best = k;
+                }
+                k += 1;
+            }
+        }
+        let d1 = D2::new(cand[best].0, cand[best].1, cand[best].2);
+        let ws_w = PATCH_SOFT.max(1.5 * fp as f32).min(95.0);
+        let wh_w = PATCH_SHARP.max(1.5 * fp as f32).min(95.0);
+        let mut num = [D2::ZERO; NP];
+        let (mut sum, mut onum, mut osum) = (D2::ZERO, D2::ZERO, D2::ZERO);
+        let mut edge = f32::MAX;
+        for (i, c) in cand.iter().enumerate() {
+            let delta = if i == best { D2::ZERO } else { D2::new(c.0, c.1, c.2) - d1 };
+            if i != best {
+                edge = edge.min(delta.v);
+            }
+            if delta.v >= ws_w {
+                continue;
+            }
+            let cell = self.patch_cell(c.3, c.4);
+            let ws = 1.0 - smoothstep_d(0.0, ws_w, delta);
+            for (n, &pv) in num.iter_mut().zip(cell.p.iter()) {
+                *n += ws * pv;
+            }
+            sum += ws;
+            if delta.v < wh_w {
+                let wh = 1.0 - smoothstep_d(0.0, wh_w, delta);
+                onum += wh * cell.off;
+                osum += wh;
+            }
+        }
+        let p = num.map(|n| n / sum);
+        let off = onum / osum;
+        let bc = self.patch_cell(cand[best].3, cand[best].4);
+        PatchMix { p, off, biome: bc.biome, style: bc.style, edge }
+    }
+
+    /// Rock landforms of a jittered point grid (cell `cell`, ≤ 1 feature per cell): each kind
+    /// `(K, prob)` in priority order claims the cell when its hash `u < prob`; the feature is a
+    /// superellipse dome `Ht·(1 − (r/R')^k)^e` with an irregular radius R' = R·m(θ),
+    /// m = 1 + 0.2 cos(2θ+φ₁) + 0.1 cos(3θ+φ₂), shrunk by `smoothstep(0, 0.06, prob − u)` where the
+    /// blended density changes (patch borders) and faded out once the footprint exceeds ≈ R/2.
+    /// Returns the tallest feature at (x, z) (height above the local ground, with gradient).
+    fn point_rocks(&self, x: f64, z: f64, fp: f64, cell: f64, salt: u64, kinds: &[(RockKind, f32)]) -> D2 {
+        let cx = (x / cell).floor() as i32;
+        let cz = (z / cell).floor() as i32;
+        let mut best = D2::ZERO;
+        for dz in -1..=1 {
+            for dx in -1..=1 {
+                let id = hash2(self.seed ^ salt, cx + dx, cz + dz);
+                for (i, &(kind, prob)) in kinds.iter().enumerate() {
+                    let u = hash_f01(mix64(id ^ (0x51 + i as u64)));
+                    if u >= prob {
+                        continue;
+                    }
+                    let a = hash_f01(mix64(id ^ 0x61));
+                    let b = hash_f01(mix64(id ^ 0x62));
+                    let rr = kind.r0 + kind.r1 * a;
+                    let fade = 1.0 - smoothstep(0.3 * rr, 0.9 * rr, fp as f32);
+                    if fade <= 0.0 {
+                        break;
+                    }
+                    let ht = (kind.h0 + kind.h1 * b * (0.4 + 0.6 * a)) * smoothstep(0.0, 0.06, prob - u) * fade;
+                    let px = (cx + dx) as f64 * cell + cell * (0.2 + 0.6 * hash_f01(mix64(id ^ 0x71)) as f64);
+                    let pz = (cz + dz) as f64 * cell + cell * (0.2 + 0.6 * hash_f01(mix64(id ^ 0x72)) as f64);
+                    let (ddx, ddz) = ((x - px) as f32, (z - pz) as f32);
+                    let d2 = ddx * ddx + ddz * ddz;
+                    if d2 >= (1.3 * rr) * (1.3 * rr) {
+                        break;
+                    }
+                    let dist = d2.sqrt().max(1e-3);
+                    let (c1, s1) = (ddx / dist, ddz / dist);
+                    let (p1s, p1c) = fast_sin_cos(6.283 * hash_f01(mix64(id ^ 0x81)));
+                    let (p2s, p2c) = fast_sin_cos(6.283 * hash_f01(mix64(id ^ 0x82)));
+                    let (c2, s2) = (2.0 * c1 * c1 - 1.0, 2.0 * s1 * c1);
+                    let (c3, s3) = (4.0 * c1 * c1 * c1 - 3.0 * c1, 3.0 * s1 - 4.0 * s1 * s1 * s1);
+                    let m = 1.0 + 0.2 * (c2 * p1c - s2 * p1s) + 0.1 * (c3 * p2c - s3 * p2s);
+                    let r_eff = rr * m;
+                    let uu = dist / r_eff;
+                    if uu >= 1.0 {
+                        break;
+                    }
+                    let uk = uu.powf(kind.k);
+                    let core = (1.0 - uk).max(1e-4);
+                    let v = ht * core.powf(kind.e);
+                    if v > best.v {
+                        let dv = (-ht * kind.e * core.powf(kind.e - 1.0) * kind.k * uk / uu.max(1e-3) / r_eff).max(-40.0);
+                        best = D2::new(v, dv * c1, dv * s1);
+                    }
+                    break;
+                }
+            }
+        }
+        best
     }
 
     pub fn column(&self, climate: &ClimateSampler, x: f64, z: f64, footprint: f64) -> ColumnInfo {
@@ -514,47 +961,36 @@ impl TerrainShaper {
         vec![base.v, ridge.v * 300.0, hills.v * 300.0, sh.mountain, sh.height.v, m.v, m.dx + base.dx, m.dz + base.dz]
     }
 
-    /// Region weights from climate alone.
+    /// Region weights from the climate and the landform patches.
     pub fn regions(&self, cd: &ClimateD, x: f64, z: f64, fp: f64) -> Regions {
-        let (t, hu, e, c) = (cd.t.v, cd.h.v, cd.e.v, cd.c.v);
-        // Drylands nested by one scalar, the aridity α: desert for α ≳ 0.36, badlands only in
-        // the arid core (α ≳ 0.65) where a λ 2.7 km "mesa country" selector and low/mid erosion
-        // agree → large coherent mesa regions always ringed by desert (red-sand ecotone) and a
-        // savanna/steppe band (α > 0.2, see `classify`), never dropped into green forest.
+        let pm = self.patch_mix(x, z, fp);
+        let chi = if cd.c.v > -0.45 { self.character.sample(x, z, fp) } else { D2::ZERO };
+        self.regions_with(cd, &pm, chi)
+    }
+
+    /// Region weights: drylands, swamps and badlands are *patch styles* now (dune seas, mesa
+    /// country, hoodoo fields, swamp flats — blended over the patch borders), gated to land and
+    /// kept out of the orogeny-belt cores (low E* and the rain shadow make belts "hot-dry" by
+    /// climate, which would terrace whole ranges and pile dunes on their flanks).
+    fn regions_with(&self, cd: &ClimateD, pm: &PatchMix, chi: D2) -> Regions {
+        let (t, hu, c) = (cd.t.v, cd.h.v, cd.c.v);
         let arid = aridity(t, hu);
-        let desert_all = smoothstep(0.30, 0.42, arid);
-        let badlands = if arid > 0.58 {
-            let sel = self.select.value(x * 0.4 + 3100.0, z * 0.4 - 1700.0, fp * 0.4);
-            smoothstep(0.58, 0.70, arid) * smoothstep(-0.14, 0.04, sel) * smoothstep(0.66, 0.34, e)
-        } else {
-            0.0
-        };
-        let hoodoo = if badlands > 0.0 {
-            badlands * smoothstep(0.30, 0.42, self.select.value(x + 3100.0, z - 1700.0, fp))
-        } else {
-            0.0
-        };
-        let swamp = (1.0 - smoothstep(0.2, 0.55, cd.orogeny.v))
-            * smoothstep(0.30, 0.48, hu)
-            * smoothstep(-0.20, 0.02, t)
-            * smoothstep(-0.10, 0.30, e)
-            * smoothstep(0.40, 0.22, c)
-            * smoothstep(-0.14, -0.06, c);
+        let land = smoothstep(-0.16, -0.08, c) * (1.0 - smoothstep(0.2, 0.55, cd.orogeny.v));
+        let badlands = saturate(pm.p[P_MESA].v) * land;
+        let swamp = saturate(pm.p[P_SWAMP].v) * (1.0 - smoothstep(0.2, 0.55, cd.orogeny.v)) * smoothstep(-0.14, -0.06, c);
         // sea cliffs follow the *raw* erosion (the coast-shaping input of the offset spline)
         let cliff = smoothstep(-0.25, -0.60, cd.e_raw.v) * smoothstep(-0.20, -0.15, c) * smoothstep(0.02, -0.06, c);
-        // dry-land landforms only on land (no mesas or spires on the sea floor) and not in the
-        // cores of orogenic belts (low E* and the rain shadow make belts "hot-dry" by climate,
-        // which would terrace whole mountain ranges and pile dunes on their flanks)
-        let land = smoothstep(-0.16, -0.08, c) * (1.0 - smoothstep(0.2, 0.55, cd.orogeny.v));
-        let plain = if c > -0.12 { self.plain_weight(cd, self.character.sample(x, z, fp)).v } else { 0.0 };
+        let plain = if c > -0.12 { self.plain_weight(cd, chi).v } else { 0.0 };
         Regions {
-            desert: desert_all * (1.0 - badlands) * land,
-            badlands: badlands * land,
-            hoodoo: hoodoo * land,
+            desert: saturate(pm.p[P_DUNE].v) * land,
+            badlands,
+            hoodoo: saturate(pm.p[P_HOODOO].v) * land,
             swamp,
             cliff,
             arid,
             plain,
+            patch: pm.biome,
+            style: pm.style,
             ..Default::default()
         }
     }
@@ -582,7 +1018,9 @@ impl TerrainShaper {
     }
 
     fn shape_impl(&self, cd: &ClimateD, x: f64, z: f64, fp: f64, lakes: Option<&ClimateSampler>) -> Shape {
-        let mut reg = self.regions(cd, x, z, fp);
+        let chi = if cd.c.v > -0.45 { self.character.sample(x, z, fp) } else { D2::ZERO };
+        let pm = self.patch_mix(x, z, fp);
+        let mut reg = self.regions_with(cd, &pm, chi);
         // Offset (hypsometry + coast shape) from the raw erosion; uplift, valley walls etc. from
         // the effective, orogeny-gated erosion.
         let inp = [cd.c, cd.e, cd.pv];
@@ -596,17 +1034,23 @@ impl TerrainShaper {
         // --- mountains / hills
         let q = &cd.q;
         // (the ridged field only matters where there is uplift: skip it on the open sea floor)
-        let (ridge, steer) = if amp.v > 0.0 || amp.dx != 0.0 || amp.dz != 0.0 {
+        // (the ridged field only matters where there is real uplift: below ≈ 6 blocks of
+        // amplitude the rounded hills take over smoothly and the 5 ridged octaves are skipped)
+        let ridge_w = smoothstep_d(5.0, 14.0, amp);
+        let (ridge, steer) = if ridge_w.v > 0.0 {
             let (r, st) = self.ridged.sample_with_steer(q.x, q.z, fp);
             (q.chain(r), q.chain(st))
         } else {
             (D2::ZERO, D2::ZERO)
         };
         let ridge = ((ridge - 0.12) * 1.25).clamp(0.0, 1.0);
+        // Gameplay pass: sharper summits inside the belts (r^1.6: narrow peaks and arêtes, broad
+        // walkable valley floors) instead of uniform domes.
+        let ridge = lerp_d(ridge, ridge.powf(1.6), belt);
         let hills = self.hills.sample(x, z, fp);
         let hills01 = (hills * 1.3 + 0.45).clamp(0.0, 1.0);
         // Ridges dominate in high uplift and on pv-peaks; rounded eroded hills elsewhere.
-        let s_mix = (smoothstep_d(-0.5, 0.6, cd.pv) * 0.5 + smoothstep_d(40.0, 200.0, amp) * 0.5).max(belt).clamp(0.0, 1.0);
+        let s_mix = ((smoothstep_d(-0.5, 0.6, cd.pv) * 0.5 + smoothstep_d(40.0, 200.0, amp) * 0.5).max(belt) * ridge_w).clamp(0.0, 1.0);
         let shape = lerp_d(hills01, ridge, s_mix);
         let vfac = smoothstep_d(-0.95, -0.35, cd.pv) * 0.65 + 0.35;
         // Orogenic massif: broad uplift under the belt core (land only) — raises the valley floors
@@ -622,7 +1066,6 @@ impl TerrainShaper {
         // --- open plains (DESIGN §2a anti-monotony): blend toward a calm, low surface (no
         // ridge/valley relief, ±1.5-block swells) — lowland basins where rivers meander across
         // genuinely flat floodplains, steppe and meadows.
-        let chi = if cd.c.v > -0.45 { self.character.sample(x, z, fp) } else { D2::ZERO };
         let plain = if cd.c.v > -0.12 { self.plain_weight(cd, chi) } else { D2::ZERO };
         if plain.v > 0.0 {
             // low plains a few blocks above the (sea-level) rivers: SEA + 3 near the coast …
@@ -664,6 +1107,14 @@ impl TerrainShaper {
                     h = lerp_d(h, top.max(h), isl * wgt);
                 }
             }
+        }
+
+        // --- landform patches (gameplay pass): mid-frequency relief with a per-patch spectrum and
+        // profile, plus the patch level offset (sharp blend → escarpments). Faded toward the
+        // coast and inside the orogeny belts (where the mountains own the relief).
+        let g_land = smoothstep(-0.10, 0.02, cd.c.v) * (1.0 - smoothstep(0.25, 0.75, cd.orogeny.v));
+        if g_land > 0.0 {
+            h = h + self.patch_relief(&pm, x, z, fp) * g_land;
         }
 
         // --- fine roughness ±2–4 blocks (less on plains/dunes/swamps/beaches)
@@ -792,6 +1243,63 @@ impl TerrainShaper {
             }
         }
 
+        // --- stepped relief (gameplay pass): smooth terraces τ_s(ℓ) on the bedding coordinate
+        // ℓ = h + D(x, z) (treads follow the gently dipping beds; risers are short, steep cliff
+        // bands) → bimodal slopes: long walkable shelves separated by distinct cliff steps instead
+        // of uniform ramps. Lowland patches blend two fixed steps (5 and 8 blocks, by the patch
+        // step parameter) with their terrace strength and riser sharpness; mountain flanks get an
+        // 11-block ledge system. A λ 330 mask leaves some slopes smooth; nothing at the waterline.
+        // (Fixed step sizes: a spatially varying step would make the levels k·s(x) drift through
+        // the terrain.)
+        let mtn_w = smoothstep(35.0, 120.0, mountain.v);
+        let (mn, _, _) = self.step_n.n2d(x * (1.0 / 330.0) + 41.3, z * (1.0 / 330.0) - 12.9);
+        let mask = smoothstep(-0.35, 0.15, mn);
+        let water_fade = smoothstep(SEA + 1.5, SEA + 5.0, h.v) * (1.0 - reg.channel) * (1.0 - reg.badlands) * (1.0 - reg.desert);
+        let tk_land = pm.p[P_TERR] * (g_land * (1.0 - mtn_w) * (0.45 + 0.55 * mask) * water_fade);
+        let tk_mtn = 0.6 * mtn_w * mask * water_fade;
+        if tk_land.v > 0.01 || tk_mtn > 0.01 {
+            let dd = self.strata.offset_d(x, z);
+            let ell = h + dd;
+            let delta = ell.grad_len() * fp.max(0.0) as f32;
+            let t0 = 0.55 + 0.35 * lerp(saturate(pm.p[P_SHARP].v), 0.6, mtn_w);
+            let mut dh = D2::ZERO;
+            if tk_land.v > 0.01 {
+                let ws = ((pm.p[P_STEP] - 5.0) * (1.0 / 3.0)).clamp(0.0, 1.0);
+                let t5 = terrace_gen(ell, 5.0, delta, t0);
+                let t8 = if ws.v > 0.0 { terrace_gen(ell, 8.0, delta, t0) } else { t5 };
+                dh += (lerp_d(t5, t8, ws) - ell) * tk_land;
+            }
+            if tk_mtn > 0.01 {
+                dh += (terrace_gen(ell, 11.0, delta, t0) - ell) * tk_mtn;
+            }
+            h = h + dh;
+            reg.terrace = tk_land.v + tk_mtn;
+        }
+
+        // --- rock landforms: tors, karst towers and buttes (patch densities, 64-block grid) and
+        // needle spires on high ridges (90-block grid); never in water or river channels.
+        if h.v > SEA + 1.0 && reg.channel < 0.5 {
+            let gate = smoothstep(SEA + 1.0, SEA + 4.0, h.v) * (1.0 - reg.channel) * g_land;
+            let pt = pm.p[P_TOR].v * 0.45 * gate;
+            let pk = pm.p[P_KARST].v * 0.7 * gate;
+            let pb = pm.p[P_BUTTE].v * 0.32 * gate;
+            if pt + pk + pb > 0.0 {
+                let r = self.point_rocks(x, z, fp, ROCK_CELL, 0x70C5, &[(KARST, pk), (BUTTE, pb), (TOR, pt)]);
+                if r.v > 0.0 {
+                    h = h + r;
+                    reg.rock = smoothstep(0.5, 2.0, r.v);
+                }
+            }
+            let ps = 0.32 * smoothstep(110.0, 230.0, mountain.v) * smoothstep(0.0, 0.5, cd.pv.v);
+            if ps > 0.0 {
+                let r = self.point_rocks(x, z, fp, SPIRE_CELL, 0x5917E, &[(SPIRE, ps)]);
+                if r.v > 0.0 {
+                    h = h + r;
+                    reg.rock = reg.rock.max(smoothstep(0.5, 2.0, r.v));
+                }
+            }
+        }
+
         // --- inland lakes: flat water level, basin + containment sill (see `apply_lake`)
         let mut water_level = i32::MIN;
         if let Some(cs) = lakes {
@@ -888,6 +1396,29 @@ impl TerrainShaper {
             jag = 0.0;
         }
         Shape { height: h, mountain: mountain.v, regions: reg, jaggedness: jag, water_level, steer: steer_dbg }
+    }
+
+    /// Patch relief `R = ½A(s + 1) + off` (mostly positive: hills rise from the lowland floor):
+    /// `n = 3.2·Σ g_k(f)·o_k` over 4 equal-amplitude octaves (λ 600, 300, 150, 75) whose weights
+    /// slide from broad swells (1, .55, .3, .15) to hummocks (.35, .6, 1, .5) with the patch's
+    /// spectrum parameter f; the profile `s = n + K⁺(ridged − n) + K⁻(billow − n)` with
+    /// ridged = 1 − 2|1.2n|, billow = 2|1.2n| − 1 (smooth |·|).
+    pub fn patch_relief(&self, pm: &PatchMix, x: f64, z: f64, fp: f64) -> D2 {
+        const B: [f32; 4] = [1.0, 0.55, 0.3, 0.15];
+        const F: [f32; 4] = [0.35, 0.6, 1.0, 0.5];
+        let o = self.relief.sample_each::<4>(x, z, fp);
+        let fine = pm.p[P_FINE];
+        let mut n = D2::ZERO;
+        for k in 0..4 {
+            n += o[k] * (fine * (F[k] - B[k]) + B[k]);
+        }
+        let n = n * 3.2;
+        let kk = pm.p[P_SHAPE];
+        let a = sabs_d(n * 1.2, 0.08);
+        let ridged = 1.0 - a * 2.0;
+        let billow = a * 2.0 - 1.0;
+        let s = n + (ridged - n) * kk.maxf(0.0) + (billow - n) * (-kk).maxf(0.0);
+        pm.p[P_AMP] * (s + 1.0) * 0.5 + pm.off
     }
 
     /// Reach (blocks) of the rock-shelter notches of a column: `1.6·min(|∇H|, 4)·D(x, z)` with
