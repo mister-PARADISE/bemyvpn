@@ -680,3 +680,32 @@ fn find_cave_entrances() {
         }
     }
 }
+
+#[test]
+fn collision_grid_matches_voxels() {
+    let g = WorldGen::new(42);
+    let mut b = ChunkBuilder::new();
+    let mut out = Vec::new();
+    for &(_, cx, cz) in terrain_mix(&g).iter().take(6) {
+        b.build(&g, cx, cz);
+        b.coll_grid(&mut out);
+        let yb = i32::from_le_bytes(out[0..4].try_into().unwrap());
+        let ny = i32::from_le_bytes(out[4..8].try_into().unwrap());
+        assert_eq!(out.len(), 8 + (ny * 32 * 32) as usize);
+        for y in yb..yb + ny {
+            for lz in 0..32 {
+                for lx in 0..32 {
+                    let (x, z) = (cx * 32 + lx, cz * 32 + lz);
+                    let c = out[8 + ((y - yb) * 1024 + lz * 32 + lx) as usize];
+                    let m = b.block_at(cx, cz, x, y, z).unwrap_or(Material::Air);
+                    let want = match cls(m) {
+                        Cls::Air => 0,
+                        Cls::Water => if m == Material::Lava { 3 } else { 2 },
+                        _ => if m == Material::Lava { 3 } else { 1 },
+                    };
+                    assert_eq!(c, want, "({x},{y},{z}) {m:?}");
+                }
+            }
+        }
+    }
+}

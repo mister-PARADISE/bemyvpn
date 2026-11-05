@@ -45,6 +45,7 @@ panic = "abort", strip). rayon must never be called inside wasm (no threads): do
 | `vw_solid_at(x: f64, y: f64, z: f64) -> u32` | 1 if the block containing the point is not air — rock, surface water / lava / ice, cave water / lava — exactly as the exact chunks voxelise it (3D band + caves), trees ignored; 0 for air (sky or cave). Camera collision; recent columns are cached, a few dozen calls per frame are cheap |
 | `vw_biome_at(x: f64, z: f64) -> u32` | `Biome as u8` (HUD shows the name) |
 | `vw_material_table_ptr() -> u32`, `vw_material_count() -> u32` | per material 4×f32: linear albedo r,g,b + flags (bit0 grass-tinted, bit1 foliage-tinted, bit2 emissive, bit3 leaves) |
+| `vw_coll_chunk(cx: i32, cz: i32) -> u32` + `vw_coll_len()` | build exact chunk and return its collision grid: `[yb i32, ny i32]` + ny·32·32 class bytes (y, then z, then x; 0 air/plants, 1 solid incl. logs/leaves/ice, 2 water, 3 lava; below yb solid, above air) — walking mode |
 | `vw_find_spawn(x: f64, z: f64) -> u32` + `vw_spawn_ptr()` | 6×f32 (x,y,z,yaw,pitch,0): a nice dry viewpoint near (x,z) (for custom seeds) |
 
 ### Chunk vertex format (kinds 0–2): 12 bytes per vertex, 4 vertices per quad (CCW from outside)

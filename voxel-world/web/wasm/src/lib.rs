@@ -43,6 +43,8 @@ pub struct State {
     pub far: Vec<u8>,
     pub spawn: [f32; 6],
     pub mats: Vec<f32>,
+    /// Collision grid of the last `vw_coll_chunk`.
+    pub coll: Vec<u8>,
 }
 
 impl State {
@@ -66,6 +68,7 @@ impl State {
             far: Vec::new(),
             spawn: [0.0; 6],
             mats: far::material_table(),
+            coll: Vec::new(),
         }
     }
 }
@@ -151,6 +154,28 @@ pub extern "C" fn vw_build_lod(level: u32, sx: i32, sz: i32) -> u32 {
             1
         }
     })
+}
+
+/// Build exact chunk (cx, cz) and export its collision grid (see `ChunkBuilder::coll_grid`):
+/// returns a pointer to `[yb i32, ny i32, ny·32·32 class bytes]`, length via `vw_coll_len`.
+/// The mesh outputs are overwritten as by `vw_build_chunk`.
+#[no_mangle]
+pub extern "C" fn vw_coll_chunk(cx: i32, cz: i32) -> u32 {
+    with(|s| match &s.gen {
+        Some(g) => {
+            s.chunk.build(g, cx, cz);
+            let mut v = std::mem::take(&mut s.coll);
+            s.chunk.coll_grid(&mut v);
+            s.coll = v;
+            s.coll.as_ptr() as usize as u32
+        }
+        None => 0,
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn vw_coll_len() -> u32 {
+    with(|s| s.coll.len() as u32)
 }
 
 /// kind 0 opaque, 1 water, 2 foliage.

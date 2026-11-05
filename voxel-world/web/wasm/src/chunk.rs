@@ -1046,6 +1046,36 @@ impl ChunkBuilder {
         Some(Material::from_u8(self.vox[self.vidx(lx, y, lz)]))
     }
 
+    /// Collision grid of the last exact chunk (`build`): `[yb: i32 LE, ny: i32 LE]` followed by
+    /// ny·32·32 class bytes, y-major then z then x over the chunk's own 32×32 columns
+    /// (0 air / plants, 1 solid — rock, logs, leaves, ice —, 2 water, 3 lava). Rows below `yb`
+    /// are solid, rows from `yb + ny` up are air.
+    pub fn coll_grid(&self, out: &mut Vec<u8>) {
+        out.clear();
+        let ny = (self.yt - self.yb).max(0);
+        out.extend_from_slice(&self.yb.to_le_bytes());
+        out.extend_from_slice(&ny.to_le_bytes());
+        out.reserve((ny * CS * CS) as usize);
+        let lava = Material::Lava as u8;
+        for y in self.yb..self.yb + ny {
+            let base = (y - self.yb + 1) as usize * LAYER;
+            for lz in 1..=CS as usize {
+                for lx in 1..=CS as usize {
+                    let m = self.vox[base + lz * WU + lx];
+                    out.push(if m == lava {
+                        3
+                    } else {
+                        match self.cls[m as usize] {
+                            C_AIR => 0,
+                            C_WATER => 2,
+                            _ => 1,
+                        }
+                    });
+                }
+            }
+        }
+    }
+
     pub fn quad_count(&self, kind: usize) -> usize {
         self.out[kind].len() / QB
     }

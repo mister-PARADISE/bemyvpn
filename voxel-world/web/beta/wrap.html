@@ -40,7 +40,8 @@
   #stick .knob { position: absolute; left: 50%; top: 50%; width: 54px; height: 54px; margin: -27px 0 0 -27px; border-radius: 50%; background: rgba(220, 235, 245, 0.55); }
   #pad { position: fixed; right: max(16px, env(safe-area-inset-right, 0px)); bottom: calc(env(safe-area-inset-bottom, 0px) + 18px); display: grid; gap: 10px; }
   #pad button { width: 58px; height: 58px; border-radius: 50%; font-size: 20px; padding: 0; }
-  #pad #fast.on { border-color: var(--accent); color: var(--accent); }
+  #pad #fast.on, #pad #walkBtn.on { border-color: var(--accent); color: var(--accent); }
+  #pad { grid-template-columns: repeat(2, 58px); }
   #loader { position: fixed; inset: 0; display: grid; place-items: center; text-align: center; padding: 24px; background: #0e161e; }
   #loader h1 { font-size: 22px; margin: 0 0 8px; text-wrap: balance; }
   #loader p { color: var(--ink-dim); margin: 0; max-width: 36ch; line-height: 1.5; }
@@ -51,7 +52,7 @@
   #cross::before { left: 6px; top: 0; width: 2px; height: 14px; }
   #cross::after { top: 6px; left: 0; height: 2px; width: 14px; }
   @media (prefers-reduced-motion: reduce) { #hint { transition: none; } }
-  @media (hover: hover) and (pointer: fine) { #stick, #pad .touch-only { display: none; } }
+  @media (hover: hover) and (pointer: fine) { #stick, #pad .touch-only, .touch-note { display: none; } }
   @media (hover: none), (pointer: coarse) { .desk-only { display: none; } }
 </style>
 
@@ -86,17 +87,22 @@
       <option value="2">Максимум</option>
     </select>
   </label>
+  <label for="fov">Поле зрения (FOV): <span id="fovVal">70</span>°
+    <input id="fov" type="range" min="50" max="110" value="70">
+  </label>
   <label for="sens">Чувствительность обзора
     <input id="sens" type="range" min="2" max="20" value="8">
   </label>
-  <p class="note desk-only">Клик по миру — захватить мышь (вращать без зажатия). Esc — отпустить. WASD — полёт, Пробел/E — вверх, Q/C — вниз, Shift — быстро.</p>
-  <p class="note">Рядом — настоящие блоки, дальше — те же блоки покрупнее, до ~24 км. Мир генерируется прямо на устройстве.</p>
+  <p class="note desk-only">Клик по миру — захватить мышь (вращать без зажатия). Esc — отпустить. WASD — полёт, Пробел/E — вверх, Q/C — вниз, Shift — быстро. F — пешком/полёт; пешком: Пробел — прыжок, Shift/Ctrl — бег.</p>
+  <p class="note touch-note">🚶 — пешком (как в игре): джойстик — идти (до упора вперёд — бег), ▲ — прыжок, ⚡ — бег. Ещё раз 🚶 — снова полёт.</p>
+  <p class="note">Рядом — настоящие блоки, дальше — те же блоки покрупнее, до ~4–8 км. Мир генерируется прямо на устройстве.</p>
 </div>
 <div id="stick" hidden><div class="ring"></div><div class="knob" id="knob"></div></div>
 <div id="pad">
   <button id="up" aria-label="Вверх" class="touch-only">▲</button>
   <button id="down" aria-label="Вниз" class="touch-only">▼</button>
-  <button id="fast" aria-label="Быстро">⚡</button>
+  <button id="fast" aria-label="Быстро / бег">⚡</button>
+  <button id="walkBtn" aria-label="Пешком / полёт" aria-pressed="false">🚶</button>
 </div>
 <div class="panel" id="hint" hidden></div>
 <div class="panel" id="toast" hidden></div>
@@ -121,12 +127,13 @@ if (!gl) { fail('WebGL2 недоступен', 'Нужен браузер с п�
 // K: split distance in node sizes (bigger = finer far detail; levels ≥ 2 use 2K, see kOf),
 // range: view distance in blocks
 const QUALITY = [
-  { K: 3.8, range: 8400, shadow: 1024, scale: 1.0 },
-  { K: 5.4, range: 12000, shadow: 2048, scale: 1.25 },
-  { K: 7.5, range: 15600, shadow: 2048, scale: 1.5 },
+  { K: 3.8, range: 4200, shadow: 1024, scale: 1.25, minScale: 0.7 },
+  { K: 5.4, range: 6000, shadow: 2048, scale: 1.75, minScale: 0.9 },
+  { K: 7.5, range: 7800, shadow: 2048, scale: 2.25, minScale: 1.1 },
 ];
 const QS = new URLSearchParams(location.search);
-const st = { seed: 42, x: 0, y: 200, z: 0, yaw: 0, pitch: -0.2, tod: 35, sunAz: 210, q: Math.min(2, Math.max(0, parseInt(QS.get('q') ?? '1', 10) || 0)), fast: false, sens: 8 };
+const st = { seed: 42, x: 0, y: 200, z: 0, yaw: 0, pitch: -0.2, tod: 35, sunAz: 210, q: Math.min(2, Math.max(0, parseInt(QS.get('q') ?? '1', 10) || 0)), fast: false, sens: 8, walk: false, fovDeg: 70 };
+let fovCur = 70;
 let bookmarks = {}, wasmBytes = null, ready = false;
 
 // =====================================================================================
@@ -406,7 +413,7 @@ const quadIB = (() => {
 // =====================================================================================
 // 4 cascades (half-sizes in blocks); texel-snapped so shadows never swim, re-rendered only when
 // the camera moved a texel or the sun moved; the far cascades refresh less often
-const CSM_R = [40, 220, 1300, 9000];
+const CSM_R = [32, 160, 700, 3800];               // tighter for the shorter view range: sharper
 let csmTex = null, csmFbo = [], csmSize = 0, shadowDirty = true;
 const csm = CSM_R.map(() => ({ vp: new Float32Array(16), key: '', frame: -99, texel: 1 }));
 let lastSun = '';
@@ -438,6 +445,10 @@ async function handle(m) {
     if (ex.vw_set_merge) ex.vw_set_merge(7);
     postMessage({ type: 'ready' }); return;
   }
+  if (m.type === 'coll') {
+    const p = ex.vw_coll_chunk(m.cx, m.cz), buf = copy(p, ex.vw_coll_len());
+    postMessage({ type: 'coll', key: m.key, gen: m.gen, buf }, [buf]); return;
+  }
   if (m.type === 'node') {
     const t0 = performance.now();
     if (m.L === 0) ex.vw_build_chunk(m.sx, m.sz); else ex.vw_build_lod(m.L, m.sx, m.sz);
@@ -466,6 +477,10 @@ function makeWorkers(bytes) {
 // =====================================================================================
 const LMAX = 7;
 const nodes = new Map();          // key → { L, sx, sz, kinds, ymin, ymax (blocks), used }
+// walking: exact block classes of the chunks around the player, built by the workers
+// (0 air/plants, 1 solid incl. logs/leaves/ice, 2 water, 3 lava)
+const coll = new Map(), collInflight = new Set();
+let collQueue = [];
 const inflight = new Set();
 let nodeMsAvg = 0, desired = [], drawList = [], lastSelect = 0, selCam = [NaN, NaN, NaN, NaN];
 const nkey = (L, sx, sz) => L + ':' + sx + ':' + sz;
@@ -578,6 +593,13 @@ function schedule() {
 }
 let queue = [], qi = 0;
 function dispatch(w) {
+  while (collQueue.length) {                                     // walking: collision first
+    const c = collQueue.shift();
+    if (coll.has(c.k) || collInflight.has(c.k)) continue;
+    collInflight.add(c.k); w.busy = true;
+    w.w.postMessage({ type: 'coll', key: c.k, gen, cx: c.cx, cz: c.cz });
+    return;
+  }
   while (qi < queue.length) {
     const j = queue[qi++];
     if (nodes.has(j.k) || inflight.has(j.k)) continue;
@@ -589,7 +611,16 @@ function dispatch(w) {
 function onWorker(slot, m) {
   slot.busy = false;
   if (m.type === 'ready') { slot.ready = true; dispatch(slot); return; }
-  if (m.type === 'err') { console.error(m.msg); inflight.delete(m.key); dispatch(slot); return; }
+  if (m.type === 'err') { console.error(m.msg); inflight.delete(m.key); collInflight.delete(m.key); dispatch(slot); return; }
+  if (m.type === 'coll') {
+    collInflight.delete(m.key);
+    if (m.gen === gen) {
+      const dv = new DataView(m.buf);
+      coll.set(m.key, { yb: dv.getInt32(0, true), ny: dv.getInt32(4, true), data: new Uint8Array(m.buf, 8), used: performance.now() });
+      if (coll.size > 40) { let old = null; for (const [k, c] of coll) if (!old || c.used < old[1].used) old = [k, c]; coll.delete(old[0]); }
+    }
+    dispatch(slot); return;
+  }
   if (m.type === 'node') {
     inflight.delete(m.key);
     nodeMsAvg = nodeMsAvg ? nodeMsAvg * 0.9 + m.ms * 0.1 : m.ms;
@@ -603,7 +634,7 @@ function onWorker(slot, m) {
 // =====================================================================================
 let mainEx = null;
 function setSeed(seed, spotIndex) {
-  st.seed = seed; gen++;
+  st.seed = seed; gen++; coll.clear(); collQueue = []; setWalk(false);
   for (const n of nodes.values()) freeNode(n); nodes.clear(); inflight.clear(); desired = []; selCam = [NaN, NaN, NaN, NaN];
   for (const s of workers) { s.busy = true; s.ready = false; s.job = { type: 'init' }; s.w.postMessage({ type: 'init', seedLo: seed >>> 0, seedHi: Math.floor(seed / 4294967296) >>> 0 }); }
   mainEx.vw_init(seed >>> 0, Math.floor(seed / 4294967296) >>> 0);
@@ -620,6 +651,7 @@ function setSeed(seed, spotIndex) {
   shadowDirty = true;
 }
 function goBookmark(b) {
+  setWalk(false);
   Object.assign(st, { x: b.x, y: b.y, z: b.z, yaw: b.yaw, pitch: b.pitch });
   arriving = performance.now();
   if (b.sun_el !== undefined) { st.tod = Math.max(4, Math.min(85, b.sun_el)); $('tod').value = st.tod; st.sunAz = b.sun_az; }
@@ -688,6 +720,9 @@ const hold = (el, v) => {
 };
 hold($('up'), 1); hold($('down'), -1);
 $('fast').addEventListener('click', () => { st.fast = !st.fast; $('fast').classList.toggle('on', st.fast); });
+$('walkBtn').addEventListener('click', () => setWalk(!st.walk));
+addEventListener('keydown', (e) => { if (e.code === 'KeyF' && e.target.tagName !== 'INPUT') setWalk(!st.walk); });
+$('fov').addEventListener('input', (e) => { st.fovDeg = +e.target.value; $('fovVal').textContent = st.fovDeg; });
 document.addEventListener('gesturestart', (e) => e.preventDefault());
 document.addEventListener('touchmove', (e) => { if (e.target === cv) e.preventDefault(); }, { passive: false });
 function hideHint() { $('hint').style.opacity = 0; setTimeout(() => { $('hint').hidden = true; }, 700); }
@@ -867,13 +902,121 @@ function moveCam(dx, dy, dz) {
     }
   }
 }
+// =====================================================================================
+// Walking (like the block game): 0.6×1.8 box, eyes at 1.62, walk 4.3 / sprint 5.6 blocks/s,
+// gravity 32, jump ≈ 1.25 blocks, swimming, auto-jump onto 1-block steps,
+// view bobbing. Collision against the exact chunk voxels (terrain, caves, trees).
+// =====================================================================================
+const PW = 0.3, PH = 1.8, EYE = 1.62, GRAV = 32, JUMP_V = 8.9;
+const pl = { x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0, ground: false, bob: 0, bobA: 0, jumpCd: 0 };
+function requestColl(cx, cz) {
+  const k = cx + ',' + cz;
+  if (coll.has(k) || collInflight.has(k) || collQueue.some((c) => c.k === k)) return;
+  collQueue.push({ k, cx, cz });
+  for (const w of workers) if (w.ready && !w.busy) { dispatch(w); break; }
+}
+function blockCls(bx, by, bz) {
+  const cx = Math.floor(bx / 32), cz = Math.floor(bz / 32), c = coll.get(cx + ',' + cz);
+  if (!c) { requestColl(cx, cz); return mainEx.vw_solid_at && mainEx.vw_solid_at(bx + 0.5, by + 0.5, bz + 0.5) ? 1 : 0; }
+  if (by < c.yb) return 1;
+  if (by >= c.yb + c.ny) return 0;
+  return c.data[(by - c.yb) * 1024 + (bz - cz * 32) * 32 + (bx - cx * 32)];
+}
+function hitBox(x, y, z) {
+  const x0 = Math.floor(x - PW), x1 = Math.floor(x + PW - 1e-6), y0 = Math.floor(y), y1 = Math.floor(y + PH - 1e-6);
+  const z0 = Math.floor(z - PW), z1 = Math.floor(z + PW - 1e-6);
+  for (let by = y0; by <= y1; by++) for (let bz = z0; bz <= z1; bz++) for (let bx = x0; bx <= x1; bx++) if (blockCls(bx, by, bz) === 1) return true;
+  return false;
+}
+function setWalk(on) {
+  if (on === st.walk) return;
+  st.walk = on; $('walkBtn').classList.toggle('on', on); $('walkBtn').setAttribute('aria-pressed', on);
+  $('up').setAttribute('aria-label', on ? 'Прыжок' : 'Вверх');
+  if (!on) { st.y = pl.y + EYE; return; }
+  Object.assign(pl, { x: st.x, y: st.y - EYE, z: st.z, vx: 0, vy: 0, vz: 0, ground: false, bob: 0, bobA: 0 });
+  st.pitch = Math.max(-0.6, Math.min(0.4, st.pitch));
+  // high up: drop onto the ground under the camera (no minute-long fall from 900 blocks)
+  const top = mainEx.vw_height_at(pl.x, pl.z);
+  if (pl.y > top + 40 || hitBox(pl.x, pl.y, pl.z)) pl.y = top + 0.05;
+  for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) requestColl(Math.floor(pl.x / 32) + dx, Math.floor(pl.z / 32) + dz);
+  toast(IS_TOUCH ? 'Пешком: джойстик — идти (до упора — бег), ▲ — прыжок. 🚶 — снова полёт.' : 'Пешком: WASD, Пробел — прыжок, Shift/Ctrl — бег. F — снова полёт.', 4000);
+}
+// one frame of walking; returns whether the player is sprinting
+function walkStep(dt, mf, ms, jump, run) {
+  const fx = Math.floor(pl.x), fz = Math.floor(pl.z);
+  for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) requestColl(Math.floor((pl.x + dx * 12) / 32), Math.floor((pl.z + dz * 12) / 32));
+  const wet = blockCls(fx, Math.floor(pl.y + 0.4), fz) >= 2, headWet = blockCls(fx, Math.floor(pl.y + EYE), fz) >= 2;
+  const m = Math.hypot(mf, ms); if (m > 1) { mf /= m; ms /= m; }
+  const sprint = run && mf > 0.35 && !wet;
+  const speed = (sprint ? 5.612 : 4.317) * (wet ? 0.5 : 1);
+  const sy = Math.sin(st.yaw), cy = Math.cos(st.yaw);
+  const tx = (sy * mf - cy * ms) * speed, tz = (cy * mf + sy * ms) * speed;
+  const k = Math.min(1, (pl.ground ? 16 : wet ? 6 : 2.2) * dt);
+  pl.vx += (tx - pl.vx) * k; pl.vz += (tz - pl.vz) * k;
+  pl.jumpCd = Math.max(0, pl.jumpCd - dt);
+  if (wet) {                                                     // swimming: slow sink, jump = swim up
+    pl.vy += (jump ? 14 : -6) * dt; pl.vy = Math.max(-2.2, Math.min(jump && !headWet ? 4.2 : 2.6, pl.vy));
+  } else {
+    pl.vy = Math.max(-78, pl.vy - GRAV * dt);
+    if (jump && pl.ground && pl.jumpCd <= 0) {
+      pl.vy = JUMP_V; pl.jumpCd = 0.25;
+      if (sprint) { pl.vx += sy * 1.6; pl.vz += cy * 1.6; }   // sprint-jump boost
+    }
+  }
+  // integrate axis by axis (y, x, z) in sub-steps ≤ 0.3 blocks, clamping to block faces
+  const n = Math.min(40, Math.max(1, Math.ceil(Math.max(Math.abs(pl.vx), Math.abs(pl.vy), Math.abs(pl.vz)) * dt / 0.3)));
+  const h = dt / n; let blocked = false; pl.ground = false;
+  for (let i = 0; i < n; i++) {
+    let y2 = pl.y + pl.vy * h;
+    if (hitBox(pl.x, y2, pl.z)) {
+      if (pl.vy < 0) { y2 = Math.floor(y2) + 1; pl.ground = true; } else y2 = Math.ceil(y2 + PH) - 1 - PH - 1e-4;
+      if (hitBox(pl.x, y2, pl.z)) y2 = pl.y;
+      pl.vy = 0;
+    }
+    pl.y = y2;
+    let x2 = pl.x + pl.vx * h;
+    if (hitBox(x2, pl.y, pl.z)) {
+      x2 = pl.vx > 0 ? Math.floor(x2 + PW) - PW - 1e-4 : Math.floor(x2 - PW) + 1 + PW + 1e-4;
+      if (hitBox(x2, pl.y, pl.z)) x2 = pl.x;
+      pl.vx = 0; blocked = true;
+    }
+    pl.x = x2;
+    let z2 = pl.z + pl.vz * h;
+    if (hitBox(pl.x, pl.y, z2)) {
+      z2 = pl.vz > 0 ? Math.floor(z2 + PW) - PW - 1e-4 : Math.floor(z2 - PW) + 1 + PW + 1e-4;
+      if (hitBox(pl.x, pl.y, z2)) z2 = pl.z;
+      pl.vz = 0; blocked = true;
+    }
+    pl.z = z2;
+  }
+  if (!pl.ground && pl.vy <= 0 && hitBox(pl.x, pl.y - 0.02, pl.z)) pl.ground = true;
+  // auto-jump: walking into a 1-block step with room above it
+  if (blocked && pl.ground && Math.hypot(tx, tz) > 0.5 && pl.jumpCd <= 0) {
+    const d = 0.45 / Math.hypot(tx, tz);
+    if (!hitBox(pl.x + tx * d, pl.y + 1.02, pl.z + tz * d)) { pl.vy = JUMP_V; pl.jumpCd = 0.25; }
+  }
+  if (pl.y < -64) { pl.y = mainEx.vw_height_at(pl.x, pl.z) + 0.05; pl.vy = 0; }
+  // view bobbing (vertical double bounce + slight sway along the stride)
+  const hs = Math.hypot(pl.vx, pl.vz);
+  pl.bobA += ((pl.ground && hs > 0.5 ? Math.min(1, hs / 4.3) : 0) - pl.bobA) * Math.min(1, dt * 10);
+  pl.bob += hs * dt * 0.55;
+  const ph = pl.bob * Math.PI;
+  const bobY = -Math.abs(Math.cos(ph)) * 0.09 * pl.bobA, bobS = Math.sin(ph) * 0.045 * pl.bobA;
+  st.x = pl.x - cy * bobS; st.y = pl.y + EYE + bobY + 0.045 * pl.bobA; st.z = pl.z + sy * bobS;
+  return sprint && hs > 4.5;
+}
 // three depth ranges (exact blocks / mid LOD / far LOD), each with a projection matched to its
 // distances, so a 24-bit depth buffer never z-fights anywhere between 10 cm and 40 km
 const GROUPS = [[3, LMAX], [1, 2], [0, 0]];
 function frame(now) {
   const rawDt = (now - last) / 1000, dt = Math.min(0.1, rawDt); last = now;
   fps = fps * 0.9 + (1 / Math.max(rawDt, 1e-3)) * 0.1;
-  if (fps < 22 && ++slow > 120 && scale > 0.55) { scale *= 0.85; slow = 0; } else if (fps >= 22) slow = 0;
+  // dynamic resolution: never below the preset's floor (blurry upscaling was the "bad quality"),
+  // and back up again when there is headroom
+  const Qs = QUALITY[st.q];
+  if (fps < 24 && ++slow > 120 && scale > Qs.minScale) { scale = Math.max(Qs.minScale, scale * 0.9); slow = 0; }
+  else if (fps > 45 && --slow < -180 && scale < Qs.scale) { scale = Math.min(Qs.scale, scale / 0.9); slow = 0; }
+  else if (fps >= 24 && fps <= 45) slow = 0;
   resize();
   // movement
   const sp = (st.fast ? 180 : 30) * (keys.has('ShiftLeft') || keys.has('ShiftRight') ? 4 : 1);
@@ -885,8 +1028,17 @@ function frame(now) {
   if (keys.has('KeyE') || keys.has('Space')) mv += 1;
   if (keys.has('KeyQ') || keys.has('KeyC')) mv -= 1;
   const cp = Math.cos(st.pitch), sy = Math.sin(st.yaw), cy = Math.cos(st.yaw);
-  // forward f = (sin yaw·cos pitch, sin pitch, cos yaw·cos pitch); right = (-cos yaw, 0, sin yaw)
-  moveCam((sy * cp * mf - cy * ms) * sp * dt, (Math.sin(st.pitch) * mf + mv) * sp * dt, (cy * cp * mf + sy * ms) * sp * dt);
+  let sprinting = false;
+  if (st.walk) {
+    const run = st.fast || keys.has('ShiftLeft') || keys.has('ShiftRight') || keys.has('ControlLeft') || stick.y < -0.93;
+    sprinting = walkStep(dt, mf, ms, vert > 0 || keys.has('Space') || keys.has('KeyE'), run);
+  } else {
+    // forward f = (sin yaw·cos pitch, sin pitch, cos yaw·cos pitch); right = (-cos yaw, 0, sin yaw)
+    moveCam((sy * cp * mf - cy * ms) * sp * dt, (Math.sin(st.pitch) * mf + mv) * sp * dt, (cy * cp * mf + sy * ms) * sp * dt);
+  }
+  // FOV like the game: base slider value, ×1.15 while sprinting (×1.1 in fast flight), eased
+  const fovT = st.fovDeg * (sprinting ? 1.15 : (!st.walk && (st.fast || keys.has('ShiftLeft')) && Math.hypot(mf, ms, mv) > 0.2 ? 1.1 : 1));
+  fovCur += (fovT - fovCur) * Math.min(1, dt * 8);
   const ground = mainEx.vw_height_at(st.x, st.z);
   st.y = Math.min(st.y, 6000);
   if (prevPos && rawDt > 0) { const k = Math.min(1, rawDt * 3); for (let i = 0; i < 3; i++) vel[i] += (([st.x, st.y, st.z][i] - prevPos[i]) / rawDt - vel[i]) * k; }
@@ -897,7 +1049,7 @@ function frame(now) {
   const cpf = Math.cos(st.pitch);
   const f = [Math.sin(st.yaw) * cpf, Math.sin(st.pitch), Math.cos(st.yaw) * cpf];
   const view = lookAt([st.x, st.y, st.z], f, [0, 1, 0]);
-  const fov = 70 * Math.PI / 180, asp = cv.width / cv.height;
+  const fov = fovCur * Math.PI / 180, asp = cv.width / cv.height;
   const agl = Math.max(0, st.y - ground);
   const K = QUALITY[st.q].K, RMAX = QUALITY[st.q].range;
   const ranges = [
@@ -955,7 +1107,7 @@ function frame(now) {
     frame.hudT = now;
     const b = mainEx.vw_biome_at(st.x, st.z);
     $('hBiome').textContent = BIOMES[b] || ('Биом ' + b);
-    $('hNums').textContent = `высота ${Math.round(st.y)} · ${Math.round(fps)} к/с · секций ${drawn}/${desired.length}${pendingJobs ? ' · грузится ' + pendingJobs : ''}`;
+    $('hNums').textContent = `${st.walk ? 'пешком · ' : ''}высота ${Math.round(st.y)} · ${Math.round(fps)} к/с · секций ${drawn}/${desired.length}${pendingJobs ? ' · грузится ' + pendingJobs : ''}`;
   }
   requestAnimationFrame(frame);
 }
@@ -999,7 +1151,7 @@ function frame(now) {
     const hint = $('hint'); hint.hidden = false;
     hint.innerHTML = IS_TOUCH ? 'Левый палец — полёт, правый — обзор.<br>▲▼ — высота, ⚡ — скорость' : 'Кликни по миру, чтобы управлять мышью.<br>WASD — полёт, Пробел/Q — вверх/вниз, Shift — быстро, Esc — отпустить мышь';
     setTimeout(hideHint, 9000);
-    window.__vw = { st, nodes, workers, inflight, get desired() { return desired; }, get fps() { return fps; }, get ms() { return nodeMsAvg; } };
+    window.__vw = { st, nodes, workers, inflight, setWalk, pl, coll, get desired() { return desired; }, get fps() { return fps; }, get ms() { return nodeMsAvg; } };
     requestAnimationFrame(frame);
   } catch (e) {
     fail('Не получилось запустить', String((e && e.message) || e));
