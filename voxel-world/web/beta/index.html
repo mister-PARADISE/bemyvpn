@@ -117,11 +117,12 @@ const cv = $('cv');
 const gl = cv.getContext('webgl2', { antialias: true, powerPreference: 'high-performance' });
 if (!gl) { fail('WebGL2 недоступен', 'Нужен браузер с поддержкой WebGL2 (Safari 15+, Chrome). Напиши в чат, какой у тебя браузер.'); return; }
 
-// K: split distance in node sizes (bigger = finer far detail), range: view distance in blocks
+// K: split distance in node sizes (bigger = finer far detail; levels ≥ 2 use 2K, see kOf),
+// range: view distance in blocks
 const QUALITY = [
-  { K: 3.8, range: 14000, shadow: 1024, scale: 1.0 },
-  { K: 5.4, range: 20000, shadow: 2048, scale: 1.25 },
-  { K: 7.5, range: 26000, shadow: 2048, scale: 1.5 },
+  { K: 3.8, range: 8400, shadow: 1024, scale: 1.0 },
+  { K: 5.4, range: 12000, shadow: 2048, scale: 1.25 },
+  { K: 7.5, range: 15600, shadow: 2048, scale: 1.5 },
 ];
 const QS = new URLSearchParams(location.search);
 const st = { seed: 42, x: 0, y: 200, z: 0, yaw: 0, pitch: -0.2, tod: 35, sunAz: 210, q: Math.min(2, Math.max(0, parseInt(QS.get('q') ?? '1', 10) || 0)), fast: false, sens: 8 };
@@ -492,6 +493,9 @@ function distBox(L, sx, sz) {
   const dy = Math.max(0, st.y - (nd ? nd.ymax : 420));   // (terrain top of the node once known)
   return Math.sqrt(dx * dx + dz * dz + dy * dy);
 }
+// split distance per level: the exact-block radius stays K·64 (level 1 → 0), every coarser
+// level is kept twice as far (2K): mid/far detail doubled — each distance gets voxels half as big
+const kOf = (K, L) => (L >= 2 ? 2 * K : K);
 // every node on the split path is "wanted" (leaves to draw + their ancestors as fallbacks);
 // loading by d/size naturally brings parents in before their children
 function select(px = st.x, py = st.y, pz = st.z) {
@@ -504,7 +508,7 @@ function select(px = st.x, py = st.y, pz = st.z) {
   const visit = (L, sx, sz) => {
     const d = distBox(L, sx, sz);
     if (d > RMAX) return;
-    const split = L > 0 && d < K * (32 << L);
+    const split = L > 0 && d < kOf(K, L) * (32 << L);
     out.push({ L, sx, sz, d, leaf: !split });
     if (split) for (const [a, b] of [[0, 0], [1, 0], [0, 1], [1, 1]]) visit(L - 1, sx * 2 + a, sz * 2 + b);
   };
@@ -522,7 +526,7 @@ function buildDrawList() {
     const d = distBox(L, sx, sz);
     if (d > RMAX) return true;
     const nd = nodes.get(nkey(L, sx, sz));
-    if (!(L > 0 && d < K * (32 << L))) { if (nd) { acc.push(nd); return true; } return false; }
+    if (!(L > 0 && d < kOf(K, L) * (32 << L))) { if (nd) { acc.push(nd); return true; } return false; }
     const tmp = []; let all = true;
     for (const [a, b] of [[0, 0], [1, 0], [0, 1], [1, 1]]) if (!choose(L - 1, sx * 2 + a, sz * 2 + b, tmp)) all = false;
     if (all) { for (const t of tmp) acc.push(t); return true; }
@@ -897,7 +901,7 @@ function frame(now) {
   const K = QUALITY[st.q].K, RMAX = QUALITY[st.q].range;
   const ranges = [
     [Math.max(40, agl * 0.4), RMAX * 1.6 + st.y * 2],            // far LOD
-    [Math.max(2, agl * 0.05), K * 32 * 8 * 2.5 + agl * 1.5],      // levels 1–2
+    [Math.max(2, agl * 0.05), K * 32 * 8 * 5 + agl * 1.5],        // levels 1–2 (kept to 2K·256)
     [Math.max(0.12, agl * 0.004), K * 64 * 1.8 + agl * 1.5],      // exact blocks
   ];
   const vps = ranges.map(([n, fa]) => mul(persp(fov, asp, n, fa), view));
