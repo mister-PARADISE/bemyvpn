@@ -3,13 +3,14 @@
 tdb — анализ и очистка текстовых баз: CSV, TSV, TXT с разделителями.
 
 Запуск
-    python tdb.py                    меню: выбрать файл и работать
-    python tdb.py base.csv           то же, файл открыт сразу (можно перетащить на скрипт)
+    python tdb.py                    открыть и перетащить файл базы в окно — больше ничего не нужно
+    python tdb.py base.csv           то же, файл открыт сразу (можно перетащить на сам скрипт)
     python tdb.py base.csv -a        анализ — заполненность и уникальность — и выход
     python tdb.py base.csv -o new.csv --drop 3,7-12 --dedupe
     python tdb.py -h                 все опции командной строки
 
 Что умеет
+    · файл базы достаточно перетащить в окно; последние базы открываются по номеру;
     · сам определяет кодировку, разделитель, кавычки и строку заголовков;
     · заполненность: значение считается данными, только если в нём есть хотя бы
       одна буква или цифра и это не маркер пустоты (NULL, \\N …);
@@ -35,6 +36,7 @@ import re
 import shutil
 import signal
 import sys
+import textwrap
 import time
 import unicodedata
 from array import array
@@ -42,6 +44,7 @@ from collections import Counter
 from itertools import compress, islice
 from operator import itemgetter, mul, not_, or_
 from pathlib import Path
+from urllib.parse import unquote
 
 __version__ = "1.0"
 
@@ -50,7 +53,7 @@ __version__ = "1.0"
 #  НАСТРОЙКИ — то, что имеет смысл править под себя
 # ══════════════════════════════════════════════════════════════════════════════
 
-DEFAULT_FILE = r""            # файл, который открывать сразу; пусто — спросить
+DEFAULT_FILE = r""            # файл, который открывать сразу; пусто — спросить (файл перетаскивают в окно)
 
 # Маркеры пустоты. Значение, целиком равное одному из них (регистр и пробелы по
 # краям не важны), считается пустым. Кроме того, пустым считается всё, в чём нет
@@ -64,6 +67,8 @@ DOUBLE_QUOTE = True           # две кавычки подряд внутри 
 FIELD_LIMIT_MB = 16           # поле длиннее — запись нечитаема (защита от непарных кавычек)
 MEMORY_LIMIT_MB = 1024        # память на точный подсчёт уникальных; не хватило — оценка со знаком «≈»
 OUTPUT_SUFFIX = "_clean"      # имя нового файла: base.csv → base_clean.csv
+CLEAR_SCREEN = True           # каждый раздел — на чистом экране; False — сплошной лентой
+RECENT_FILES = 9              # сколько последних баз помнить (список — ~/.tdb_recent); 0 — не помнить
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -80,6 +85,7 @@ SET_LIMIT = 262_144           # до стольких — обычным мно�
 TOP_KEEP = 20                 # сколько частых значений хранить на столбец
 PRUNE_AT = 2_000_000          # отдельный проход: при стольких разных значениях редкие отбрасываются
 DATA_SUFFIXES = (".csv", ".tsv", ".txt", ".tab", ".dat", ".psv")
+RECENT_NAME = ".tdb_recent"   # файл со списком недавних баз — в домашней папке
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -87,7 +93,9 @@ DATA_SUFFIXES = (".csv", ".tsv", ".txt", ".tab", ".dat", ".psv")
 # ══════════════════════════════════════════════════════════════════════════════
 
 class UI:
+    interactive = False       # работаем в меню, а не по опциям командной строки
     color = False             # красить вывод
+    wipe = ""                 # чем очищать экран: "ansi", "command" или "" — нечем
     live = False              # терминал настоящий: прогресс рисуется на месте, одной строкой
     steps = False             # терминала нет (консоль IDE): прогресс — редкими отдельными строками
 
@@ -112,9 +120,12 @@ def setup_console():
             pass
     env = os.environ
     idle = "idlelib" in sys.modules       # оболочка IDLE: ни цвета, ни возврата каретки
-    capable = sys.stdout.isatty() and ansi and not idle or "PYCHARM_HOSTED" in env
-    UI.color = bool(env.get("FORCE_COLOR")) or capable and "NO_COLOR" not in env and env.get("TERM") != "dumb"
+    terminal = sys.stdout.isatty() and not idle and env.get("TERM") != "dumb"
+    capable = terminal and ansi or "PYCHARM_HOSTED" in env
+    UI.color = bool(env.get("FORCE_COLOR")) or capable and "NO_COLOR" not in env
     UI.live = sys.stderr.isatty() and not idle
+    if terminal and CLEAR_SCREEN:
+        UI.wipe = "ansi" if ansi else "command"
 
 
 def _paint(code):
@@ -126,6 +137,10 @@ dim, bold, accent, green, yellow, red = (_paint(code) for code in ("90", "1", "3
 
 def term_width():
     return max(64, min(shutil.get_terminal_size((100, 30)).columns - 1, 150))
+
+
+def term_height():
+    return shutil.get_terminal_size((100, 30)).lines
 
 
 def wlen(text):
@@ -147,6 +162,19 @@ def clip(text, width):
             break
         out.append(ch)
     return "".join(out) + "…" if width > 0 else ""
+
+
+def clip_left(text, width):
+    """Длинный путь обрезается слева: конец пути важнее начала."""
+    if wlen(text) <= width:
+        return text
+    out, used = [], 1
+    for ch in reversed(text):
+        used += wlen(ch)
+        if used > width:
+            break
+        out.append(ch)
+    return "…" + "".join(reversed(out))
 
 
 def pad(text, width, right=False):
@@ -259,16 +287,29 @@ class Back(Exception):
     """Ctrl+C в подсказке: шаг назад."""
 
 
-def ask(label=""):
+class Dropped(Exception):
+    """В подсказку перетащили файл: его надо открыть, на каком бы экране мы ни были."""
+
+
+def ask(label="", drop=True):
+    """Ввод строки. drop=False — там, где путь к файлу и есть ожидаемый ответ."""
     print()
     try:
-        return input(f"  {label}› ").strip()
+        text = input(f"  {label}› ").strip()
     except KeyboardInterrupt:
         print()
         raise Back from None
     except EOFError:
         print()
         raise SystemExit(0)
+    if drop and UI.interactive and len(text) > 2:
+        try:                              # полный путь к существующему файлу — значит, перетащили базу
+            path = clean_path(text)
+            if path.is_absolute() and path.is_file():
+                raise Dropped(text)
+        except (OSError, ValueError):
+            pass
+    return text
 
 
 _LAYOUT = str.maketrans("йцукенгшщзфывапролдячсмить", "qwertyuiopasdfghjklzxcvbnm")
@@ -284,25 +325,27 @@ def confirm(question):
     return ask(f"{question} [д/Н] ").lower() in ("д", "да", "y", "yes")
 
 
-def title(text, note_text=""):
-    print()
-    print(f"  {bold(text)}" + (f"   {dim(note_text)}" if note_text else ""))
-    print()
-
-
-def crumb(src, screen, note_text=""):
-    """Заголовок экрана: файл › экран."""
-    print()
-    print(f"  {dim(show(src.path.name) + ' ›')} {bold(screen)}" + (f"   {dim(note_text)}" if note_text else ""))
-    print()
+def clear_screen():
+    """Чистый лист: и экран, и прокрутка. Где очищать нечем (консоль IDE, вывод в файл) — экраны идут подряд."""
+    if UI.wipe == "ansi":
+        sys.stdout.write("\x1b[H\x1b[2J\x1b[3J")
+        sys.stdout.flush()
+    elif UI.wipe:
+        os.system("cls" if os.name == "nt" else "clear")
 
 
 def menu(rows):
-    """rows — (клавиша, название, пояснение[, True — пояснение не приглушать])."""
+    """rows — (клавиша, название, значение[, выделить значение[, приглушённая приписка]]).
+    Что не помещается в ширину окна, обрезается, а не переносится."""
     width = max(wlen(row[1]) for row in rows)
+    room = term_width() - width - 8
     for row in rows:
-        text = row[2] if len(row) > 3 and row[3] else dim(row[2])
-        print(f"  {accent(row[0])}  {pad(row[1], width)}   {text}".rstrip())
+        text = clip(row[2], room)
+        line = text if len(row) > 3 and row[3] else dim(text)
+        left = room - wlen(text) - 3
+        if len(row) > 4 and row[4] and left > 4:
+            line += "   " + dim(clip(row[4], left))
+        print(f"  {accent(row[0])}  {pad(row[1], width)}   {line}".rstrip())
 
 
 def hints(*pairs):
@@ -318,16 +361,22 @@ def hints(*pairs):
     print("  " + dim("  ·  ").join(line))
 
 
+def say(text, paint=str):
+    """Строка текста с отступом; длинная переносится по словам, а не там, где кончилось окно."""
+    for line in textwrap.wrap(text, term_width() - 2) or [""]:
+        print("  " + paint(line))
+
+
 def note(text):
-    print("  " + dim(text))
+    say(text, dim)
 
 
 def alert(text):
-    print("  " + yellow(text))
+    say(text, yellow)
 
 
 def fail(text):
-    print("  " + red(text))
+    say(text, red)
 
 
 class Progress:
@@ -640,9 +689,10 @@ def detect_encoding(head, more=(), whole=True):
         return "utf-32"
     if head.startswith((codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)):
         return "utf-16"
-    probe = head[:65536]
-    if probe.count(0) > len(probe) // 5:                  # UTF-16 без BOM: каждый второй байт нулевой
-        return "utf-16-le" if probe[1::2].count(0) >= probe[0::2].count(0) else "utf-16-be"
+    even, odd = head[0:65536:2].count(0), head[1:65536:2].count(0)
+    pairs = min(len(head), 65536) // 2                    # UTF-16 без BOM: нулевые байты — строго через один
+    if max(even, odd) * 5 > pairs and min(even, odd) * 50 < pairs:
+        return "utf-16-le" if odd > even else "utf-16-be"
     pieces = (head, *more)
     high = sum(len(piece.translate(None, _ASCII)) for piece in pieces)
     if not high:
@@ -747,6 +797,22 @@ def one_char(text):
 #  ИСХОДНЫЙ ФАЙЛ И ПРОХОД ПО НЕМУ
 # ══════════════════════════════════════════════════════════════════════════════
 
+_NOT_TEXT = ((b"PK\x03\x04", "архив ZIP или документ Excel/Word (.xlsx, .docx)"),
+             (b"\xd0\xcf\x11\xe0", "документ старого Excel/Word (.xls, .doc)"),
+             (b"\x1f\x8b", "архив GZIP"), (b"7z\xbc\xaf\x27\x1c", "архив 7z"), (b"Rar!", "архив RAR"),
+             (b"SQLite format 3\x00", "база SQLite"), (b"%PDF", "документ PDF"))
+
+
+def not_text(head, encoding):
+    """Если файл — не текст (архив, Excel, база SQLite, двоичные данные), возвращает, что это; иначе — пусто."""
+    for magic, name in _NOT_TEXT:
+        if head.startswith(magic):
+            return name
+    if not encoding.startswith(("utf-16", "utf-32")) and head.count(0) * 10 > len(head):
+        return "двоичный файл"
+    return ""
+
+
 class Source:
     """Исходный файл и его формат. Что не задано вручную (forced) — определяется по содержимому."""
 
@@ -769,6 +835,9 @@ class Source:
                     file.seek(int(self.size * part))
                     more.append(file.read(SAMPLE // 2))
         self.encoding = forced.get("encoding") or detect_encoding(head, more, self.size <= len(head))
+        alien = not_text(head, self.encoding)
+        if alien:
+            raise ValueError(f"это {alien}, а нужен текстовый файл: CSV, TSV, TXT")
         text = head.decode(self.encoding, "replace").lstrip("\ufeff")
         if self.size > len(head):                         # последняя строка образца оборвана
             text = text[: max(text.rfind("\n"), text.rfind("\r")) + 1] or text
@@ -1508,13 +1577,13 @@ def parse_columns(text, names):
 # ══════════════════════════════════════════════════════════════════════════════
 
 def file_card(src):
-    print(f"  {bold(show(src.path.name))}   {dim(size_text(src.size))}")
+    print(f"  {bold(clip_left(show(src.path.name), term_width() - 16))}   {dim(size_text(src.size))}")
     parts = [encoding_name(src.encoding), f"разделитель {delimiter_name(src.delimiter)}",
              f"{num(src.ncols)} {plural(src.ncols, 'столбец', 'столбца', 'столбцов')}",
              "с заголовком" if src.has_header else "без заголовка"]
     if not src.quote:
         parts.insert(2, "без кавычек")
-    print("  " + dim(" · ".join(parts)))
+    note(" · ".join(parts))
     if src.note:
         alert(src.note)
 
@@ -1570,8 +1639,9 @@ def table_lines(an, order="n", width=None):
     return lines
 
 
-def summary_lines(an):
+def summary_lines(an, width=None):
     """Итог под таблицей: строки, битые, дубли, время."""
+    width = width or term_width()
     rows = [("строк", num(an.rows), "")]
     total = an.rows + an.broken
     if an.broken:
@@ -1585,7 +1655,7 @@ def summary_lines(an):
         rows.append(("дублей строк", num(duplicates), f"{pct(duplicates, an.rows)} %" if duplicates else ""))
     else:
         rows.append(("дублей строк", repeats_text(an.rows, an.unique_rows, False),
-                     "оценка: на точный счёт не хватило памяти — см. MEMORY_LIMIT_MB в начале файла"))
+                     "оценка: не хватило памяти (MEMORY_LIMIT_MB)"))
     if an.multiline:
         rows.append(("переносов", num(an.multiline), "переводы строки внутри значений"))
     speed = f"{short(int(total / an.seconds))} строк/с" if an.seconds > 0.5 else ""
@@ -1593,15 +1663,18 @@ def summary_lines(an):
     key_w = max(wlen(k) for k, _, _ in rows)
     value_w = max(wlen(v) for _, v, _ in rows)
     lines = [f"  {dim(pad(k, key_w))}  {pad(v, value_w, True)}   {dim(extra)}".rstrip() for k, v, extra in rows]
+    warnings = []
     if an.part < 1:
-        lines.append("  " + yellow(f"прервано на {an.part * 100:.0f} % файла — цифры по прочитанной части"))
+        warnings.append(f"прервано на {an.part * 100:.0f} % файла — цифры по прочитанной части")
     if an.swallowed:
         lost = f"{num(an.swallowed)} {plural(an.swallowed, 'строка', 'строки', 'строк')}"
-        lines.append("  " + yellow(f"похоже на непарные кавычки: внутри значений оказалось {lost} файла, "
-                                   "похожих на отдельные записи"))
-        lines.append("  " + yellow("если кавычки в этом файле — просто символы, выключи их: «Формат» → «Кавычки»"))
+        warnings.append(f"похоже на непарные кавычки: внутри значений оказалось {lost} файла, "
+                        "похожих на отдельные записи")
+        warnings.append("если кавычки в этом файле — просто символы, выключи их: «Формат» → «Кавычки»")
     elif an.unreadable or an.broken * 100 > total:
-        lines.append("  " + yellow("много битых строк — проверь разделитель и кавычки в разделе «Формат»"))
+        warnings.append("много битых строк — проверь разделитель и кавычки в разделе «Формат»")
+    for text in warnings:
+        lines += ["  " + yellow(line) for line in textwrap.wrap(text, width - 2)]
     return lines
 
 
@@ -1618,24 +1691,24 @@ def value_list(pairs, total, limit=10):
 
 def column_card(an, col):
     """Подробности по одному столбцу."""
-    title(f"{col.index + 1} · {col.name or 'без имени'}", col.kind)
     empty = an.rows - col.filled
     approx = "" if col.exact else "≈ "
     unique = col.unique if col.exact else roughly(col.unique)
     bar = meter(col.filled / an.rows if an.rows else 0)
     rows = [("заполнено", num(col.filled), pct(col.filled, an.rows) + " %", bar),
             ("пусто", num(empty), pct(empty, an.rows) + " %", ""),
-            ("уникальных", approx + num(unique), pct(col.unique, col.filled) + " %",
-             dim("от заполненных" if col.exact else "от заполненных · оценка: не хватило памяти на точный счёт")),
+            ("уникальных", approx + num(unique), pct(col.unique, col.filled) + " %", dim("от заполненных")),
             ("повторов", repeats_text(col.filled, col.unique, col.exact), "", "")]
     value_w = max(wlen(row[1]) for row in rows)
     for name, value, share, extra in rows:
         print(f"  {dim(pad(name, 10))}  {pad(value, value_w, True)}  {pad(share, 7, True)}  {extra}".rstrip())
     if col.filled:
-        span = str(col.len_min)
+        span = f"{col.len_min} {plural(col.len_min, 'символ', 'символа', 'символов')}"
         if col.len_min != col.len_max:
-            span = f"{col.len_min} – {col.len_max}, в среднем {col.len_avg:.1f}"
-        print(f"  {dim(pad('длина', 10))}  {span} {dim(plural(col.len_max, 'символ', 'символа', 'символов'))}")
+            span = f"от {col.len_min} до {col.len_max}, в среднем {col.len_avg:.1f}"
+        print(f"  {dim(pad('длина', 10))}  {span}")
+    if not col.exact:
+        note("число уникальных — оценка: на точный счёт по всем столбцам сразу не хватило памяти")
     if col.empties and empty:
         print()
         note("что сочтено пустым")
@@ -1654,9 +1727,8 @@ def column_card(an, col):
         note("повторяющихся значений не найдено")
 
 
-def key_card(src, check):
-    """Итог проверки связки столбцов как ключа."""
-    title("Ключ: " + src.labels(check.indices))
+def key_card(check):
+    """Итог проверки столбца или связки столбцов как ключа."""
     approx = "" if check.exact else "≈ "
     unique = check.unique if check.exact else roughly(check.unique)
     complete = dim("все части ключа заполнены") if len(check.indices) > 1 else ""
@@ -1677,8 +1749,8 @@ def key_card(src, check):
         print("  " + green("повторов нет — годится как ключ"))
 
 
-def broken_card(src, samples):
-    title("Битые строки", f"в строке должно быть полей: {src.ncols}")
+def broken_card(samples):
+    """Примеры битых строк: номер записи, сколько в ней полей и сами поля."""
     for number, row in samples:
         print(f"  {dim('запись')} {num(number)}   {yellow(f'полей: {len(row)}')}")
         print("    " + clip(" ¦ ".join(show(cell) for cell in row), term_width() - 6))
@@ -1703,7 +1775,9 @@ def outcome_lines(result, plan):
         rows.append(("починено", result.repaired, ""))
     key_w = max(wlen(k) for k, _, _ in rows)
     value_w = max(len(num(v)) for _, v, _ in rows)
-    return [f"  {dim(pad(k, key_w))}  {pad(num(v), value_w, True)}   {dim(extra)}".rstrip() for k, v, extra in rows]
+    room = max(term_width() - key_w - value_w - 7, 10)
+    return [f"  {dim(pad(k, key_w))}  {pad(num(v), value_w, True)}   {dim(clip(extra, room))}".rstrip()
+            for k, v, extra in rows]
 
 
 def report_text(src, an, width=160):
@@ -1713,7 +1787,7 @@ def report_text(src, an, width=160):
         head = [str(src.path), f"{size_text(src.size)} · {encoding_name(src.encoding)} · разделитель "
                                f"{delimiter_name(src.delimiter)} · столбцов: {src.ncols} · "
                                f"{'с заголовком' if src.has_header else 'без заголовка'}", ""]
-        body = table_lines(an, width=width) + [""] + summary_lines(an)
+        body = table_lines(an, width=width) + [""] + summary_lines(an, width)
         return "\n".join(head + [line[2:] for line in body]) + "\n"
     finally:
         UI.color = was
@@ -1747,55 +1821,208 @@ def save_report(src, an, path):
 # ══════════════════════════════════════════════════════════════════════════════
 
 def clean_path(text):
-    """Путь, как его вставляют и перетаскивают: в кавычках, с «& » от PowerShell, с ~."""
+    """Путь, как его вставляют и перетаскивают: в кавычках, с «& » от PowerShell, ссылкой file://, с ~."""
     text = text.strip()
     if text.startswith("& "):
         text = text[2:].strip()
     if len(text) > 1 and text[0] == text[-1] and text[0] in "\"'":
         text = text[1:-1]
+    if text.lower().startswith("file://"):
+        text = unquote(text[7:])
+        if os.name == "nt":               # file:///C:/base.csv и file://server/share/base.csv
+            text = text.lstrip("/") if re.match(r"/+[A-Za-z]:", text) else "//" + text.lstrip("/")
     return Path(os.path.expandvars(os.path.expanduser(text)))
 
 
+def dropped(text):
+    """Что перетащили в окно или вписали руками: существующие файлы и папки из строки ввода.
+
+    Терминалы вставляют путь по-разному: в кавычках, если в нём пробелы, или с экранированными
+    пробелами; несколько файлов — через пробел. Сначала вся строка пробуется как один путь.
+    """
+    def existing(path):
+        try:
+            return Path(os.path.abspath(path)) if path.exists() else None
+        except (OSError, ValueError):
+            return None
+
+    if not text.strip():
+        return []
+    whole = existing(clean_path(text))
+    if whole:
+        return [whole]
+    found = []
+    bare = r"(\S+)" if os.name == "nt" else r"((?:\\.|\S)+)"
+    for double, single, plain in re.findall(r'"([^"]+)"|\'([^\']+)\'|' + bare, text.strip()):
+        if plain and os.name != "nt":
+            plain = re.sub(r"\\(.)", r"\1", plain)        # my\ base.csv → my base.csv
+        path = existing(clean_path(double or single or plain))
+        if path and path not in found:
+            found.append(path)
+    return found
+
+
+def recent_files():
+    """Недавно открытые базы, последняя — первой. Список живёт в домашней папке."""
+    if RECENT_FILES <= 0:
+        return []
+    try:
+        lines = (Path.home() / RECENT_NAME).read_text(encoding="utf-8").splitlines()
+    except (OSError, RuntimeError, UnicodeError):
+        return []
+    return [Path(line) for line in lines if line.strip()][:RECENT_FILES]
+
+
+def remember(path):
+    if RECENT_FILES <= 0:
+        return
+    path = Path(os.path.abspath(path))
+    paths = [path] + [p for p in recent_files() if p != path]
+    try:
+        (Path.home() / RECENT_NAME).write_text("".join(f"{p}\n" for p in paths[:RECENT_FILES]), encoding="utf-8")
+    except (OSError, RuntimeError, UnicodeError):
+        pass                              # не записалось — значит, без списка недавних
+
+
+def data_files(folder):
+    """Файлы в папке, похожие на базы; свежие — первыми."""
+    try:
+        files = [p for p in Path(folder).iterdir()
+                 if p.suffix.lower() in DATA_SUFFIXES and not p.name.endswith("_report.txt")
+                 and p.is_file() and p.stat().st_size]
+        return sorted(files, key=lambda p: -p.stat().st_mtime)[:9]
+    except OSError:
+        return []
+
+
+def size_of(path):
+    try:
+        return size_text(path.stat().st_size)
+    except OSError:
+        return ""
+
+
+BANNER = "анализ и очистка текстовых баз"
+
+
 class App:
+    """Интерактивный режим. Каждый раздел рисуется на чистом экране, а то, что нужно сказать
+    по итогам действия (ошибка, «сохранено»), показывается внизу следующего экрана."""
+
     def __init__(self, rules, forced=None):
         self.rules = rules
         self.forced = dict(forced or {})  # параметры формата, заданные вручную
         self.src = self.analysis = self.plan = None
+        self.notes = []                   # сообщения для следующего экрана: (краска, текст)
+
+    # ── экран ─────────────────────────────────────────────────────────────────
+
+    def page(self, screen="", extra=""):
+        """Новый экран: чистый лист и строка «файл › раздел»."""
+        clear_screen()
+        print()
+        if screen:
+            room = term_width() - 2
+            screen = clip(screen, max(room - 16, 20))
+            name = clip_left(show(self.src.path.name), max(room - wlen(screen) - 3, 8))
+            left = room - wlen(name) - wlen(screen) - 6
+            extra = clip(extra, left) if extra and left > 8 else ""
+            print(f"  {dim(name + ' ›')} {bold(screen)}" + (f"   {dim(extra)}" if extra else ""))
+            print()
+
+    def tell(self, text, paint=dim):
+        """Сообщение, которое появится внизу следующего экрана."""
+        self.notes.append((paint, text))
+
+    def foot(self, *pairs):
+        """Низ экрана: накопившиеся сообщения и подсказки по клавишам."""
+        if self.notes:
+            print()
+            for paint, text in self.notes:
+                say(text, paint)
+            self.notes.clear()
+        if pairs:
+            print()
+            hints(*pairs)
 
     # ── файл ──────────────────────────────────────────────────────────────────
 
-    def open(self, path, forced=None):
-        src = Source(path, forced or {})
+    def open(self, path):
+        forced = self.forced if self.src is None else {}      # формат из командной строки — для первого файла
+        src = Source(path, forced)
         if not src.ncols:
             raise ValueError("файл пуст или в нём нет строк с данными")
         self.src, self.forced, self.analysis, self.plan = src, src.forced, None, Plan(src)
+        remember(src.path)
 
-    def choose_file(self):
-        try:
-            nearby = sorted((p for p in Path.cwd().iterdir()
-                             if p.suffix.lower() in DATA_SUFFIXES and p.is_file() and p.stat().st_size),
-                            key=lambda p: -p.stat().st_mtime)[:9]
-        except OSError:
-            nearby = []
-        title("Файл")
-        if nearby:
-            width = max(wlen(p.name) for p in nearby)
-            for n, path in enumerate(nearby, 1):
-                print(f"  {accent(n)}  {pad(show(path.name), width)}   {dim(size_text(path.stat().st_size))}")
-            print()
-        note("путь к файлу — можно перетащить файл в это окно" + (" — или номер из списка" if nearby else ""))
+    def choose_file(self, typed=""):
+        """Экран выбора базы: перетащить файл в окно, взять из недавних или из папки.
+
+        typed — уже готовый ввод: путь из командной строки или файл, перетащенный прямо в меню.
+        Возвращает True, если файл открыт.
+        """
+        folder, offered = None, []        # folder — папка, которую перетащили; None — текущая
         while True:
-            text = ask()
-            if not text:
-                if self.src:
-                    return
-                continue
-            path = nearby[int(text) - 1] if text.isdigit() and 1 <= int(text) <= len(nearby) else clean_path(text)
-            try:
-                self.open(path)
-                return
-            except (OSError, ValueError) as error:
-                fail(f"не открыть — {reason(error)}")
+            if typed:
+                found, text, typed = dropped(typed), typed, ""
+            else:
+                options = self.file_list(folder, offered)
+                pairs = [("номер", "открыть из списка")] if options else [("путь", "можно вписать и вручную")]
+                self.foot(*pairs, ("0", "назад" if self.src else "выход"))
+                text = ask(drop=False)
+                if text == "0" or key(text) == "q" or not text and self.src:
+                    return False
+                if not text:
+                    continue
+                if text.isdigit() and 1 <= int(text) <= len(options):
+                    found = [options[int(text) - 1]]
+                else:
+                    found = dropped(text)
+            files = [p for p in found if p.is_file()]
+            if len(found) == 1 and files:
+                try:
+                    self.open(files[0])
+                    return True
+                except (OSError, ValueError) as error:
+                    self.tell(f"не открыть {show(files[0].name)} — {reason(error)}", red)
+            elif files:                   # перетащили несколько — работаем с одним, какой?
+                offered = files
+            elif found:                   # перетащили папку — показываем, что в ней
+                folder = found[0]
+                if not data_files(folder):
+                    self.tell(f"в папке {show(folder.name)} нет файлов, похожих на базы "
+                              f"({', '.join(DATA_SUFFIXES)})", yellow)
+            else:
+                self.tell(f"нет такого файла: {show(text)}", red)
+
+    def file_list(self, folder, offered):
+        """Рисует экран выбора базы и возвращает файлы в том порядке, в каком они пронумерованы."""
+        current = Path(os.path.abspath(self.src.path)) if self.src else None
+        here = folder or Path.cwd()
+        nearby = (f"в папке {show(here.name or str(here))}", data_files(here))
+        recent = ("недавние", [p for p in recent_files() if p.is_file()])
+        groups = (("перетащено", offered), nearby, recent) if folder else (("перетащено", offered), recent, nearby)
+        clear_screen()
+        print()
+        print(f"  {bold('tdb')}  {dim(BANNER)}")
+        print()
+        print(f"  Перетащи файл базы в это окно и нажми {bold('Enter')}")
+        options, shown = [], []
+        for label, paths in groups:                       # один файл — в одной группе, первой по порядку
+            paths = [p for p in paths if p != current and not any(p in group for _, group in shown)][:9]
+            if paths:
+                shown.append((label, paths))
+        width = min(max([wlen(show(p.name)) for _, group in shown for p in group] + [8]), 48, term_width() - 20)
+        for label, paths in shown:
+            print()
+            note(label)
+            for path in paths:
+                options.append(path)
+                room = term_width() - width - 21                  # место под папку, если файл не отсюда
+                where = clip_left(show(str(path.parent)), room) if path.parent != here and room > 12 else ""
+                print(f"  {accent(pad(str(len(options)), 2, True))}  {pad(show(path.name), width)}   "
+                      f"{dim(pad(size_of(path), 9, True))}   {dim(where)}".rstrip())
+        return options
 
     def analyzed(self):
         """Анализ файла; считается один раз и пересчитывается, если изменились файл или правила."""
@@ -1806,19 +2033,18 @@ class App:
 
     # ── главное меню ──────────────────────────────────────────────────────────
 
-    def run(self):
-        UI.steps = not UI.live
-        print()
-        print(f"  {bold('tdb')}  {dim('анализ и очистка текстовых баз')}")
-        if self.src is None:
-            try:
-                self.choose_file()
-            except Back:
-                return
-        while True:
+    def run(self, path=""):
+        UI.interactive, UI.steps = True, not UI.live
+        try:
+            opened = self.choose_file(path)
+        except Back:
+            opened = False
+        while opened:
             an = self.analysis
             if an and an.signature != (self.src.signature(), self.rules.signature()):
                 an = self.analysis = None
+            self.page()
+            print(f"  {bold('tdb')}  {dim(BANNER)}")
             print()
             file_card(self.src)
             print()
@@ -1830,12 +2056,14 @@ class App:
                   ("2", "Просмотр", "записи файла по одной"),
                   ("3", "Экспорт", "новый файл: столбцы, дубли, пустые и битые строки"),
                   ("4", "Формат", "кодировка, разделитель, заголовок, что считать пустым"),
-                  ("5", "Файл", "открыть другой"),
+                  ("5", "Файл", "открыть другой — или просто перетащи его в это окно"),
                   ("0", "Выход", "")])
+            self.foot()
             try:
-                choice = key(ask())
+                text = ask(drop=False)
             except Back:
-                return
+                break
+            choice = key(text)
             try:
                 if choice == "1":
                     self.screen_analysis()
@@ -1848,74 +2076,100 @@ class App:
                 elif choice == "5":
                     self.choose_file()
                 elif choice in ("0", "q"):
-                    return
+                    break
+                elif dropped(text):       # в меню перетащили другой файл
+                    self.choose_file(text)
+                elif text:
+                    self.tell(f"нет пункта «{show(text)}» — нужен номер из меню или путь к файлу")
             except Back:
                 pass
+            except Dropped as drop:       # на любом экране перетащили другую базу
+                try:
+                    self.choose_file(str(drop))
+                except Back:
+                    pass
             except (OSError, ValueError) as error:
-                fail(reason(error))
+                self.tell(reason(error), red)
+        clear_screen()
 
     # ── анализ ────────────────────────────────────────────────────────────────
 
     def screen_analysis(self):
         src = self.src
-        an, order, redraw, last, full = self.analyzed(), "n", True, None, True
+        if self.analysis is None:
+            self.page("Анализ")
+        an, order, view = self.analyzed(), "n", None      # view: None — таблица, "broken", Column или KeyCheck
         while True:
-            if redraw:
-                crumb(src, "Анализ")
-                for line in table_lines(an, order) + [""] + summary_lines(an):
+            if view is None:
+                self.page("Анализ")
+                lines = table_lines(an, order)
+                if len(lines) + 14 > term_height():       # таблица выше окна — шапка повторяется внизу
+                    lines.append(lines[0])
+                for line in lines + [""] + summary_lines(an):
                     print(line)
-                redraw = False
-            print()
-            pairs = [("номер", "столбец подробно")]
-            if last is not None and an.columns[last].top is None:
-                what = "частые значения" if an.columns[last].exact else "точное число уникальных и частые значения"
-                pairs.append(("d", f"{what} столбца {last + 1}: отдельный проход"))
-            if full:
-                pairs += [("несколько номеров", "проверить связку как ключ"),
-                          ("f u n", "сортировка: заполненность, уникальность, порядок"), ("s", "сохранить отчёт")]
+                pairs = [("номер", "столбец подробно"), ("несколько номеров", "проверить связку как ключ"),
+                         ("f u n", "сортировка: заполненность, уникальность, порядок"), ("s", "сохранить отчёт")]
                 if an.samples:
                     pairs.append(("b", "примеры битых строк"))
                 if an.part < 1:
                     pairs.append(("r", "посчитать заново"))
+                back = "в меню"
+            elif view == "broken":
+                self.page("Анализ › Битые строки", f"в строке должно быть полей: {src.ncols}")
+                broken_card(an.samples)
+                pairs, back = [("номер", "столбец подробно")], "к таблице"
+            elif isinstance(view, Column):
+                self.page(f"Анализ › {view.index + 1} · {show(view.name) or 'без имени'}", view.kind)
+                column_card(an, view)
+                pairs, back = [("номер", "другой столбец")], "к таблице"
+                if view.top is None:
+                    what = "частые значения" if view.exact else "точное число уникальных и частые значения"
+                    pairs.append(("d", f"{what}: отдельный проход"))
             else:
-                pairs.append(("?", "все команды"))
-            hints(*pairs, ("Enter", "назад"))
-            text = ask()
-            command, full = key(text), False
+                self.page("Анализ › Ключ: " + src.labels(view.indices))
+                key_card(view)
+                pairs, back = [("номера", "другой столбец или связка")], "к таблице"
+            self.foot(*pairs, ("Enter", back))
+            try:
+                text = ask()
+            except Back:
+                text = ""
+            command = key(text)
             if not text:
-                return
-            if command == "?":
-                full = True
+                if view is None:
+                    return
+                view = None
             elif command in ("f", "u", "n"):
-                order, redraw, full = command, True, True
+                order, view = command, None
             elif command == "s":
                 path = save_report(src, an, free_path(src.path.with_name(src.path.stem + "_report.txt")))
-                print(f"  {green('отчёт сохранён →')} {path}")
+                self.tell(f"отчёт сохранён → {show(path.name)} — рядом с базой", green)
             elif command == "b" and an.samples:
-                broken_card(src, an.samples)
+                view = "broken"
             elif command == "r":
                 self.analysis = None
-                an, redraw, full = self.analyzed(), True, True
-            elif command == "d" and last is not None:
-                self.deepen(an.columns[last])
-                column_card(an, an.columns[last])
+                self.page("Анализ")
+                an, view = self.analyzed(), None
+            elif command == "d" and isinstance(view, Column) and view.top is None:
+                self.page(f"Анализ › {view.index + 1} · {show(view.name) or 'без имени'}", view.kind)
+                self.deepen(view)
             else:
                 try:
                     picked = parse_columns(text, src.names)
                 except ValueError as error:
-                    fail(str(error))
+                    self.tell(str(error), red)
                     continue
                 if len(picked) == 1:
-                    last = picked[0]
-                    column_card(an, an.columns[last])
+                    view = an.columns[picked[0]]
                 else:
-                    key_card(src, check_key(src, self.rules, picked))
+                    self.page("Анализ › Ключ: " + src.labels(picked))
+                    view = check_key(src, self.rules, picked)
 
     def deepen(self, col):
         """Отдельный проход по столбцу: частые значения и точное число уникальных."""
         check = check_key(self.src, self.rules, [col.index], "частые значения")
         if check.part < 1:
-            alert("прервано — частые значения не посчитаны")
+            self.tell("прервано — частые значения не посчитаны", yellow)
             return
         col.top, col.top_exact = check.top, check.top_exact
         if check.exact:
@@ -1926,7 +2180,6 @@ class App:
     def screen_preview(self):
         src = self.src
         stream, number, hide_empty, end = records(src), 0, True, object()
-        crumb(src, "Просмотр")
 
         def jump(target):
             """Встать перед записью target (нумерация с единицы)."""
@@ -1936,15 +2189,15 @@ class App:
 
         while True:
             row = next(stream, end)
+            self.page("Просмотр")
             if row is end:
                 note("конец файла — дальше снова с первой записи")
                 stream, number = records(src), 0
             else:
                 number += 1
                 self.record_card(number, row, hide_empty)
-            print()
-            hints(("Enter", "следующая"), ("число", "перейти к записи"), ("e", "пустые поля: показать / скрыть"),
-                  ("0", "назад"))
+            self.foot(("Enter", "следующая"), ("число", "перейти к записи"), ("e", "пустые поля: показать / скрыть"),
+                      ("0", "в меню"))
             text = ask()
             command = key(text)
             if command in ("0", "q"):
@@ -1954,10 +2207,12 @@ class App:
                 stream, number = jump(max(number, 1))
             elif text.isdigit():
                 stream, number = jump(int(text))
+            elif text:
+                stream, number = jump(max(number, 1))
+                self.tell("Enter — следующая запись, число — перейти к записи с этим номером")
 
     def record_card(self, number, row, hide_empty):
         src = self.src
-        print()
         if row is None:
             print(f"  {dim('запись')} {bold(num(number))}   {yellow('нечитаема: поле больше предела')}")
             return
@@ -2014,20 +2269,19 @@ class App:
                  plan.broken != "file"),
                 ("6", "Значения", ", ".join(cleaning) or "без изменений", bool(cleaning)),
                 ("7", "Формат", " · ".join(layout), changed),
-                ("8", "Файл", str(plan.path), True)]
+                ("8", "Файл", clip_left(show(str(plan.path)), term_width() - 24), True)]
 
     def screen_export(self):
         src, plan = self.src, self.plan
         while True:
-            crumb(src, "Экспорт", "исходный файл не изменяется")
+            self.page("Экспорт", "исходный файл не изменяется")
             menu(self.plan_rows())
             try:
                 if shutil.disk_usage(Path(plan.path).resolve().parent).free < src.size:
-                    alert("на диске меньше свободного места, чем занимает исходный файл")
+                    self.tell("на диске меньше свободного места, чем занимает исходный файл", yellow)
             except OSError:
                 pass
-            print()
-            hints(("Enter", "выполнить"), ("номер", "изменить"), ("0", "назад"))
+            self.foot(("Enter", "выполнить"), ("номер", "изменить"), ("0", "в меню"))
             choice = key(ask())
             if choice in ("0", "q"):
                 return
@@ -2053,14 +2307,14 @@ class App:
                 elif choice == "7":
                     self.pick_layout()
                 elif choice == "8":
-                    text = ask("новый файл ")
+                    text = ask("новый файл ", drop=False)
                     if text:
                         path = clean_path(text)
                         plan.path = path if path.is_absolute() else src.path.parent / path
             except Back:
                 pass
             except (ValueError, OSError) as error:
-                fail(reason(error))
+                self.tell(reason(error), red)
 
     def column_grid(self, kept):
         """Столбцы сеткой: номер, имя, заполненность; убранные — приглушены и с крестиком."""
@@ -2081,14 +2335,13 @@ class App:
     def pick_columns(self):
         src, plan = self.src, self.plan
         while True:
-            crumb(src, "Экспорт › Столбцы", f"в новый файл пойдут {len(plan.keep)} из {src.ncols}")
+            self.page("Экспорт › Столбцы", f"в новый файл пойдут {len(plan.keep)} из {src.ncols}")
             self.column_grid(set(plan.keep))
             if plan.keep != sorted(plan.keep):
                 print()
                 note("порядок в новом файле: " + " ".join(str(i + 1) for i in plan.keep))
-            print()
-            hints(("номера или имена", "убрать / вернуть"), ("=1-5 9", "оставить только эти, в этом порядке"),
-                  ("<5", "убрать заполненные меньше чем на 5 %"), ("*", "все"), ("Enter", "готово"))
+            self.foot(("номера или имена", "убрать / вернуть"), ("=1-5 9", "оставить только эти, в этом порядке"),
+                      ("<5", "убрать заполненные меньше чем на 5 %"), ("*", "все"), ("Enter", "готово"))
             text = ask()
             if not text:
                 return
@@ -2102,11 +2355,13 @@ class App:
                         limit = float(text[1:].replace(",", ".").replace("%", "").strip() or 0)
                     except ValueError:
                         raise ValueError("после «<» нужно число — процент заполненности") from None
+                    if self.analysis is None:             # заполненность ещё не считалась
+                        self.page("Экспорт › Столбцы")
                     an = self.analyzed()
                     kept = [i for i in plan.keep if well_filled(an, i, limit)]
                     if not kept:
                         raise ValueError("так не останется ни одного столбца")
-                    print("  " + green(f"убрано столбцов: {len(plan.keep) - len(kept)}"))
+                    self.tell(f"убрано столбцов: {len(plan.keep) - len(kept)}", green)
                     plan.keep = kept
                 else:
                     picked = parse_columns(text, src.names)
@@ -2116,17 +2371,17 @@ class App:
                         raise ValueError("должен остаться хотя бы один столбец")
                     plan.keep = sorted(kept) if ordered else kept
             except ValueError as error:
-                fail(str(error))
+                self.tell(str(error), red)
 
     def pick_dedupe(self):
         src, plan = self.src, self.plan
-        crumb(src, "Экспорт › Дубликаты")
+        self.page("Экспорт › Дубликаты")
         menu([("1", "Не убирать", ""),
               ("2", "Одинаковые строки", "из совпадающих целиком остаётся первая"),
               ("3", "По ключу", "остаётся первая строка на каждое значение выбранных столбцов")])
         if not self.rules.soft:
-            print()
-            note("сравнение точное; без учёта регистра и пробелов по краям — в разделе «Формат»")
+            self.tell("сравнение точное; без учёта регистра и пробелов по краям — в разделе «Формат»")
+        self.foot()
         choice = key(ask())
         if choice == "1":
             plan.dedupe, plan.key = "", []
@@ -2136,7 +2391,7 @@ class App:
             picked = parse_columns(ask("столбцы ключа: номера или имена "), src.names)
             if picked:
                 plan.dedupe, plan.key = "key", picked
-                note("строки, где ключ пуст или неполон, дублями не считаются — остаются все")
+                self.tell("строки, где ключ пуст или неполон, дублями не считаются — остаются все")
 
     def pick_required(self):
         src, plan = self.src, self.plan
@@ -2151,15 +2406,15 @@ class App:
     def pick_cleaning(self):
         plan = self.plan
         while True:
-            crumb(self.src, "Экспорт › Значения")
+            self.page("Экспорт › Значения")
             trim = plan.trim or plan.denoise
-            menu([("1", "Пробелы по краям", "убирать" if trim else "оставить", trim),
-                  ("2", "Невидимые символы", "убирать; переносы, табуляции и повторные пробелы — в один пробел"
-                   if plan.denoise else "оставить", plan.denoise),
-                  ("3", "Пустышки", "значения без букв и цифр и маркеры пустоты → пустое поле"
-                   if plan.blank else "оставить", plan.blank)])
-            print()
-            hints(("номер", "переключить"), ("Enter", "готово"))
+            mark = {True: "вкл", False: "—  "}            # что делает пункт, видно и до включения
+            menu([("1", "Пробелы по краям", mark[trim], trim, "обрезать пробелы в начале и в конце значения"),
+                  ("2", "Невидимые символы", mark[plan.denoise], plan.denoise,
+                   "убрать; переносы, табуляции и повторные пробелы — в один"),
+                  ("3", "Пустышки", mark[plan.blank], plan.blank,
+                   "значения без букв и цифр и маркеры пустоты → пустое поле")])
+            self.foot(("номер", "переключить"), ("Enter", "готово"))
             choice = key(ask())
             if choice == "1":
                 plan.trim, plan.denoise = not trim, False
@@ -2173,15 +2428,14 @@ class App:
     def pick_layout(self):
         src, plan = self.src, self.plan
         while True:
-            crumb(src, "Экспорт › Формат нового файла")
+            self.page("Экспорт › Формат нового файла")
             rows = [("1", "Кодировка", encoding_name(plan.encoding), True),
                     ("2", "Разделитель", delimiter_name(plan.delimiter), True),
                     ("3", "Кавычки", "вокруг всех значений" if plan.quote_all else "только где необходимо", True)]
             if src.has_header:
                 rows.append(("4", "Заголовок", "писать" if plan.header else "не писать", True))
             menu(rows)
-            print()
-            hints(("номер", "изменить"), ("Enter", "готово"))
+            self.foot(("номер", "изменить"), ("Enter", "готово"))
             choice = key(ask())
             try:
                 if choice == "1":
@@ -2197,28 +2451,30 @@ class App:
                 else:
                     return
             except ValueError as error:
-                fail(str(error))
+                self.tell(str(error), red)
 
     def run_export(self):
+        """Выполняет план. True — файл записан (и экран экспорта можно закрывать)."""
         src, plan = self.src, self.plan
         path = Path(plan.path)
         if path.exists():
             if os.path.samefile(path, src.path):
-                fail("это исходный файл — его трогать нельзя; укажи другое имя в пункте 8")
+                self.tell("это исходный файл — его трогать нельзя; укажи другое имя в пункте 8", red)
                 return False
-            if not confirm(f"файл {path.name} уже есть — заменить?"):
+            if not confirm(f"файл {clip_left(show(path.name), 36)} уже есть — заменить?"):
                 return False
+        self.page("Экспорт")
         result = export(src, self.rules, plan)
         if result.cancelled:
-            alert("прервано — новый файл не создан")
+            self.tell("прервано — новый файл не создан", yellow)
             return False
-        title("Готово", time_text(result.seconds))
+        self.page("Экспорт › Готово", time_text(result.seconds))
         for line in outcome_lines(result, plan):
             print(line)
         print()
-        print(f"  {green('→')} {result.path}   {dim(size_text(result.size))}")
-        print()
-        hints(("o", "открыть новый файл здесь"), ("Enter", "в меню"))
+        print(f"  {green('→')} {show(result.path.name)}   {dim(size_text(result.size))}")
+        print("    " + dim(clip_left(show(os.path.abspath(result.path.parent)), term_width() - 6)))
+        self.foot(("o", "открыть новый файл здесь"), ("Enter", "в меню"))
         if key(ask()) == "o":
             self.open(result.path)
         else:
@@ -2231,24 +2487,25 @@ class App:
         while True:
             src, rules = self.src, self.rules
 
-            def value(name, text):
-                return text + ("" if name in self.forced else dim("   авто"))
+            def auto(name):               # «авто» — у того, что определено по содержимому, а не задано руками
+                return "" if name in self.forced else "авто"
 
-            crumb(src, "Формат")
+            self.page("Формат")
             markers = "без букв и цифр" + (", а также: " + "  ".join(rules.markers) if rules.markers else "")
-            menu([("1", "Кодировка", value("encoding", encoding_name(src.encoding)), True),
-                  ("2", "Разделитель", value("delimiter", delimiter_name(src.delimiter)), True),
-                  ("3", "Кавычки", value("quote", f"«{src.quote}»" if src.quote else "нет"), True),
-                  ("4", "Экранирование", value("escape", f"«{src.escape}»" if src.escape else "нет"), True),
-                  ("5", "Заголовок", value("header", "первая строка — имена столбцов" if src.has_header
-                                           else "нет, данные с первой строки"), True),
-                  ("6", "Столбцов", value("ncols", str(src.ncols)), True),
+            menu([("1", "Кодировка", encoding_name(src.encoding), True, auto("encoding")),
+                  ("2", "Разделитель", delimiter_name(src.delimiter), True, auto("delimiter")),
+                  ("3", "Кавычки", f"«{src.quote}»" if src.quote else "нет", True, auto("quote")),
+                  ("4", "Экранирование", f"«{src.escape}»" if src.escape else "нет", True, auto("escape")),
+                  ("5", "Заголовок", "первая строка — имена столбцов" if src.has_header
+                   else "нет, данные с первой строки", True, auto("header")),
+                  ("6", "Столбцов", str(src.ncols), True, auto("ncols")),
                   ("7", "Короткие строки", "чинить: дополнять пустыми полями" if rules.repair
                    else "считать битыми", True),
                   ("8", "Пустые значения", markers, True),
                   ("9", "Сравнение", "без учёта регистра и пробелов по краям" if rules.soft else "точное", True)])
-            print()
-            hints(("номер", "изменить"), ("a", "определить всё заново"), ("Enter", "назад"))
+            if src.note:
+                self.tell(src.note, yellow)
+            self.foot(("номер", "изменить"), ("a", "определить всё заново"), ("Enter", "в меню"))
             choice = key(ask())
             try:
                 if choice == "1":
@@ -2278,7 +2535,7 @@ class App:
                 else:
                     return
             except (ValueError, OSError) as error:
-                fail(f"не подходит — {reason(error)}")
+                self.tell(f"не подходит — {reason(error)}", red)
 
     def change(self, name, text, convert):
         """Параметр формата: пустой ввод — не менять, «a» — определять автоматически, иначе — задать."""
@@ -2321,7 +2578,8 @@ def build_parser():
     me = Path(sys.argv[0]).name or "tdb.py"
     parser = argparse.ArgumentParser(
         prog=me, add_help=False, formatter_class=_Help, usage=f"{me} [файл] [опции]",
-        description="Анализ и очистка текстовых баз (CSV, TSV, TXT). Без -a / -r / -o — интерактивный режим.",
+        description="Анализ и очистка текстовых баз (CSV, TSV, TXT). Без -a / -r / -o — интерактивный режим:\n"
+                    "файл базы достаточно перетащить в окно.",
         epilog="СТОЛБЦЫ — номера с единицы, диапазоны, имена и маски имён: 1,3-5,email,addr*\n\n"
                "примеры:\n"
                f"  {me} base.csv -a\n"
@@ -2465,14 +2723,7 @@ def main(argv=None):
             if not src.ncols:
                 raise ValueError("файл пуст или в нём нет строк с данными")
             return batch(args, src, rules)
-        app = App(rules, forced)
-        if path:
-            try:
-                app.open(clean_path(path), forced)
-            except (OSError, ValueError) as error:
-                fail(f"не открыть — {reason(error)}")
-        app.run()
-        print()
+        App(rules, forced).run(path)
         return 0
     except KeyboardInterrupt:
         print()
@@ -2483,4 +2734,14 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except Exception:                     # непредвиденное: показать, а не дать окну закрыться молча
+        import traceback
+        traceback.print_exc()
+        if UI.interactive and sys.stdin.isatty():
+            try:
+                input("\n  Что-то сломалось — текст ошибки выше. Enter — закрыть ")
+            except (EOFError, KeyboardInterrupt):
+                pass
+        sys.exit(1)
