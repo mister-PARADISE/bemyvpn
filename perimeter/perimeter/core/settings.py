@@ -101,7 +101,8 @@ class Settings:
                 raise
             return default
         values = self._values()
-        if key in values:
+        # пустое поле («очистили и сохранили») значит «как по умолчанию»: иначе None * 3600 роняет панель
+        if values.get(key) is not None:
             return copy.deepcopy(values[key])
         return copy.deepcopy(fld.default)
 

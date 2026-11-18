@@ -76,3 +76,8 @@ def test_proxies_page_add_check_and_stat(browser, ctx):
         with ctx.db.session() as s:
             assert [p.port for p in s.scalars(select(Proxy))] == [proxy.port]
         assert ctx.services["proxies"].pick() == f"http://127.0.0.1:{proxy.port}"
+
+
+def test_bad_check_url_ends_as_dead_not_stuck():
+    result = asyncio.run(check("https://ipinfo.io:port/json", "http://127.0.0.1:9", 2))
+    assert result["status"] == "dead" and result["error"]

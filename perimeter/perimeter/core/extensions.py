@@ -67,7 +67,13 @@ def _import_file(name: str, entry: Path) -> ModuleType:
 
 def _load(ctx: Context, name: str, origin: str, importer) -> None:
     info = ExtensionInfo(name=name.rsplit(".", 1)[-1], title=name, origin=origin)
+    taken = {e.name for e in ctx.extensions}
     ctx.extensions.append(info)
+    if info.name in taken:
+        # имя — это и компонент миграций: два «journal» делили бы одну версию схемы
+        info.error = f"имя «{info.name}» уже занято другим расширением — переименуйте папку"
+        log.error("Расширение %s не загружено: %s", name, info.error)
+        return
     snapshot = _Snapshot(ctx)
     try:
         module = importer()

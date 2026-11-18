@@ -4,7 +4,7 @@
 {% block content %}
 {% set scope = target.scope %}
 {% call ui.head(target.name, [target.title, "добавлена " ~ (target.created_at|date)], back="/targets", back_text="Цели") %}
-  <a class="ib" href="https://{{ target.domain }}" target="_blank" rel="noopener noreferrer" data-tip="Открыть сайт" aria-label="Открыть сайт">{{ icon('external') }}</a>
+  <a class="ib" href="https://{{ '[' ~ target.domain ~ ']' if ':' in target.domain else target.domain }}/" target="_blank" rel="noopener noreferrer" data-tip="Открыть сайт" aria-label="Открыть сайт">{{ icon('external') }}</a>
   <a class="ib" href="/targets/{{ target.id }}/edit" data-tip="Изменить" aria-label="Изменить">{{ icon('edit') }}</a>
   {{ ui.post_ib("/targets/%d/delete"|format(target.id), "trash", "Удалить цель", "danger",
                 confirm="Цель, её хосты, запуски и находки будут удалены. Записи в журнале останутся.",

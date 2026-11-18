@@ -132,7 +132,7 @@ class UI:
         name = self.ctx.settings.get("general.timezone")
         try:
             return ZoneInfo(name)
-        except (ZoneInfoNotFoundError, ValueError):
+        except (ZoneInfoNotFoundError, ValueError, TypeError):
             return timezone.utc
 
     def local(self, value: datetime) -> datetime:

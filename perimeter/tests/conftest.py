@@ -76,15 +76,31 @@ def ctx(app):
 
 
 def run_and_wait(browser: Browser, target_id: int, module: str, timeout: float = 30, **params) -> dict:
-    """Запустить модуль через панель и дождаться конца. Возвращает итог с полным выводом."""
-    import time
+    """Запустить модуль через панель и дождаться конца всей цепочки (модуль + то, на чём он построен).
+    Возвращает итог запуска именно этого модуля; state["chain"] — [(модуль, статус)] всей цепочки."""
     from urllib.parse import parse_qs, urlsplit
 
     form = {"module": module, **({"with_params": "1"} if params else {}), **{f"p_{k}": v for k, v in params.items()}}
     r = browser.post(f"/targets/{target_id}/run", form)
     assert r.status_code == 303, r.text
     run_id = int(parse_qs(urlsplit(r.headers["location"]).query)["run"][0])
-    return wait_run(browser, run_id, timeout)
+    return wait_chain(browser, run_id, None if module == "__all__" else module, timeout)
+
+
+def wait_chain(browser: Browser, run_id: int, module: str | None = None, timeout: float = 30) -> dict:
+    import time
+
+    deadline = time.monotonic() + timeout
+    chain, found, state = [], None, None
+    while run_id is not None:
+        state = wait_run(browser, run_id, max(0.5, deadline - time.monotonic()))
+        chain.append((state["module"], state["status"]))
+        if module is None or state["module"] == module:
+            found = state
+        run_id = state["next"]["id"] if state["next"] else None
+    result = found or state
+    result["chain"] = chain
+    return result
 
 
 def wait_run(browser: Browser, run_id: int, timeout: float = 30) -> dict:

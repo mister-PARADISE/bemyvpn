@@ -5,14 +5,14 @@
 {% call ui.head("Запуск #" ~ run.id, [module.spec.title if module else run.module_id, (target.name if target else "цель удалена"), "начат " ~ (run.created_at|dt)], back="/runs", back_text="Запуски") %}
   {% if target %}<a class="ib" href="/targets/{{ target.id }}" data-tip="К цели" aria-label="К цели">{{ icon('globe') }}</a>{% endif %}
 {% endcall %}
-{% if run.params %}
+{% if params %}
 <section class="card">
   <div class="card-head"><h2>Параметры</h2></div>
-  <div class="kvlist">
-    {% for k, v in run.params.items() %}<div class="kvrow"><span class="k">{{ k }}</span><span class="v">{{ v }}</span></div>{% endfor %}
+  <div class="kvlist wide">
+    {% for k, v in params %}<div class="kvrow"><span class="k">{{ k }}</span><span class="v">{{ v }}</span></div>{% endfor %}
   </div>
 </section>
 <div style="height:18px"></div>
 {% endif %}
-{{ partial("runs/_console.html", {"run": run, "state": state, "reload": false}) }}
+{{ partial("runs/_console.html", {"view": view, "reload": false}) }}
 {% endblock %}

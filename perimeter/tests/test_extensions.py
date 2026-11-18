@@ -124,3 +124,11 @@ def setup(ctx):
     ctx = make_app(tmp_path).state.ctx
     assert "odd" not in ctx.modules
     assert any(e.error and "nonsense" in e.error for e in ctx.extensions)
+
+
+def test_plugin_cannot_take_a_builtin_name(tmp_path):
+    write_plugin(tmp_path, "journal", GOOD_PLUGIN)
+    app = make_app(tmp_path)  # раньше: IntegrityError на schema_version при первом запуске
+    plugins = [e for e in app.state.ctx.extensions if e.origin == "plugin"]
+    assert len(plugins) == 1 and not plugins[0].ok and "уже занято" in plugins[0].error
+    app.state.ctx.call_hooks("app.stop", app.state.ctx)

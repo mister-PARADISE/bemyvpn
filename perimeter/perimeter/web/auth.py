@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import time
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 from fastapi import APIRouter, Request
 from sqlalchemy import func, select
@@ -51,7 +51,12 @@ async def require_user(request: Request) -> User:
     fresh = time.time() - request.session.get("at", 0) < hours * 3600
     if user is None or request.session.get("epoch") != user.session_epoch or not fresh:
         request.session.pop("uid", None)
-        path = request.url.path + (f"?{request.url.query}" if request.url.query else "")
+        if request.method == "GET":
+            path = request.url.path + (f"?{request.url.query}" if request.url.query else "")
+        else:  # форма после истёкшего входа: после входа — туда, откуда её отправили, а не на адрес POST
+            ref = urlsplit(request.headers.get("referer", ""))
+            same = ref.netloc == request.url.netloc and ref.path.startswith("/") and not ref.path.startswith("//")
+            path = (ref.path + (f"?{ref.query}" if ref.query else "")) if same else "/"
         raise LoginRequired(next_url=path)
     request.state.user = user
     return user

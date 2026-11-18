@@ -1,7 +1,7 @@
-"""Разведка: первые модули и то, как их находки выглядят в карточке цели.
+"""Разведка: модули (один модуль — один вопрос) и то, как их находки выглядят на странице цели.
 
-Сводка цели («паспорт») и подсказки «можно добавить» собираются из находок —
-сами модули о них ничего не знают.
+Сводка, замечания, структура и подсказки «можно добавить» собираются из находок
+(recon/view.py) — сами модули о них ничего не знают.
 """
 
 from __future__ import annotations
@@ -11,14 +11,15 @@ from fastapi import APIRouter, HTTPException, Request
 from sqlalchemy import select
 
 from ...core import fields as f
-from ...core.context import Context, Slot
+from ...core.context import Context, Slot, Stat
 from ...core.modules import AssetType
 from ...core.settings import SettingsSection
 from ...web import DB, actor, get_ctx, redirect
+from ...web.ui import plural
 from ..runs.models import Asset
 from . import netkit, view
 from ..targets.models import Target
-from .modules import HostInfo, Neighbors, OpenPorts, Reach
+from .modules import MODULES
 
 TITLE = "Разведка"
 DESCRIPTION = "Хост и провайдер, пинг и веб, открытые порты, соседи по подсети"
@@ -95,8 +96,8 @@ def summary_slot(db, ctx: Context, target=None, **_):
     if target is None:
         return None
     f = view.load(db, target)
-    groups = view.summary(f)
-    return {"groups": groups if any(g.facts for g in groups) else [], "updated": f.updated}
+    # ни один модуль ещё не отрабатывал — вместо сетки «▶» одна кнопка «Запустить всё»
+    return {"groups": view.summary(f) if (f.rows or f.ran) else [], "updated": f.updated}
 
 
 def issues_slot(db, ctx: Context, target=None, **_):
@@ -118,6 +119,55 @@ def tree_slot(db, ctx: Context, target=None, **_):
     if not f.rows:
         return None
     return {"root": view.tree(f)}
+
+
+# --- список целей и обзор --------------------------------------------------------------
+
+def target_columns(db, targets) -> list[dict]:
+    """Две колонки списка целей: где сайт живёт и что с ним не так."""
+    facts = view.facts_for(db, targets)
+    addr: dict[int, dict] = {}
+    problems: dict[int, dict] = {}
+    for tid, fx in facts.items():
+        if fx.ips:
+            first = next(iter(fx.ips.values()))
+            d = first.data or {}
+            more = len(fx.ips) - 1
+            where = (f"за {d['cdn']}" if d.get("cdn") else netkit.org_name(d.get("as_name")) if d.get("asn")
+                     else "частная сеть" if d.get("private") else "провайдер не проверен")
+            addr[tid] = {"l1": [(first.value, "")] + ([(f"+{more}", "dim")] if more else []), "l2": where}
+        elif fx.did("resolve") and fx.ran is not None and "resolve" in fx.ran:
+            addr[tid] = {"l1": [("не разрешается", "err")], "l2": "у имён нет адресов"}
+        if not fx.ran:
+            continue
+        found = view.issues(fx)
+        c = view.counts(found)
+        segs = ([(f"[!] {c['err']}", "err")] if c["err"] else []) + ([(f"[~] {c['warn']}", "warn")] if c["warn"] else []) \
+            + ([(f"[i] {c['info']}", "dim")] if c["info"] else [])
+        top = next((i.title for i in found if i.level in ("err", "warn")), "")
+        problems[tid] = {"l1": segs or [("[ok]", "ok")], "l2": top or ("к сведению" if c["info"] else "замечаний нет")}
+    return [{"title": "Адрес", "order": 10, "cells": addr}, {"title": "Замечания", "order": 20, "cells": problems}]
+
+
+def issues_stat(db, ctx: Context):
+    """Строка «Панели» на обзоре: серьёзное по всем целям сразу."""
+    targets = list(db.scalars(select(Target)))
+    total = {"err": 0, "warn": 0}
+    sites = 0
+    for fx in view.facts_for(db, targets).values():
+        if not fx.ran:
+            continue
+        c = view.counts(view.issues(fx))
+        total["err"] += c["err"]
+        total["warn"] += c["warn"]
+        sites += bool(c["err"])
+    if not total["err"] and not total["warn"]:
+        return "серьёзных нет", "ok"
+    text = (f"серьёзных {total['err']} на {sites} {plural(sites, 'цели', 'целях', 'целях')}" if total["err"]
+            else "серьёзных нет")
+    if total["warn"]:
+        text += f", стоит поправить {total['warn']}"
+    return text, "err" if total["err"] else "warn"
 
 
 # --- можно добавить в цель ----------------------------------------------------------
@@ -153,7 +203,7 @@ def dismiss(request: Request, db: DB, target_id: int, asset_id: int):
 
 def setup(ctx: Context) -> None:
     ctx.asset_types.add(AssetType("neighbor", "Сосед", "network", "Адрес в той же сети с обратным именем", 110))
-    for module in (HostInfo, Reach, OpenPorts, Neighbors):
+    for module in MODULES:
         ctx.modules.add(module)
     ctx.services.setdefault("asset_columns", {}).update(COLUMNS)
     ctx.add_router(router)
@@ -161,6 +211,8 @@ def setup(ctx: Context) -> None:
     ctx.add_slot("target.main", Slot("issues", "recon/_issues.html", data=issues_slot, order=12, nav="замечания"))
     ctx.add_slot("target.main", Slot("tree", "recon/_tree.html", data=tree_slot, order=14, nav="структура"))
     ctx.add_slot("target.side", Slot("suggest", "recon/_suggest.html", data=suggestions, order=20, nav="можно добавить"))
+    ctx.hook("targets.columns", target_columns)
+    ctx.stats.add(Stat("issues", "замечания", issues_stat, order=15, link="/targets"))
     ctx.settings.section(SettingsSection(
         id="recon", title="Разведка", icon="search", group="Модули", order=20,
         description="Через какие DNS-серверы модули спрашивают про адреса, сети и соседей.",

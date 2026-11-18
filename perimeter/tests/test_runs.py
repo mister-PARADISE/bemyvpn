@@ -1,4 +1,4 @@
-"""Движок запусков: отмена, падение, таймаут, перезапуск панели, проверка адресов цели."""
+"""Движок запусков: зависимости и цепочки, отмена, падение, таймаут, перезапуск панели, проверка адресов цели."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from perimeter.extensions.recon.modules import Neighbors, OpenPorts
 from perimeter.extensions.runs.engine import RunContext, TargetView
 from perimeter.extensions.runs.models import Asset, Run, RunLine
 
-from .conftest import PASSWORD, Browser, make_app, run_and_wait, wait_run
+from .conftest import PASSWORD, Browser, make_app, run_and_wait, wait_chain, wait_run
 
 PLUGIN = '''
 import asyncio
@@ -48,8 +48,31 @@ class Sneaky(Module):
     async def run(self, run):
         await run.connect("evil.test", 80)
 
+class Base(Module):
+    spec = ModuleSpec(id="t_base", title="Основа", kind=Kind.PASSIVE, consumes=("domain",), produces=("dns_record",))
+    FAIL = False
+    async def run(self, run):
+        if type(self).FAIL:
+            raise RuntimeError("основа сломалась")
+        await run.emit("dns_record", "TXT base", type="TXT")
+
+class Child(Module):
+    spec = ModuleSpec(id="t_child", title="Надстройка", kind=Kind.PASSIVE, consumes=("domain",), needs=("t_base",))
+    async def run(self, run):
+        run.log("надстройка работает")
+
+class Grand(Module):
+    spec = ModuleSpec(id="t_grand", title="Над надстройкой", kind=Kind.PASSIVE, consumes=("domain",), needs=("t_child",))
+    async def run(self, run):
+        run.log("и я работаю")
+
+class After(Module):
+    spec = ModuleSpec(id="t_after", title="После сонного", kind=Kind.PASSIVE, consumes=("domain",), needs=("t_sleepy",))
+    async def run(self, run):
+        run.log("дождался")
+
 def setup(ctx):
-    for m in (Sleepy, Boom, Slow, Sneaky):
+    for m in (Sleepy, Boom, Slow, Sneaky, Base, Child, Grand, After):
         ctx.modules.add(m)
 '''
 
@@ -150,13 +173,17 @@ def test_scope_rules_for_active_modules(app):
         s.add(t)
         s.flush()
         tid = t.id
-        s.add(Asset(target_id=tid, kind="ip", value="93.184.216.34", data={"domains": ["example.com"]}))
+        s.add(Asset(target_id=tid, kind="ip", value="93.184.216.34", data={"domains": ["example.com"], "checked": True}))
         s.add(Asset(target_id=tid, kind="ip", value="104.16.1.1", data={"domains": ["example.com"], "cdn": "Cloudflare"}))
+        s.add(Asset(target_id=tid, kind="ip", value="198.51.100.7", data={"domains": ["www.example.com"]}))
         s.add(Asset(target_id=tid, kind="neighbor", value="93.184.216.40", data={"ptr": "x"}))
     view = TargetView(tid, "example.com", Scope.build("example.com", [], ["pay.example.com"]))
     rc = RunContext(ctx.services["engine"], 0, OpenPorts, view, {})
     assert rc.allows("api.example.com")[0]
     assert rc.allows("93.184.216.34")[0]  # адрес, в который указывает имя цели
+    # провайдер ещё не проверен — вдруг CDN: только как на сайт
+    assert rc.allows("198.51.100.7", 443)[0] and not rc.allows("198.51.100.7", 22)[0]
+    assert "Провайдер" in rc.allows("198.51.100.7", 22)[1]
     assert not rc.allows("93.184.216.40")[0]  # сосед — не цель
     assert rc.allows("104.16.1.1", 443)[0] and not rc.allows("104.16.1.1", 22)[0]  # CDN: только как сайт
     assert not rc.allows("104.16.1.1")[0]
@@ -167,3 +194,105 @@ def test_scope_rules_for_active_modules(app):
     passive = RunContext(ctx.services["engine"], 0, Neighbors, view, {})
     with pytest.raises(OutOfScope, match="пассивный"):
         asyncio.run(passive.connect("93.184.216.34", 80, 1))
+
+
+# --- зависимости и цепочки ------------------------------------------------------------
+
+def test_needs_run_first_and_fresh_results_are_reused(lab):
+    _app, b, tid = lab
+    state = run_and_wait(b, tid, "t_grand")
+    assert state["chain"] == [("t_base", "done"), ("t_child", "done"), ("t_grand", "done")]
+    assert run_and_wait(b, tid, "t_grand")["chain"] == [("t_grand", "done")]  # всё свежее — только сам
+    run_and_wait(b, tid, "t_base")  # основу обновили — надстройка над ней устарела, как в make
+    assert run_and_wait(b, tid, "t_grand")["chain"] == [("t_child", "done"), ("t_grand", "done")]
+    b.post(f"/targets/{tid}/assets/clear")  # находки стёрли — основа снова нужна
+    assert run_and_wait(b, tid, "t_grand")["chain"] == [("t_base", "done"), ("t_child", "done"), ("t_grand", "done")]
+
+
+def test_failed_need_skips_everything_built_on_it(lab, monkeypatch):
+    app, b, tid = lab
+    monkeypatch.setattr(app.state.ctx.modules.get("t_base"), "FAIL", True)
+    state = run_and_wait(b, tid, "t_grand")
+    assert state["chain"] == [("t_base", "failed"), ("t_child", "skipped"), ("t_grand", "skipped")]
+    assert state["error"] == "не отработал «Надстройка»" and "[skip]" in state["text"]
+    with app.state.ctx.db.session() as s:
+        first = s.scalars(select(Run.id).where(Run.target_id == tid).order_by(Run.id)).first()
+    page = b.get(f"/targets/{tid}?run={first}").text
+    assert "── [1/3] Основа" in page and "── [3/3] Над надстройкой" in page  # вся цепочка в одной консоли
+    assert "есть ошибки" in page
+    assert "[-]" in b.get("/journal").text
+
+
+def test_stop_all_cancels_the_rest_of_chain_and_again_repeats_it(lab):
+    _app, b, tid = lab
+    r = b.post(f"/targets/{tid}/run", {"module": "t_after"})
+    first = int(r.headers["location"].split("run=")[1].split("#")[0])
+    deadline = time.monotonic() + 10
+    while b.client.get(f"/runs/{first}/log").json()["status"] != "running":
+        assert time.monotonic() < deadline
+        time.sleep(0.05)
+    page = b.get(f"/targets/{tid}?run={first}").text
+    assert "Остановить всё" in page and "── [1/2] Сонный" in page
+    b.post(f"/runs/{first}/cancel")
+    assert wait_chain(b, first, timeout=10)["chain"] == [("t_sleepy", "cancelled"), ("t_after", "cancelled")]
+    r = b.post(f"/runs/{first}/again")
+    again = int(r.headers["location"].split("run=")[1].split("#")[0])
+    state = b.client.get(f"/runs/{again}/log").json()
+    assert state["module"] == "t_sleepy" and state["total"] == 2 and state["next"]["module_title"] == "После сонного"
+    b.post(f"/runs/{again}/cancel")
+    wait_chain(b, again, timeout=10)
+
+
+def test_runs_migration_adds_chain_column(tmp_path):
+    app = make_app(tmp_path)
+    app.state.ctx.call_hooks("app.stop", app.state.ctx)
+    with app.state.ctx.db.engine.begin() as conn:  # как будто база из прошлой версии
+        conn.exec_driver_sql("DROP INDEX ix_run_chain")
+        conn.exec_driver_sql("ALTER TABLE run DROP COLUMN chain")
+        conn.exec_driver_sql("UPDATE schema_version SET version = 1 WHERE component = 'runs'")
+    app2 = make_app(tmp_path)
+    with app2.state.ctx.db.engine.begin() as conn:
+        assert "chain" in {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(run)")}
+    app2.state.ctx.call_hooks("app.stop", app2.state.ctx)
+
+
+# --- после ревью --------------------------------------------------------------------
+
+def test_ip_of_excluded_name_is_not_a_target(app):
+    """Адрес остался в находках от «pay.example.com», а его потом исключили — трогать нельзя."""
+    ctx = app.state.ctx
+    with ctx.db.session() as s:
+        from perimeter.extensions.targets.models import Target
+        t = Target(domain="example.com", exclude=["pay.example.com"])
+        s.add(t)
+        s.flush()
+        tid = t.id
+        s.add(Asset(target_id=tid, kind="ip", value="203.0.113.50", data={"domains": ["pay.example.com"], "checked": True}))
+    view = TargetView(tid, "example.com", Scope.build("example.com", [], ["pay.example.com"]))
+    rc = RunContext(ctx.services["engine"], 0, OpenPorts, view, {})
+    assert not rc.allows("203.0.113.50", 443)[0] and not rc.allows("203.0.113.50", 22)[0]
+
+
+def test_long_output_shows_the_tail_with_a_marker(lab):
+    app, b, tid = lab
+    ctx = app.state.ctx
+    with ctx.db.session() as s:
+        run = Run(target_id=tid, module_id="t_boom", status="done")
+        s.add(run)
+        s.flush()
+        s.add_all(RunLine(run_id=run.id, n=i, level="info", text=f"строка {i}") for i in range(1, 1251))
+        run_id = run.id
+    state = b.client.get(f"/runs/{run_id}/log").json()
+    assert state["lines"][0]["text"].startswith("… скрыто строк: 250") and state["lines"][-1]["text"] == "строка 1250"
+    assert len(state["lines"]) == 1001
+
+
+def test_single_run_page_acts_on_that_run_only(lab):
+    app, b, tid = lab
+    r = b.post(f"/targets/{tid}/run", {"module": "t_after"})
+    first = int(r.headers["location"].split("run=")[1].split("#")[0])
+    page = b.get(f"/runs/{first}").text
+    assert 'name="only" value="1"' in page  # кнопки страницы запуска — только про него
+    b.post(f"/runs/{first}/cancel", {"only": "1"})
+    state = wait_chain(b, first, timeout=10)
+    assert state["chain"] == [("t_sleepy", "cancelled"), ("t_after", "skipped")]  # второй пропущен, не отменён

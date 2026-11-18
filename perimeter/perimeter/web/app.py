@@ -6,6 +6,7 @@ import logging
 from contextlib import asynccontextmanager
 
 from fastapi import APIRouter, Depends, FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -206,6 +207,22 @@ def _install_handlers(app: FastAPI) -> None:
         detail = exc.detail if exc.status_code != 404 else "Возможно, запись удалили или адрес набран с ошибкой."
         return render(request, "error.html", exc.status_code,
                       code=exc.status_code, title=titles.get(exc.status_code, "Ошибка"), detail=detail)
+
+    @app.exception_handler(RequestValidationError)
+    async def bad_input(request: Request, exc: RequestValidationError):
+        """/targets/abc, ?page=x — для человека это «нет такой страницы», а не JSON от FastAPI."""
+        if _wants_json(request):
+            return JSONResponse({"error": "Неверный запрос"}, status_code=400)
+        return render(request, "error.html", 404, code=404, title="Страница не найдена",
+                      detail="В адресе что-то не так: номер или параметр не тот.")
+
+    @app.exception_handler(OverflowError)
+    async def too_big(request: Request, exc: OverflowError):
+        """Номер длиннее, чем помещается в базу, — такой записи точно нет."""
+        if _wants_json(request):
+            return JSONResponse({"error": "Не найдено"}, status_code=404)
+        return render(request, "error.html", 404, code=404, title="Страница не найдена",
+                      detail="Возможно, запись удалили или адрес набран с ошибкой.")
 
     @app.exception_handler(Exception)
     async def crash(request: Request, exc: Exception):

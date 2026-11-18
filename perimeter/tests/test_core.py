@@ -208,3 +208,41 @@ def test_event_bus_patterns_and_isolation():
     assert ("exact", 7) in seen and ("prefix", "client.created") in seen
     assert ("all", "target.created") in seen
     assert ("prefix", "target.created") not in seen
+
+
+# --- после ревью: адреса, IDNA, слишком широкие правила, пустые настройки ------------
+
+@pytest.mark.parametrize("raw,expected", [
+    ("2001:db8::1", "2001:db8::1"),  # голый IPv6 (urlsplit читал бы хост «2001»)
+    ("https://[2001:DB8::1]:8443/x", "2001:db8::1"),
+    ("straße.de", "xn--strae-oqa.de"),  # IDNA 2008, как в браузерах; не чужой strasse.de
+])
+def test_normalize_ipv6_and_idna2008(raw, expected):
+    assert normalize_host(raw) == expected
+
+
+def test_include_rules_cannot_swallow_the_internet():
+    from perimeter.core.scope import ScopeRule, check_include
+
+    good, bad = parse_rules(["203.0.113.10/0", "10.0.0.0/24", "github.io", "shop.github.io"], include=True)
+    assert good == ["10.0.0.0/24", "shop.github.io"]
+    assert "0.0.0.0/0" in bad[0] and "широкая" in bad[0] and "общий домен" in bad[1]
+    check_include(ScopeRule.parse("2001:db8::/48"))  # /48 для IPv6 ещё можно
+    assert parse_rules(["10.0.0.0/8"])[0] == ["10.0.0.0/8"]  # в «не трогать» широкие сети можно
+
+
+def test_empty_setting_means_default(settings):
+    settings.section(SettingsSection(id="t", title="T", fields=(f.integer("hours", "Часы", default=12),)))
+    assert settings.save_form("t", {"hours": ""}).ok
+    assert settings.get("t.hours") == 12  # а не None, на котором падала бы арифметика
+
+
+@pytest.mark.parametrize("value", ["nan", "inf", "-inf"])
+def test_float_rejects_non_finite(value):
+    with pytest.raises(FieldError):
+        f.number("x", "X").parse(value)
+
+
+def test_form_value_keeps_raw_text_after_error():
+    assert f.number("x", "X").form_value("abc") == "abc"
+    assert f.lines("l", "L").form_value("a\nb") == "a\nb"

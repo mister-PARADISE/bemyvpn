@@ -18,6 +18,8 @@ import re
 from dataclasses import dataclass, field
 from urllib.parse import urlsplit
 
+import idna
+
 IPNetwork = ipaddress.IPv4Network | ipaddress.IPv6Network
 _LABEL = re.compile(r"^(?!-)[a-z0-9-]{1,63}(?<!-)$")
 
@@ -38,6 +40,10 @@ def normalize_host(value: str, *, strip_www: bool = False) -> str:
     raw = (value or "").strip()
     if not raw:
         raise ScopeError("Пустой адрес")
+    try:  # голый IPv6: «2001:db8::1» urlsplit прочитал бы как хост «2001»
+        return str(ipaddress.ip_address(raw.strip("[]")))
+    except ValueError:
+        pass
     if "://" not in raw:
         raw = "//" + raw
     try:
@@ -51,10 +57,12 @@ def normalize_host(value: str, *, strip_www: bool = False) -> str:
         return str(ipaddress.ip_address(host))
     except ValueError:
         pass
-    try:
-        host = host.encode("idna").decode("ascii")
-    except UnicodeError:
-        raise ScopeError(f"Недопустимое доменное имя: {value!r}") from None
+    if not host.isascii():
+        # IDNA 2008 (UTS 46, как в браузерах): «straße.de» — это xn--strae-oqa.de, а не чужой strasse.de
+        try:
+            host = idna.encode(host, uts46=True, transitional=False).decode("ascii")
+        except (idna.IDNAError, UnicodeError):
+            raise ScopeError(f"Недопустимое доменное имя: {value!r}") from None
     if strip_www and host.startswith("www.") and host.count(".") >= 2:
         host = host[4:]
     labels = host.split(".")
@@ -67,10 +75,33 @@ def normalize_host(value: str, *, strip_www: bool = False) -> str:
 
 def display_host(host: str) -> str:
     """ASCII (punycode) → как читает человек: xn--e1afmkfd.xn--p1ai → пример.рф"""
-    try:
-        return host.encode("ascii").decode("idna")
-    except UnicodeError:
+    if "xn--" not in host:
         return host
+    try:
+        return idna.decode(host)
+    except (idna.IDNAError, UnicodeError):
+        return host
+
+
+# Общие домены: внутри них сайты разных владельцев. Целью может быть конкретный сайт
+# (shop.github.io), но не весь общий домен — иначе в цель попали бы чужие сайты.
+SHARED_SUFFIXES = frozenset({
+    "github.io", "gitlab.io", "netlify.app", "vercel.app", "pages.dev", "workers.dev", "herokuapp.com",
+    "web.app", "firebaseapp.com", "appspot.com", "azurewebsites.net", "cloudfront.net", "blogspot.com",
+    "myshopify.com", "wixsite.com", "tilda.ws", "ucoz.ru", "narod.ru", "beget.tech", "timeweb.cloud",
+    "co.uk", "org.uk", "ac.uk", "gov.uk", "com.ru", "net.ru", "org.ru", "pp.ru", "msk.ru", "spb.ru",
+    "com.ua", "org.ua", "pp.ua", "in.ua", "com.kz", "org.kz", "com.by", "co.jp", "com.au", "com.br",
+    "com.tr", "com.cn", "co.in", "co.za", "co.nz", "com.mx", "com.ar",
+})
+MIN_PREFIX = {4: 16, 6: 48}  # шире /16 (65 536 адресов) — почти наверняка опечатка, а не свой сервер
+
+
+def check_include(rule: "ScopeRule") -> None:
+    """Правило, которое расширяет цель, не должно захватывать чужое."""
+    if rule.network is not None and rule.network.prefixlen < MIN_PREFIX[rule.network.version]:
+        raise ScopeError(f"Слишком широкая сеть {rule.network}: не шире /{MIN_PREFIX[rule.network.version]}")
+    if rule.domain is not None and rule.domain in SHARED_SUFFIXES:
+        raise ScopeError(f"{rule.domain} — общий домен, в нём сайты разных владельцев; укажите свой поддомен")
 
 
 def is_ip(value: str) -> bool:
@@ -163,12 +194,15 @@ class Scope:
         return self.explain(value)[0]
 
 
-def parse_rules(lines: list[str]) -> tuple[list[str], list[str]]:
-    """Проверяет список правил из формы: (нормальные строки, ошибки)."""
+def parse_rules(lines: list[str], include: bool = False) -> tuple[list[str], list[str]]:
+    """Проверяет список правил из формы: (нормальные строки, ошибки). include — правила, расширяющие цель."""
     good, errors = [], []
     for line in lines:
         try:
-            canon = ScopeRule.parse(line).canonical()
+            rule = ScopeRule.parse(line)
+            if include:
+                check_include(rule)
+            canon = rule.canonical()
             if canon not in good:
                 good.append(canon)
         except ScopeError as exc:

@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% import "_ui.html" as ui with context %}
 {% block content %}
-{{ ui.head("Модули", ["Каждый инструмент — отдельный модуль", "Модули передают друг другу данные по типам: домен → поддомены → IP → порты"]) }}
+{{ ui.head("Модули", ["Один модуль — один вопрос: адреса, провайдер, почта, сертификат, порты…", "Модули передают друг другу данные по типам; что кому нужно, движок запускает сам"]) }}
 
 <div style="margin-bottom:var(--gap)">{{ ui.seg(tabs, tab, "tab", query) }}</div>
 
@@ -26,8 +26,9 @@
           {{ icon('arrow-right') }}
           {% for t in s.produces %}<span class="chip">{{ ctx.asset_types.get(t).title if ctx.asset_types.get(t) else t }}</span>{% else %}<span class="muted small">отчёт</span>{% endfor %}
         </div>
-        {% set next = ctx.modules.followers(s.id) %}
-        {% if next %}<div class="small muted">Дальше могут работать: {{ next|map(attribute='spec.title')|join(', ') }}</div>{% endif %}
+        {% if s.needs %}<div class="small muted">Построен на: {% for n in s.needs %}«{{ ctx.modules.get(n).spec.title if ctx.modules.get(n) else n }}»{{ ", " if not loop.last }}{% endfor %} — запустятся сами, если нужно</div>{% endif %}
+        {% set built = built_on.get(s.id, []) %}
+        {% if built %}<div class="small muted">На нём построены: {{ built|map(attribute='spec.title')|join(', ') }}</div>{% endif %}
       </div>
       {% endfor %}
     </div>

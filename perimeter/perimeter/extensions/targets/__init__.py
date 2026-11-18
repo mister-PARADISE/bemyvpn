@@ -20,7 +20,8 @@ from sqlalchemy.engine import Connection
 
 from ...core import fields as f
 from ...core.context import Context, Page, SearchHit, Stat
-from ...core.scope import ScopeError, ScopeRule, display_host, normalize_host, parse_rules
+from ...core.models import AuditEntry
+from ...core.scope import Scope, ScopeError, ScopeRule, check_include, display_host, normalize_host, parse_rules
 from ...web import DB, actor, flash, form_data, get_ctx, redirect, render
 from .models import Target
 
@@ -57,6 +58,7 @@ def _validate(db, values: dict, errors: dict, current: Target | None = None) -> 
     if "domain" in values and "domain" not in errors:
         try:
             values["domain"] = normalize_host(values["domain"], strip_www=True)
+            check_include(ScopeRule.parse(values["domain"]))  # не «github.io» целиком
         except ScopeError as exc:
             errors["domain"] = str(exc)
         else:
@@ -65,10 +67,11 @@ def _validate(db, values: dict, errors: dict, current: Target | None = None) -> 
                 errors["domain"] = f"Этот домен уже есть: «{clash.title or clash.name}»"
     for key in ("include", "exclude"):
         if key in values and key not in errors:
-            good, bad = parse_rules(values[key] or [])
-            if bad:
+            good, bad = parse_rules(values[key] or [], include=key == "include")
+            if bad:  # в поле остаётся то, что ввели, — чтобы поправить, а не набирать заново
                 errors[key] = "Не разобрал: " + "; ".join(bad)
-            values[key] = good
+            else:
+                values[key] = good
     for key in ("title", "notes"):
         values[key] = values.get(key) or ""
     return values
@@ -95,8 +98,12 @@ def targets_list(request: Request, db: DB, q: str = "", page: int = 1):
     pages = max(1, math.ceil(total / PER_PAGE))
     page = min(max(page, 1), pages)
     rows = db.scalars(stmt.order_by(Target.updated_at.desc()).offset((page - 1) * PER_PAGE).limit(PER_PAGE)).all()
+    # колонки от расширений: {"title", "order", "cells": {id цели: {"l1": [(текст, оттенок)], "l2": текст, "when": дата}}}
+    found = get_ctx(request).call_hooks("targets.columns", db, rows)
+    columns = sorted((c for r in found for c in (r if isinstance(r, list) else [r]) if c),
+                     key=lambda c: c.get("order", 100))
     return render(request, "targets/list.html", targets=rows, q=q, page=page, pages=pages, total=total,
-                  everything=everything, query={"q": q})
+                  everything=everything, query={"q": q}, columns=columns)
 
 
 @router.get("/targets/new")
@@ -112,7 +119,11 @@ async def target_create(request: Request, db: DB):
     if errors:
         return render(request, "targets/form.html", 422, target=None, fields=TARGET_FIELDS, values=values,
                       errors=errors)
-    target = Target(**values)
+    # id не переиспользуем: у удалённой цели с тем же номером остались записи журнала,
+    # и новая цель не должна получить чужую историю
+    used = max(db.scalar(select(func.max(Target.id))) or 0,
+               db.scalar(select(func.max(AuditEntry.entity_id)).where(AuditEntry.entity_type == "target")) or 0)
+    target = Target(id=used + 1, **values)
     db.add(target)
     db.flush()
     get_ctx(request).audit(db, "target.created", f"Новая цель {target.name}", entity=("target", target.id),
@@ -160,6 +171,12 @@ async def target_update(request: Request, db: DB, target_id: int):
 def target_delete(request: Request, db: DB, target_id: int):
     target = _target_or_404(db, target_id)
     name = target.name
+    ctx = get_ctx(request)
+    # право вето у расширений: вернул строку — удалять нельзя, и это причина
+    vetoes = [v for v in ctx.call_hooks("target.before_delete", db, target) if isinstance(v, str) and v]
+    if vetoes:
+        flash(request, "Не удалено: " + "; ".join(vetoes), "error")
+        return redirect(f"/targets/{target.id}")
     db.delete(target)
     get_ctx(request).audit(db, "target.deleted", f"Удалена цель {name}", actor=actor(request))
     flash(request, f"Цель {name} удалена")
@@ -172,21 +189,37 @@ def split_hosts(text: str) -> list[str]:
     return [t for t in text.replace(",", " ").replace(";", " ").split() if t.strip()]
 
 
+def _short(items: list[str], limit: int = 8) -> str:
+    """Список в уведомлении: длинный не влезет в cookie сессии (4 КБ) и потеряется молча."""
+    return ", ".join(items[:limit]) + (f" и ещё {len(items) - limit}" if len(items) > limit else "")
+
+
+def _covered(rule: ScopeRule, scope: Scope) -> bool:
+    """Уже входит в цель целиком (без учёта исключений): домен — в домен, сеть — в сеть."""
+    if rule.network is not None:
+        return any(r.network is not None and r.network.version == rule.network.version
+                   and rule.network.subnet_of(r.network) for r in scope.rules())
+    return any(r.matches(rule.domain) for r in scope.rules())
+
+
 @router.post("/targets/{target_id}/hosts")
 async def hosts_add(request: Request, db: DB, target_id: int):
     """«api.example.com 203.0.113.10 -pay.example.com»: минус (или !) — «не трогать»."""
     target = _target_or_404(db, target_id)
     tokens = split_hosts(str((await form_data(request)).get("hosts", "")))
     include, exclude = list(target.include or []), list(target.exclude or [])
-    added, skipped, bad = [], [], []
+    added, skipped, bad, blocked = [], [], [], []
     for token in tokens:
         negative = token[0] in "-!"
         raw = token[1:] if negative else token
         try:
-            canon = ScopeRule.parse(raw).canonical()
-        except ScopeError:
-            bad.append(token)
+            rule = ScopeRule.parse(raw)
+            if not negative:
+                check_include(rule)
+        except ScopeError as exc:
+            bad.append(f"{token} ({exc})" if "общий домен" in str(exc) or "широкая" in str(exc) else token)
             continue
+        canon = rule.canonical()
         if negative:
             if canon in exclude:
                 skipped.append(token)
@@ -194,25 +227,35 @@ async def hosts_add(request: Request, db: DB, target_id: int):
             exclude.append(canon)
             include = [x for x in include if x != canon]
             added.append(f"не трогать {display_host(canon)}")
-        elif canon in exclude:
-            exclude.remove(canon)  # снова входит
-            added.append(display_host(canon))
-        elif canon == target.domain or canon in include or target.scope.allows(canon):
-            skipped.append(token)
-        else:
-            include.append(canon)
-            added.append(display_host(canon))
+            continue
+        if canon in exclude:
+            exclude.remove(canon)  # снова можно трогать
+        scope = Scope.build(target.domain, include, exclude)
+        why = scope.explain(rule.domain)[1] if rule.domain is not None else ""
+        if why.startswith("Исключено"):  # под более широким «не трогать»: исключения важнее
+            blocked.append(f"{token} ({why[0].lower()}{why[1:]})")
+            continue
+        if _covered(rule, scope):
+            if canon in (target.exclude or []):
+                added.append(f"снова можно {display_host(canon)}")
+            else:
+                skipped.append(token)
+            continue
+        include.append(canon)
+        added.append(display_host(canon))
     target.include, target.exclude = include, exclude
     if added:
         get_ctx(request).audit(db, "target.hosts", f"{target.name}: {', '.join(added)}", entity=("target", target.id),
                                actor=actor(request))
     parts = []
     if added:
-        parts.append(f"добавлено: {', '.join(added)}")
+        parts.append(f"добавлено: {_short(added)}")
     if skipped:
-        parts.append(f"уже входит: {', '.join(skipped)}")
+        parts.append(f"уже входит: {_short(skipped)}")
+    if blocked:
+        parts.append(f"не добавлено: {_short(blocked)}")
     if bad:
-        parts.append(f"не понял: {', '.join(bad)}")
+        parts.append(f"не понял: {_short(bad)}")
     flash(request, "; ".join(parts) or "Пустая строка", "error" if bad and not added else "success" if added else "info")
     return redirect(f"/targets/{target.id}#hosts")
 

@@ -90,6 +90,9 @@ class ModuleSpec:
     icon: str = "puzzle"
     order: int = 100
     timeout: int = 300
+    # id модулей, на чьих находках этот построен. Движок запустит их первыми, если по цели
+    # они ещё не отрабатывали или их результат старше того, на чём построены они сами.
+    needs: tuple[str, ...] = ()
 
 
 class OutOfScope(PermissionError):
@@ -158,7 +161,8 @@ class ModuleRegistry(Registry[type[Module]]):
         return [m for m in self if asset_type in m.spec.consumes]
 
     def categories(self) -> list[tuple[str, list[type[Module]]]]:
+        """Модули по группам; группы и модули внутри — в порядке ModuleSpec.order."""
         result: dict[str, list[type[Module]]] = {}
-        for m in self:
+        for m in sorted(self, key=lambda m: (m.spec.order, m.spec.id)):
             result.setdefault(m.spec.category, []).append(m)
         return list(result.items())

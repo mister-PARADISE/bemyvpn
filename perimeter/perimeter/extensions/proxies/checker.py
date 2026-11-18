@@ -128,5 +128,7 @@ async def check(url: str, proxy_url: str, timeout: float) -> dict[str, Any]:
         return {"status": "dead", "error": f"нет ответа за {timeout:.0f} с"}
     except httpx.ConnectError as exc:
         return {"status": "dead", "error": f"не подключиться: {exc}"[:200]}
-    except (httpx.HTTPError, OSError, ValueError) as exc:
+    except (httpx.HTTPError, httpx.InvalidURL, OSError, ValueError) as exc:
         return {"status": "dead", "error": f"{type(exc).__name__}: {exc}"[:200]}
+    except Exception as exc:  # noqa: BLE001 — что бы ни случилось, у прокси должен появиться итог
+        return {"status": "dead", "error": f"проверка не удалась: {type(exc).__name__}: {exc}"[:200]}

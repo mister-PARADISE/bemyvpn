@@ -28,6 +28,7 @@ LEVELS = {
     "failed": ("[x]", "danger"),
     "cancelled": ("[!]", "warning"),
     "interrupted": ("[!]", "warning"),
+    "skipped": ("[-]", ""),
 }
 
 

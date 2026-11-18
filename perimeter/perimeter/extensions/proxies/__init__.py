@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import math
 import random
+from urllib.parse import quote
 
 from fastapi import APIRouter, HTTPException, Request
 from sqlalchemy import func, select
@@ -51,7 +52,10 @@ async def check_many(ctx: Context, ids: list[int]) -> None:
 
     async def one(pid: int, proxy_url: str) -> None:
         async with sem:
-            result = await check(url, proxy_url, timeout)
+            try:
+                result = await check(url, proxy_url, timeout)
+            except Exception as exc:  # noqa: BLE001 — итог нужен всегда, иначе прокси навсегда «проверяется»
+                result = {"status": "dead", "error": f"проверка не удалась: {exc}"[:200]}
         with ctx.db.session() as s:
             p = s.get(Proxy, pid)
             if p is None:
@@ -199,7 +203,7 @@ def proxies_stat(db, ctx: Context):
 def search_proxies(db, q: str) -> list[SearchHit]:
     like = f"%{q}%"
     rows = db.scalars(select(Proxy).where(Proxy.host.ilike(like) | Proxy.label.ilike(like)).limit(5)).all()
-    return [SearchHit(p.hostport, "/proxies", "Прокси", p.state_title, "server") for p in rows]
+    return [SearchHit(p.hostport, f"/proxies?q={quote(p.host)}", "Прокси", p.state_title, "server") for p in rows]
 
 
 class ProxyPool:
@@ -231,7 +235,7 @@ def setup(ctx: Context) -> None:
         id="proxies", title="Прокси", icon="server", group="Модули", order=30,
         description="Как проверять прокси: через какой сайт узнавать адрес выхода и сколько ждать.",
         fields=(
-            f.text("check_url", "Сайт для проверки", default="https://ipinfo.io/json",
+            f.url("check_url", "Сайт для проверки", default="https://ipinfo.io/json",
                    help="Должен вернуть IP выхода: ipinfo.io, ip-api.com, api.ipify.org…"),
             f.integer("timeout", "Ждать ответа, с", default=10, min=2, max=60, width="half"),
             f.integer("parallel", "Проверять одновременно", default=20, min=1, max=200, width="half"),

@@ -48,6 +48,85 @@ def _unverified() -> ssl.SSLContext:
     return ctx
 
 
+# Почему сертификат не прошёл проверку — словами, понятными владельцу сайта
+VERIFY_ERRORS = (
+    ("certificate has expired", "сертификат истёк"),
+    ("not yet valid", "сертификат ещё не начал действовать"),
+    ("self-signed certificate in certificate chain", "в цепочке самоподписанный сертификат"),
+    ("self signed certificate in certificate chain", "в цепочке самоподписанный сертификат"),
+    ("self-signed certificate", "самоподписанный: браузеры ему не верят"),
+    ("self signed certificate", "самоподписанный: браузеры ему не верят"),
+    ("unable to get local issuer certificate", "неполная цепочка: сервер не отдаёт промежуточный сертификат"),
+    ("hostname mismatch", "выдан на другое имя"),
+    ("ip address mismatch", "выдан на другой адрес"),
+    ("certificate has been revoked", "сертификат отозван"),
+)
+
+
+def explain_verify(message: str) -> str:
+    low = (message or "").lower()
+    for needle, text in VERIFY_ERRORS:
+        if needle in low:
+            return text
+    return message or "не прошёл проверку"
+
+
+def _tls_details(writer) -> dict[str, Any]:
+    obj = writer.get_extra_info("ssl_object")
+    if obj is None:
+        return {}
+    out: dict[str, Any] = {"protocol": obj.version() or ""}
+    if cipher := obj.cipher():
+        out["cipher"], out["bits"] = cipher[0], cipher[2]
+    return out
+
+
+async def tls_probe(run, ip: str, host: str, port: int = 443, timeout: float = 8.0,
+                    verify_ctx: ssl.SSLContext | None = None) -> dict[str, Any]:
+    """Только рукопожатие TLS с нужным именем (SNI): сертификат, его проверка, версия протокола, шифр.
+    Невалидный сертификат — не ошибка проверки: пишем почему, а версию и шифр узнаём без проверки."""
+    try:
+        try:
+            _r, writer = await run.connect(ip, port, timeout, ssl=verify_ctx or verify_context(), server_hostname=host)
+            out: dict[str, Any] = {"valid": True, **cert_summary(writer.get_extra_info("peercert") or {})}
+        except ssl.SSLCertVerificationError as exc:
+            raw = exc.verify_message or str(exc)
+            out = {"valid": False, "error": explain_verify(raw), "raw": raw}
+            _r, writer = await run.connect(ip, port, timeout, ssl=_unverified(), server_hostname=host)
+    except (OSError, TimeoutError, ssl.SSLError) as exc:
+        return {"failed": _why(exc)}
+    out.update(_tls_details(writer))
+    writer.close()
+    with suppress(Exception):
+        await asyncio.wait_for(writer.wait_closed(), 1)
+    return out
+
+
+# Заголовки, которыми сайт защищает посетителя. Нет — не катастрофа, но каждый закрывает свой класс атак.
+SECURITY_HEADERS = (
+    ("content-security-policy", "CSP"),
+    ("x-frame-options", "X-Frame-Options"),
+    ("x-content-type-options", "X-Content-Type-Options"),
+    ("referrer-policy", "Referrer-Policy"),
+)
+
+
+def security_report(headers: dict[str, str]) -> list[str]:
+    """Каких защитных заголовков нет. X-Frame-Options не нужен, если в CSP есть frame-ancestors."""
+    missing = [label for key, label in SECURITY_HEADERS if key not in headers]
+    if "X-Frame-Options" in missing and "frame-ancestors" in headers.get("content-security-policy", "").lower():
+        missing.remove("X-Frame-Options")
+    return missing
+
+
+def parse_cookie(line: str) -> dict[str, Any]:
+    name = line.split("=", 1)[0].strip()
+    attrs = {p.strip().split("=", 1)[0].lower(): (p.split("=", 1)[1].strip() if "=" in p else "")
+             for p in line.split(";")[1:]}
+    return {"name": name[:64], "secure": "secure" in attrs, "httponly": "httponly" in attrs,
+            "samesite": attrs.get("samesite", "")}
+
+
 async def fetch(run, ip: str, host: str, port: int, tls: bool, path: str = "/", timeout: float = 8.0,
                 verify_ctx: ssl.SSLContext | None = None) -> dict[str, Any]:
     """GET на ip:port с Host: host. Возвращает статус, заголовки, title, TLS, время — или error."""
@@ -91,14 +170,20 @@ async def fetch(run, ip: str, host: str, port: int, tls: bool, path: str = "/", 
     status = lines[0].split(" ", 2)
     out["status"] = int(status[1]) if len(status) > 1 and status[1].isdigit() else 0
     headers: dict[str, str] = {}
+    cookies: list[dict[str, Any]] = []
     for line in lines[1:]:
         if ":" in line:
             k, v = line.split(":", 1)
-            headers.setdefault(k.strip().lower(), v.strip())
+            key = k.strip().lower()
+            if key == "set-cookie" and len(cookies) < 20:
+                cookies.append(parse_cookie(v.strip()))
+            headers.setdefault(key, v.strip())
     out["server"] = headers.get("server", "")
     out["powered_by"] = headers.get("x-powered-by", "")
     out["location"] = headers.get("location", "")
     out["hsts"] = "strict-transport-security" in headers
+    out["missing"] = security_report(headers)
+    out["cookies"] = cookies
     if m := TITLE.search(body):
         charset = re.search(r"charset=([\w-]+)", headers.get("content-type", ""))
         try:

@@ -31,9 +31,10 @@ def catalog(request: Request, tab: str = "modules"):
             "producers": [m for m in modules if t.id in m.spec.produces],
             "consumers": [m for m in modules if t.id in m.spec.consumes],
         })
+    built_on = {m.spec.id: [d for d in modules if m.spec.id in d.spec.needs] for m in modules}
     return render(request, "catalog/index.html", tab=tab, tabs=[(k, v, counts[k]) for k, v in TABS],
                   categories=ctx.modules.categories(), types=types, extensions=ctx.extensions, Kind=Kind,
-                  query={"tab": tab})
+                  built_on=built_on, query={"tab": tab})
 
 
 def modules_stat(db, ctx: Context) -> str:

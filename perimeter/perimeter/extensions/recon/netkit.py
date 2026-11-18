@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import ipaddress
 from dataclasses import dataclass, field
 from typing import Any
@@ -136,6 +135,10 @@ class Resolver:
         for rr in answer.rrset:
             if rtype == "TXT":
                 out.append(b"".join(rr.strings).decode("utf-8", "replace"))
+            elif rtype == "SOA":  # «главный-сервер почта-админа серийный-номер»
+                out.append(f"{rr.mname.to_text().rstrip('.')} {rr.rname.to_text().rstrip('.')} {rr.serial}")
+            elif rtype == "CAA":  # «0 issue letsencrypt.org»
+                out.append(f"{rr.flags} {rr.tag.decode('ascii', 'replace')} {rr.value.decode('utf-8', 'replace')}")
             else:
                 out.append(rr.to_text().rstrip("."))
         return out, None
@@ -234,13 +237,21 @@ def fmt_ms(v: float) -> str:
     return "<1 мс" if v < 1 else f"{v:.0f} мс"
 
 
-async def resolve_names(run, res: Resolver, names: list[str], quiet: bool = False) -> dict[str, dict[str, list]]:
-    """Имена → {ip: {"domains": [...], "cnames": [...]}}; в консоль — что во что разрешилось."""
+async def resolve_names(run, res: Resolver, names: list[str],
+                        quiet: bool = False) -> tuple[dict[str, dict[str, list]], set[str]]:
+    """Имена → ({ip: {"domains": [...], "cnames": [...]}}, имена с точным ответом DNS).
+
+    «Точный ответ» — DNS ответил (пусть и «такого имени нет»). Если не ответил (таймаут),
+    по такому имени нельзя делать выводов: например, что адрес «ушёл».
+    """
     ipmap: dict[str, dict[str, list]] = {}
+    sure: set[str] = set()
     for name in names:
         cnames = await res.cname_chain(name)
         a, err_a = await res.query(name, "A")
-        aaaa, _err = await res.query(name, "AAAA")
+        aaaa, err_aaaa = await res.query(name, "AAAA")
+        if err_a in (None, "nxdomain") and err_aaaa in (None, "nxdomain", "no-servers"):
+            sure.add(name)
         if not quiet:
             if not a and not aaaa:
                 why = {"nxdomain": "нет такого имени", "timeout": "DNS не ответил", None: "нет адресов"}.get(err_a, err_a)
@@ -250,63 +261,51 @@ async def resolve_names(run, res: Resolver, names: list[str], quiet: bool = Fals
             for c in cnames:
                 run.log(f"    CNAME  {c}")
             if a:
-                run.log(f"    A      {', '.join(a)}")
+                run.log(f"    A      {', '.join(a)}", "found")
             if aaaa:
-                run.log(f"    AAAA   {', '.join(aaaa)}")
+                run.log(f"    AAAA   {', '.join(aaaa)}", "found")
         for ip in a + aaaa:
             entry = ipmap.setdefault(ip, {"domains": [], "cnames": []})
             if name not in entry["domains"]:
                 entry["domains"].append(name)
             entry["cnames"] += [c for c in cnames if c not in entry["cnames"]]
-    return ipmap
+    return ipmap, sure
 
 
-async def describe_ips(run, res: Resolver, ipmap: dict[str, dict[str, list]], quiet: bool = False) -> None:
-    """Для каждого IP: сеть и провайдер, обратное имя, CDN. Всё сохраняется в находки."""
-    async def one(ip: str) -> tuple[str, dict | None, str | None]:
-        if private(ip):
-            return ip, None, await res.ptr(ip)
-        info, ptr = await asyncio.gather(res.asn(ip), res.ptr(ip))
-        return ip, info, ptr
-
-    for ip, info, ptr in await asyncio.gather(*(one(ip) for ip in ipmap)):
-        entry = ipmap[ip]
-        info = info or {}
-        cdn = cdn_of(info.get("as_name"), entry.get("cnames", []))
-        await run.emit("ip", ip, domains=entry.get("domains", []), cnames=entry.get("cnames", []), asn=info.get("asn"), as_name=info.get("as_name"),
-                       prefix=info.get("prefix"), country=info.get("country"), registry=info.get("registry"),
-                       ptr=ptr, cdn=cdn, private=private(ip), version=ipaddress.ip_address(ip).version)
-        if quiet:
-            continue
-        run.log(f"[*] {ip}")
-        if info:
-            run.log(f"    сеть   AS{info.get('asn')} {info.get('as_name') or '?'}  {info.get('prefix')}  {info.get('country')}")
-        elif private(ip):
-            run.log("    сеть   частный адрес — провайдера нет")
-        else:
-            run.log("    сеть   не удалось узнать", "dim")
-        run.log(f"    ptr    {ptr or '—'}")
-        if cdn:
-            run.log(f"    [!] {cdn} — чужая инфраструктура: сайт прячется за ней, порты этого адреса не трогаем", "warn")
+def own_ips(run) -> dict[str, dict[str, Any]]:
+    """Адреса цели из находок: на них указывают имена цели или они сами вписаны в хосты.
+    Адреса, на которые имена больше не указывают («ушли»), — уже не цель."""
+    out = {}
+    for a in run.assets("ip"):
+        d = a["data"]
+        if d.get("domains") or run.target.scope.allows(a["value"]):
+            out[a["value"]] = d
+    return dict(sorted(out.items(), key=lambda kv: (ipaddress.ip_address(kv[0]).version, ipaddress.ip_address(kv[0]))))
 
 
-async def ensure_ips(run, res: Resolver) -> dict[str, dict[str, Any]]:
-    """Адреса цели. Если их ещё никто не нашёл — находит сам (тихо, только DNS)."""
-    def known() -> dict[str, dict[str, Any]]:
-        return {a["value"]: a["data"] for a in run.assets("ip")
-                if a["data"].get("domains") or run.target.scope.allows(a["value"])}
+def no_ips(run) -> None:
+    run.log("[!] адресов цели нет: имена не разрешаются или «Адреса» ещё не находили их", "warn")
+    run.summary = "нет адресов"
 
-    ips = known()
-    if ips:
-        return ips
-    run.log("[*] адреса цели ещё не известны — узнаю через DNS", "dim")
-    ipmap = await resolve_names(run, res, target_names(run), quiet=True)
-    if run.target.is_ip:
-        ipmap.setdefault(run.target.root, {"domains": [], "cnames": []})
-    for rule in run.target.scope.include:
-        if rule.network is not None and rule.network.num_addresses == 1:
-            ipmap.setdefault(str(rule.network.network_address), {"domains": [], "cnames": []})
-    await describe_ips(run, res, ipmap, quiet=True)
-    ips = known()
-    run.log(f"    найдено адресов: {len(ips)}", "dim")
-    return ips
+
+def names_with_ip(run, www: bool = True) -> list[tuple[str, str]]:
+    """[(имя, его первый адрес)] для имён цели, у которых есть адрес: по ним ходят «Ответ сайта» и «Сертификат»."""
+    ips = own_ips(run)
+    out = []
+    for name in target_names(run, www=www):
+        ip = next((ip for ip, d in ips.items() if name in (d.get("domains") or [])), None)
+        if ip is not None:
+            out.append((name, ip))
+    if run.target.is_ip and run.target.root in ips:
+        out.append((run.target.root, run.target.root))
+    return out
+
+
+async def find_zone(res: Resolver, name: str) -> tuple[str, list[str]]:
+    """Зона, в которой живёт имя, и её NS. У поддомена своих NS обычно нет — поднимаемся вверх."""
+    zone = name
+    while True:
+        ns, _err = await res.query(zone, "NS")
+        if ns or zone.count(".") < 2:
+            return zone, sorted(ns)
+        zone = zone.split(".", 1)[1]

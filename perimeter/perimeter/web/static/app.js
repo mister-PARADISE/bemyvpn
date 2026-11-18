@@ -206,7 +206,7 @@
     },
   };
 
-  /* ---------- Проверка адреса на границы цели ---------- */
+  /* ---------- Проверка: входит ли адрес в цель ---------- */
   async function scopeCheck(form) {
     const out = $("[data-scope-result]", form);
     const host = new FormData(form).get("host");
@@ -217,7 +217,7 @@
       out.hidden = false;
       out.className = `note tone-${d.allowed ? "success" : "danger"}`;
       out.innerHTML = `${svg(d.allowed ? "check-circle" : "x-circle")}<div class="cell"><span class="l1"><span>${
-        d.allowed ? "Входит в границы" : "Не входит"}</span></span><span class="l2">${esc(d.host || host)}</span><span class="small">${esc(d.reason)}</span></div>`;
+        d.allowed ? "Входит в цель" : "Не входит"}</span></span><span class="l2">${esc(d.host || host)}</span><span class="small">${esc(d.reason)}</span></div>`;
     } catch { toast("Проверка не удалась", "error"); }
   }
 
@@ -336,15 +336,23 @@
     if (!box || box.dataset.active !== "1") return;
     const body = $("[data-c-body]", box);
     const prog = $("[data-c-progress]", box);
+    let id = box.dataset.console;  // текущий запуск; в цепочке консоль переходит от модуля к модулю
     let after = +box.dataset.after || 0;
+    const total = +box.dataset.total || 1;
     body.scrollTop = body.scrollHeight;
+    const divider = (pos, title) => {
+      const div = document.createElement("div");
+      div.className = "cl lvl-head";
+      div.textContent = `── [${pos}/${total}] ${title} ──`;
+      body.append(div);
+    };
     const bar = (p) => {
       const w = 30, fill = Math.round((p.done / (p.total || 1)) * w);
       return `[${"#".repeat(fill)}${"-".repeat(w - fill)}] ${p.done}/${p.total} ${p.label || ""}`;
     };
     const tick = async () => {
       try {
-        const r = await fetch(`/runs/${box.dataset.console}/log?after=${after}`, { headers: { Accept: "application/json" }, cache: "no-store" });
+        const r = await fetch(`/runs/${id}/log?after=${after}`, { headers: { Accept: "application/json" }, cache: "no-store" });
         if (r.ok) {
           const s = await r.json();
           const stick = body.scrollHeight - body.scrollTop - body.clientHeight < 40;
@@ -360,9 +368,26 @@
           const badge = $("[data-c-status]", box);
           badge.className = `badge tone-${s.tone} dot`;
           badge.textContent = s.title;
+          $("[data-c-title]", box).textContent = (total > 1 ? `[${s.pos}/${s.total}] ` : "") + s.module_title;
+          const link = $("[data-c-link]", box);
+          link.href = `/runs/${s.id}`;
+          link.textContent = `#${s.id}`;
           $("[data-c-time]", box).textContent = `${s.seconds} с`;
+          const row = $(`[data-mod-last="${CSS.escape(s.module)}"]`);  // строка модуля в списке — тоже живая
+          if (row) {
+            const tone = { success: "ok", danger: "err", warning: "warn", accent: "accent" }[s.tone] || "";
+            row.innerHTML = `<a href="?run=${s.id}#console" class="t-${tone}">${esc(s.title)}</a> `
+              + `<span class="muted">${esc(s.summary || s.error || "")}</span>`;
+          }
           prog.hidden = !(s.active && s.progress);
           if (s.active && s.progress) prog.textContent = bar(s.progress);
+          if (!s.active && s.next && total > 1) {  // модуль цепочки закончил — дальше следующий
+            id = s.next.id;
+            after = 0;
+            divider(s.next.pos, s.next.module_title);
+            setTimeout(tick, 150);
+            return;
+          }
           if (!s.active) {
             $("[data-c-stop]", box).hidden = true;
             $("[data-c-again]", box).hidden = false;
@@ -497,7 +522,13 @@
     initConsole();
     initToc();
     const refresh = $("[data-refresh]");  // страница с идущей проверкой обновляет себя сама
-    if (refresh) setTimeout(() => location.reload(), +refresh.dataset.refresh || 2000);
+    if (refresh) {
+      // …но не пока человек что-то набирает: перезагрузка стёрла бы его текст
+      const busy = () => $$("textarea, input:not([type=hidden]):not([type=checkbox])")
+        .some((el) => el.value !== el.defaultValue || el === document.activeElement);
+      const later = () => setTimeout(() => (busy() ? later() : location.reload()), +refresh.dataset.refresh || 2000);
+      later();
+    }
     palette.init();
     setTimeout(tickClock, (60 - new Date().getSeconds()) * 1000 + 50);
     watchServer();

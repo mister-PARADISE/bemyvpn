@@ -11,12 +11,14 @@
 
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass
 from datetime import date as _date
 from datetime import datetime as _datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any, Iterable, Mapping
+from urllib.parse import urlsplit
 
 
 class FieldError(ValueError):
@@ -32,7 +34,7 @@ class _Keep:
 
 KEEP = _Keep()
 
-KINDS = ("text", "textarea", "secret", "int", "float", "decimal", "bool", "choice", "lines", "date", "email")
+KINDS = ("text", "textarea", "secret", "int", "float", "decimal", "bool", "choice", "lines", "date", "email", "url")
 # Значения этих типов не ложатся в JSON как есть — в настройках они запрещены.
 NON_JSON_KINDS = ("date", "decimal")
 _TRUE = {"1", "on", "true", "yes", "да"}
@@ -143,6 +145,8 @@ class Field:
             if isinstance(value, bool) or not isinstance(value, (int, float)):
                 raise FieldError("Нужно число")
             value = int(value) if self.kind == "int" else float(value)
+            if not math.isfinite(value):
+                raise FieldError("Нужно обычное число")
             if self.min is not None and value < self.min:
                 raise FieldError(f"Не меньше {_num(self.min)}")
             if self.max is not None and value > self.max:
@@ -167,12 +171,23 @@ class Field:
             raise FieldError(f"Не длиннее {limit} символов")
         if self.kind == "email" and not _EMAIL.match(value):
             raise FieldError("Не похоже на почту")
+        if self.kind == "url":
+            try:
+                parts = urlsplit(value)
+                ok = parts.scheme in ("http", "https") and bool(parts.hostname)
+                parts.port  # noqa: B018 — «:порт» буквами здесь и всплывает
+            except ValueError:
+                ok = False
+            if not ok:
+                raise FieldError("Нужен адрес вида https://сайт/путь")
         return value
 
     # --- вывод в форму -------------------------------------------------
     def form_value(self, value: Any) -> str:
         if self.kind == "secret" or value is None:
             return ""
+        if isinstance(value, str) and self.kind in ("lines", "float", "decimal", "date", "int"):
+            return value  # форму вернули с ошибкой: показываем ровно то, что ввели
         if self.kind == "lines":
             return "\n".join(value or [])
         if self.kind == "bool":
@@ -235,6 +250,10 @@ def _choices(choices: Iterable[tuple[str, str]] | Mapping[str, str]) -> tuple[tu
 
 def text(key: str, label: str, default: str = "", **kw) -> Field:
     return Field(key, label, "text", default, **kw)
+
+
+def url(key: str, label: str, default: str = "", **kw) -> Field:
+    return Field(key, label, "url", default, **kw)
 
 
 def textarea(key: str, label: str, default: str = "", **kw) -> Field:

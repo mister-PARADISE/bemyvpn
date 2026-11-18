@@ -2,6 +2,7 @@
 
 Всё строится из находок (Asset), в сеть ничего не ходит. Модули пишут факты, а здесь решается,
 что из них главное, что плохо и как это связано: имя → адрес → порт → что на нём отвечает.
+Каждая строка сводки знает свой модуль: пока он не запускался, вместо значения — кнопка «▶ модуль».
 """
 
 from __future__ import annotations
@@ -10,19 +11,23 @@ import ipaddress
 import re
 from collections import Counter
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any
 from urllib.parse import urlsplit
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from ...web.ui import plural
-from ..runs.models import Asset
+from ..runs.models import Asset, Run
 from . import netkit
 from .ports import RISKY, SERVICES
 
 Seg = tuple[str, str]  # (текст, оттенок: "" | ok | warn | err | dim)
 
 REDIRECTS = (301, 302, 303, 307, 308)
+TITLES = {"resolve": "Адреса", "asn": "Провайдер", "ptr": "Обратные имена", "zone": "DNS-зона", "mail": "Почта",
+          "neighbors": "Соседи по подсети", "ping": "Пинг", "http": "Ответ сайта", "tls": "Сертификат",
+          "ports": "Открытые порты"}
 
 
 def _d(a: Asset | None) -> dict[str, Any]:
@@ -64,16 +69,22 @@ class Url:
 
 
 class Facts:
-    """Находки цели, разложенные по полочкам. Строится один раз на страницу."""
+    """Находки цели, разложенные по полочкам. Строится один раз на страницу.
 
-    def __init__(self, target, rows: list[Asset]) -> None:
+    ran — какие модули по цели уже отработали (id → когда). None — неизвестно: считаем, что все.
+    """
+
+    def __init__(self, target, rows: list[Asset], ran: dict[str, datetime] | None = None) -> None:
         self.target = target
         self.root: str = target.domain  # основной домен (или IP) цели
         self.rows = rows
+        self.ran = ran
         self.by: dict[str, list[Asset]] = {}
         for a in rows:
             self.by.setdefault(a.kind, []).append(a)
-        self.ips: dict[str, Asset] = {a.value: a for a in sorted(self.kind("ip"), key=lambda a: _ip_key(a.value))}
+        every = sorted(self.kind("ip"), key=lambda a: _ip_key(a.value))
+        self.ips: dict[str, Asset] = {a.value: a for a in every if not _d(a).get("gone")}
+        self.gone: dict[str, Asset] = {a.value: a for a in every if _d(a).get("gone")}
         self.names: dict[str, list[str]] = {}  # имя → его адреса
         for ip, a in self.ips.items():
             for name in _d(a).get("domains") or []:
@@ -81,7 +92,7 @@ class Facts:
         self.ports: dict[str, dict[int, Asset]] = {}
         for a in self.kind("port"):
             ip, port = _d(a).get("ip"), _d(a).get("port")
-            if ip and port:
+            if ip and port and ip in self.ips:
                 self.ports.setdefault(ip, {})[int(port)] = a
         self.urls: list[Url] = []
         for a in self.kind("url"):
@@ -89,9 +100,19 @@ class Facts:
             if u.hostname:
                 self.urls.append(Url(a, u.scheme, u.hostname, u.port or (443 if u.scheme == "https" else 80)))
         self.certs = {a.value.rsplit(":", 1)[0]: a for a in self.kind("certificate")}
+        self.records: dict[str, list[Asset]] = {}
+        for a in self.kind("dns_record"):
+            self.records.setdefault((_d(a).get("type") or a.value.split()[0]).upper(), []).append(a)
 
     def kind(self, k: str) -> list[Asset]:
         return self.by.get(k, [])
+
+    def did(self, module_id: str) -> bool:
+        return self.ran is None or module_id in self.ran
+
+    def record(self, rtype: str) -> dict[str, Any]:
+        rows = self.records.get(rtype) or []
+        return _d(rows[0]) if rows else {}
 
     @property
     def updated(self):
@@ -110,6 +131,10 @@ class Facts:
         https = self.best([u for u in self.urls if u.scheme == "https"])
         http = self.best([u for u in self.urls if u.scheme == "http"])
         return https, http
+
+    def main_cert(self) -> dict[str, Any]:
+        host = min(self.certs, key=self.name_rank, default=None)
+        return _d(self.certs[host]) if host else {}
 
     def web_on(self, ip: str) -> dict[int, list[Url]]:
         out: dict[int, list[Url]] = {}
@@ -131,8 +156,30 @@ def load(db, target) -> Facts:
     key = ("recon.facts", target.id)
     if key not in db.info:
         rows = list(db.scalars(select(Asset).where(Asset.target_id == target.id).order_by(Asset.id)))
-        db.info[key] = Facts(target, rows)
+        ran = dict(db.execute(select(Run.module_id, func.max(Run.finished_at))
+                              .where(Run.target_id == target.id, Run.status == "done").group_by(Run.module_id)).all())
+        db.info[key] = Facts(target, rows, ran)
     return db.info[key]
+
+
+def facts_for(db, targets) -> dict[int, Facts]:
+    """Факты по многим целям тремя запросами, а не тремя на каждую (список целей, обзор)."""
+    ids = [t.id for t in targets]
+    if not ids:
+        return {}
+    by: dict[int, list[Asset]] = {}
+    for a in db.scalars(select(Asset).where(Asset.target_id.in_(ids)).order_by(Asset.id)):
+        by.setdefault(a.target_id, []).append(a)
+    ran: dict[int, dict[str, datetime]] = {}
+    for tid, mid, when in db.execute(select(Run.target_id, Run.module_id, func.max(Run.finished_at))
+                                     .where(Run.target_id.in_(ids), Run.status == "done")
+                                     .group_by(Run.target_id, Run.module_id)):
+        ran.setdefault(tid, {})[mid] = when
+    return {t.id: Facts(t, by.get(t.id, []), ran.get(t.id, {})) for t in targets}
+
+
+def counts(found: list["Issue"]) -> dict[str, int]:
+    return {level: sum(1 for i in found if i.level == level) for level in ("err", "warn", "info")}
 
 
 # --- сводка ------------------------------------------------------------------------
@@ -143,112 +190,197 @@ class Fact:
     value: list[Seg]
     sub: str = ""
     href: str = ""
+    run: tuple[str, str] | None = None  # модуль ещё не запускался: (id, название) — вместо значения кнопка
 
 
 @dataclass
 class Group:
     title: str
     facts: list[Fact]
-    module: tuple[str, str] | None = None  # чем заполнить, если пусто: (id модуля, название)
+
+
+def _todo(key: str, module_id: str) -> Fact:
+    return Fact(key, [], run=(module_id, TITLES.get(module_id, module_id)))
 
 
 def summary(f: Facts) -> list[Group]:
-    return [_net(f), _site(f), _dns(f), _outside(f)]
+    return [g for g in (_net(f), _site(f), _dns(f), _outside(f)) if g.facts]
 
 
 def _net(f: Facts) -> Group:
-    g = Group("сеть", [], ("hostinfo", "Хост и провайдер"))
+    g = Group("сеть", [])
+    if not f.did("resolve"):
+        g.facts.append(_todo("адреса", "resolve"))
+        return g
     if not f.ips:
+        g.facts.append(Fact("адреса", [("имена не разрешаются", "err")]))
         return g
     addrs = list(f.ips)
     g.facts.append(Fact("адреса", [(ip, "") for ip in addrs[:3]] + ([(f"+{len(addrs) - 3}", "dim")] if len(addrs) > 3 else []),
-                        href="#tree"))
-    own = [a for a in f.ips.values() if not _d(a).get("cdn")]
-    cdn = sorted({_d(a)["cdn"] for a in f.ips.values() if _d(a).get("cdn")})
-    host = next((a for a in own if _d(a).get("asn")), None)
-    if host:
-        d = _d(host)
-        g.facts.append(Fact("хостинг", [(netkit.org_name(d.get("as_name")) or "?", ""), (f"AS{d['asn']}", "dim"),
-                                        (d.get("country") or "", "dim")], sub=d.get("prefix") or ""))
-    elif own and all(_d(a).get("private") for a in own):
-        g.facts.append(Fact("хостинг", [("частная сеть", "dim")], sub="адрес не из интернета"))
-    elif cdn and not own:
-        g.facts.append(Fact("хостинг", [("не виден", "warn")], sub="сайт за CDN — настоящий сервер скрыт"))
-    g.facts.append(Fact("cdn", [(", ".join(cdn), "warn")] if cdn else [("нет", "")],
-                        sub="" if cdn else "сервер виден напрямую"))
-    rtts = [_d(a)["rtt_ms"] for a in f.ips.values() if _d(a).get("rtt_ms") is not None]
-    dead = [ip for ip, a in f.ips.items() if _d(a).get("reachable") is False]
-    if rtts or dead:
+                        sub=f"больше не используются: {', '.join(f.gone)}" if f.gone else "", href="#tree"))
+    if not f.did("asn"):
+        g.facts.append(_todo("хостинг", "asn"))
+    else:
+        own = [a for a in f.ips.values() if not _d(a).get("cdn")]
+        cdn = sorted({_d(a)["cdn"] for a in f.ips.values() if _d(a).get("cdn")})
+        host = next((a for a in own if _d(a).get("asn")), None)
+        if host:
+            d = _d(host)
+            g.facts.append(Fact("хостинг", [(netkit.org_name(d.get("as_name")) or "?", ""), (f"AS{d['asn']}", "dim"),
+                                            (d.get("country") or "", "dim")], sub=d.get("prefix") or ""))
+        elif own and all(_d(a).get("private") for a in own):
+            g.facts.append(Fact("хостинг", [("частная сеть", "dim")], sub="адрес не из интернета"))
+        elif cdn and not own:
+            g.facts.append(Fact("хостинг", [("не виден", "warn")], sub="сайт за CDN — настоящий сервер скрыт"))
+        else:
+            g.facts.append(Fact("хостинг", [("не определился", "dim")]))
+        g.facts.append(Fact("cdn", [(", ".join(cdn), "warn")] if cdn else [("нет", "")],
+                            sub="" if cdn else "сервер виден напрямую"))
+    if not f.did("ptr"):
+        g.facts.append(_todo("имя", "ptr"))
+    else:
+        ptrs = [_d(a).get("ptr") for a in f.ips.values() if _d(a).get("ptr")]
+        g.facts.append(Fact("имя", [(ptrs[0], "")] + ([(f"+{len(ptrs) - 1}", "dim")] if len(ptrs) > 1 else [])
+                            if ptrs else [("без обратного имени", "dim")]))
+    if not f.did("ping"):
+        g.facts.append(_todo("пинг", "ping"))
+    else:
+        rtts = [_d(a)["rtt_ms"] for a in f.ips.values() if _d(a).get("rtt_ms") is not None]
+        dead = [ip for ip, a in f.ips.items() if _d(a).get("reachable") is False]
         value = [(netkit.fmt_ms(min(rtts)), "")] if rtts else []
         if dead:
             value.append((f"не отвечает {len(dead)}" if rtts else "не отвечает", "err"))
-        g.facts.append(Fact("пинг", value))
+        g.facts.append(Fact("пинг", value or [("—", "dim")]))
     return g
 
 
 def _site(f: Facts) -> Group:
-    g = Group("сайт", [], ("reach", "Пинг и веб"))
+    g = Group("сайт", [])
     https, http = f.site()
-    page = https or (http if http and not http.data.get("to_https") else None)
-    if page is None and http is None:
-        return g
-    if page is not None:
-        d = page.data
-        g.facts.append(Fact("ответ", [(str(d.get("status")), _status_tone(d.get("status"))), (d.get("server") or "", "dim"),
-                                      (netkit.fmt_ms(d["ms"]) if d.get("ms") is not None else "", "dim")],
-                            sub=page.asset.value, href=f.node_of(page.host, page.port)))
-        if d.get("title"):
-            g.facts.append(Fact("страница", [(f"«{d['title']}»", "")]))
-    g.facts.append(Fact("https", [("есть", "ok")] if https else [("нет", "err")],
-                        sub="" if https else "сайт открывается только без шифрования"))
-    if http is not None:
-        to = http.data.get("to_https")
-        g.facts.append(Fact("с http", [("уводит на https", "ok")] if to else [("остаётся на http", "warn")]))
-    if https is not None:
-        g.facts.append(Fact("hsts", [("есть", "ok")] if https.data.get("hsts") else [("нет", "dim")]))
-        cert = f.certs.get(https.host)
-        if cert is not None:
-            c = _d(cert)
-            if c.get("valid") is False:
-                g.facts.append(Fact("tls", [("не проходит проверку", "err")], sub=c.get("error") or ""))
-            else:
-                days = c.get("days_left")
-                g.facts.append(Fact("tls", [(c.get("issuer") or "?", ""), (f"до {c.get('expires')}", "dim"),
-                                            (f"{days} дн", _days_tone(days) or "ok")],
-                                    sub=f"имён в сертификате {len(c.get('sans') or [])}" if c.get("sans") else ""))
+    if not f.did("http"):
+        g.facts.append(_todo("ответ", "http"))
+    elif https is None and http is None:
+        g.facts.append(Fact("ответ", [("не отвечает", "err")], sub="ни http, ни https"))
+    else:
+        page = https or (http if not http.data.get("to_https") else None)
+        if page is not None:
+            d = page.data
+            g.facts.append(Fact("ответ", [(str(d.get("status")), _status_tone(d.get("status"))),
+                                          (d.get("server") or "", "dim"),
+                                          (netkit.fmt_ms(d["ms"]) if d.get("ms") is not None else "", "dim")],
+                                sub=page.asset.value, href=f.node_of(page.host, page.port)))
+            if d.get("title"):
+                g.facts.append(Fact("страница", [(f"«{d['title']}»", "")]))
+        g.facts.append(Fact("https", [("есть", "ok")] if https else [("нет", "err")],
+                            sub="" if https else "сайт открывается только без шифрования"))
+        if http is not None:
+            to = http.data.get("to_https")
+            g.facts.append(Fact("с http", [("уводит на https", "ok")] if to else [("остаётся на http", "warn")]))
+        if https is not None:
+            d = https.data
+            g.facts.append(Fact("hsts", [("есть", "ok")] if d.get("hsts") else [("нет", "dim")]))
+            missing = d.get("missing") or []
+            g.facts.append(Fact("заголовки", [("все на месте", "ok")] if not missing else
+                                [(f"нет {len(missing)} из 4", "warn" if len(missing) > 2 else "dim")],
+                                sub=", ".join(missing), href="#issues" if missing else ""))
+            cookies = d.get("cookies") or []
+            if cookies:
+                bad = [c["name"] for c in cookies if not c.get("secure")]
+                g.facts.append(Fact("cookie", [(f"без Secure: {', '.join(bad)}", "warn")] if bad else
+                                    [(f"{len(cookies)} с флагом Secure", "ok")]))
+    if not f.did("tls"):
+        g.facts.append(_todo("сертификат", "tls"))
+    else:
+        c = f.main_cert()
+        tech = "  ".join(x for x in (c.get("protocol"), c.get("cipher")) if x)
+        if not c:
+            g.facts.append(Fact("сертификат", [("не получен", "dim")]))
+        elif c.get("failed"):
+            g.facts.append(Fact("сертификат", [("https не отвечает", "err")], sub=c["failed"]))
+        elif c.get("valid") is False:
+            g.facts.append(Fact("сертификат", [(c.get("error") or "не проходит проверку", "err")], sub=tech,
+                                href="#issues"))
+        else:
+            days = c.get("days_left")
+            g.facts.append(Fact("сертификат", [(c.get("issuer") or "?", ""), (f"до {c.get('expires')}", "dim"),
+                                               (f"{days} дн", _days_tone(days) or "ok")],
+                                sub=tech + (f"  имён в нём {len(c.get('sans') or [])}" if c.get("sans") else "")))
     return g
+
+
+def _spf_seg(f: Facts) -> list[Seg]:
+    spf = f.record("SPF")
+    records = spf.get("records") or []
+    if len(records) > 1:
+        return [(f"записей {len(records)} — не работает", "err")]
+    if not records:
+        return [("нет", "warn")]
+    policy = spf.get("all") or ""
+    tone = {"-all": "ok", "~all": "ok", "?all": "warn", "+all": "err"}.get(policy, "")
+    return [(policy or "без all", tone)]
 
 
 def _dns(f: Facts) -> Group:
-    g = Group("dns и почта", [], ("hostinfo", "Хост и провайдер"))
-    recs = f.kind("dns_record")
-    ns = sorted({_d(a).get("host") or a.value for a in recs if _d(a).get("type") == "NS"})
-    mx = sorted((a for a in recs if _d(a).get("type") == "MX"), key=lambda a: int(_d(a).get("priority") or 99))
-    if not ns and not mx:
+    g = Group("dns и почта", [])
+    if _is_ip(f.root):  # у IP-адреса нет ни зоны, ни почты
         return g
-    dns_by = Counter(_d(a).get("provider") for a in recs if _d(a).get("type") == "NS" and _d(a).get("provider"))
-    g.facts.append(Fact("dns", [(dns_by.most_common(1)[0][0] if dns_by else ("свои серверы" if ns else "?"), "")],
-                        sub="  ".join(ns)))
-    if mx:
-        mail = next((_d(a).get("provider") for a in mx if _d(a).get("provider")), None)
-        g.facts.append(Fact("почта", [(mail or "свой сервер", "")], sub="  ".join(_d(a).get("host") or "" for a in mx)))
+    if not f.did("zone"):
+        g.facts.append(_todo("dns", "zone"))
     else:
-        g.facts.append(Fact("почта", [("не принимает", "dim")], sub="нет MX-записей"))
+        ns = f.records.get("NS") or []
+        if not ns:
+            g.facts.append(Fact("dns", [("NS не найдены", "warn")]))
+        else:
+            by = Counter(_d(a).get("provider") for a in ns if _d(a).get("provider")).most_common(1)
+            g.facts.append(Fact("dns", [(by[0][0] if by else "свои серверы", "")],
+                                sub="  ".join(sorted(_d(a).get("host") or "" for a in ns))))
+            sec = f.record("DNSSEC")
+            g.facts.append(Fact("dnssec", [("подписана", "ok")] if sec.get("signed") else [("нет", "dim")]))
+            caa = f.record("CAA")
+            if caa:
+                g.facts.append(Fact("caa", [(", ".join(caa.get("issuers") or []) or "запрещено всем", "ok")]
+                                    if caa.get("records") else [("нет", "dim")],
+                                    sub="" if caa.get("records") else "сертификат может выпустить любой центр"))
+    if not f.did("mail"):
+        g.facts.append(_todo("почта", "mail"))
+    else:
+        mx = sorted(f.records.get("MX") or [], key=lambda a: int(_d(a).get("priority") or 99))
+        if mx:
+            provider = next((_d(a).get("provider") for a in mx if _d(a).get("provider")), None)
+            g.facts.append(Fact("почта", [(provider or "свой сервер", "")], sub="  ".join(_d(a).get("host") or "" for a in mx)))
+        else:
+            g.facts.append(Fact("почта", [("не принимается", "dim")], sub="нет MX-записей"))
+        g.facts.append(Fact("spf", _spf_seg(f), href="#issues"))
+        dmarc = f.record("DMARC")
+        policy = dmarc.get("policy") or ""
+        g.facts.append(Fact("dmarc", [(f"p={policy}", "ok" if policy in ("reject", "quarantine") else "warn")]
+                            if dmarc.get("records") else [("нет", "warn")], href="#issues"))
     return g
 
 
+def _is_ip(value: str) -> bool:
+    try:
+        ipaddress.ip_address(value)
+        return True
+    except ValueError:
+        return False
+
+
 def _outside(f: Facts) -> Group:
-    g = Group("снаружи", [], ("ports", "Открытые порты"))
-    ports = [a for per in f.ports.values() for a in per.values()]
-    if ports:
+    g = Group("снаружи", [])
+    if not f.did("ports"):
+        g.facts.append(_todo("порты", "ports"))
+    else:
+        ports = [a for per in f.ports.values() for a in per.values()]
         opened = [a for a in ports if _d(a).get("state") != "closed"]
         nums: dict[int, bool] = {}
         for a in opened:
             nums[int(_d(a)["port"])] = nums.get(int(_d(a)["port"]), False) or bool(_d(a).get("risky"))
         hosts = len({_d(a)["ip"] for a in opened})
-        g.facts.append(Fact("порты", [(str(p), "err" if bad else "") for p, bad in sorted(nums.items())] or [("все закрыты", "dim")],
-                            sub=f"открыто {len(opened)} на {hosts} {plural(hosts, 'адресе', 'адресах', 'адресах')}" if opened else "",
-                            href="#tree"))
+        g.facts.append(Fact("порты", [(str(p), "err" if bad else "") for p, bad in sorted(nums.items())]
+                            or [("открытых не нашлось", "dim")],
+                            sub=f"открыто {len(opened)} на {hosts} {plural(hosts, 'адресе', 'адресах', 'адресах')}"
+                            if opened else "", href="#tree"))
         risky = sorted({(int(_d(a)["port"]), _d(a).get("service") or RISKY.get(int(_d(a)["port"]), "")) for a in opened
                         if _d(a).get("risky")})
         g.facts.append(Fact("опасные", [(f"{p} {s}".strip(), "err") for p, s in risky] or [("нет", "ok")],
@@ -256,11 +388,13 @@ def _outside(f: Facts) -> Group:
         closed = sorted({int(_d(a)["port"]) for a in ports if _d(a).get("state") == "closed"})
         if closed:
             g.facts.append(Fact("закрылись", [(str(p), "dim") for p in closed], sub="были открыты в прошлый раз"))
-    nb = f.kind("neighbor")
-    if nb:
+    if not f.did("neighbors"):
+        g.facts.append(_todo("соседи", "neighbors"))
+    else:
+        nb = f.kind("neighbor")
         rel = sum(1 for a in nb if _d(a).get("related"))
-        g.facts.append(Fact("соседи", [(f"{len(nb)} с именами", "")] + ([(f"{rel} похож на ваш", "warn")] if rel else []),
-                            href="#tree"))
+        g.facts.append(Fact("соседи", ([(f"{len(nb)} с именами", "")] if nb else [("с именами не нашлось", "dim")])
+                            + ([(f"{rel} похож на ваш", "warn")] if rel else []), href="#tree" if nb else ""))
     return g
 
 
@@ -299,6 +433,25 @@ def risk_hint(service: str) -> str:
 
 def issues(f: Facts) -> list[Issue]:
     out: list[Issue] = []
+    _ports_issues(f, out)
+    _web_issues(f, out)
+    _cert_issues(f, out)
+    _mail_issues(f, out)
+    _zone_issues(f, out)
+    # одно и то же на нескольких именах (общий сертификат example.com и www) — одной строкой
+    merged: dict[tuple[str, str, str], Issue] = {}
+    for i in out:
+        key = (i.level, i.title, i.hint)
+        if key in merged:
+            if i.where not in merged[key].where.split("  "):
+                merged[key].where += "  " + i.where
+        else:
+            merged[key] = i
+    rank = {"err": 0, "warn": 1, "info": 2}
+    return sorted(merged.values(), key=lambda i: (rank[i.level], i.where, i.title))
+
+
+def _ports_issues(f: Facts, out: list[Issue]) -> None:
     for ip, per in f.ports.items():
         for port, a in per.items():
             d = _d(a)
@@ -314,16 +467,9 @@ def issues(f: Facts) -> list[Issue]:
         if _d(a).get("reachable") is False:
             out.append(Issue("warn", "адрес не отвечает", ip, "Ни 443, ни 80 не приняли подключение: сервер выключен "
                              "или закрыт файрволом.", "#" + anchor(ip)))
-    for host, c in f.certs.items():
-        d = _d(c)
-        if d.get("valid") is False:
-            out.append(Issue("err", "сертификат не проходит проверку", host,
-                             f"{d.get('error') or ''}. Браузер покажет посетителю «Подключение не защищено».".lstrip(". "),
-                             f.node_of(host)))
-        elif d.get("days_left") is not None and d["days_left"] < 21:
-            out.append(Issue("err" if d["days_left"] < 7 else "warn", f"сертификат кончается через {d['days_left']} дн", host,
-                             f"Действует до {d.get('expires')} ({d.get('issuer')}). Не продлят — сайт перестанет "
-                             "открываться без предупреждения.", f.node_of(host)))
+
+
+def _web_issues(f: Facts, out: list[Issue]) -> None:
     https, http = f.site()
     if http is not None and not http.data.get("to_https"):
         out.append(Issue("warn", "http:// не уводит на https://", http.host,
@@ -336,29 +482,92 @@ def issues(f: Facts) -> list[Issue]:
         if u.scheme == "https" and (u.data.get("status") or 0) >= 500:
             out.append(Issue("err", f"сайт отвечает ошибкой {u.data['status']}", u.host,
                              "Сервер сломан или перегружен.", f.node_of(u.host, u.port)))
-    if https is not None:
-        d = https.data
-        if not d.get("hsts"):
-            out.append(Issue("info", "нет HSTS", https.host, "Браузер не запоминает, что сайт только на https, — "
-                             "первый заход могут перехватить. Заголовок Strict-Transport-Security.", f.node_of(https.host, https.port)))
-        if d.get("powered_by"):
-            out.append(Issue("info", f"сервер называет движок: {d['powered_by']}", https.host,
-                             "По версии ищут известные уязвимости. Заголовок X-Powered-By лучше убрать.",
-                             f.node_of(https.host, https.port)))
-        if re.search(r"/\d", d.get("server") or ""):
-            out.append(Issue("info", f"видна версия сервера: {d['server']}", https.host,
-                             "По версии ищут известные уязвимости. В nginx — server_tokens off.", f.node_of(https.host, https.port)))
-    # одно и то же на нескольких именах (общий сертификат example.com и www) — одной строкой
-    merged: dict[tuple[str, str, str], Issue] = {}
-    for i in out:
-        key = (i.level, i.title, i.hint)
-        if key in merged:
-            if i.where not in merged[key].where.split("  "):
-                merged[key].where += "  " + i.where
+    if https is None:
+        return
+    d, at = https.data, f.node_of(https.host, https.port)
+    if not d.get("hsts"):
+        out.append(Issue("info", "нет HSTS", https.host, "Браузер не запоминает, что сайт только на https, — "
+                         "первый заход могут перехватить. Заголовок Strict-Transport-Security.", at))
+    if d.get("missing"):
+        out.append(Issue("info", f"нет защитных заголовков: {', '.join(d['missing'])}", https.host,
+                         "CSP мешает внедрить чужой скрипт, X-Frame-Options — встроить сайт в чужую страницу "
+                         "(кликджекинг), X-Content-Type-Options — подсунуть файл другого типа, Referrer-Policy — "
+                         "утечке адресов страниц.", at))
+    insecure = [c["name"] for c in d.get("cookies") or [] if not c.get("secure")]
+    if insecure:
+        out.append(Issue("warn", f"cookie без флага Secure: {', '.join(insecure)}", https.host,
+                         "Такая cookie может уйти по http и попасть к перехватчику. Ставьте Secure, а сессионным "
+                         "ещё HttpOnly и SameSite.", at))
+    if d.get("powered_by"):
+        out.append(Issue("info", f"сервер называет движок: {d['powered_by']}", https.host,
+                         "По версии ищут известные уязвимости. Заголовок X-Powered-By лучше убрать.", at))
+    if re.search(r"/\d", d.get("server") or ""):
+        out.append(Issue("info", f"видна версия сервера: {d['server']}", https.host,
+                         "По версии ищут известные уязвимости. В nginx — server_tokens off.", at))
+
+
+def _cert_issues(f: Facts, out: list[Issue]) -> None:
+    for host, c in f.certs.items():
+        d = _d(c)
+        if d.get("valid") is False:
+            out.append(Issue("err", "сертификат не проходит проверку", host,
+                             f"{d.get('error') or ''}. Браузер покажет посетителю «Подключение не защищено».".lstrip(". "),
+                             f.node_of(host)))
+        elif d.get("days_left") is not None and d["days_left"] < 21:
+            out.append(Issue("err" if d["days_left"] < 7 else "warn", f"сертификат кончается через {d['days_left']} дн",
+                             host, f"Действует до {d.get('expires')} ({d.get('issuer')}). Не продлят — сайт перестанет "
+                             "открываться без предупреждения.", f.node_of(host)))
+        if d.get("protocol") in ("TLSv1", "TLSv1.1"):
+            out.append(Issue("warn", f"устаревший протокол {d['protocol']}", host,
+                             "Браузеры его уже не поддерживают, а шифрование в нём слабое. Включите TLS 1.2 и 1.3.",
+                             f.node_of(host)))
+
+
+def _mail_issues(f: Facts, out: list[Issue]) -> None:
+    if not f.did("mail") or not f.records.get("SPF"):
+        return
+    zone = f.record("SPF").get("zone") or f.root
+    has_mx = bool(f.records.get("MX"))
+    spf = f.record("SPF")
+    records = spf.get("records") or []
+    if len(records) > 1:
+        out.append(Issue("err", f"записей SPF {len(records)} — не работает ни одна", zone,
+                         "По стандарту запись SPF должна быть одна, иначе проверка падает с ошибкой. Объедините их.",
+                         "#" + anchor("dns")))
+    elif not records:
+        if has_mx:
+            out.append(Issue("warn", "нет SPF", zone, "Письма от имени домена может отправить кто угодно: "
+                             "почтовые сервисы не отличат подделку. Добавьте TXT-запись v=spf1 с серверами, "
+                             "которые реально шлют вашу почту.", "#" + anchor("dns")))
         else:
-            merged[key] = i
-    rank = {"err": 0, "warn": 1, "info": 2}
-    return sorted(merged.values(), key=lambda i: (rank[i.level], i.where, i.title))
+            out.append(Issue("info", "домен не шлёт почту, но подделку не запрещает", zone,
+                             "Чтобы письма от его имени не принимали, добавьте TXT v=spf1 -all и DMARC p=reject.",
+                             "#" + anchor("dns")))
+    elif spf.get("all") == "+all":
+        out.append(Issue("err", "SPF разрешает отправлять всем (+all)", zone,
+                         "Это то же, что не иметь SPF: подделку не отличить. Замените на -all или ~all.", "#" + anchor("dns")))
+    elif spf.get("all") == "?all":
+        out.append(Issue("warn", "SPF ничего не запрещает (?all)", zone,
+                         "Почтовые сервисы не отбрасывают чужие письма от вашего имени. Замените на ~all или -all.",
+                         "#" + anchor("dns")))
+    dmarc = f.record("DMARC")
+    if not dmarc.get("records"):
+        if has_mx or records:
+            out.append(Issue("warn", "нет DMARC", zone, "Почтовые сервисы не знают, что делать с поддельными письмами "
+                             f"от вашего имени. Добавьте TXT _dmarc.{zone}: v=DMARC1; p=quarantine; rua=mailto:…",
+                             "#" + anchor("dns")))
+    elif dmarc.get("policy") == "none":
+        out.append(Issue("info", "DMARC только наблюдает (p=none)", zone,
+                         "Поддельные письма всё ещё доходят. Когда отчёты чистые — переходите на p=quarantine или reject.",
+                         "#" + anchor("dns")))
+
+
+def _zone_issues(f: Facts, out: list[Issue]) -> None:
+    caa = f.record("CAA")
+    if caa and not caa.get("records"):
+        out.append(Issue("info", "нет CAA", caa.get("zone") or f.root,
+                         "Сертификат на домен может выпустить любой удостоверяющий центр. Запись CAA ограничит их "
+                         "теми, кем вы пользуетесь (например, letsencrypt.org).", "#" + anchor("dns")))
 
 
 # --- структура ----------------------------------------------------------------------
@@ -400,6 +609,13 @@ def tree(f: Facts) -> Node:
             node.tags.insert(0, ("из хостов", "dim"))
             root.children.append(node)
 
+    if f.gone:
+        node = Node([("", "больше не используются")], "group", anchor("gone"), meta=[(str(len(f.gone)), "dim")])
+        for ip, a in f.gone.items():
+            node.children.append(Node([(ip, ip)], "ip", dim=True, meta=[("раньше: " + ", ".join(_d(a).get("was") or []), "dim")],
+                                      tags=[("не трогаем", "dim")]))
+        root.children.append(node)
+
     loose = sorted((a for a in f.kind("subdomain") + f.kind("domain") if a.value not in f.names),
                    key=lambda a: f.name_rank(a.value))
     if loose:
@@ -413,25 +629,38 @@ def tree(f: Facts) -> Node:
             node.children.append(child)
         root.children.append(node)
 
-    recs = f.kind("dns_record")
-    if recs:
-        node = Node([("", "dns")], "group", anchor("dns"))
-        by_type: dict[str, list[Asset]] = {}
-        for a in recs:
-            by_type.setdefault((_d(a).get("type") or a.value.split()[0]).upper(), []).append(a)
-        for typ in sorted(by_type, key=lambda x: ({"NS": 0, "MX": 1}.get(x, 2), x)):
-            rows = by_type[typ]
-            provider = Counter(_d(a).get("provider") for a in rows if _d(a).get("provider")).most_common(1)
-            if typ == "MX":
-                rows.sort(key=lambda a: int(_d(a).get("priority") or 99))
-                values = [f"{_d(a).get('priority')} {_d(a).get('host')}" for a in rows]
-            else:
-                values = sorted(_d(a).get("host") or a.value.split(" ", 1)[-1] for a in rows)
-            child = Node([("", typ.lower())], "rec", meta=[(provider[0][0], "")] if provider else [])
-            child.meta += [(v, "dim") for v in values]
-            node.children.append(child)
-        root.children.append(node)
+    dns = _dns_node(f)
+    if dns.children:
+        root.children.append(dns)
     return root
+
+
+def _dns_node(f: Facts) -> Node:
+    node = Node([("", "dns")], "group", anchor("dns"))
+    order = {"NS": 0, "SOA": 1, "DNSSEC": 2, "CAA": 3, "MX": 4, "SPF": 5, "DMARC": 6}
+    for typ in sorted(f.records, key=lambda x: (order.get(x, 9), x)):
+        rows = f.records[typ]
+        provider = Counter(_d(a).get("provider") for a in rows if _d(a).get("provider")).most_common(1)
+        child = Node([("", typ.lower())], "rec", meta=[(provider[0][0], "")] if provider else [])
+        if typ == "MX":
+            rows = sorted(rows, key=lambda a: int(_d(a).get("priority") or 99))
+            child.meta += [(_d(a).get("detail") or a.value, "dim") for a in rows]
+        elif typ == "NS":
+            child.meta += [(h, "dim") for h in sorted(_d(a).get("host") or a.value.split(" ", 1)[-1] for a in rows)]
+        elif typ == "SPF":
+            records = _d(rows[0]).get("records") or []
+            segs = _spf_seg(f)
+            child.meta += [(r, "dim") for r in records] or []
+            child.tags += [s for s in segs if s[1] in ("err", "warn")]
+            if not records:
+                child.meta.append(("нет", "warn"))
+        elif typ == "DMARC":
+            d = _d(rows[0])
+            child.meta.append((d.get("detail") or "нет", "dim" if d.get("records") else "warn"))
+        else:
+            child.meta += [(_d(a).get("detail") or a.value, "dim") for a in rows]
+        node.children.append(child)
+    return node
 
 
 def _ip_node(f: Facts, ip: str, seen: set[str]) -> Node:
@@ -495,9 +724,11 @@ def _port_node(f: Facts, ip: str, port: int, asset: Asset | None, urls: list[Url
         if u.scheme == "https":
             cert = _d(f.certs.get(u.host))
             if cert.get("valid") is False:
-                node.tags.append(("tls не проходит проверку", "err"))
+                node.tags.append((f"tls: {cert.get('error') or 'не проходит проверку'}", "err"))
             elif cert.get("days_left") is not None:
                 node.tags.append((f"tls {cert['days_left']} дн", _days_tone(cert["days_left"]) or "ok"))
+            if cert.get("protocol"):
+                node.meta.append((cert["protocol"], "warn" if cert["protocol"] in ("TLSv1", "TLSv1.1") else "dim"))
         elif not w.get("to_https"):
             node.tags.append(("без https", "warn"))
     elif d.get("banner"):

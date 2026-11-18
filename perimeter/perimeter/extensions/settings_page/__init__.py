@@ -70,5 +70,5 @@ async def settings_save(request: Request, section_id: str):
 
 def setup(ctx: Context) -> None:
     ctx.pages.add(Page("settings", "Настройки", "/settings", icon="sliders", placement="footer", order=100,
-                       description="Название, тема, валюта, безопасность"))
+                       description="Название, оформление, часовой пояс, безопасность"))
     ctx.add_router(router)

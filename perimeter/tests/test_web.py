@@ -251,3 +251,63 @@ def test_two_flashes_in_a_row_survive(browser, ctx):
     browser.post(f"/targets/{tid}/hosts", {"hosts": "api.example.net"})
     note = flashes(browser.get(f"/targets/{tid}").text)
     assert "Цель добавлена" in note and "добавлено: api.example.net" in note
+
+
+# --- после ревью --------------------------------------------------------------------
+
+def test_cleared_setting_does_not_break_panel(browser, ctx):
+    browser.get("/settings/security")
+    r = browser.post("/settings/security", {"session_hours": ""})
+    assert r.status_code in (200, 303)
+    assert browser.get("/").status_code == 200 and browser.get("/settings").status_code == 200
+    assert ctx.settings.get("security.session_hours") > 0
+
+
+def test_bad_addresses_are_404_pages_not_json(browser):
+    for url in ("/targets/abc", "/targets/99999999999999999999", "/runs?page=x"):
+        r = browser.get(url)
+        assert r.status_code == 404 and "text/html" in r.headers["content-type"], url
+
+
+def test_hosts_add_edge_cases(browser, ctx):
+    browser.post("/targets/new", {"domain": "example.com"})
+    tid = rows(ctx, Target)[0].id
+    browser.post(f"/targets/{tid}/hosts", {"hosts": "203.0.113.5 10.0.0.0/24 -pay.example.com"})
+    browser.post(f"/targets/{tid}/hosts", {"hosts": "-203.0.113.5"})
+    browser.post(f"/targets/{tid}/hosts", {"hosts": "203.0.113.5"})  # снова можно — и снова входит
+    t = rows(ctx, Target)[0]
+    assert "203.0.113.5" in t.include and "203.0.113.5" not in t.exclude
+    browser.post(f"/targets/{tid}/hosts", {"hosts": "10.0.0.0/25 x.pay.example.com github.io 0.0.0.0/0"})
+    note = flashes(browser.get(f"/targets/{tid}").text)
+    assert "уже входит: 10.0.0.0/25" in note  # подсеть уже включённой сети
+    assert "не добавлено: x.pay.example.com" in note  # исключение важнее
+    assert "общий домен" in note and "широкая" in note
+    assert set(rows(ctx, Target)[0].include) == {"203.0.113.5", "10.0.0.0/24"}
+
+
+def test_target_form_keeps_what_was_typed(browser):
+    page = browser.post("/targets/new", {"domain": "example.com", "include": "api.example.com\nне адрес!"}).text
+    assert "не адрес!" in page and "api.example.com" in page
+    assert "общий домен" in browser.post("/targets/new", {"domain": "github.io"}).text
+
+
+def test_deleting_target_stops_its_runs_and_ids_are_not_reused(browser, ctx):
+    from perimeter.extensions.runs.models import Run
+
+    browser.post("/targets/new", {"domain": "old.example"})
+    old = rows(ctx, Target)[0].id
+    with ctx.db.session() as s:
+        s.add(Run(target_id=old, module_id="resolve", status="queued"))
+    browser.post(f"/targets/{old}/delete")
+    browser.post("/targets/new", {"domain": "new.example"})
+    new = rows(ctx, Target)[0]
+    assert new.id != old  # у новой цели не может оказаться чужой истории
+    assert "Новая цель old.example" not in browser.get(f"/targets/{new.id}").text  # история не чужая
+
+
+def test_expired_session_post_returns_to_the_form_page(browser, app):
+    browser.get("/targets")
+    browser.client.cookies.clear()
+    r = browser.client.post("/targets/new", data={"domain": "x.example"}, follow_redirects=False,
+                            headers={"referer": "http://testserver/targets/new"})
+    assert r.status_code in (303, 307) and r.headers["location"] in ("/login?next=/targets/new", "/login?next=%2Ftargets%2Fnew")

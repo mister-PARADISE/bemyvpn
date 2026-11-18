@@ -1,4 +1,5 @@
-{# Сводка: главное о цели одним взглядом. Что показывать — решает recon/view.py #}
+{# Сводка: главное о цели одним взглядом. Что показывать — решает recon/view.py.
+   Строка, чей модуль ещё не запускался, вместо значения предлагает его запустить. #}
 {% import "_ui.html" as ui with context %}
 <section class="card" id="summary">
   <div class="card-head"><h2>Сводка</h2>{% if updated %}<span class="small muted">проверено {{ updated|ago }}</span>{% endif %}</div>
@@ -8,17 +9,16 @@
     <div class="fgroup">
       <h3># {{ g.title }}</h3>
       {% for x in g.facts %}
-      <div class="fact">
+      <div class="fact{% if x.run %} todo{% endif %}">
         <span class="k">{% if x.href %}<a href="{{ x.href }}">{{ x.key }}</a>{% else %}{{ x.key }}{% endif %}</span>
+        {% if x.run %}
+        <span class="v"><form method="post" action="/targets/{{ target.id }}/run" class="inline">
+          {{- ui.csrf_field() }}<input type="hidden" name="module" value="{{ x.run[0] }}">
+          <button class="runlink" data-tip="Запустить модуль">▶ {{ x.run[1] }}</button></form></span>
+        {% else %}
         <span class="v">{% for text, tone in x.value if text %}<span{% if tone %} class="t-{{ tone }}"{% endif %}>{{ text }}</span>{% endfor %}</span>
         {% if x.sub %}<span class="sub">{{ x.sub }}</span>{% endif %}
-      </div>
-      {% else %}
-      <div class="fact">
-        <span class="k">нет</span>
-        <span class="v">{% if g.module %}<form method="post" action="/targets/{{ target.id }}/run" class="inline">
-          {{- ui.csrf_field() }}<input type="hidden" name="module" value="{{ g.module[0] }}">
-          <button class="runlink" data-tip="Запустить модуль">▶ {{ g.module[1] }}</button></form>{% endif %}</span>
+        {% endif %}
       </div>
       {% endfor %}
     </div>
@@ -27,7 +27,7 @@
   {% else %}
   <div class="empty">
     <h3>Пока ничего не известно</h3>
-    <div class="lines"><span>Модули узнают адреса и провайдера, ответ сайта и сертификат, открытые порты и соседей.</span>
+    <div class="lines"><span>Модули узнают адреса и провайдера, DNS и почту, ответ сайта и сертификат, открытые порты и соседей.</span>
       <span>Всё вместе — за минуту-две.</span></div>
     <form method="post" action="/targets/{{ target.id }}/run" class="inline" style="margin-top:12px">
       {{ ui.csrf_field() }}<input type="hidden" name="module" value="__all__">

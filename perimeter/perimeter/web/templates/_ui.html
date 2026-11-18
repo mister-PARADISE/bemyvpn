@@ -88,7 +88,7 @@
       <label class="switch small"><input type="checkbox" name="{{ name }}__clear" value="1"><span class="sw"></span><span>Удалить сохранённое значение</span></label>
       {% endif %}
     {% else %}
-      {% set types = {'int': 'number', 'float': 'number', 'date': 'date', 'email': 'email'} %}
+      {% set types = {'int': 'number', 'float': 'number', 'date': 'date', 'email': 'email', 'url': 'url'} %}
       <input class="input{% if f.kind == 'decimal' %} mono{% endif %}" id="f-{{ name }}" name="{{ name }}" value="{{ f.form_value(value) }}"
              type="{{ types.get(f.kind, 'text') }}"
              {%- if f.required %} required{% endif %}

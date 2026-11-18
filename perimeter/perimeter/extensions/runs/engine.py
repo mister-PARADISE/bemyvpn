@@ -13,13 +13,15 @@ import asyncio
 import concurrent.futures
 import json
 import logging
+import socket
 import threading
 import time
 from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from sqlalchemy import select
+from sqlalchemy import select, update
+from sqlalchemy.exc import OperationalError
 
 from ...core.context import Context
 from ...core.db import utcnow
@@ -59,8 +61,9 @@ class RunContext:
     """То, что видит модуль во время работы."""
 
     def __init__(self, engine: "Engine", run_id: int, module: type[Module], target: TargetView,
-                 params: dict[str, Any]) -> None:
+                 params: dict[str, Any], created: Any = None) -> None:
         self.engine = engine
+        self.created = created  # когда создан запуск: по номеру запуска его не опознать, номер могут переиспользовать
         self.ctx: Context = engine.ctx
         self.run_id = run_id
         self.spec = module.spec
@@ -77,9 +80,19 @@ class RunContext:
     def setting(self, key: str) -> Any:
         return self.ctx.settings.get(key)
 
+    def _check_alive(self, s) -> None:
+        """Цель (а с ней и запуск) удалили посреди работы — дальше не пишем ни строчки: это уже чужое."""
+        if self.created is None:
+            return
+        same = s.scalar(select(Run.id).where(Run.id == self.run_id, Run.target_id == self.target.id,
+                                             Run.created_at == self.created))
+        if same is None:
+            raise asyncio.CancelledError("запуск удалён")
+
     def log(self, message: str, level: str = "info") -> None:
         self._n += 1
         with self.ctx.db.session() as s:
+            self._check_alive(s)
             s.add(RunLine(run_id=self.run_id, n=self._n, level=level if level in LEVELS else "info",
                           text=str(message)[:4000]))
 
@@ -98,6 +111,7 @@ class RunContext:
         value = str(value)[:512]
         clean = _jsonable(data)
         with self.ctx.db.session() as s:
+            self._check_alive(s)
             asset = s.scalar(select(Asset).where(Asset.target_id == self.target.id, Asset.kind == kind,
                                                  Asset.value == value))
             new = asset is None
@@ -124,7 +138,7 @@ class RunContext:
             return [{"value": a.value, "data": dict(a.data or {}), "first_seen": a.first_seen,
                      "last_seen": a.last_seen} for a in rows]
 
-    # --- границы и сеть ----------------------------------------------------
+    # --- что входит в цель, и сеть ------------------------------------------
     def _ip_assets(self) -> dict[str, dict[str, Any]]:
         if self._ips is None:
             self._ips = {a["value"]: a["data"] for a in self.assets("ip")}
@@ -141,13 +155,31 @@ class RunContext:
         if ok or reason.startswith("Исключено"):
             return ok, reason
         if is_ip(h):
-            data = self._ip_assets().get(h)
-            if data and data.get("domains"):
+            data = self._ip_assets().get(h) or {}
+            names = [d for d in data.get("domains") or [] if self.target.scope.allows(d)]
+            if names:
                 cdn = data.get("cdn")
                 if cdn and port not in (80, 443):
                     return False, f"чужая инфраструктура ({cdn}): сюда можно только как на сайт, порты 80 и 443"
-                return True, f"адрес {display_host(data['domains'][0])}"
+                if not data.get("checked") and not data.get("private") and port not in (80, 443):
+                    # пока не знаем, чья это сеть, адрес может оказаться CDN — только как на сайт
+                    return False, "чья это сеть, ещё не проверено («Провайдер»): пока можно только порты 80 и 443"
+                return True, f"адрес {display_host(names[0])}"
         return False, reason
+
+    def _vet_ip(self, ip: str, port: int) -> tuple[bool, str]:
+        """IP, в который разрешилось имя цели: те же правила, что и для адреса, — исключения, CDN, непроверенная сеть."""
+        ok, reason = self.target.scope.explain(ip)
+        if reason.startswith("Исключено"):
+            return False, f"{ip}: {reason}"
+        if ok:
+            return True, ""
+        data = self._ip_assets().get(ip) or {}
+        if data.get("cdn") and port not in (80, 443):
+            return False, f"{ip}: чужая инфраструктура ({data['cdn']}), можно только порты 80 и 443"
+        if not data.get("checked") and not data.get("private") and port not in (80, 443):
+            return False, f"{ip}: чья это сеть, не проверено («Провайдер») — пока только порты 80 и 443"
+        return True, ""
 
     async def connect(self, host: str, port: int, timeout: float = 3.0, **kw: Any):
         if self.spec.kind is not Kind.ACTIVE:
@@ -155,7 +187,23 @@ class RunContext:
         ok, reason = self.allows(host, port)
         if not ok:
             raise OutOfScope(f"{host}: {reason}")
-        return await asyncio.wait_for(asyncio.open_connection(host, port, **kw), timeout)
+        name = normalize_host(host)  # звоним ровно туда, что проверили
+        addr = name
+        if not is_ip(name):
+            # имя входит в цель, но соединение идёт на IP из DNS — и он тоже проходит проверку
+            infos = await asyncio.wait_for(
+                asyncio.get_running_loop().getaddrinfo(name, port, type=socket.SOCK_STREAM), timeout)
+            why = "имя не разрешилось"
+            for *_rest, sockaddr in infos:
+                good, why = self._vet_ip(sockaddr[0], port)
+                if good:
+                    addr = sockaddr[0]
+                    break
+            else:
+                raise OutOfScope(f"{host} → {why}")
+            if kw.get("ssl") is not None:
+                kw.setdefault("server_hostname", name)
+        return await asyncio.wait_for(asyncio.open_connection(addr, port, **kw), timeout)
 
     async def tcp_ping(self, host: str, port: int, timeout: float = 3.0) -> float:
         start = time.perf_counter()
@@ -170,6 +218,12 @@ class RunContext:
     def cancelled(self) -> bool:
         task = self.engine.tasks.get(self.run_id)
         return bool(task and task.cancelling())
+
+
+def _report(fut: concurrent.futures.Future) -> None:
+    """Цепочка упала вне модуля — пусть это будет видно в логе, а не пропадёт молча."""
+    if not fut.cancelled() and fut.exception() is not None:
+        log.error("Цепочка запусков упала", exc_info=fut.exception())
 
 
 class Engine:
@@ -227,7 +281,9 @@ class Engine:
     # --- запуски ---------------------------------------------------------
     def submit(self, run_ids: list[int]) -> concurrent.futures.Future:
         """Запуски из одного вызова идут по очереди: «запустить всё» = цепочка."""
-        return asyncio.run_coroutine_threadsafe(self._chain(list(run_ids)), self._ensure())
+        fut = asyncio.run_coroutine_threadsafe(self._chain(list(run_ids)), self._ensure())
+        fut.add_done_callback(_report)
+        return fut
 
     def busy(self) -> int:
         return sum(1 for t in self.tasks.values() if not t.done())
@@ -241,11 +297,42 @@ class Engine:
         return False
 
     async def _chain(self, run_ids: list[int]) -> None:
+        broken: dict[str, str] = {}  # модуль цепочки, который не отработал → его название
         for run_id in run_ids:
+            if self._skip_if_broken(run_id, broken):
+                continue
             task = asyncio.create_task(self._run_one(run_id))
             self.tasks[run_id] = task
             await asyncio.wait([task])  # отмена одного запуска не обрывает цепочку
             self.tasks.pop(run_id, None)
+            with self.ctx.db.session() as s:
+                run = s.get(Run, run_id)
+                if run is not None and run.status != "done":
+                    module = self.ctx.modules.get(run.module_id)
+                    broken[run.module_id] = module.spec.title if module else run.module_id
+
+    def _skip_if_broken(self, run_id: int, broken: dict[str, str]) -> bool:
+        """Модуль построен на том, что в этой цепочке не отработало, — пропускаем, а не гоняем впустую."""
+        if not broken:
+            return False
+        from ..targets.models import Target
+
+        with self.ctx.db.session() as s:
+            run = s.get(Run, run_id)
+            module = self.ctx.modules.get(run.module_id) if run is not None else None
+            if run is None or module is None or run.status != "queued":
+                return False
+            missing = [broken[m] for m in module.spec.needs if m in broken]
+            if not missing:
+                return False
+            why = "не отработал " + ", ".join(f"«{t}»" for t in missing)
+            run.status, run.finished_at, run.error, run.summary = "skipped", utcnow(), why, f"пропущен: {why}"
+            s.add(RunLine(run_id=run_id, n=1, level="warn", text=f"[skip] пропущен: {why}"))
+            target = s.get(Target, run.target_id)
+            self.ctx.audit(s, "run.skipped", f"{module.spec.title} {target.name if target else ''}: пропущен, {why}",
+                           entity=("target", run.target_id), actor=run.actor, data={"run": run_id, "module": run.module_id})
+            broken[run.module_id] = module.spec.title  # и то, что построено на нём, тоже пропустим
+            return True
 
     async def _run_one(self, run_id: int) -> None:
         assert self._sem is not None
@@ -266,18 +353,22 @@ class Engine:
                 run.error = "цель удалена" if target is None else f"модуль «{run.module_id}» не найден"
                 return
             view = TargetView(target.id, target.domain, target.scope)
-            run.status, run.started_at = "running", utcnow()
+            # «в очереди» → «идёт» одним UPDATE с условием: если его только что отменили, не начинаем
+            claimed = s.execute(update(Run).where(Run.id == run_id, Run.status == "queued")
+                                .values(status="running", started_at=utcnow())).rowcount
+            if not claimed:
+                return
             # недостающее или пустое — из значений по умолчанию модуля (и для старых запусков)
             params = {fld.key: fld.default for fld in module.spec.params}
             params.update({k: v for k, v in (run.params or {}).items() if v is not None})
-            actor = run.actor
+            actor, created = run.actor, run.created_at
 
-        rc = RunContext(self, run_id, module, view, params)
+        rc = RunContext(self, run_id, module, view, params, created)
         spec = module.spec
-        rc.log(f"$ perimeter run {spec.id} {view.name}", "dim")
         status, error = "done", ""
         started = time.monotonic()
         try:
+            rc.log(f"$ perimeter run {spec.id} {view.name}", "dim")
             await asyncio.wait_for(module().run(rc), timeout=spec.timeout)
         except asyncio.CancelledError:
             status = "cancelled"
@@ -298,21 +389,33 @@ class Engine:
 
         seconds = time.monotonic() - started
         summary = rc.summary or (f"найдено {rc.total}, новых {rc.new}" if rc.total else "ничего не найдено")
-        if status == "done":
-            rc.log(f"[done] {summary}  за {seconds:.1f} с", "ok")
-        elif status == "cancelled":
-            rc.log(f"[stop] остановлено через {seconds:.1f} с. {summary}", "warn")
-        else:
-            rc.log(f"[err] {error}", "err")
-
-        with self.ctx.db.session() as s:
-            run = s.get(Run, run_id)
-            if run is None:
-                return
-            run.status, run.finished_at, run.error = status, utcnow(), error
-            run.summary, run.found_new, run.found_total = summary, rc.new, rc.total
+        with suppress(Exception, asyncio.CancelledError):  # последняя строка консоли — не повод потерять итог
             if status == "done":
-                run.progress = None
-            text = error if status == "failed" else summary
-            self.ctx.audit(s, f"run.{status}", f"{spec.title} {view.name}: {text}", entity=("target", view.id),
-                           actor=actor, data={"run": run_id, "module": spec.id})
+                rc.log(f"[done] {summary}  за {seconds:.1f} с", "ok")
+            elif status == "cancelled":
+                rc.log(f"[stop] остановлено через {seconds:.1f} с. {summary}", "warn")
+            else:
+                rc.log(f"[err] {error}", "err")
+        await self._finish(run_id, created, status, error, summary, rc, spec, view, actor)
+
+    async def _finish(self, run_id: int, created: Any, status: str, error: str, summary: str, rc: RunContext,
+                      spec: Any, view: TargetView, actor: str) -> None:
+        """Итог запуска записывается всегда — иначе он навсегда остался бы «идёт»."""
+        for attempt in range(4):
+            try:
+                with self.ctx.db.session() as s:
+                    run = s.get(Run, run_id)
+                    if run is None or run.created_at != created:  # цель удалили вместе с запуском
+                        return
+                    run.status, run.finished_at, run.error = status, utcnow(), error
+                    run.summary, run.found_new, run.found_total = summary, rc.new, rc.total
+                    if status == "done":
+                        run.progress = None
+                    text = error if status == "failed" else summary
+                    self.ctx.audit(s, f"run.{status}", f"{spec.title} {view.name}: {text}", entity=("target", view.id),
+                                   actor=actor, data={"run": run_id, "module": spec.id})
+                return
+            except OperationalError:  # база занята дольше обычного — пробуем ещё раз
+                log.warning("Итог запуска %s не записался, попытка %d", run_id, attempt + 1)
+                await asyncio.sleep(0.5 * (attempt + 1))
+        log.error("Итог запуска %s так и не записался", run_id)

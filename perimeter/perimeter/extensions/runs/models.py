@@ -15,6 +15,7 @@ RUN_STATES = {
     "failed": ("ошибка", "danger"),
     "cancelled": ("остановлен", "warning"),
     "interrupted": ("прерван", "warning"),
+    "skipped": ("пропущен", "warning"),  # не отработал модуль, на котором этот построен
 }
 ACTIVE_STATES = ("queued", "running")
 
@@ -38,6 +39,8 @@ class Run(Base):
     error: Mapped[str] = mapped_column(Text, default="", nullable=False)
     found_new: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     found_total: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    # цепочка: запуски одного нажатия («Запустить всё» или модуль со своими зависимостями) — id первого из них
+    chain: Mapped[int | None] = mapped_column(Integer, index=True)
 
     @property
     def state_title(self) -> str:

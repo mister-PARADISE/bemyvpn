@@ -1,21 +1,34 @@
-{# Консоль запуска. Ожидает: state (run_state), run, reload (перезагрузить страницу, когда закончится) #}
+{# Консоль запуска — или всей цепочки модулей подряд, с разделителями, как в терминале.
+   Ожидает: view (console_view), reload (перезагрузить страницу, когда цепочка закончится) #}
 {% import "_ui.html" as ui with context %}
-<div class="console" id="console" data-console="{{ run.id }}" data-after="{{ state.lines[-1].n if state.lines else 0 }}"
-     data-active="{{ 1 if state.active else 0 }}"{% if reload %} data-reload{% endif %}>
+{% set run = view.run %}
+{# на странице одного запуска из цепочки кнопки действуют только на него #}
+{% set single = view.total == 1 and run.chain is not none %}
+{% set back = request.url.path ~ "?run=" ~ run.id %}
+<div class="console" id="console" data-console="{{ view.current.id }}" data-after="{{ view.after }}"
+     data-active="{{ 1 if view.active else 0 }}" data-total="{{ view.total }}"{% if reload %} data-reload{% endif %}>
   <div class="console-head">
-    <span class="badge tone-{{ state.tone }} dot" data-c-status>{{ state.title }}</span>
-    <a class="small muted" href="/runs/{{ run.id }}">запуск #{{ run.id }}</a>
+    <span class="badge tone-{{ view.tone }} dot" data-c-status>{{ view.title }}</span>
+    <span class="small ink2" data-c-title>{% if view.total > 1 %}[{{ view.pos }}/{{ view.total }}] {% endif %}{{ view.current_title }}</span>
+    <a class="small muted" href="/runs/{{ view.current.id }}" data-c-link>#{{ view.current.id }}</a>
     <span class="grow"></span>
-    <span class="small muted tnum" data-c-time>{{ state.seconds }} с</span>
-    <span data-c-stop{% if not state.active %} hidden{% endif %}>
-      {{ ui.post_ib("/runs/%d/cancel"|format(run.id), "x", "Остановить", "danger", sm=True, fields={"back": request.url.path ~ "?run=" ~ run.id}) }}
+    <span class="small muted tnum" data-c-time>{{ view.seconds }} с</span>
+    <span data-c-stop{% if not view.active %} hidden{% endif %}>
+      {{ ui.post_ib("/runs/%d/cancel"|format(run.id), "x", "Остановить всё" if view.total > 1 else "Остановить", "danger", sm=True,
+                    fields={"back": back, "only": 1} if single else {"back": back}) }}
     </span>
-    <span data-c-again{% if state.active %} hidden{% endif %}>{{ ui.post_ib("/runs/%d/again"|format(run.id), "refresh", "Запустить ещё раз", sm=True) }}</span>
+    <span data-c-again{% if view.active %} hidden{% endif %}>
+      {{ ui.post_ib("/runs/%d/again"|format(run.id), "refresh", "Запустить всё это ещё раз" if view.total > 1 else "Запустить ещё раз", sm=True,
+                    fields={"only": 1} if single else None) }}
+    </span>
   </div>
   <div class="console-body" data-c-body>
-    {%- for ln in state.lines %}<div class="cl lvl-{{ ln.level }}"><span class="ts">{{ ln.at }}</span>{{ ln.text }}</div>{% endfor -%}
+    {%- for p in view.parts %}
+      {%- if view.total > 1 %}<div class="cl lvl-head">── [{{ p.pos }}/{{ view.total }}] {{ p.state.module_title }}  {{ p.state.title }} ──</div>{% endif -%}
+      {%- for ln in p.state.lines %}<div class="cl lvl-{{ ln.level }}"><span class="ts">{{ ln.at }}</span>{{ ln.text }}</div>{% endfor -%}
+    {%- endfor -%}
   </div>
-  <div class="console-progress" data-c-progress{% if not (state.active and state.progress) %} hidden{% endif %}>
-    {%- if state.progress %}{% set p = state.progress %}{% set w = 30 %}{% set fill = ((p.done / (p.total or 1)) * w)|round|int %}[{{ "#" * fill }}{{ "-" * (w - fill) }}] {{ p.done }}/{{ p.total }} {{ p.label }}{% endif -%}
+  <div class="console-progress" data-c-progress{% if not view.progress %} hidden{% endif %}>
+    {%- if view.progress %}{% set p = view.progress %}{% set w = 30 %}{% set fill = ((p.done / (p.total or 1)) * w)|round|int %}[{{ "#" * fill }}{{ "-" * (w - fill) }}] {{ p.done }}/{{ p.total }} {{ p.label }}{% endif -%}
   </div>
 </div>

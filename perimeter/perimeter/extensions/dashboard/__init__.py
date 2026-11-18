@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import date
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Request
 
@@ -38,7 +38,8 @@ def dashboard(request: Request, db: DB):
             widgets.append({"widget": widget, "data": {}, "error": "не удалось собрать данные, подробности в логе"})
     snap = system.snapshot(ctx.config.data_dir)
     return render(request, "dashboard/index.html", widgets=widgets,
-                  lines=[ru_date(date.today()), f"{snap['host']}, {snap['os']}"])
+                  lines=[ru_date(datetime.now(timezone.utc).astimezone(request.app.state.ui.tz()).date()),  # дата пояса панели
+                         f"{snap['host']}, {snap['os']}"])
 
 
 @router.get("/api/system")
