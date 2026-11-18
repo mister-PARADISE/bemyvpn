@@ -110,11 +110,17 @@ def test_ports_find_services_banners_and_closing(browser, ctx, dnsd, monkeypatch
     assert "nginx/1.25.3" in found[f"127.0.0.1:{site.port}"]["banner"]
     assert found[f"127.0.0.1:{db.port}"]["risky"] is True and "опасных 1" in state["summary"]
     assert "не должно смотреть наружу" in state["text"]
+    page = browser.get(f"/targets/{tid}").text
+    assert f'id="n-127-0-0-1-{db.port}"' in page and "SSH-2.0-OpenSSH_9.6" in page  # порт в структуре
+    assert f"{db.port} mysql открыт в интернет" in page and "База данных принимает" in page  # замечание с советом
+    assert '<a href="#issues">замечания' in page and '<a href="#tree">структура' in page  # оглавление
 
     ssh.stop()  # между запусками сервис выключили
     state = run_and_wait(browser, tid, "ports", preset="custom", custom=ports, timeout_ms=500, banners="1")
     assert assets(ctx, tid, "port")[f"127.0.0.1:{ssh.port}"]["state"] == "closed"
     assert "закрылось с прошлого раза: 1" in state["text"]
+    page = browser.get(f"/targets/{tid}").text
+    assert f"{ssh.port} ssh закрылся" in page and "закрылись" in page
     site.stop()
     db.stop()
 
@@ -164,6 +170,9 @@ def test_reach_ping_redirect_title_and_cert(browser, ctx, dnsd, monkeypatch, tmp
     assert "301 → https" in state["text"] and "сертификат кончается" in state["summary"]
     page = browser.get(f"/targets/{tid}").text
     assert "Можно добавить" in page and "other.test" in page
+    assert "уводит на https" in page and "«Магазин на тесте»" in page  # сводка
+    assert "сертификат кончается через" in page and f'href="#n-127-0-0-1-{secure.port}"' in page  # замечание → дерево
+    assert assets(ctx, tid, "url")[f"http://shop.test:{plain.port}/"]["to_https"] is True
     secure.stop()
     plain.stop()
 
@@ -233,3 +242,55 @@ def test_fmt_ms():
 ])
 def test_org_name(raw, org):
     assert netkit.org_name(raw) == org
+
+
+def test_view_tree_issues_and_summary():
+    """Страница цели из готовых находок: группы имён, порты с ответом сайта, замечания без повторов."""
+    from types import SimpleNamespace
+
+    from perimeter.core.scope import Scope
+    from perimeter.extensions.recon import view
+
+    def a(kind, value, **data):
+        return Asset(kind=kind, value=value, data=data)
+
+    ip = "93.184.216.34"
+    cert = dict(valid=True, issuer="R3", expires="2026-12-01", days_left=5, sans=["shop.test", "www.shop.test"])
+    rows = [
+        a("ip", ip, domains=["www.shop.test", "shop.test"], cnames=["shop.test"], asn=64500,
+          as_name="EX-NET - Example Hosting", country="NL", rtt_ms=0.4),
+        a("port", f"{ip}:3306", ip=ip, port=3306, service="mysql", risky=True, state="open", banner="MySQL 8.0"),
+        a("port", f"{ip}:443", ip=ip, port=443, service="https", state="open"),
+        a("url", "https://shop.test/", status=200, title="Магазин", server="nginx/1.25.3", hsts=False),
+        a("url", "http://shop.test/", status=301, to_https=True, location="https://shop.test/"),
+        a("certificate", "shop.test:443", **cert),
+        a("certificate", "www.shop.test:443", **cert),
+        a("subdomain", "api.shop.test", source="сертификат", seen_on="shop.test"),
+        a("dns_record", "NS ns1.beget.com", type="NS", host="ns1.beget.com", provider="Beget"),
+    ]
+    target = SimpleNamespace(domain="shop.test", name="shop.test", scope=Scope.build("shop.test", [], []))
+    f = view.Facts(target, rows)
+
+    root = view.tree(f)
+    names, loose, dns = root.children
+    assert [v for v, _ in names.items] == ["shop.test", "www.shop.test"] and not names.meta  # cname внутри группы не нужен
+    node = names.children[0]
+    assert node.id == "n-93-184-216-34" and ("Example Hosting", "") in node.meta and ("пинг <1 мс", "dim") in node.meta
+    p80, p443, p3306 = node.children
+    assert [p.items[0] for p in (p80, p443, p3306)] == [(f"{ip}:80", "80"), (f"{ip}:443", "443"), (f"{ip}:3306", "3306")]
+    assert ("→ https", "ok") in p80.meta
+    assert ("«Магазин»", "") in p443.meta and ("tls 5 дн", "err") in p443.tags
+    assert ("наружу", "err") in p3306.tags and ("MySQL 8.0", "dim") in p3306.meta
+    assert loose.children[0].items == [("api.shop.test", "api.shop.test")]
+    assert dns.children[0].meta[:2] == [("Beget", ""), ("ns1.beget.com", "dim")]
+
+    found = view.issues(f)
+    assert found[0].title == "3306 mysql открыт в интернет" and found[0].href == "#n-93-184-216-34-3306"
+    certs = [i for i in found if i.title.startswith("сертификат")]
+    assert len(certs) == 1 and certs[0].where == "shop.test  www.shop.test" and certs[0].level == "err"
+    assert [i.level for i in found] == sorted((i.level for i in found), key=["err", "warn", "info"].index)
+
+    groups = {g.title: g for g in view.summary(f)}
+    facts = {x.key: x for g in groups.values() for x in g.facts}
+    assert facts["опасные"].value == [("3306 mysql", "err")] and facts["с http"].value == [("уводит на https", "ok")]
+    assert facts["хостинг"].value[0] == ("Example Hosting", "") and facts["dns"].value == [("Beget", "")]

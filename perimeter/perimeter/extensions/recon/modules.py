@@ -167,7 +167,11 @@ class Reach(Module):
             run.log(f"    http   {plain['error']}", "dim")
         else:
             hop = web.next_hop(plain["url"], plain.get("location", ""))
-            if plain["status"] in (301, 302, 307, 308) and hop and hop[3]:
+            to_https = bool(plain["status"] in (301, 302, 307, 308) and hop and hop[3])
+            await run.emit("url", plain["url"], status=plain["status"], server=plain["server"],
+                           location=plain.get("location", ""), to_https=to_https, title=plain.get("title", ""),
+                           ms=plain.get("ms"))
+            if to_https:
                 run.log(f"    http   {plain['status']} → https", "ok")
             else:
                 run.log(f"    [!] http:// не уводит на https:// (ответ {plain['status']})", "warn")

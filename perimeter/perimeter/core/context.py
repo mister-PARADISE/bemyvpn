@@ -78,13 +78,17 @@ class Slot:
     """Вставка в чужую страницу. Страница объявляет место: {{ slot("target.main", target=target) }},
     а любое расширение кладёт туда свой блок — не трогая код страницы.
 
-    data(session, ctx, **kwargs) → дополнительный контекст шаблона.
+    data(session, ctx, **kwargs) → дополнительный контекст шаблона; None — блок не показывать.
+
+    nav — название в оглавлении страницы (якорь — id вставки, у блока должен быть такой id).
+    Число рядом с названием блок отдаёт сам: ключи nav_count и nav_tone (err | warn | ok) в data.
     """
 
     id: str
     template: str
-    data: Callable[..., dict[str, Any]] | None = None
+    data: Callable[..., dict[str, Any] | None] | None = None
     order: int = 100
+    nav: str = ""
 
 
 @dataclass(frozen=True)

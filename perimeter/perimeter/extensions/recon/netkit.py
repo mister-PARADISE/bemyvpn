@@ -273,7 +273,7 @@ async def describe_ips(run, res: Resolver, ipmap: dict[str, dict[str, list]], qu
         entry = ipmap[ip]
         info = info or {}
         cdn = cdn_of(info.get("as_name"), entry.get("cnames", []))
-        await run.emit("ip", ip, domains=entry.get("domains", []), asn=info.get("asn"), as_name=info.get("as_name"),
+        await run.emit("ip", ip, domains=entry.get("domains", []), cnames=entry.get("cnames", []), asn=info.get("asn"), as_name=info.get("as_name"),
                        prefix=info.get("prefix"), country=info.get("country"), registry=info.get("registry"),
                        ptr=ptr, cdn=cdn, private=private(ip), version=ipaddress.ip_address(ip).version)
         if quiet:

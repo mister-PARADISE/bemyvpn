@@ -385,6 +385,56 @@
     $$("[data-panel]", group).forEach((p) => { p.hidden = p.dataset.panel !== tab.dataset.tab; });
   });
 
+  /* ---------- Оглавление страницы [data-toc]: подсветка раздела под шапкой ---------- */
+  let tocHold = 0;  // после нажатия на пункт подсветка не прыгает, пока страница едет
+  function initToc() {
+    const toc = $("[data-toc]");
+    if (!toc) return;
+    const links = $$("a[href^='#']", toc).map((a) => [a, document.getElementById(a.hash.slice(1))]).filter(([, s]) => s);
+    if (!links.length) return;
+    const set = (a) => {
+      links.forEach(([l]) => l.classList.toggle("on", l === a));
+      const left = a.offsetLeft - toc.offsetLeft;  // на телефоне оглавление листается вбок
+      if (left < toc.scrollLeft || left + a.offsetWidth > toc.scrollLeft + toc.clientWidth) toc.scrollLeft = left - 10;
+    };
+    const spy = () => {
+      if (Date.now() < tocHold) return;
+      const edge = toc.getBoundingClientRect().bottom + 14;
+      // раздел, который сейчас под шапкой; в двух колонках — из основной (она идёт первой).
+      // Последние короткие разделы до шапки не доезжают — их подсвечивает нажатие на пункт.
+      const under = links.find(([, s]) => { const r = s.getBoundingClientRect(); return r.top <= edge && r.bottom > edge; });
+      if (under) return set(under[0]);
+      const above = links.filter(([, s]) => s.getBoundingClientRect().top <= edge);
+      set((above.at(-1) || links[0])[0]);
+    };
+    let ticking = false;
+    addEventListener("scroll", () => {
+      if (ticking) return;
+      ticking = true;
+      requestAnimationFrame(() => { ticking = false; spy(); });
+    }, { passive: true });
+    toc.addEventListener("click", (e) => {
+      const a = e.target.closest("a");
+      if (a) { set(a); tocHold = Date.now() + 900; }
+    });
+    spy();
+  }
+
+  /* Переход по якорю на странице: плавно и с короткой подсветкой цели */
+  document.addEventListener("click", (e) => {
+    const a = e.target.closest("a[href^='#']");
+    if (!a || a.hash.length < 2 || e.metaKey || e.ctrlKey) return;
+    const el = document.getElementById(decodeURIComponent(a.hash.slice(1)));
+    if (!el) return;
+    e.preventDefault();
+    el.scrollIntoView({ behavior: "smooth", block: "start" });
+    history.replaceState(null, "", a.hash);
+    el.classList.toggle("flash", false);
+    void el.offsetWidth;  // перезапустить анимацию
+    el.classList.toggle("flash", true);
+    setTimeout(() => el.classList.toggle("flash", false), 1900);
+  });
+
   /* ---------- Часы в строке состояния ---------- */
   function tickClock() {
     const el = $("[data-clock]");
@@ -445,6 +495,7 @@
     initTerm();
     watchMonitor();
     initConsole();
+    initToc();
     const refresh = $("[data-refresh]");  // страница с идущей проверкой обновляет себя сама
     if (refresh) setTimeout(() => location.reload(), +refresh.dataset.refresh || 2000);
     palette.init();

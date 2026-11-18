@@ -1,0 +1,19 @@
+{# Замечания: что на цели плохо и что с этим делать. Самое серьёзное — сверху #}
+<section class="card" id="issues">
+  <div class="card-head"><h2>Замечания <span class="count">{{ issues|length }}</span></h2>
+    {% if issues %}<span class="small muted hint">[!] плохо  [~] стоит поправить  [i] к сведению</span>{% endif %}</div>
+  {% if issues %}
+  <ul class="issues">
+    {% for i in issues %}
+    <li class="issue lv-{{ i.level }}">
+      <span class="lvl">{{ {"err": "[!]", "warn": "[~]", "info": "[i]"}[i.level] }}</span>
+      <a class="it" href="{{ i.href or '#tree' }}">{{ i.title }}</a>
+      <span class="iw">{{ i.where }}</span>
+      <span class="ih">{{ i.hint }}</span>
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <div class="card-body small"><span class="t-ok">[ok]</span> <span class="muted">замечаний нет — по тому, что успели проверить модули</span></div>
+  {% endif %}
+</section>

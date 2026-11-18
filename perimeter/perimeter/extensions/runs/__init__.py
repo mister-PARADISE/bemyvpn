@@ -225,7 +225,8 @@ def modules_slot(db, ctx: Context, target=None, run=None, **_):
         console = db.scalar(select(Run).where(Run.target_id == target.id, Run.status.in_(ACTIVE_STATES))
                             .order_by(Run.id))
     state = run_state(ctx, db, console) if console is not None else None
-    return {"mods": mods, "last": last, "console": console, "console_state": state, "Kind": Kind}
+    return {"mods": mods, "last": last, "console": console, "console_state": state, "Kind": Kind,
+            "nav_count": len(mods), "nav_tone": "warn" if state and state.get("active") else ""}
 
 
 def found_slot(db, ctx: Context, target=None, **_):
@@ -238,7 +239,7 @@ def found_slot(db, ctx: Context, target=None, **_):
     order = {t.id: t.order for t in ctx.asset_types}
     kinds = sorted(groups, key=lambda k: (k != "ip", order.get(k, 999), k))  # адреса — самое нужное
     columns = ctx.services.get("asset_columns", {})
-    return {"groups": groups, "kinds": kinds, "columns": columns, "types": ctx.asset_types}
+    return {"groups": groups, "kinds": kinds, "columns": columns, "types": ctx.asset_types, "nav_count": len(rows)}
 
 
 def default_columns(asset: Asset) -> list[tuple[str, str]]:
@@ -307,8 +308,8 @@ def setup(ctx: Context) -> None:
     ctx.pages.add(Page("runs", "Запуски", "/runs", icon="activity", order=30, badge=_active_badge,
                        badge_tone="accent", description="Что запускалось и что идёт сейчас"))
     ctx.add_router(router)
-    ctx.add_slot("target.main", Slot("modules", "runs/_modules.html", data=modules_slot, order=20))
-    ctx.add_slot("target.main", Slot("found", "runs/_found.html", data=found_slot, order=30))
+    ctx.add_slot("target.main", Slot("modules", "runs/_modules.html", data=modules_slot, order=20, nav="модули"))
+    ctx.add_slot("target.main", Slot("found", "runs/_found.html", data=found_slot, order=30, nav="найдено"))
     ctx.stats.add(Stat("runs", "запуски", runs_stat, order=30, link="/runs"))
     ctx.settings.section(SettingsSection(
         id="runs", title="Запуски", icon="activity", group="Модули", order=10,

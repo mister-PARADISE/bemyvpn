@@ -1,0 +1,21 @@
+{# Структура цели деревом: имена → адреса → порты → что отвечает. Узлы строит recon/view.py #}
+{% import "_ui.html" as ui with context %}
+{% macro node(n) %}
+<li{% if n.id %} id="{{ n.id }}"{% endif %} class="tk-{{ n.kind }}{% if n.dim %} dim{% endif %}">
+  <div class="tn">
+    <span class="tl">
+      {%- for value, shown in n.items -%}
+        {%- if n.href %}<a href="{{ n.href }}">{{ shown }}</a>{% elif value %}{{ ui.cp(value, label=shown) }}{% else %}<span>{{ shown }}</span>{% endif -%}
+      {%- endfor -%}
+    </span>
+    {%- for text, tone in n.cols %}<span class="tc{% if tone %} t-{{ tone }}{% endif %}">{{ text }}</span>{% endfor %}
+    {%- for text, tone in n.meta if text %}<span class="tm{% if tone %} t-{{ tone }}{% endif %}">{{ text }}</span>{% endfor %}
+    {%- for text, tone in n.tags %}<span class="tg t-{{ tone or 'dim' }}">{{ text }}</span>{% endfor %}
+  </div>
+  {% if n.children %}<ul>{% for c in n.children %}{{ node(c) }}{% endfor %}</ul>{% endif %}
+</li>
+{% endmacro %}
+<section class="card" id="tree">
+  <div class="card-head"><h2>Структура</h2><span class="small muted hint">нажмите на адрес или порт — скопируется</span></div>
+  <div class="tree-wrap"><ul class="tree">{{ node(root) }}</ul></div>
+</section>

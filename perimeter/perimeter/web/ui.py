@@ -44,6 +44,12 @@ def ru_date(value: date, year: bool = False) -> str:
     return f"{text} {value.year}" if year else text
 
 
+
+class SlotHTML(Markup):
+    """HTML вставок плюс пункты оглавления (у Markup нет __dict__ — у наследника есть)."""
+
+    nav: list[dict[str, Any]] = []
+
 class UI:
     def __init__(self, ctx: Context) -> None:
         self.ctx = ctx
@@ -87,12 +93,17 @@ class UI:
 
     # --- вставки расширений ------------------------------------------------
     @pass_context
-    def render_slot(self, context, name: str, **kwargs: Any) -> Markup:
-        """{{ slot("target.main", target=target) }} — блоки всех расширений для этого места."""
+    def render_slot(self, context, name: str, **kwargs: Any) -> "SlotHTML":
+        """{{ slot("target.main", target=target) }} — блоки всех расширений для этого места.
+
+        У результата есть .nav — пункты оглавления от показанных блоков:
+        {% set main = slot("target.main", ...) %} … {% for item in main.nav %} … {{ main }}
+        """
         registry = self.ctx.slots.get(name)
         if not registry:
-            return Markup("")
+            return SlotHTML("")
         parts: list[str] = []
+        nav: list[dict[str, Any]] = []
         with self.ctx.db.session() as session:
             for item in registry:
                 try:
@@ -101,6 +112,9 @@ class UI:
                         continue
                     template = self.env.get_template(item.template)
                     parts.append(template.render({**context.get_all(), **kwargs, **extra}))
+                    if item.nav:
+                        nav.append({"id": item.id, "title": item.nav, "count": extra.get("nav_count"),
+                                    "tone": extra.get("nav_tone", "")})
                 except Exception:  # noqa: BLE001 — чужой блок не роняет страницу
                     log.exception("Вставка %s в %s упала", item.id, name)
                     if self.ctx.config.debug:
@@ -109,7 +123,9 @@ class UI:
                         f'<div class="callout tone-danger">{icon("alert")}'
                         f"<div>Блок «{escape(item.id)}» не отрисовался — подробности в логе.</div></div>"
                     )
-        return Markup("".join(parts))
+        out = SlotHTML("".join(parts))
+        out.nav = nav
+        return out
 
     # --- время -----------------------------------------------------------
     def tz(self) -> ZoneInfo | timezone:

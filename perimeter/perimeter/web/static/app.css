@@ -586,6 +586,72 @@ dialog::backdrop{background:rgba(0,0,0,.72);-webkit-backdrop-filter:blur(3px);ba
 .table td.key .cp,.table td.key .l1>span{overflow:visible;text-overflow:clip}
 .table .l2.err{max-width:300px}
 
+/* ---------- Страница цели: оглавление, сводка, замечания, структура ---------- */
+.t-dim{color:var(--ink3)}
+.toc{position:sticky;top:0;z-index:12;display:flex;gap:2px;margin:-4px 0 18px;padding:7px 0;overflow-x:auto;
+     background:var(--bg);border-bottom:1px solid var(--line2);font-size:12.5px;scrollbar-width:none}
+.toc::-webkit-scrollbar{display:none}
+.toc a{flex:none;display:flex;align-items:baseline;gap:.8ch;padding:2px 9px;border-radius:var(--r-sm);color:var(--ink3);white-space:nowrap}
+.toc a:hover{color:var(--ink);text-decoration:none}
+.toc a.on{background:var(--accent);color:var(--accent-ink)}
+.toc .n{font-size:11.5px;color:var(--ink3)}
+.toc .n::before{content:"["}.toc .n::after{content:"]"}
+.toc .n.t-err{color:var(--err)}.toc .n.t-warn{color:var(--warn)}.toc .n.t-ok{color:var(--ok)}
+.toc a.on .n{color:inherit}
+.with-side [id]{scroll-margin-top:58px}
+.flash>.tn,.flash>.card-head h2{animation:flash 1.8s var(--ease)}
+@keyframes flash{0%,45%{background:var(--accent-soft);box-shadow:0 0 0 1px var(--accent-line)}100%{background:transparent;box-shadow:none}}
+
+#summary{container-type:inline-size}
+.facts{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px 40px;padding:8px var(--pad) 2px;font-size:13px;line-height:1.75}
+@container (max-width:600px){.facts{grid-template-columns:minmax(0,1fr)}}
+.fgroup h3{margin:0 0 3px;font-size:12px;font-weight:500;color:var(--ink3)}
+.fact{display:grid;grid-template-columns:9ch minmax(0,1fr);column-gap:1.5ch}
+.fact .k{color:var(--ink3)}
+.fact .k a{color:inherit;border-bottom:1px dashed var(--line2)}
+.fact .k a:hover{color:var(--accent);text-decoration:none}
+.fact .v{display:flex;flex-wrap:wrap;column-gap:1.6ch;min-width:0;overflow-wrap:anywhere}
+.fact .sub{grid-column:2;margin:-3px 0 3px;font-size:12px;line-height:1.5;color:var(--ink3);overflow-wrap:anywhere}
+.runlink{border:0;background:none;padding:0;font:inherit;color:var(--accent);cursor:pointer}
+.runlink:hover{text-decoration:underline}
+
+.issues{list-style:none;margin:0;padding:0 var(--pad);font-size:13px}
+.issue{display:grid;grid-template-columns:3.5ch minmax(0,1fr) auto;column-gap:1.2ch;padding:8px 0;border-bottom:1px dashed var(--line)}
+.issue:last-child{border-bottom:0}
+.issue .lvl{font-weight:700}
+.issue.lv-err .lvl{color:var(--err)}.issue.lv-warn .lvl{color:var(--warn)}.issue.lv-info .lvl{color:var(--info)}
+.issue .it{color:var(--ink);font-weight:500}
+.issue .it:hover{color:var(--accent);text-decoration:none}
+.issue .iw{color:var(--ink3);font-size:12px;text-align:right;white-space:nowrap}
+.issue .ih{grid-column:2/4;margin-top:2px;font-size:12px;line-height:1.55;color:var(--ink3)}
+@media (max-width:760px){.issue{grid-template-columns:3.5ch minmax(0,1fr)}.issue .iw{grid-column:2;text-align:left}.issue .ih{grid-column:2}}
+
+.tree-wrap{padding:4px var(--pad) 2px}
+.tree,.tree ul{list-style:none;margin:0;padding:0}
+.tree{font-size:13px;line-height:1.8}
+.tree ul{padding-left:1ch}
+.tree li li{position:relative;padding-left:3ch}
+.tree li li::before{content:"";position:absolute;left:0;top:0;bottom:0;border-left:1px solid var(--line2)}
+.tree li li:last-child::before{bottom:auto;height:.9em}
+.tree li li::after{content:"";position:absolute;left:0;top:.9em;width:2.3ch;border-top:1px solid var(--line2)}
+.tn{display:flex;flex-wrap:wrap;align-items:baseline;column-gap:1.6ch;margin-left:-6px;padding:0 6px;border-radius:var(--r-sm)}
+.tn:hover{background:var(--raised)}
+.tl{display:inline-flex;flex-wrap:wrap;column-gap:2ch;color:var(--ink);font-weight:500}
+.tl a{color:inherit}
+/* адрес в дереве не обрезается: длинное имя на узком экране переносится, а не превращается в «example.…» */
+.tl .cp{max-width:none;overflow:visible;text-overflow:clip;white-space:normal;overflow-wrap:anywhere}
+.tk-root>.tn .tl{color:var(--accent);font-weight:700}
+.tk-group>.tn .tl,.tk-rec>.tn .tl,.tk-note>.tn .tl,.tk-more>.tn .tl{color:var(--ink3);font-weight:400}
+.tk-port>.tn>.tl{min-width:5ch;justify-content:flex-end}
+.tk-rec>.tn>.tl{min-width:3ch}
+.tk-nb>.tn>.tl{min-width:15ch}
+.tc{min-width:9ch;color:var(--ink2)}
+.tm{min-width:0;color:var(--ink2);overflow-wrap:anywhere}
+.tg{font-size:11.5px;white-space:nowrap}
+.tg::before{content:"["}.tg::after{content:"]"}
+.tn .t-ok{color:var(--ok)}.tn .t-warn{color:var(--warn)}.tn .t-err{color:var(--err)}.tn .t-dim{color:var(--ink3)}
+.tree .dim>.tn{opacity:.5}
+
 /* ---------- Строка состояния внизу, как в tmux ---------- */
 .statusbar{position:sticky;bottom:0;z-index:15;display:flex;align-items:stretch;height:26px;margin-top:auto;
            border-top:1px solid var(--line);background:var(--surface);font-size:11.5px;color:var(--ink2);white-space:nowrap;overflow:hidden}
@@ -638,6 +704,9 @@ dialog::backdrop{background:rgba(0,0,0,.72);-webkit-backdrop-filter:blur(3px);ba
   .table.rows .l1,.table.rows .l2{white-space:normal}
   .table.rows .cp{white-space:normal;overflow-wrap:anywhere}
   .table.rows td.key{white-space:normal}
+  .toc{top:52px;margin:-8px -14px 14px;padding:7px 10px}
+  .card-head .hint{display:none}
+  .with-side [id]{scroll-margin-top:110px}
 }
 
 /* ---------- Палец вместо мыши ---------- */

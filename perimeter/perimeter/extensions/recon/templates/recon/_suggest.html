@@ -1,6 +1,6 @@
 {# Найдено рядом с целью, но в неё пока не входит: одно нажатие — и входит #}
 {% import "_ui.html" as ui with context %}
-<section class="card">
+<section class="card" id="suggest">
   <div class="card-head"><h2>Можно добавить <span class="count">{{ items|length }}</span></h2></div>
   <div class="list">
     {% for it in items %}

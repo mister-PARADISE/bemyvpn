@@ -11,15 +11,25 @@
                 confirm_title="Удалить " ~ target.name ~ "?", confirm_ok="Удалить") }}
 {% endcall %}
 
+{# Сначала собираем блоки расширений: у каждого есть пункт оглавления #}
+{% set main = slot("target.main", target=target, run=request.query_params.get("run")) %}
+{% set side = slot("target.side", target=target) %}
+{% set hosts_n = 1 + scope.include|length + scope.exclude|length %}
+{% set toc = main.nav + [{"id": "hosts", "title": "хосты", "count": hosts_n, "tone": ""}]
+             + ([{"id": "notes", "title": "заметки", "count": None, "tone": ""}] if target.notes else []) + side.nav %}
+<nav class="toc" data-toc aria-label="Разделы цели">
+  {% for t in toc %}<a href="#{{ t.id }}">{{ t.title }}{% if t.count is not none %}<span class="n{% if t.tone %} t-{{ t.tone }}{% endif %}">{{ t.count }}</span>{% endif %}</a>{% endfor %}
+</nav>
+
 <div class="with-side">
   <div class="stack">
-    {{ slot("target.main", target=target, run=request.query_params.get("run")) }}
+    {{ main }}
   </div>
 
   <div class="stack">
     {# --- Хосты: что входит в цель --- #}
     <section class="card" id="hosts">
-      <div class="card-head"><h2>Хосты <span class="count">{{ 1 + scope.include|length + scope.exclude|length }}</span></h2></div>
+      <div class="card-head"><h2>Хосты <span class="count">{{ hosts_n }}</span></h2></div>
       <div class="hosts">
         {% for rule in scope.rules() %}
         <div class="host">
@@ -56,13 +66,13 @@
     </section>
 
     {% if target.notes %}
-    <section class="card">
+    <section class="card" id="notes">
       <div class="card-head"><h2>Заметки</h2></div>
       <div class="card-body ink2">{{ target.notes|nl2br }}</div>
     </section>
     {% endif %}
 
-    {{ slot("target.side", target=target) }}
+    {{ side }}
   </div>
 </div>
 {% endblock %}
