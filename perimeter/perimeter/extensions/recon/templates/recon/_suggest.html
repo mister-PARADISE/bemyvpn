@@ -1,0 +1,16 @@
+{# Найдено рядом с целью, но в неё пока не входит: одно нажатие — и входит #}
+{% import "_ui.html" as ui with context %}
+<section class="card">
+  <div class="card-head"><h2>Можно добавить <span class="count">{{ items|length }}</span></h2></div>
+  <div class="list">
+    {% for it in items %}
+    <div class="item">
+      <span class="cell grow"><span class="l1"><span class="mono">{{ it.value }}</span></span><span class="l2">{{ it.why }}</span></span>
+      <span class="ibar">
+        {{ ui.post_ib("/targets/%d/hosts"|format(target.id), "plus", "Добавить в хосты цели", "good", sm=True, fields={"hosts": it.value}) }}
+        {{ ui.post_ib("/targets/%d/assets/%d/dismiss"|format(target.id, it.id), "x", "Скрыть", sm=True) }}
+      </span>
+    </div>
+    {% endfor %}
+  </div>
+</section>

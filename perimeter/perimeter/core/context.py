@@ -146,6 +146,8 @@ class Context:
     template_globals: dict[str, Any] = field(default_factory=dict)
     slots: dict[str, Registry[Slot]] = field(default_factory=dict)
     hooks: dict[str, list[Callable[..., Any]]] = field(default_factory=dict)
+    # Общие объекты расширений: движок запусков, пул прокси… ctx.services["engine"]
+    services: dict[str, Any] = field(default_factory=dict)
     _search: list[SearchProvider] = field(default_factory=list)
     _entities: dict[str, tuple[str, Callable[[int], str]]] = field(default_factory=dict)
 

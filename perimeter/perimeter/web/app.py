@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from contextlib import asynccontextmanager
 
 from fastapi import APIRouter, Depends, FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -102,8 +103,16 @@ def create_app(config: Config | None = None) -> FastAPI:
     load_all(ctx)
     components = ["core", *(e.name for e in ctx.extensions if e.ok)]
     ctx.db.migrate(components)
+    # База готова: расширения могут навести порядок (например, пометить прерванные запуски).
+    ctx.call_hooks("app.ready", ctx)
 
-    app = FastAPI(title="Периметр", version=__version__, docs_url=None, redoc_url=None, openapi_url=None)
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        yield
+        ctx.call_hooks("app.stop", ctx)
+
+    app = FastAPI(title="Периметр", version=__version__, docs_url=None, redoc_url=None, openapi_url=None,
+                  lifespan=lifespan)
     app.state.ctx = ctx
 
     csrf = [Depends(verify_csrf)]

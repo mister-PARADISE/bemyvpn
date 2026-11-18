@@ -1,0 +1,55 @@
+{# Модули на карточке цели: запуск одним нажатием, параметры, последний результат, консоль #}
+{% import "_ui.html" as ui with context %}
+<section class="card" id="modules">
+  <div class="card-head">
+    <h2>Модули <span class="count">{{ mods|length }}</span></h2>
+    {% if mods %}
+    <form method="post" action="/targets/{{ target.id }}/run" class="inline">
+      {{ ui.csrf_field() }}<input type="hidden" name="module" value="__all__">
+      <button class="btn-primary btn-sm">{{ icon('play') }}Запустить всё</button>
+    </form>
+    {% endif %}
+  </div>
+  {% if mods %}
+  <div class="mods">
+    {% for m in mods %}
+      {% set s = m.spec %}{% set r = last.get(s.id) %}
+      <details class="mod">
+        <summary>
+          <form method="post" action="/targets/{{ target.id }}/run" class="inline">
+            {{ ui.csrf_field() }}<input type="hidden" name="module" value="{{ s.id }}">
+            <button class="ib sm accent" data-tip="Запустить" aria-label="Запустить: {{ s.title }}">{{ icon('play') }}</button>
+          </form>
+          <span class="mod-title">{{ s.title }}</span>
+          <span class="kind {{ s.kind.value }}">{{ s.kind.title }}</span>
+          <span class="mod-last">
+            {%- if r %}<a href="?run={{ r.id }}#console" class="t-{{ {'success':'ok','danger':'err','warning':'warn','accent':'accent'}.get(r.state_tone, '') }}">{{ r.state_title }}</a>
+            <span class="muted">{{ r.summary or r.error }}{% if r.finished_at %}, {{ r.finished_at|ago }}{% endif %}</span>
+            {%- else %}<span class="muted">ещё не запускался</span>{% endif -%}
+          </span>
+          <span class="mod-more muted" aria-hidden="true">{{ "[параметры]" if s.params else "[?]" }}</span>
+        </summary>
+        <div class="mod-body">
+          <p class="small ink2">{{ s.description }}</p>
+          <p class="small muted">{{ s.kind.hint }}</p>
+          {% if s.params %}
+          <form class="form" method="post" action="/targets/{{ target.id }}/run" style="margin-top:12px">
+            {{ ui.csrf_field() }}<input type="hidden" name="module" value="{{ s.id }}"><input type="hidden" name="with_params" value="1">
+            <div class="form-grid">
+              {% for fld in s.params %}{{ ui.field(fld, fld.default, None, prefix="p_") }}{% endfor %}
+            </div>
+            <div><button class="btn-primary btn-sm">{{ icon('play') }}Запустить с этими параметрами</button></div>
+          </form>
+          {% endif %}
+        </div>
+      </details>
+    {% endfor %}
+  </div>
+  {% else %}
+    {{ ui.empty("puzzle", "Модулей пока нет", ["Их добавляют расширения: ctx.modules.add(...)"]) }}
+  {% endif %}
+
+  {% if console %}
+    <div style="margin-top:14px">{{ partial("runs/_console.html", {"run": console, "state": console_state, "reload": true}) }}</div>
+  {% endif %}
+</section>

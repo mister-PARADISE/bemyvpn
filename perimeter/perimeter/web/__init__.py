@@ -39,7 +39,9 @@ def render(request: Request, template: str, status_code: int = 200, **context: A
 
 def flash(request: Request, message: str, tone: str = "success") -> None:
     """Всплывающее уведомление на следующей странице. tone: success | error | info | warning"""
-    request.session.setdefault("_flash", []).append({"text": message, "tone": tone})
+    # Присваиваем заново, а не дописываем в список: сессия сохраняется, только когда меняется ключ,
+    # и второе уведомление подряд (без перехода на страницу) иначе бы потерялось.
+    request.session["_flash"] = [*request.session.get("_flash", []), {"text": message, "tone": tone}]
 
 
 def pop_flashes(request: Request) -> list[dict[str, str]]:

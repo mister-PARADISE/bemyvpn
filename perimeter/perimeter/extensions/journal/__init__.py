@@ -24,6 +24,10 @@ LEVELS = {
     "setup": ("[ok]", "success"),
     "login": ("[>]", ""),
     "deleted": ("[x]", "danger"),
+    "done": ("[ok]", "success"),
+    "failed": ("[x]", "danger"),
+    "cancelled": ("[!]", "warning"),
+    "interrupted": ("[!]", "warning"),
 }
 
 

@@ -8,7 +8,7 @@ from sqlalchemy import select
 from perimeter.core.models import AuditEntry, User
 from perimeter.extensions.targets.models import Target
 
-from .conftest import PASSWORD, Browser
+from .conftest import PASSWORD, Browser, flashes
 
 
 def rows(ctx, model):
@@ -93,7 +93,7 @@ def test_password_change_ends_other_sessions(browser, app, ctx):
 # --- страницы ------------------------------------------------------------------
 
 def test_every_registered_page_renders(browser, ctx):
-    assert {p.id for p in ctx.pages} == {"dashboard", "targets", "modules", "journal", "settings"}
+    assert {p.id for p in ctx.pages} == {"dashboard", "targets", "runs", "proxies", "modules", "journal", "settings"}
     for page in ctx.pages:
         r = browser.get(page.path)
         assert r.status_code == 200, (page.id, r.text[:500])
@@ -223,3 +223,31 @@ def test_login_is_a_console(anon, browser):
     page = TestClient(browser.client.app).get("/login").text
     assert "data-term" in page and "perimeter</span> login:" in page and "password:" in page
     assert 'class="card' not in page  # без окон
+
+
+# --- хосты цели ------------------------------------------------------------------
+
+def test_hosts_add_remove_in_one_line(browser, ctx):
+    browser.post("/targets/new", {"domain": "example.com"})
+    tid = rows(ctx, Target)[0].id
+    r = browser.post(f"/targets/{tid}/hosts", {"hosts": "https://API.Example.NET/x, 203.0.113.10 -pay.example.com "
+                                                         "shop.example.com bad_host! 198.51.100.0/24"})
+    assert r.status_code == 303
+    t = rows(ctx, Target)[0]
+    assert t.include == ["api.example.net", "203.0.113.10", "198.51.100.0/24"]
+    assert t.exclude == ["pay.example.com"]
+    note = flashes(browser.get(f"/targets/{tid}").text)
+    assert "уже входит: shop.example.com" in note and "не понял: bad_host!" in note
+    browser.post(f"/targets/{tid}/hosts", {"hosts": "pay.example.com"})  # снова можно трогать
+    assert rows(ctx, Target)[0].exclude == []
+    browser.post(f"/targets/{tid}/hosts/remove", {"value": "203.0.113.10", "list": "include"})
+    assert rows(ctx, Target)[0].include == ["api.example.net", "198.51.100.0/24"]
+    assert any(e.action == "target.hosts" for e in rows(ctx, AuditEntry))
+
+
+def test_two_flashes_in_a_row_survive(browser, ctx):
+    browser.post("/targets/new", {"domain": "example.com"})  # «Цель добавлена» ещё не показано
+    tid = rows(ctx, Target)[0].id
+    browser.post(f"/targets/{tid}/hosts", {"hosts": "api.example.net"})
+    note = flashes(browser.get(f"/targets/{tid}").text)
+    assert "Цель добавлена" in note and "добавлено: api.example.net" in note

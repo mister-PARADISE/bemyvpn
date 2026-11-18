@@ -330,6 +330,61 @@
     setTimeout(tick, 2000);
   }
 
+  /* ---------- Консоль запуска: живой вывод, пока модуль работает ---------- */
+  function initConsole() {
+    const box = $("[data-console]");
+    if (!box || box.dataset.active !== "1") return;
+    const body = $("[data-c-body]", box);
+    const prog = $("[data-c-progress]", box);
+    let after = +box.dataset.after || 0;
+    body.scrollTop = body.scrollHeight;
+    const bar = (p) => {
+      const w = 30, fill = Math.round((p.done / (p.total || 1)) * w);
+      return `[${"#".repeat(fill)}${"-".repeat(w - fill)}] ${p.done}/${p.total} ${p.label || ""}`;
+    };
+    const tick = async () => {
+      try {
+        const r = await fetch(`/runs/${box.dataset.console}/log?after=${after}`, { headers: { Accept: "application/json" }, cache: "no-store" });
+        if (r.ok) {
+          const s = await r.json();
+          const stick = body.scrollHeight - body.scrollTop - body.clientHeight < 40;
+          s.lines.forEach((ln) => {
+            const div = document.createElement("div");
+            div.className = `cl lvl-${ln.level}`;
+            div.innerHTML = `<span class="ts">${esc(ln.at)}</span>`;
+            div.append(ln.text);
+            body.append(div);
+            after = ln.n;
+          });
+          if (stick) body.scrollTop = body.scrollHeight;
+          const badge = $("[data-c-status]", box);
+          badge.className = `badge tone-${s.tone} dot`;
+          badge.textContent = s.title;
+          $("[data-c-time]", box).textContent = `${s.seconds} с`;
+          prog.hidden = !(s.active && s.progress);
+          if (s.active && s.progress) prog.textContent = bar(s.progress);
+          if (!s.active) {
+            $("[data-c-stop]", box).hidden = true;
+            $("[data-c-again]", box).hidden = false;
+            if (box.hasAttribute("data-reload")) setTimeout(() => location.reload(), 700); // показать новые находки
+            return;
+          }
+        }
+      } catch { /* сервер недоступен — попробуем ещё */ }
+      setTimeout(tick, 700);
+    };
+    setTimeout(tick, 400);
+  }
+
+  /* ---------- Вкладки без перезагрузки: [data-tabs] > [data-tab] / [data-panel] ---------- */
+  document.addEventListener("click", (e) => {
+    const tab = e.target.closest("[data-tabs] [data-tab]");
+    if (!tab) return;
+    const group = tab.closest("[data-tabs]");
+    $$("[data-tab]", group).forEach((b) => b.classList.toggle("on", b === tab));
+    $$("[data-panel]", group).forEach((p) => { p.hidden = p.dataset.panel !== tab.dataset.tab; });
+  });
+
   /* ---------- Часы в строке состояния ---------- */
   function tickClock() {
     const el = $("[data-clock]");
@@ -389,6 +444,9 @@
     syncShowIf();
     initTerm();
     watchMonitor();
+    initConsole();
+    const refresh = $("[data-refresh]");  // страница с идущей проверкой обновляет себя сама
+    if (refresh) setTimeout(() => location.reload(), +refresh.dataset.refresh || 2000);
     palette.init();
     setTimeout(tickClock, (60 - new Date().getSeconds()) * 1000 + 50);
     watchServer();

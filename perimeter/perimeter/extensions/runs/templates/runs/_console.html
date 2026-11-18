@@ -1,0 +1,21 @@
+{# Консоль запуска. Ожидает: state (run_state), run, reload (перезагрузить страницу, когда закончится) #}
+{% import "_ui.html" as ui with context %}
+<div class="console" id="console" data-console="{{ run.id }}" data-after="{{ state.lines[-1].n if state.lines else 0 }}"
+     data-active="{{ 1 if state.active else 0 }}"{% if reload %} data-reload{% endif %}>
+  <div class="console-head">
+    <span class="badge tone-{{ state.tone }} dot" data-c-status>{{ state.title }}</span>
+    <a class="small muted" href="/runs/{{ run.id }}">запуск #{{ run.id }}</a>
+    <span class="grow"></span>
+    <span class="small muted tnum" data-c-time>{{ state.seconds }} с</span>
+    <span data-c-stop{% if not state.active %} hidden{% endif %}>
+      {{ ui.post_ib("/runs/%d/cancel"|format(run.id), "x", "Остановить", "danger", sm=True, fields={"back": request.url.path ~ "?run=" ~ run.id}) }}
+    </span>
+    <span data-c-again{% if state.active %} hidden{% endif %}>{{ ui.post_ib("/runs/%d/again"|format(run.id), "refresh", "Запустить ещё раз", sm=True) }}</span>
+  </div>
+  <div class="console-body" data-c-body>
+    {%- for ln in state.lines %}<div class="cl lvl-{{ ln.level }}"><span class="ts">{{ ln.at }}</span>{{ ln.text }}</div>{% endfor -%}
+  </div>
+  <div class="console-progress" data-c-progress{% if not (state.active and state.progress) %} hidden{% endif %}>
+    {%- if state.progress %}{% set p = state.progress %}{% set w = 30 %}{% set fill = ((p.done / (p.total or 1)) * w)|round|int %}[{{ "#" * fill }}{{ "-" * (w - fill) }}] {{ p.done }}/{{ p.total }} {{ p.label }}{% endif -%}
+  </div>
+</div>

@@ -7,64 +7,59 @@
   <a class="ib" href="https://{{ target.domain }}" target="_blank" rel="noopener noreferrer" data-tip="Открыть сайт" aria-label="Открыть сайт">{{ icon('external') }}</a>
   <a class="ib" href="/targets/{{ target.id }}/edit" data-tip="Изменить" aria-label="Изменить">{{ icon('edit') }}</a>
   {{ ui.post_ib("/targets/%d/delete"|format(target.id), "trash", "Удалить цель", "danger",
-                confirm="Цель и её границы будут удалены. Записи в журнале останутся.",
+                confirm="Цель, её хосты, запуски и находки будут удалены. Записи в журнале останутся.",
                 confirm_title="Удалить " ~ target.name ~ "?", confirm_ok="Удалить") }}
 {% endcall %}
 
 <div class="with-side">
   <div class="stack">
-
-    {# --- Модули --- #}
-    <div class="card">
-      <div class="card-head"><h2>{{ icon('puzzle') }}Модули <span class="count">{{ modules|length }}</span></h2></div>
-      {% if modules %}
-      <div class="list">
-        {% for m in modules %}
-          <div class="item">
-            <span class="item-ico">{{ icon(m.spec.icon) }}</span>
-            <span class="cell grow"><span class="l1"><span>{{ m.spec.title }}</span><span class="kind {{ m.spec.kind.value }}">{{ m.spec.kind.title }}</span></span><span class="l2">{{ m.spec.description }}</span></span>
-          </div>
-        {% endfor %}
-      </div>
-      {% else %}
-        {{ ui.empty("puzzle", "Модулей пока нет", ["Инструменты подключаются как модули: WHOIS, DNS, поддомены, сертификаты, порты.",
-                    "Пассивные берут открытые данные, активные обращаются к сайту — только в его границах"]) }}
-      {% endif %}
-    </div>
-
-    {{ slot("target.main", target=target) }}
+    {{ slot("target.main", target=target, run=request.query_params.get("run")) }}
   </div>
 
   <div class="stack">
-    {# --- Границы --- #}
-    <div class="card">
-      <div class="card-head"><h2>{{ icon('target') }}Границы</h2>
-        <a class="ib sm" href="/targets/{{ target.id }}/edit" data-tip="Изменить границы" aria-label="Изменить границы">{{ icon('edit') }}</a></div>
-      <div class="list">
+    {# --- Хосты: что входит в цель --- #}
+    <section class="card" id="hosts">
+      <div class="card-head"><h2>Хосты <span class="count">{{ 1 + scope.include|length + scope.exclude|length }}</span></h2></div>
+      <div class="hosts">
         {% for rule in scope.rules() %}
-        <div class="item"><span class="item-ico tone-success">{{ icon('check') }}</span>
-          <span class="cell grow"><span class="l1 soft"><span>{{ rule.label() }}</span></span>{% if loop.first %}<span class="l2">основной домен</span>{% endif %}</span></div>
+        <div class="host">
+          <span class="mark t-ok">+</span>
+          <span class="grow truncate">{{ rule.label() }}</span>
+          {% if loop.first %}<span class="small muted">основной</span>
+          {% else %}{{ ui.post_ib("/targets/%d/hosts/remove"|format(target.id), "x", "Убрать", "danger", sm=True,
+                                  fields={"value": rule.canonical(), "list": "include"}) }}{% endif %}
+        </div>
         {% endfor %}
         {% for rule in scope.exclude %}
-        <div class="item"><span class="item-ico tone-danger">{{ icon('x') }}</span>
-          <span class="cell grow"><span class="l1 soft"><span>{{ rule.raw }}</span></span><span class="l2">не трогать</span></span></div>
+        <div class="host">
+          <span class="mark t-err">−</span>
+          <span class="grow truncate">{{ rule.label() }}</span>
+          <span class="small muted">не трогать</span>
+          {{ ui.post_ib("/targets/%d/hosts/remove"|format(target.id), "x", "Снова можно трогать", sm=True,
+                        fields={"value": rule.canonical(), "list": "exclude"}) }}
+        </div>
         {% endfor %}
       </div>
-      <form class="card-body stack-sm" style="border-top:1px solid var(--line)" method="get" action="/targets/{{ target.id }}/scope" data-scope-check>
-        <label class="field-label" for="scope-host">Проверить адрес</label>
-        <div class="row">
-          <input class="input mono" id="scope-host" name="host" placeholder="api.{{ target.name }}" autocomplete="off">
-          <button class="ib accent" data-tip="Проверить" aria-label="Проверить">{{ icon('arrow-right') }}</button>
-        </div>
-        <div data-scope-result hidden></div>
+      <form class="cmd" method="post" action="/targets/{{ target.id }}/hosts">
+        {{ ui.csrf_field() }}
+        <span class="prompt" aria-hidden="true">+</span>
+        <input class="cmd-in" name="hosts" placeholder="api.{{ target.name }} 203.0.113.10 -pay.{{ target.name }}" autocomplete="off" spellcheck="false" aria-label="Добавить хосты">
+        <button class="ib sm accent" data-tip="Добавить" aria-label="Добавить">{{ icon('arrow-right') }}</button>
       </form>
-    </div>
+      <p class="small muted" style="padding:2px 10px 0"># домен, IP или подсеть, можно несколько. «-адрес» — не трогать</p>
+      <form class="cmd" method="get" action="/targets/{{ target.id }}/scope" data-scope-check>
+        <span class="prompt" aria-hidden="true">?</span>
+        <input class="cmd-in" name="host" placeholder="входит ли адрес в цель" autocomplete="off" spellcheck="false" aria-label="Проверить адрес">
+        <button class="ib sm" data-tip="Проверить" aria-label="Проверить">{{ icon('arrow-right') }}</button>
+        <div data-scope-result hidden style="flex-basis:100%"></div>
+      </form>
+    </section>
 
     {% if target.notes %}
-    <div class="card">
-      <div class="card-head"><h2>{{ icon('file') }}Заметки</h2></div>
+    <section class="card">
+      <div class="card-head"><h2>Заметки</h2></div>
       <div class="card-body ink2">{{ target.notes|nl2br }}</div>
-    </div>
+    </section>
     {% endif %}
 
     {{ slot("target.side", target=target) }}

@@ -1,4 +1,4 @@
-"""Границы проверки: что именно владелец разрешил трогать.
+"""Хосты цели: что именно входит в цель и куда модулям можно ходить.
 
 Это главный предохранитель панели. Активный модуль сможет обратиться только
 к хосту, который `Scope.allows()` пропустит, — проверку делает ядро, а не
@@ -112,6 +112,13 @@ class ScopeRule:
         assert self.domain is not None
         return host == self.domain or host.endswith("." + self.domain)
 
+    def canonical(self) -> str:
+        """Единый вид для хранения: «https://API.example.com/x» → «api.example.com», «10.0.0.0/8», «10.0.0.5»."""
+        if self.network is not None:
+            net = self.network
+            return str(net.network_address) if net.num_addresses == 1 else str(net)
+        return self.domain or self.raw
+
     def label(self) -> str:
         if self.network is not None:
             net = self.network
@@ -150,7 +157,7 @@ class Scope:
         for rule in self.rules():
             if rule.matches(host):
                 return True, f"Входит в «{rule.label()}»"
-        return False, "Не входит в границы цели"
+        return False, "не входит в цель"
 
     def allows(self, value: str) -> bool:
         return self.explain(value)[0]
@@ -161,8 +168,9 @@ def parse_rules(lines: list[str]) -> tuple[list[str], list[str]]:
     good, errors = [], []
     for line in lines:
         try:
-            ScopeRule.parse(line)
-            good.append(line.strip())
+            canon = ScopeRule.parse(line).canonical()
+            if canon not in good:
+                good.append(canon)
         except ScopeError as exc:
             errors.append(f"{line.strip()}: {exc}")
     return good, errors

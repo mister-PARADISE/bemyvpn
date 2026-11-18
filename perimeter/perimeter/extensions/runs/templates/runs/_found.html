@@ -1,0 +1,42 @@
+{# Находки цели по видам. Вкладки переключаются без перезагрузки (app.js → data-tabs) #}
+{% import "_ui.html" as ui with context %}
+<section class="card" id="found">
+  <div class="card-head">
+    <h2>Найдено <span class="count">{{ groups.values()|map("length")|sum }}</span></h2>
+    {% if kinds %}
+    {{ ui.post_ib("/targets/%d/assets/clear"|format(target.id), "trash", "Очистить найденное", "danger", sm=True,
+                  confirm="Все находки по этой цели будут удалены. Модули найдут их снова при следующем запуске.",
+                  confirm_title="Очистить найденное?", confirm_ok="Очистить") }}
+    {% endif %}
+  </div>
+  {% if kinds %}
+  <div data-tabs>
+    <nav class="seg" role="tablist">
+      {% for k in kinds %}
+        {% set t = types.get(k) %}
+        <button type="button" role="tab" data-tab="{{ k }}"{% if loop.first %} class="on"{% endif %}>{{ (t.title if t else k)|lower }} <span class="count">{{ groups[k]|length }}</span></button>
+      {% endfor %}
+    </nav>
+    {% for k in kinds %}
+    <div class="table-wrap" data-panel="{{ k }}"{% if not loop.first %} hidden{% endif %}>
+      {% set first = asset_cells(columns, groups[k][0]) %}
+      <table class="table rows">
+        <thead><tr>{% for title, _t, _tone in first %}<th>{{ title }}</th>{% endfor %}<th class="right">когда</th></tr></thead>
+        <tbody>
+        {% for a in groups[k] %}
+          <tr{% if (a.data or {}).get("state") == "closed" %} class="dimmed"{% endif %}>
+            {% for _title, text, tone in asset_cells(columns, a) %}
+              <td{% if loop.first %} class="mono key"{% endif %}>{% if loop.first %}{{ ui.cp(text) }}{% else %}<span{% if tone %} class="t-{{ tone }}"{% endif %}>{{ text }}</span>{% endif %}</td>
+            {% endfor %}
+            <td class="right muted small nowrap" title="впервые {{ a.first_seen|dt }}">{{ a.last_seen|ago }}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+    {{ ui.empty("search", "Пока ничего", ["Запустите модули выше — здесь появятся IP, провайдер, порты, соседи по сети"]) }}
+  {% endif %}
+</section>

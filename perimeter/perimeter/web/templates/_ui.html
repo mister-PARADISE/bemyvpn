@@ -61,11 +61,11 @@
 {% endmacro %}
 
 {# Поле из описания (core.fields.Field): настройки, формы и параметры модулей рисуются одним макросом #}
-{% macro field(f, value, errors=None, is_set=False) %}
-{% set name = f.key %}
-{% set invalid = errors and errors.get(name) %}
+{% macro field(f, value, errors=None, is_set=False, prefix="") %}
+{% set name = prefix ~ f.key %}
+{% set invalid = errors and errors.get(f.key) %}
 <div class="field{% if f.width != 'half' %} full{% endif %}{% if invalid %} is-invalid{% endif %}"
-     {%- if f.show_if %} data-show-if="{{ f.show_if }}"{% endif %}>
+     {%- if f.show_if %} data-show-if="{{ prefix ~ f.show_if }}"{% endif %}>
   {% if f.kind == "bool" %}
     <label class="switch">
       <input type="checkbox" name="{{ name }}" value="1"{% if value %} checked{% endif %}>
@@ -100,7 +100,7 @@
     {% endif %}
   {% endif %}
   {% if f.help %}<span class="help">{{ f.help }}</span>{% endif %}
-  {{ error(errors, name) }}
+  {{ error(errors, f.key) }}
 </div>
 {% endmacro %}
 

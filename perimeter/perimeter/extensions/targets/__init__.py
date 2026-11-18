@@ -1,10 +1,13 @@
-"""Цели: сайты и их границы.
+"""Цели: сайты и их хосты.
 
-Границы — это то, куда модулям можно ходить: домен цели с поддоменами,
-дополнительные домены, IP и подсети, минус исключения. Активный модуль не
-обратится к адресу за границами, даже если наткнётся на него по пути
-(чужой CDN, платёжный шлюз). Согласие владельца оператор проверяет сам
-до того, как добавить сайт.
+Хосты — это то, что входит в цель и куда модулям можно ходить: домен цели с
+поддоменами, дополнительные домены, IP и подсети, минус «не трогать».
+Активный модуль не обратится к адресу вне цели, даже если наткнётся на него
+по пути (чужой CDN, платёжный шлюз). Согласие владельца оператор проверяет
+сам до того, как добавить сайт.
+
+Хосты добавляются прямо со страницы цели одной строкой:
+«api.example.com 203.0.113.10 -pay.example.com» — минус значит «не трогать».
 """
 
 from __future__ import annotations
@@ -17,22 +20,23 @@ from sqlalchemy.engine import Connection
 
 from ...core import fields as f
 from ...core.context import Context, Page, SearchHit, Stat
-from ...core.scope import ScopeError, display_host, normalize_host, parse_rules
+from ...core.scope import ScopeError, ScopeRule, display_host, normalize_host, parse_rules
 from ...web import DB, actor, flash, form_data, get_ctx, redirect, render
 from .models import Target
 
 TITLE = "Цели"
-DESCRIPTION = "Сайты и их границы"
+DESCRIPTION = "Сайты и их хосты"
 VERSION = "3.0"
 PER_PAGE = 50
 
 TARGET_FIELDS = (
     f.text("domain", "Домен сайта", required=True, max_length=253, width="half", placeholder="example.com",
-           help="Поддомены входят в границы сами"),
+           help="Поддомены входят в цель сами"),
     f.text("title", "Название", max_length=160, width="half", placeholder="Интернет-магазин"),
-    f.lines("include", "Дополнительно можно", max_length=253,
+    f.lines("include", "Ещё хосты", max_length=253,
             placeholder="cdn.example.net\n203.0.113.10\n198.51.100.0/24",
-            help="По одному в строке: другой домен, IP или подсеть владельца", width="half"),
+            help="По одному в строке: другой домен, IP или подсеть владельца. Можно и потом, со страницы цели",
+            width="half"),
     f.lines("exclude", "Не трогать", max_length=253, placeholder="pay.example.com",
             help="Исключения важнее остального", width="half"),
     f.textarea("notes", "Заметки", help="Видите только вы"),
@@ -49,7 +53,7 @@ def _target_or_404(db, target_id: int) -> Target:
 
 
 def _validate(db, values: dict, errors: dict, current: Target | None = None) -> dict:
-    """Нормализует домен и правила границ, дописывает ошибки в errors."""
+    """Нормализует домен и хосты, дописывает ошибки в errors."""
     if "domain" in values and "domain" not in errors:
         try:
             values["domain"] = normalize_host(values["domain"], strip_www=True)
@@ -162,6 +166,83 @@ def target_delete(request: Request, db: DB, target_id: int):
     return redirect("/targets")
 
 
+# --- хосты: добавить одной строкой, убрать одним нажатием -------------------------------
+
+def split_hosts(text: str) -> list[str]:
+    return [t for t in text.replace(",", " ").replace(";", " ").split() if t.strip()]
+
+
+@router.post("/targets/{target_id}/hosts")
+async def hosts_add(request: Request, db: DB, target_id: int):
+    """«api.example.com 203.0.113.10 -pay.example.com»: минус (или !) — «не трогать»."""
+    target = _target_or_404(db, target_id)
+    tokens = split_hosts(str((await form_data(request)).get("hosts", "")))
+    include, exclude = list(target.include or []), list(target.exclude or [])
+    added, skipped, bad = [], [], []
+    for token in tokens:
+        negative = token[0] in "-!"
+        raw = token[1:] if negative else token
+        try:
+            canon = ScopeRule.parse(raw).canonical()
+        except ScopeError:
+            bad.append(token)
+            continue
+        if negative:
+            if canon in exclude:
+                skipped.append(token)
+                continue
+            exclude.append(canon)
+            include = [x for x in include if x != canon]
+            added.append(f"не трогать {display_host(canon)}")
+        elif canon in exclude:
+            exclude.remove(canon)  # снова входит
+            added.append(display_host(canon))
+        elif canon == target.domain or canon in include or target.scope.allows(canon):
+            skipped.append(token)
+        else:
+            include.append(canon)
+            added.append(display_host(canon))
+    target.include, target.exclude = include, exclude
+    if added:
+        get_ctx(request).audit(db, "target.hosts", f"{target.name}: {', '.join(added)}", entity=("target", target.id),
+                               actor=actor(request))
+    parts = []
+    if added:
+        parts.append(f"добавлено: {', '.join(added)}")
+    if skipped:
+        parts.append(f"уже входит: {', '.join(skipped)}")
+    if bad:
+        parts.append(f"не понял: {', '.join(bad)}")
+    flash(request, "; ".join(parts) or "Пустая строка", "error" if bad and not added else "success" if added else "info")
+    return redirect(f"/targets/{target.id}#hosts")
+
+
+@router.post("/targets/{target_id}/hosts/remove")
+async def hosts_remove(request: Request, db: DB, target_id: int):
+    target = _target_or_404(db, target_id)
+    form = await form_data(request)
+    value, where = str(form.get("value", "")), str(form.get("list", "include"))
+    current = list(target.exclude if where == "exclude" else target.include or [])
+
+    def canon(x: str) -> str:
+        try:
+            return ScopeRule.parse(x).canonical()
+        except ScopeError:
+            return x
+
+    kept = [x for x in current if canon(x) != canon(value)]
+    if len(kept) != len(current):
+        if where == "exclude":
+            target.exclude = kept
+            text = f"{target.name}: снова можно трогать {display_host(canon(value))}"
+        else:
+            target.include = kept
+            text = f"{target.name}: убран хост {display_host(canon(value))}"
+        get_ctx(request).audit(db, "target.hosts", text, entity=("target", target.id), actor=actor(request))
+        flash(request, text.split(": ", 1)[1].capitalize())
+    return redirect(f"/targets/{target.id}#hosts")
+
+
 @router.get("/targets/{target_id}/scope")
 def target_scope_check(request: Request, db: DB, target_id: int, host: str = ""):
     target = _target_or_404(db, target_id)
@@ -217,7 +298,7 @@ def _v3_no_consent(conn: Connection) -> None:
 
 
 def setup(ctx: Context) -> None:
-    ctx.pages.add(Page("targets", "Цели", "/targets", icon="globe", order=20, description="Сайты и их границы"))
+    ctx.pages.add(Page("targets", "Цели", "/targets", icon="globe", order=20, description="Сайты и их хосты"))
     ctx.add_router(router)
     ctx.stats.add(Stat("targets", "цели", targets_stat, order=10, link="/targets"))
     ctx.search(search_targets)

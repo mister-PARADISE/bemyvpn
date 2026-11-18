@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% import "_ui.html" as ui with context %}
+{% block content %}
+{{ ui.head("Запуски", ["что запускалось и что идёт сейчас", "запуск начинается из карточки цели"]) }}
+<section class="card">
+  <div class="toolbar">{{ ui.seg(tabs, state, "state", query) }}</div>
+  {% if runs %}
+  <div class="table-wrap">
+    <table class="table rows">
+      <thead><tr><th>#</th><th>Модуль</th><th>Цель</th><th>Статус</th><th>Итог</th><th class="right">Когда</th></tr></thead>
+      <tbody>
+      {% for r in runs %}
+        {% set m = modules.get(r.module_id) %}{% set t = targets.get(r.target_id) %}
+        <tr data-href="/runs/{{ r.id }}">
+          <td class="muted tnum">{{ r.id }}</td>
+          <td><div class="cell"><span class="l1"><span>{{ m.spec.title if m else r.module_id }}</span></span><span class="l2">{{ r.actor }}</span></div></td>
+          <td>{% if t %}<a href="/targets/{{ t.id }}">{{ t.name }}</a>{% else %}<span class="muted">удалена</span>{% endif %}</td>
+          <td>{{ ui.badge(r.state_title, r.state_tone, dot=True) }}</td>
+          <td class="hide-sm"><span class="small {{ 't-err' if r.error else 'ink2' }}">{{ r.error or r.summary or "—" }}</span></td>
+          <td class="right nowrap"><div class="cell"><span class="l1 soft tnum" style="justify-content:flex-end"><span>{{ r.created_at|ago }}</span></span><span class="l2">{% if r.seconds is not none %}{{ "%.1f"|format(r.seconds) }} с{% endif %}</span></div></td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {{ ui.pager(page, pages, total, query) }}
+  {% else %}
+    {{ ui.empty("activity", "Запусков нет", ["Откройте цель и нажмите «Запустить всё» или ▶ у нужного модуля"]) }}
+  {% endif %}
+</section>
+{% endblock %}

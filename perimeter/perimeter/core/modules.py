@@ -3,29 +3,27 @@
 Модуль — это класс с паспортом (`ModuleSpec`) и методом `run`. Паспорт
 говорит панели всё, что ей нужно, ещё до запуска:
 
-* `kind` — пассивный (только публичные источники, к цели не обращается)
-  или активный (шлёт запросы цели — только к адресам внутри её границ);
+* `kind` — пассивный (открытые источники, к сайту не обращается) или
+  активный (обращается к сайту — только к адресам, которые входят в цель);
 * `consumes` / `produces` — типы данных на входе и выходе. По ним панель
-  сама строит цепочки: модуль, который выдаёт `subdomain`, может кормить
-  любой модуль, который `subdomain` принимает;
-* `params` — параметры запуска, те же поля, что и в настройках.
+  строит цепочки: модуль, который выдаёт `ip`, может кормить любой модуль,
+  который `ip` принимает;
+* `params` — параметры запуска, те же поля, что и в настройках;
+* `timeout` — сколько секунд модулю можно работать.
 
-    class DnsRecords(Module):
-        spec = ModuleSpec(
-            id="dns_records", title="DNS-записи", kind=Kind.PASSIVE,
-            category="Разведка", consumes=("domain", "subdomain"),
-            produces=("ip", "dns_record"),
-            description="A, AAAA, MX, NS, TXT, CAA через публичные резолверы",
-        )
+    class Whois(Module):
+        spec = ModuleSpec(id="whois", title="WHOIS", kind=Kind.PASSIVE, category="Разведка",
+                          consumes=("domain",), produces=("dns_record",))
 
         async def run(self, run: ModuleRun) -> None:
-            ...
+            run.log(f"смотрю {run.target.root}")
+            await run.emit("dns_record", "registrar REG.RU", registrar="REG.RU")
 
     def setup(ctx):
-        ctx.modules.add(DnsRecords)
+        ctx.modules.add(Whois)
 
-Сам движок запусков (очередь, лимиты, журнал) появится следующим этапом и
-будет передавать в `run` объект, удовлетворяющий протоколу `ModuleRun`.
+Сеть активный модуль открывает только через `run.connect` / `run.tcp_ping`:
+они проверяют, что адрес входит в цель, и отказывают иначе.
 """
 
 from __future__ import annotations
@@ -50,7 +48,7 @@ class Kind(str, Enum):
     def hint(self) -> str:
         if self is Kind.PASSIVE:
             return "Берёт данные из публичных источников, к цели не обращается"
-        return "Обращается к сайту — только к адресам внутри границ цели"
+        return "Обращается к сайту — только к адресам, которые входят в цель"
 
 
 @dataclass(frozen=True)
@@ -91,17 +89,31 @@ class ModuleSpec:
     version: str = "1.0"
     icon: str = "puzzle"
     order: int = 100
+    timeout: int = 300
+
+
+class OutOfScope(PermissionError):
+    """Адрес не входит в цель — модуль туда не пойдёт."""
+
+
+class ModuleError(Exception):
+    """Понятная человеку причина, почему модуль не смог отработать («список портов: не понял «8o»»)."""
 
 
 class ModuleRun(Protocol):
-    """Что движок даёт модулю при запуске (реализация — на этапе движка)."""
+    """Что движок даёт модулю при запуске (реализация — расширение «Запуски»)."""
 
     params: dict[str, Any]
+    target: Any  # .id, .root, .name, .is_ip, .scope
 
     def setting(self, key: str) -> Any: ...
-    def log(self, message: str) -> None: ...
-    async def emit_asset(self, type: str, value: str, **data: Any) -> None: ...
-    async def emit_finding(self, severity: str, title: str, **data: Any) -> None: ...
+    def log(self, message: str, level: str = "info") -> None: ...  # info | ok | warn | err | dim | found
+    def progress(self, done: int, total: int, label: str = "") -> None: ...
+    async def emit(self, kind: str, value: str, **data: Any) -> bool: ...  # True — новая находка
+    def assets(self, kind: str) -> list[dict[str, Any]]: ...  # что уже известно о цели
+    def allows(self, host: str, port: int | None = None) -> tuple[bool, str]: ...
+    async def connect(self, host: str, port: int, timeout: float = 3.0, **kw: Any) -> tuple[Any, Any]: ...
+    async def tcp_ping(self, host: str, port: int, timeout: float = 3.0) -> float: ...
     @property
     def cancelled(self) -> bool: ...
 

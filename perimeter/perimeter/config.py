@@ -22,6 +22,9 @@ class Config:
     builtin_extensions: tuple[str, ...] = (
         "perimeter.extensions.dashboard",
         "perimeter.extensions.targets",
+        "perimeter.extensions.runs",
+        "perimeter.extensions.recon",
+        "perimeter.extensions.proxies",
         "perimeter.extensions.catalog",
         "perimeter.extensions.journal",
         "perimeter.extensions.settings_page",

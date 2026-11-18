@@ -26,19 +26,19 @@ def hello(request: Request):
     return render(request, "hello/page.html", who=request.app.state.ctx.settings.get("hello.who"))
 
 class Whois(Module):
-    spec = ModuleSpec(id="whois", title="WHOIS", kind=Kind.PASSIVE, category="Разведка",
+    spec = ModuleSpec(id="x_whois", title="WHOIS", kind=Kind.PASSIVE, category="Разведка",
                       consumes=("domain",), produces=("registrar",))
 
 class Ports(Module):
-    spec = ModuleSpec(id="ports", title="Порты", kind=Kind.ACTIVE, category="Сеть",
-                      consumes=("ip",), produces=("port",))
+    spec = ModuleSpec(id="x_ports", title="Порты по URL", kind=Kind.ACTIVE, category="Сеть",
+                      consumes=("url",), produces=("port",))
 
 class Resolve(Module):
-    spec = ModuleSpec(id="resolve", title="DNS", kind=Kind.PASSIVE, category="Разведка",
-                      consumes=("domain",), produces=("ip",))
+    spec = ModuleSpec(id="x_resolve", title="DNS", kind=Kind.PASSIVE, category="Разведка",
+                      consumes=("domain",), produces=("url",))
 
 class Headers(Module):
-    spec = ModuleSpec(id="headers", title="Заголовки", kind=Kind.ACTIVE, category="Веб",
+    spec = ModuleSpec(id="x_headers", title="Заголовки", kind=Kind.ACTIVE, category="Веб",
                       consumes=("domain",), produces=("url",))
 
 def setup(ctx):
@@ -102,13 +102,13 @@ def test_plugin_extends_everything(tmp_path):
     assert "Привет, Периметр!" in b.get("/hello").text
 
     page = b.get("/modules").text
-    assert "WHOIS" in page and "Порты" in page and "Активный" in page
+    assert "WHOIS" in page and "Порты по URL" in page and "Активный" in page
     assert "упало специально" in b.get("/modules?tab=extensions").text
-    assert [m.spec.id for m in ctx.modules.followers("resolve")] == ["ports"]
+    assert "x_ports" in [m.spec.id for m in ctx.modules.followers("x_resolve")]
 
     b.post("/targets/new", {"domain": "example.com"})
     detail = b.get("/targets/1").text
-    assert "WHOIS" in detail and "Заголовки" in detail and "Порты" not in detail  # Порты ждут IP, не домен
+    assert "WHOIS" in detail and "Заголовки" in detail and "Порты по URL" not in detail  # ждёт URL, не домен
     assert "Активный" in detail and "Пассивный" in detail
     assert "виджет-привет" in detail  # вставка расширения в карточку цели
 

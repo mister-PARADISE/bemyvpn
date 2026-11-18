@@ -539,6 +539,53 @@ dialog::backdrop{background:rgba(0,0,0,.72);-webkit-backdrop-filter:blur(3px);ba
 .dash{gap:28px 36px}
 @media (max-width:380px){.mon{font-size:11.5px}}
 
+/* ---------- Консоль запуска ---------- */
+.console{border:1px solid var(--line2);background:#000;border-radius:var(--r);min-width:0}
+.console-head{display:flex;align-items:center;gap:10px;padding:6px 6px 6px 12px;border-bottom:1px solid var(--line)}
+.console-body{max-height:440px;overflow:auto;padding:10px 12px;font-size:12.5px;line-height:1.6;white-space:pre-wrap;
+              overflow-wrap:anywhere;color:var(--ink)}
+.console-body:empty::before{content:"ждём вывода…";color:var(--ink3)}
+.cl .ts{color:var(--ink3);margin-right:1.5ch;user-select:none}
+.cl.lvl-dim{color:var(--ink3)}
+.cl.lvl-ok{color:var(--ok)}
+.cl.lvl-warn{color:var(--warn)}
+.cl.lvl-err{color:var(--err)}
+.cl.lvl-found{color:var(--ink);font-weight:600}
+.console-progress{padding:6px 12px 8px;border-top:1px solid var(--line);color:var(--accent);font-size:12.5px;white-space:pre}
+
+/* ---------- Модули на цели ---------- */
+.mods{display:flex;flex-direction:column}
+.mod{border-bottom:1px solid var(--line)}
+.mod:last-child{border-bottom:0}
+.mod>summary{display:flex;align-items:center;gap:12px;min-height:44px;padding:4px 6px;list-style:none;cursor:pointer;min-width:0}
+.mod>summary::-webkit-details-marker{display:none}
+.mod>summary:hover{background:var(--raised)}
+.mod-title{font-weight:600;white-space:nowrap}
+.mod-last{flex:1;min-width:0;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.mod-last a{font-weight:600;margin-right:1ch}
+.mod-more{font-size:12px;flex:none}
+.mod[open] .mod-more{color:var(--accent)}
+.mod-body{padding:4px 6px 14px 46px;display:flex;flex-direction:column;gap:4px}
+@media (max-width:760px){.mod>summary{flex-wrap:wrap;gap:4px 10px}.mod-last{flex-basis:100%;order:5;padding-left:40px}
+                         .mod-more{display:none}.mod-body{padding-left:6px}}
+
+/* ---------- Хосты цели ---------- */
+.hosts{display:flex;flex-direction:column;padding:2px 0}
+.host{display:flex;align-items:center;gap:10px;min-height:34px;padding:0 4px 0 10px;font-size:13px}
+.host:hover{background:var(--raised)}
+.host .mark{width:1ch;flex:none;font-weight:700}
+.cmd{display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin:6px 0 0;padding:4px 4px 4px 10px;border:1px solid var(--line2);
+     border-radius:var(--r);background:var(--bg)}
+.cmd:focus-within{border-color:var(--accent)}
+.cmd .prompt{margin:0;flex:none}
+.cmd-in{flex:1;min-width:0;height:28px;border:0;outline:0;background:none;color:var(--ink);font:inherit;font-size:12.5px}
+.cmd-in::placeholder{color:var(--ink3)}
+.table tr.dimmed td{opacity:.45}
+/* ключевая колонка (адрес, хост:порт) не обрезается — лучше прокрутка таблицы, чем «104.16.…» */
+.table td.key{white-space:nowrap}
+.table td.key .cp,.table td.key .l1>span{overflow:visible;text-overflow:clip}
+.table .l2.err{max-width:300px}
+
 /* ---------- Строка состояния внизу, как в tmux ---------- */
 .statusbar{position:sticky;bottom:0;z-index:15;display:flex;align-items:stretch;height:26px;margin-top:auto;
            border-top:1px solid var(--line);background:var(--surface);font-size:11.5px;color:var(--ink2);white-space:nowrap;overflow:hidden}
@@ -590,6 +637,7 @@ dialog::backdrop{background:rgba(0,0,0,.72);-webkit-backdrop-filter:blur(3px);ba
   .table.rows td.act .ibar{opacity:1}
   .table.rows .l1,.table.rows .l2{white-space:normal}
   .table.rows .cp{white-space:normal;overflow-wrap:anywhere}
+  .table.rows td.key{white-space:normal}
 }
 
 /* ---------- Палец вместо мыши ---------- */

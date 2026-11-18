@@ -3,7 +3,7 @@
     ctx.events.on("target.consent", handler)
     ctx.events.on("target.*", handler)      # все события целей
     ctx.events.on("*", handler)             # вообще всё
-    ctx.events.emit("target.consent", target_id=5)
+    ctx.events.emit("run.done", target_id=5)
 
 Ошибка в одном обработчике не ломает остальные и не ломает того, кто событие
 отправил: она пишется в лог.

@@ -1,0 +1,84 @@
+{% extends "base.html" %}
+{% import "_ui.html" as ui with context %}
+{% block content %}
+{% call ui.head("Прокси", [(alive ~ " " ~ plural(alive, "живой", "живых", "живых") ~ " из " ~ total_all) if total_all else "список пуст", ("идёт проверка: " ~ checking) if checking else None]) %}
+  {% if total_all %}
+  {{ ui.post_ib("/proxies/check", "refresh", "Проверить все", fields={"which": "all"}) }}
+  {{ ui.post_ib("/proxies/delete-dead", "trash", "Удалить мёртвые", "danger",
+                confirm="Все прокси со статусом «мёртв» будут удалены.", confirm_title="Удалить мёртвые?", confirm_ok="Удалить") }}
+  {% endif %}
+{% endcall %}
+
+<div class="with-side proxies">
+  <section class="card">
+    <div class="card-head"><h2>Список <span class="count">{{ total }}</span></h2></div>
+    {% if total_all %}
+    <div class="toolbar">
+      {{ ui.seg(tabs, state, "state", query) }}
+      <form class="grow search-field" method="get" role="search">
+        <input type="hidden" name="state" value="{{ state }}">
+        {{ icon('search') }}
+        <input class="input" type="search" name="q" value="{{ q }}" placeholder="адрес, страна, провайдер, метка" aria-label="Поиск прокси">
+      </form>
+    </div>
+    {% endif %}
+    {% if proxies %}
+    <div class="table-wrap"{% if checking %} data-refresh="2000"{% endif %}>
+      <table class="table rows">
+        <thead><tr><th>Прокси</th><th>Статус</th><th>Выход</th><th class="right">Отклик</th><th></th></tr></thead>
+        <tbody>
+        {% for p in proxies %}
+          <tr>
+            <td class="key"><div class="cell">
+              <span class="l1"><span>{{ ui.cp(p.url, label=p.hostport) }}</span><span class="kind">{{ p.scheme }}</span></span>
+              <span class="l2">{{ p.username or "без логина" }}{% if p.label %}  {{ p.label }}{% endif %}</span>
+            </div></td>
+            <td><div class="cell">
+              <span class="l1">{{ ui.badge(p.state_title, p.state_tone, dot=True) }}</span>
+              <span class="l2{% if p.error %} err{% endif %}" title="{{ p.error }}">{{ p.error or ((p.checked_at|ago) if p.checked_at else "") }}</span>
+            </div></td>
+            <td><div class="cell">
+              <span class="l1 soft"><span>{{ p.exit_ip or "—" }}{% if p.country %}  {{ p.country }}{% endif %}</span></span>
+              <span class="l2">{{ p.org }}{% if p.city %}{{ ", " if p.org else "" }}{{ p.city }}{% endif %}</span>
+            </div></td>
+            <td class="right tnum">{% if p.latency_ms is not none %}<span class="{{ 't-ok' if p.latency_ms < 800 else 't-warn' if p.latency_ms < 3000 else 't-err' }}">{{ "%.0f"|format(p.latency_ms) }} мс</span>{% else %}<span class="muted">—</span>{% endif %}</td>
+            <td class="act"><span class="ibar">
+              {{ ui.post_ib("/proxies/%d/check"|format(p.id), "refresh", "Проверить", sm=True) }}
+              {{ ui.post_ib("/proxies/%d/delete"|format(p.id), "trash", "Удалить", "danger", sm=True) }}
+            </span></td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {{ ui.pager(page, pages, total, query) }}
+    {% elif total_all %}
+      {{ ui.empty("search", "Ничего не нашлось", ["Попробуйте другой фильтр"]) }}
+    {% else %}
+      {{ ui.empty("server", "Прокси пока нет", ["Вставьте список справа — по одному в строке, в любом привычном виде"]) }}
+    {% endif %}
+  </section>
+
+  <section class="card">
+    <div class="card-head"><h2>Добавить</h2></div>
+    <form class="form" method="post" action="/proxies" style="padding:8px 10px">
+      {{ ui.csrf_field() }}
+      <textarea class="textarea mono" name="lines" rows="8" spellcheck="false" aria-label="Прокси, по одному в строке"
+                placeholder="1.2.3.4:8080&#10;user:pass@1.2.3.4:8080&#10;1.2.3.4:8080:user:pass&#10;socks5://user:pass@5.6.7.8:1080"></textarea>
+      <div class="form-grid">
+        <div class="field">
+          <label for="f-scheme">Тип, если не указан</label>
+          <select class="select" id="f-scheme" name="scheme">
+            <option value="http">http</option><option value="https">https</option>
+            <option value="socks5">socks5</option><option value="socks5h">socks5h — DNS через прокси</option>
+          </select>
+        </div>
+        <div class="field"><label for="f-label">Метка</label><input class="input" id="f-label" name="label" placeholder="купил 18.11, DE"></div>
+      </div>
+      <label class="switch"><input type="checkbox" name="check" value="1" checked><span class="sw"></span><span>Сразу проверить</span></label>
+      <div><button class="btn-primary">Добавить</button></div>
+      <p class="small muted"># одинаковые не задвоятся. Пароли хранятся в базе панели в data/</p>
+    </form>
+  </section>
+</div>
+{% endblock %}
