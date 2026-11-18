@@ -187,3 +187,47 @@ def self_signed(dirpath: Path, names: list[str], days: int = 10) -> tuple[Path, 
     except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
         return None
     return cert, key
+
+
+def vulndb_app(nvd: dict[str, list[dict]], kev: list[str], epss: dict[str, float], hits: list[str] | None = None,
+               wp: dict[str, dict] | None = None):
+    """Поддельные NVD, CISA KEV, EPSS и база плагинов WordPress в одном сервере.
+
+    nvd — {«vendor:product»: [записи NVD «cve»]}; ищет по virtualMatchString, листает по startIndex/
+    resultsPerPage, как настоящая. wp — {«plugin/слаг»: ответ WPVulnerability}. hits — сюда пишутся
+    все запросы к базам (для проверки кеша)."""
+    from urllib.parse import parse_qs, urlsplit
+
+    def route(line: str, headers: dict[str, str]):
+        target = line.split(" ")[1]
+        url = urlsplit(target)
+        q = {k: v[0] for k, v in parse_qs(url.query, keep_blank_values=True).items()}
+        if url.path.endswith("/kev.json"):
+            feed = {"vulnerabilities": [{"cveID": c, "dateAdded": "2025-01-23", "vulnerabilityName": f"name of {c}",
+                                         "requiredAction": "Apply updates", "knownRansomwareCampaignUse": "Unknown"}
+                                        for c in kev]}
+            return 200, {"Content-Type": "application/json"}, json.dumps(feed).encode()
+        if url.path.startswith(("/plugin/", "/theme/")):
+            key = url.path.strip("/")
+            if hits is not None:
+                hits.append(key)
+            body = (wp or {}).get(key)
+            if body is None:
+                return 404, {"Content-Type": "application/json"}, b'{"error":1,"message":"not found","data":null}'
+            return 200, {"Content-Type": "application/json"}, json.dumps(body).encode()
+        if url.path.endswith("/epss"):
+            ids = q.get("cve", "").split(",")
+            data = [{"cve": c, "epss": f"{epss[c]:.6f}", "percentile": "0.990000"} for c in ids if c in epss]
+            return 200, {"Content-Type": "application/json"}, json.dumps({"data": data}).encode()
+        f = q.get("virtualMatchString", "").split(":")
+        key = f"{f[3]}:{f[4]}" if len(f) > 4 else ""
+        if hits is not None:
+            hits.append(key)
+        items = nvd.get(key, [])
+        start, size = int(q.get("startIndex", 0)), int(q.get("resultsPerPage", 2000))
+        page = items[start:start + size]
+        body = {"resultsPerPage": len(page), "startIndex": start, "totalResults": len(items), "format": "NVD_CVE",
+                "version": "2.0", "vulnerabilities": [{"cve": c} for c in page]}
+        return 200, {"Content-Type": "application/json"}, json.dumps(body).encode()
+
+    return http_app(route)

@@ -657,6 +657,50 @@ dialog::backdrop{background:rgba(0,0,0,.72);-webkit-backdrop-filter:blur(3px);ba
 .tg::before{content:"["}.tg::after{content:"]"}
 .tn .t-ok{color:var(--ok)}.tn .t-warn{color:var(--warn)}.tn .t-err{color:var(--err)}.tn .t-dim{color:var(--ink3)}
 .tree .dim>.tn{opacity:.5}
+.tk-tech>.tn .tl{color:var(--ink2);font-weight:400}
+
+/* уязвимости: группа на программу, таблица CVE */
+.vgroups{display:flex;flex-direction:column;gap:6px;padding:2px var(--pad) 0}
+.vgroup{border:1px solid var(--line);border-radius:var(--r)}
+.vgroup>summary{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 16px;padding:8px 12px;cursor:pointer;list-style:none;font-size:13px}
+.vgroup>summary::-webkit-details-marker{display:none}
+.vgroup>summary::before{content:"+";color:var(--ink3);width:1ch}
+.vgroup[open]>summary::before{content:"−"}
+.vgroup>summary:hover{background:var(--raised)}
+.vg-title{font-weight:700}
+.vg-ver{color:var(--ink2);font-weight:500}
+.vg-counts{display:flex;flex-wrap:wrap;gap:2px 1.4ch}
+.vg-counts>span,.vtotal>span,.vg-fix{white-space:nowrap}
+.vg-fix{color:var(--warn)}
+.vg-where{margin-left:auto;font-size:12px}
+.vg-note{margin:2px 0 6px;padding:0 var(--pad);font-size:12px;color:var(--ink3)}
+.vtotal{display:flex;flex-wrap:wrap;gap:4px 1.6ch;margin:0 0 8px;padding:0 var(--pad);font-size:13px}
+/* строка — одна линия: суть обрезается многоточием, целиком — по наведению и в NVD */
+.vtable{table-layout:fixed;min-width:680px}
+.vtable col.c-id{width:18ch}.vtable col.c-cvss{width:8ch}.vtable col.c-epss{width:7ch}.vtable col.c-fix{width:14ch}
+.vtable td{height:auto;padding-top:6px;padding-bottom:6px}
+.vtable .vsum{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.vmore>summary{padding:6px var(--pad);font-size:12px;color:var(--ink3);cursor:pointer;list-style:none}
+.vmore>summary::-webkit-details-marker{display:none}
+.vmore>summary:hover{color:var(--ink)}
+.vmore[open]>summary{display:none}
+
+.sev{display:inline-block;min-width:4.5ch;padding:0 6px;border-radius:var(--r-sm);font-weight:700;text-align:center;
+     background:var(--sunken);color:var(--ink2)}
+.sev-critical{background:var(--err);color:#120202}
+.sev-high{background:var(--err-soft);color:var(--err);box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--err) 45%,transparent)}
+.sev-medium{background:var(--warn-soft);color:var(--warn)}
+.sev-low{color:var(--ink2)}
+.vtable .tg{display:inline-block;margin:1px 5px 1px 0;white-space:nowrap}
+@media (max-width:760px){
+  /* на телефоне строка уязвимости — карточка: номер, оценка, признаки, исправление, суть в две строки */
+  .vtable{table-layout:auto;min-width:0}
+  .vtable colgroup,.vtable thead{display:none}
+  .vtable,.vtable tbody{display:block}
+  .vtable tr{display:flex;flex-wrap:wrap;align-items:center;gap:4px 12px;padding:10px var(--pad);border-bottom:1px solid var(--line)}
+  .vtable td{display:block;height:auto;padding:0!important;border:0;min-width:0}
+  .vtable .vsum{flex-basis:100%;white-space:normal;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+}
 
 /* ---------- Строка состояния внизу, как в tmux ---------- */
 .statusbar{position:sticky;bottom:0;z-index:15;display:flex;align-items:stretch;height:26px;margin-top:auto;

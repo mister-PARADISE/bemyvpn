@@ -56,6 +56,16 @@ def _days_tone(days: int | None) -> str:
     return "" if days is None else "err" if days < 7 else "warn" if days < 21 else ""
 
 
+_SEV_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3, "none": 4, "unknown": 5}
+
+
+def _vuln_rank(a: Asset) -> tuple:
+    """Сначала то, что уже используют в атаках, потом по опасности и вероятности атаки."""
+    d = _d(a)
+    return (not d.get("kev"), _SEV_ORDER.get(d.get("severity", "unknown"), 5), -(d.get("epss") or 0),
+            -(d.get("cvss") or 0), a.value)
+
+
 @dataclass
 class Url:
     asset: Asset
@@ -103,12 +113,38 @@ class Facts:
         self.records: dict[str, list[Asset]] = {}
         for a in self.kind("dns_record"):
             self.records.setdefault((_d(a).get("type") or a.value.split()[0]).upper(), []).append(a)
+        # программы (без исчезнувших) и уязвимости (без закрытых), уязвимости — по программе
+        self.techs: dict[str, Asset] = {a.value: a for a in self.kind("technology") if _d(a).get("state") != "gone"}
+        self.vulns: list[Asset] = sorted((a for a in self.kind("vulnerability") if _d(a).get("state") != "closed"),
+                                         key=_vuln_rank)
+        self.vulns_of: dict[str, list[Asset]] = {}
+        for a in self.vulns:
+            self.vulns_of.setdefault(_d(a).get("tech", ""), []).append(a)
 
     def kind(self, k: str) -> list[Asset]:
         return self.by.get(k, [])
 
+    def tech_spots(self, tech: Asset) -> set[tuple[str, int]]:
+        """Где работает программа: (IP, порт). Из «127.0.0.2:22» и «https://example.com» (IP — по имени)."""
+        spots = set()
+        for w in _d(tech).get("where") or []:
+            if "://" in w:
+                u = urlsplit(w)
+                port = u.port or (443 if u.scheme == "https" else 80)
+                for ip in self.names.get(u.hostname or "", []):
+                    spots.add((ip, port))
+            elif ":" in w:
+                host, _, port = w.rpartition(":")
+                if port.isdigit():
+                    spots.add((host.strip("[]"), int(port)))
+        return spots
+
     def did(self, module_id: str) -> bool:
         return self.ran is None or module_id in self.ran
+
+    def did_cve(self) -> bool:
+        """Уязвимости сверяли по-настоящему (а не «неизвестно, значит считаем, что да»)."""
+        return self.ran is not None and "cve" in self.ran
 
     def record(self, rtype: str) -> dict[str, Any]:
         rows = self.records.get(rtype) or []
@@ -204,7 +240,46 @@ def _todo(key: str, module_id: str) -> Fact:
 
 
 def summary(f: Facts) -> list[Group]:
-    return [g for g in (_net(f), _site(f), _dns(f), _outside(f)) if g.facts]
+    return [g for g in (_net(f), _site(f), _dns(f), _outside(f), _software(f)) if g.facts]
+
+
+def upgrade_text(d: dict[str, Any]) -> str:
+    """«8.0.43» или «версии новее 8.0.44» — когда база говорит только «уязвимы до 8.0.44 включительно»."""
+    v = d.get("upgrade_to") or ""
+    return f"версии новее {v}" if v and d.get("upgrade_after") else v
+
+
+SEV_SHORT = {"critical": "крит.", "high": "выс.", "medium": "сред.", "low": "низ.", "unknown": "без оценки"}
+SEV_TONE = {"critical": "err", "high": "err", "medium": "warn", "low": "dim", "unknown": "dim"}
+
+
+def _software(f: Facts) -> Group:
+    g = Group("программы и уязвимости", [])
+    if not f.did("tech"):
+        g.facts.append(_todo("программы", "tech"))
+        return g
+    techs = list(f.techs.values())
+    versioned = [a for a in techs if _d(a).get("version")]
+    shown = versioned or techs
+    g.facts.append(Fact("программы", ([(a.value, "") for a in shown[:4]] + ([(f"+{len(shown) - 4}", "dim")] if len(shown) > 4 else []))
+                        or [("не узнали", "dim")], sub=f"всего {len(techs)}, с версией {len(versioned)}" if techs else "",
+                        href="#vulns" if f.did("cve") else "#found"))
+    if not f.did("cve"):
+        g.facts.append(_todo("уязвимости", "cve"))
+        return g
+    c = Counter(_d(a).get("severity") for a in f.vulns)
+    segs = [(f"{SEV_SHORT[s]} {c[s]}", SEV_TONE[s]) for s in SEV_SHORT if c[s]]
+    kev = sum(1 for a in f.vulns if _d(a).get("kev"))
+    exploit = sum(1 for a in f.vulns if _d(a).get("exploit"))
+    g.facts.append(Fact("уязвимости", segs or [("известных нет", "ok")], href="#vulns",
+                        sub=", ".join(x for x in (f"в атаках {kev}" if kev else "", f"с эксплойтом {exploit}" if exploit else "",
+                                                  f"всего {len(f.vulns)}" if f.vulns else "") if x)))
+    upgrades = [(_d(a).get("title") or a.value, upgrade_text(_d(a)).replace("версии ", ""))
+                for a in techs if _d(a).get("upgrade_to")]
+    if upgrades:
+        g.facts.append(Fact("обновить", [(f"{t} → {v}", "warn") for t, v in upgrades[:3]]
+                            + ([(f"+{len(upgrades) - 3}", "dim")] if len(upgrades) > 3 else []), href="#vulns"))
+    return g
 
 
 def _net(f: Facts) -> Group:
@@ -407,6 +482,7 @@ class Issue:
     where: str
     hint: str
     href: str = ""
+    order: tuple = (0,)  # порядок внутри уровня: уязвимые программы — после остального, опаснее — выше
 
 
 # Что значит открытый наружу сервис и что с ним делать — по названию сервиса, а не по номеру порта:
@@ -438,6 +514,7 @@ def issues(f: Facts) -> list[Issue]:
     _cert_issues(f, out)
     _mail_issues(f, out)
     _zone_issues(f, out)
+    _vuln_issues(f, out)
     # одно и то же на нескольких именах (общий сертификат example.com и www) — одной строкой
     merged: dict[tuple[str, str, str], Issue] = {}
     for i in out:
@@ -448,7 +525,7 @@ def issues(f: Facts) -> list[Issue]:
         else:
             merged[key] = i
     rank = {"err": 0, "warn": 1, "info": 2}
-    return sorted(merged.values(), key=lambda i: (rank[i.level], i.where, i.title))
+    return sorted(merged.values(), key=lambda i: (rank[i.level], i.order, i.where, i.title))
 
 
 def _ports_issues(f: Facts, out: list[Issue]) -> None:
@@ -568,6 +645,107 @@ def _zone_issues(f: Facts, out: list[Issue]) -> None:
         out.append(Issue("info", "нет CAA", caa.get("zone") or f.root,
                          "Сертификат на домен может выпустить любой удостоверяющий центр. Запись CAA ограничит их "
                          "теми, кем вы пользуетесь (например, letsencrypt.org).", "#" + anchor("dns")))
+
+
+def _vuln_issues(f: Facts, out: list[Issue]) -> None:
+    """Уязвимая программа — одно замечание: сколько и каких, самые опасные и до какой версии обновиться."""
+    for value, tech in f.techs.items():
+        d = _d(tech)
+        if d.get("closed"):
+            out.append(Issue("warn", f"{value}: убран из каталога WordPress", ", ".join((d.get("where") or [])[:2]),
+                             f"Причина: {d['closed']}. Обновлений и исправлений больше не будет — замените его "
+                             "живым аналогом.", "#" + (anchor("vulns", d.get("product"), d.get("version"))
+                                                         if f.vulns_of.get(value) else "found")))
+        vs = f.vulns_of.get(value) or []
+        if not vs:
+            continue
+        c = Counter(_d(a).get("severity") for a in vs)
+        kev = sum(1 for a in vs if _d(a).get("kev"))
+        level = "err" if kev or c["critical"] or c["high"] else "warn" if c["medium"] else "info"
+        parts = [f"{SEV_SHORT[s]} {c[s]}" for s in SEV_SHORT if c[s]]
+        title = (f"{value}: уязвимостей {len(vs)}" + (f" ({', '.join(parts)})" if parts else "")
+                 + (f", в атаках {kev}" if kev else ""))
+        worst = "; ".join(f"{a.value} ({_d(a)['cvss'] if _d(a).get('cvss') is not None else '—'}"
+                          f"{', в атаках' if _d(a).get('kev') else ', есть эксплойт' if _d(a).get('exploit') else ''})"
+                          for a in vs[:3])
+        hint = f"Самые опасные: {worst}. " + (
+            f"Обновите до версии новее {d['upgrade_to']}." if d.get("upgrade_to") and d.get("upgrade_after")
+            else f"Обновите до {d['upgrade_to']} или новее." if d.get("upgrade_to") else "Обновите до актуальной версии.")
+        if d.get("no_fix"):
+            hint += (f" У {d['no_fix']} из {len(vs)} версия с исправлением не названа — проверьте у разработчика "
+                     "или замените программу.")
+        if d.get("distro"):
+            hint += (f" Это сборка {d['distro']}: часть исправлений могла прийти обновлением пакета без смены "
+                     f"версии — сверьте с бюллетенями {d['distro']}.")
+        out.append(Issue(level, title, ", ".join((d.get("where") or [])[:2]), hint,
+                         "#" + anchor("vulns", d.get("product"), d.get("version")),
+                         (1, -kev, -c["critical"], -c["high"], -c["medium"], -len(vs))))
+
+
+def vuln_groups(f: Facts, limit: int = 200) -> list[dict[str, Any]]:
+    """Раздел «Уязвимости»: по программе — счётчики, где работает, до чего обновить и сами CVE."""
+    groups = []
+    for value, vs in f.vulns_of.items():
+        tech = f.techs.get(value)
+        d = _d(tech) if tech is not None else _d(vs[0])
+        c = Counter(_d(a).get("severity") for a in vs)
+        kev = sum(1 for a in vs if _d(a).get("kev"))
+        rows = []
+        for a in vs[:limit]:
+            v = _d(a)
+            flags = ([("в атаках", "err")] if v.get("kev") else []) + ([("вымогатели", "err")] if v.get("ransomware") else []) \
+                + ([("эксплойт", "warn")] if v.get("exploit") else []) \
+                + ([("нет исправления", "err")] if v.get("unfixed") else []) \
+                + ([("все версии", "dim")] if v.get("how") == "all" else [])
+            epss = v.get("epss")
+            summary_text = v.get("summary") or ""
+            link = v.get("link") or (f"https://nvd.nist.gov/vuln/detail/{a.value}" if a.value.startswith("CVE-") else "")
+            link = link if link.startswith(("https://", "http://")) else ""  # ссылки пришли из чужой базы
+            rows.append({"id": a.value, "link": link, "severity": v.get("severity", "unknown"),
+                         "epss": (f"{epss * 100:.0f}%" if epss >= 0.005 else "<1%") if epss is not None else "",
+                         "epss_tone": "" if epss is None else "err" if epss >= 0.5 else "warn" if epss >= 0.1 else "dim",
+                         "score": f"{v['cvss']:.1f}" if v.get("cvss") is not None else "—", "flags": flags,
+                         "fixed": v.get("fixed_in") or "", "published": v.get("published", ""),
+                         "summary": summary_text,
+                         "cwe": ", ".join(v.get("cwe") or [])})
+        groups.append({
+            "anchor": anchor("vulns", d.get("product"), d.get("version")),
+            "title": d.get("title") or d.get("product_title") or value, "version": d.get("version", ""),
+            "where": _first(d.get("where") or []), "where_all": ", ".join(d.get("where") or []),
+            "distro": d.get("distro", ""), "package": d.get("package", ""),
+            "closed": d.get("closed", "") if tech is not None else "",
+            "counts": [(f"{SEV_SHORT[s]} {c[s]}", SEV_TONE[s]) for s in SEV_SHORT if c[s]]
+            + ([(f"в атаках {kev}", "err")] if kev else []),
+            "upgrade": upgrade_text(d), "total": len(vs), "more": max(0, len(vs) - limit), "rows": rows,
+            "hot": bool(kev or c["critical"] or c["high"]),
+            "rank": (not kev, _SEV_ORDER.get(_d(vs[0]).get("severity", "unknown"), 5), -len(vs)),
+        })
+    return sorted(groups, key=lambda g: g["rank"])
+
+
+def _first(items: list[str]) -> str:
+    """«https://example.com +1»: первое и сколько ещё — чтобы строка группы помещалась в одну линию."""
+    return (items[0] + (f" +{len(items) - 1}" if len(items) > 1 else "")) if items else ""
+
+
+def vuln_totals(f: Facts) -> list[Seg]:
+    """Строка над разделом: сколько всего и каких, сколько в атаках и с эксплойтом, у скольких программ."""
+    c = Counter(_d(a).get("severity") for a in f.vulns)
+    kev = sum(1 for a in f.vulns if _d(a).get("kev"))
+    exploit = sum(1 for a in f.vulns if _d(a).get("exploit"))
+    return ([(f"{SEV_SHORT[s]} {c[s]}", SEV_TONE[s]) for s in SEV_SHORT if c[s]]
+            + ([(f"в атаках {kev}", "err")] if kev else []) + ([(f"с эксплойтом {exploit}", "warn")] if exploit else [])
+            + [(f"программ {len(f.vulns_of)}", "dim")])
+
+
+def unchecked(f: Facts) -> list[str]:
+    """Программы, у которых не видно точной версии: уязвимости по ним не проверить."""
+    out = []
+    for value, tech in f.techs.items():
+        d = _d(tech)
+        if d.get("cve_lookup") and d.get("precision") != "exact":
+            out.append(value + ("" if d.get("version") else " (версия скрыта)"))
+    return out
 
 
 # --- структура ----------------------------------------------------------------------
@@ -738,4 +916,21 @@ def _port_node(f: Facts, ip: str, port: int, asset: Asset | None, urls: list[Url
         node.tags.append(("закрыт", "dim"))
     elif d.get("risky"):
         node.tags.append(("наружу", "err"))
+    # программы, которые работают на этом порту, и их уязвимости
+    here = [t for t in f.techs.values() if (ip, port) in f.tech_spots(t)]
+    total = 0
+    for t in sorted(here, key=lambda t: (-len(f.vulns_of.get(t.value) or []), t.value))[:12]:
+        vs = f.vulns_of.get(t.value) or []
+        total += len(vs)
+        c = Counter(_d(a).get("severity") for a in vs)
+        tone = "err" if c["critical"] or c["high"] or any(_d(a).get("kev") for a in vs) else "warn" if vs else ""
+        child = Node([("", t.value)], "tech", meta=[(_d(t).get("category", ""), "dim")],
+                     href="#" + anchor("vulns", _d(t).get("product"), _d(t).get("version")) if vs else "")
+        if vs:
+            child.tags.append((f"CVE {len(vs)}", tone))
+        node.children.append(child)
+    if len(here) > 12:
+        node.children.append(Node([("", f"… ещё {len(here) - 12}")], "more", dim=True, href="#found"))
+    if total:
+        node.tags.append((f"CVE {total}", "err" if any(c.tags and c.tags[-1][1] == "err" for c in node.children) else "warn"))
     return node

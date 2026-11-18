@@ -110,6 +110,8 @@ class ModuleRun(Protocol):
     target: Any  # .id, .root, .name, .is_ip, .scope
 
     def setting(self, key: str) -> Any: ...
+    @property
+    def data_dir(self) -> Any: ...  # папка данных панели: здесь модули держат свои кеши
     def log(self, message: str, level: str = "info") -> None: ...  # info | ok | warn | err | dim | found
     def progress(self, done: int, total: int, label: str = "") -> None: ...
     async def emit(self, kind: str, value: str, **data: Any) -> bool: ...  # True — новая находка

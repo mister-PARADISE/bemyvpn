@@ -224,7 +224,7 @@ def on_ready(ctx: Context) -> None:
 
 
 def setup(ctx: Context) -> None:
-    ctx.pages.add(Page("proxies", "Прокси", "/proxies", icon="server", section="Инструменты", order=55,
+    ctx.pages.add(Page("proxies", "Прокси", "/proxies", icon="server", section="Инструменты", order=12,
                        description="Свои прокси: живы ли, отклик, страна выхода"))
     ctx.add_router(router)
     ctx.stats.add(Stat("proxies", "прокси", proxies_stat, order=40, link="/proxies"))

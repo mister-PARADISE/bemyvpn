@@ -33,12 +33,12 @@ SERVICES = {
     9200: "elasticsearch", 9443: "https", 10000: "webmin", 10250: "kubelet", 11211: "memcached",
     15672: "rabbitmq", 27017: "mongodb",
 }
-HTTP_PORTS = {80, 81, 3000, 5000, 5601, 8000, 8008, 8080, 8081, 8086, 8888, 9000, 9200, 10000, 15672, 2375}
+HTTP_PORTS = {80, 81, 3000, 5000, 5601, 8000, 8008, 8080, 8081, 8086, 8888, 9000, 9200, 10000, 15672, 2375, 9090, 8500, 8200}
 TLS_PORTS = {443, 444, 4443, 8443, 9443, 6443, 10250, 2376}
 GREETS_FIRST = {21, 22, 25, 110, 143, 587, 3306, 5900, 1723, 2121}
 
 PRESETS = {
-    "top": "Частые 100",
+    "top": "Частые 100 и опасные сервисы (базы, панели, Docker)",
     "risky": "Базы и панели — что не должно торчать наружу",
     "web": "Веб: 80, 443, 3000, 5000, 8000–8888, 9000, 9443",
     "custom": "Свои",
@@ -71,7 +71,8 @@ def ports_for(preset: str, custom: str) -> list[int]:
         return list(WEB)
     if preset == "custom":
         return parse_ports(custom or "")
-    return list(TOP)
+    # частые плюс опасные: открытые наружу базы и панели — то, что ломают в первую очередь
+    return sorted(set(TOP) | set(RISKY))
 
 
 def _clean(data: bytes) -> str:

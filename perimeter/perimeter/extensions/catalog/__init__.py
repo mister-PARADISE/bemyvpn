@@ -46,7 +46,7 @@ def modules_stat(db, ctx: Context) -> str:
 
 
 def setup(ctx: Context) -> None:
-    ctx.pages.add(Page("modules", "Модули", "/modules", icon="puzzle", section="Инструменты", order=60,
+    ctx.pages.add(Page("modules", "Модули", "/modules", icon="puzzle", section="Инструменты", order=14,
                        description="Инструменты проверки и как они связаны"))
     ctx.add_router(router)
     ctx.stats.add(Stat("modules", "модули", modules_stat, order=20, link="/modules"))

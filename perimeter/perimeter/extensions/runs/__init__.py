@@ -39,12 +39,27 @@ def engine_of(request: Request) -> Engine:
 
 
 def applicable(ctx: Context) -> list:
-    """Модули, которые можно запустить по цели: принимают домен, поддомен или IP."""
-    return [m for m in ctx.modules if {"domain", "subdomain", "ip"} & set(m.spec.consumes)]
+    """Модули, которые можно запустить по цели: принимают домен, поддомен или IP — или построены на таких
+    («Уязвимости» принимают программы, которые находят «Технологии»)."""
+    ok = {m.spec.id for m in ctx.modules if {"domain", "subdomain", "ip"} & set(m.spec.consumes)}
+    grew = True
+    while grew:
+        grew = False
+        for m in ctx.modules:
+            if m.spec.id not in ok and m.spec.needs and all(d in ok for d in m.spec.needs):
+                ok.add(m.spec.id)
+                grew = True
+    return [m for m in ctx.modules if m.spec.id in ok]
 
 
-def _rank(module) -> tuple:
-    return (module.spec.kind is Kind.ACTIVE, module.spec.order, module.spec.id)
+def _rank(module, mods: dict | None = None, seen: frozenset = frozenset()) -> tuple:
+    """Порядок «Запустить всё»: сначала пассивные, потом активные. Модуль, построенный на активных
+    (пассивные «Уязвимости» ждут активные «Технологии»), — среди активных, а не тянет их вперёд."""
+    active = module.spec.kind is Kind.ACTIVE
+    if not active and mods:
+        active = any(_rank(mods[d], mods, seen | {module.spec.id})[0]
+                     for d in module.spec.needs if d in mods and d not in seen)
+    return (active, module.spec.order, module.spec.id)
 
 
 def plan(ctx: Context, db, target_id: int, wanted: list[str]) -> list:
@@ -79,7 +94,7 @@ def plan(ctx: Context, db, target_id: int, wanted: list[str]) -> list:
                 visit(dep, (*path, mid))
         order.append(mid)
 
-    for mid in sorted((i for i in wanted if i in mods), key=lambda i: _rank(mods[i])):
+    for mid in sorted((i for i in wanted if i in mods), key=lambda i: _rank(mods[i], mods)):
         visit(mid)
     return [mods[i] for i in order]
 

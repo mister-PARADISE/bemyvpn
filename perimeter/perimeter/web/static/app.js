@@ -445,6 +445,17 @@
     spy();
   }
 
+  /* Свёрнутый блок, к которому ведёт якорь, раскрывается — вместе со всеми, в которые он вложен */
+  function openDetails(el) {
+    for (let d = el; d; d = d.parentElement?.closest("details")) {
+      if (d.tagName === "DETAILS") d.open = true;
+    }
+  }
+  if (location.hash.length > 1) {
+    const el = document.getElementById(decodeURIComponent(location.hash.slice(1)));
+    if (el) openDetails(el);
+  }
+
   /* Переход по якорю на странице: плавно и с короткой подсветкой цели */
   document.addEventListener("click", (e) => {
     const a = e.target.closest("a[href^='#']");
@@ -452,6 +463,7 @@
     const el = document.getElementById(decodeURIComponent(a.hash.slice(1)));
     if (!el) return;
     e.preventDefault();
+    openDetails(el);
     el.scrollIntoView({ behavior: "smooth", block: "start" });
     history.replaceState(null, "", a.hash);
     el.classList.toggle("flash", false);

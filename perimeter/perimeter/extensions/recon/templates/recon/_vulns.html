@@ -1,0 +1,49 @@
+{# Уязвимости по программам: что, насколько опасно, используют ли в атаках, до чего обновить #}
+{% macro vtable(rows, head=True) %}
+<div class="table-wrap">
+  <table class="table vtable">
+    <colgroup><col class="c-id"><col class="c-cvss"><col class="c-epss"><col class="c-fix"><col></colgroup>
+    {% if head %}<thead><tr><th>ID</th><th>CVSS</th><th title="Вероятность атаки в ближайший месяц (FIRST EPSS)">EPSS</th><th>исправлено в</th><th>суть</th></tr></thead>{% endif %}
+    <tbody>
+    {% for v in rows %}
+      <tr>
+        <td class="key mono">{% if v.link %}<a href="{{ v.link }}" target="_blank" rel="noopener noreferrer">{{ v.id }}</a>{% else %}{{ v.id }}{% endif %}</td>
+        <td><span class="sev sev-{{ v.severity }}">{{ v.score }}</span></td>
+        <td class="mono small nowrap{% if v.epss_tone %} t-{{ v.epss_tone }}{% endif %}">{{ v.epss or "—" }}</td>
+        <td class="mono small nowrap">{{ v.fixed or "—" }}</td>
+        <td class="small ink2 vsum" title="{% if v.published %}{{ v.published }} · {% endif %}{{ v.summary }}">{% for text, tone in v.flags %}<span class="tg t-{{ tone }}">{{ text }}</span>{% endfor %}{{ v.summary }}{% if v.cwe %} <span class="muted">{{ v.cwe }}</span>{% endif %}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endmacro %}
+<section class="card" id="vulns">
+  <div class="card-head"><h2>Уязвимости <span class="count">{{ total }}</span></h2>
+    <span class="small muted hint">по версиям программ: NVD, база WordPress, CISA KEV, EPSS</span></div>
+  {% if groups %}
+  <p class="vtotal">{% for text, tone in totals %}<span class="t-{{ tone }}">{{ text }}</span>{% endfor %}</p>
+  <div class="vgroups">
+    {% for g in groups %}
+    <details class="vgroup" id="{{ g.anchor }}"{% if loop.first %} open{% endif %}>
+      <summary>
+        <span class="vg-title">{{ g.title }} <span class="vg-ver">{{ g.version }}</span></span>
+        <span class="vg-counts">{% for text, tone in g.counts %}<span class="t-{{ tone }}">{{ text }}</span>{% endfor %}</span>
+        {% if g.upgrade %}<span class="vg-fix">обновить до {{ g.upgrade }}</span>{% endif %}
+        <span class="vg-where muted" title="{{ g.where_all }}">{{ g.where }}</span>
+      </summary>
+      {% if g.closed %}<p class="vg-note t-err"># убран из каталога WordPress ({{ g.closed }}) — исправлений больше не будет, замените</p>{% endif %}
+      {% if g.distro %}<p class="vg-note"># сборка {{ g.distro }}{% if g.package %} {{ g.package }}{% endif %}: часть исправлений могли перенести без смены версии — сверяйте с бюллетенями {{ g.distro }}</p>{% endif %}
+      {{ vtable(g.rows[:10]) }}
+      {% if g.rows|length > 10 %}
+      <details class="vmore"><summary>[ ещё {{ g.rows|length - 10 }} ]</summary>{{ vtable(g.rows[10:], head=False) }}</details>
+      {% endif %}
+      {% if g.more %}<p class="vg-note"># и ещё {{ g.more }} — все во вкладке «Найдено → уязвимость»</p>{% endif %}
+    </details>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="card-body small"><span class="t-ok">[ok]</span> <span class="muted">в найденных версиях известных уязвимостей нет</span></div>
+  {% endif %}
+  {% if unchecked %}<p class="vg-note"># без точной версии не проверить: {{ unchecked|join(", ") }}</p>{% endif %}
+</section>

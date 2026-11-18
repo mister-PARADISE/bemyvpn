@@ -315,12 +315,12 @@ def test_run_all_is_one_chain_in_dependency_order_and_stops_whole(browser, ctx, 
     with ctx.db.session() as s:
         runs = list(s.scalars(select(Run).where(Run.target_id == tid).order_by(Run.id)))
     assert [run.module_id for run in runs] == ["resolve", "asn", "ptr", "zone", "mail", "neighbors",
-                                               "ping", "http", "tls", "ports"]
+                                               "ping", "http", "tls", "ports", "tech", "cve"]
     assert {run.chain for run in runs} == {runs[0].id}
     browser.post(f"/runs/{runs[0].id}/cancel")  # «Остановить всё»
     state = wait_chain(browser, runs[0].id, timeout=15)
     assert all(status in ("done", "cancelled") for _m, status in state["chain"])
-    assert state["chain"][-1] == ("ports", "cancelled")
+    assert state["chain"][-1] == ("cve", "cancelled")
 
 
 # --- мелочи ------------------------------------------------------------------------

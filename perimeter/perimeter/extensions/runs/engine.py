@@ -80,6 +80,11 @@ class RunContext:
     def setting(self, key: str) -> Any:
         return self.ctx.settings.get(key)
 
+    @property
+    def data_dir(self):
+        """Папка данных панели: кеши модулей (например, базы уязвимостей) живут здесь."""
+        return self.ctx.config.data_dir
+
     def _check_alive(self, s) -> None:
         """Цель (а с ней и запуск) удалили посреди работы — дальше не пишем ни строчки: это уже чужое."""
         if self.created is None:

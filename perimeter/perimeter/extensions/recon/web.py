@@ -128,8 +128,10 @@ def parse_cookie(line: str) -> dict[str, Any]:
 
 
 async def fetch(run, ip: str, host: str, port: int, tls: bool, path: str = "/", timeout: float = 8.0,
-                verify_ctx: ssl.SSLContext | None = None) -> dict[str, Any]:
-    """GET на ip:port с Host: host. Возвращает статус, заголовки, title, TLS, время — или error."""
+                verify_ctx: ssl.SSLContext | None = None, keep: bool = False, max_body: int = 262144,
+                extra_headers: dict[str, str] | None = None) -> dict[str, Any]:
+    """GET на ip:port с Host: host. Возвращает статус, заголовки, title, TLS, время — или error.
+    keep=True — ещё все заголовки (headers) и текст ответа (body, до max_body байт)."""
     scheme = "https" if tls else "http"
     default = 443 if tls else 80
     url = f"{scheme}://{host}{'' if port == default else f':{port}'}{path}"
@@ -150,14 +152,21 @@ async def fetch(run, ip: str, host: str, port: int, tls: bool, path: str = "/", 
         out["error"] = _why(exc)
         return out
     try:
+        extra = "".join(f"{k}: {v}\r\n" for k, v in (extra_headers or {}).items())
         writer.write((f"GET {path} HTTP/1.1\r\nHost: {host}\r\nUser-Agent: {UA}\r\n"
-                      "Accept: text/html,*/*;q=0.8\r\nAccept-Encoding: identity\r\nConnection: close\r\n\r\n").encode())
+                      f"Accept: text/html,*/*;q=0.8\r\nAccept-Encoding: identity\r\n{extra}Connection: close\r\n\r\n").encode())
         await writer.drain()
         head = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), timeout)
         out["ms"] = round((time.perf_counter() - start) * 1000, 1)
         body = b""
+        limit = max_body if keep else 65536
         with suppress(TimeoutError, OSError, asyncio.IncompleteReadError):
-            body = await asyncio.wait_for(reader.read(65536), 3)
+            deadline = time.monotonic() + 4
+            while len(body) < limit and time.monotonic() < deadline:  # тело целиком, а не первый кусок
+                chunk = await asyncio.wait_for(reader.read(min(65536, limit - len(body))), max(0.1, deadline - time.monotonic()))
+                if not chunk:
+                    break
+                body += chunk
     except (OSError, TimeoutError, asyncio.LimitOverrunError, asyncio.IncompleteReadError, ssl.SSLError) as exc:
         out["error"] = _why(exc)
         return out
@@ -191,6 +200,13 @@ async def fetch(run, ip: str, host: str, port: int, tls: bool, path: str = "/", 
         except LookupError:
             text = m.group(1).decode("utf-8", "replace")
         out["title"] = " ".join(text.split())[:120]
+    if keep:
+        out["headers"] = headers
+        charset = re.search(r"charset=([\w-]+)", headers.get("content-type", ""))
+        try:
+            out["body"] = body.decode(charset.group(1) if charset else "utf-8", "replace")
+        except LookupError:
+            out["body"] = body.decode("utf-8", "replace")
     return out
 
 

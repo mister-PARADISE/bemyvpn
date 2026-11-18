@@ -17,7 +17,7 @@ from ...core.settings import SettingsSection
 from ...web import DB, actor, get_ctx, redirect
 from ...web.ui import plural
 from ..runs.models import Asset
-from . import netkit, view
+from . import netkit, view, vulndb
 from ..targets.models import Target
 from .modules import MODULES
 
@@ -66,6 +66,32 @@ def _days(a):
     return (f"{d.get('expires')}, {days} дн", "err" if days < 7 else "warn" if days < 21 else "")
 
 
+def _tech_cves(a):
+    d = a.data or {}
+    if not d.get("cve_checked"):
+        return "—" if d.get("version") else ("версия не видна", "")
+    if not d.get("cves"):
+        return ("нет", "ok")
+    tone = "err" if d.get("critical") or d.get("high") or d.get("kev") else "warn"
+    return (f"{d['cves']}" + (f" (крит. {d['critical']})" if d.get("critical") else ""), tone)
+
+
+def _vuln_score(a):
+    d = a.data or {}
+    if d.get("cvss") is None:
+        return ("—", "")
+    tone = {"critical": "err", "high": "err", "medium": "warn"}.get(d.get("severity"), "")
+    return (f"{d['cvss']:.1f}", tone)
+
+
+def _vuln_flags(a):
+    d = a.data or {}
+    flags = (["в атаках"] if d.get("kev") else []) + (["эксплойт"] if d.get("exploit") else [])
+    if d.get("epss") is not None and d["epss"] >= 0.01:
+        flags.append(f"EPSS {d['epss'] * 100:.0f}%")
+    return (", ".join(flags), "err" if d.get("kev") else "warn") if flags else ""
+
+
 COLUMNS = {
     "ip": [("адрес", lambda a: a.value), ("сеть", _ip_net), ("префикс", lambda a: a.data.get("prefix")),
            ("страна", lambda a: a.data.get("country")),
@@ -84,6 +110,16 @@ COLUMNS = {
                     ("имён", lambda a: str(len(a.data.get("sans") or [])))],
     "subdomain": [("имя", lambda a: a.value), ("откуда", lambda a: a.data.get("source"))],
     "domain": [("имя", lambda a: a.value), ("откуда", lambda a: a.data.get("source"))],
+    "technology": [("программа", lambda a: a.value), ("вид", lambda a: a.data.get("category")),
+                   ("где", lambda a: ", ".join((a.data.get("where") or [])[:2])),
+                   ("сборка", lambda a: " ".join(x for x in (a.data.get("distro"), a.data.get("package")) if x)),
+                   ("уязвимости", _tech_cves),
+                   ("", lambda a: ("больше не видно", "") if a.data.get("state") == "gone"
+                    else ("убран из каталога WordPress", "warn") if a.data.get("closed") else "")],
+    "vulnerability": [("ID", lambda a: a.value), ("программа", lambda a: f"{a.data.get('product_title', '')} {a.data.get('version', '')}"),
+                      ("CVSS", _vuln_score), ("опасность", lambda a: vulndb.SEVERITY_RU.get(a.data.get("severity", ""), "")),
+                      ("признаки", _vuln_flags), ("исправлено в", lambda a: a.data.get("fixed_in")),
+                      ("", lambda a: ("закрыта", "ok") if a.data.get("state") == "closed" else "")],
     "neighbor": [("адрес", lambda a: a.value), ("имя", lambda a: a.data.get("ptr")),
                  ("рядом с", lambda a: a.data.get("near")),
                  ("", lambda a: ("похоже, ваш", "warn") if a.data.get("related") else "")],
@@ -110,6 +146,18 @@ def issues_slot(db, ctx: Context, target=None, **_):
     levels = {i.level for i in found}
     return {"issues": found, "nav_count": len(found),
             "nav_tone": "err" if "err" in levels else "warn" if "warn" in levels else "ok"}
+
+
+def vulns_slot(db, ctx: Context, target=None, **_):
+    if target is None:
+        return None
+    f = view.load(db, target)
+    if not f.vulns and not f.did_cve():
+        return None
+    groups = view.vuln_groups(f)
+    hot = any(g["hot"] for g in groups)
+    return {"groups": groups, "unchecked": view.unchecked(f), "total": len(f.vulns), "totals": view.vuln_totals(f),
+            "nav_count": len(f.vulns), "nav_tone": "err" if hot else "warn" if groups else "ok"}
 
 
 def tree_slot(db, ctx: Context, target=None, **_):
@@ -203,12 +251,15 @@ def dismiss(request: Request, db: DB, target_id: int, asset_id: int):
 
 def setup(ctx: Context) -> None:
     ctx.asset_types.add(AssetType("neighbor", "Сосед", "network", "Адрес в той же сети с обратным именем", 110))
+    ctx.asset_types.add(AssetType("vulnerability", "Уязвимость", "shield-alert",
+                                  "Известная уязвимость (CVE) в найденной версии программы", 5))
     for module in MODULES:
         ctx.modules.add(module)
     ctx.services.setdefault("asset_columns", {}).update(COLUMNS)
     ctx.add_router(router)
     ctx.add_slot("target.main", Slot("summary", "recon/_summary.html", data=summary_slot, order=10, nav="сводка"))
     ctx.add_slot("target.main", Slot("issues", "recon/_issues.html", data=issues_slot, order=12, nav="замечания"))
+    ctx.add_slot("target.main", Slot("vulns", "recon/_vulns.html", data=vulns_slot, order=13, nav="уязвимости"))
     ctx.add_slot("target.main", Slot("tree", "recon/_tree.html", data=tree_slot, order=14, nav="структура"))
     ctx.add_slot("target.side", Slot("suggest", "recon/_suggest.html", data=suggestions, order=20, nav="можно добавить"))
     ctx.hook("targets.columns", target_columns)
@@ -220,5 +271,25 @@ def setup(ctx: Context) -> None:
             f.lines("dns_servers", "DNS-серверы", placeholder="1.1.1.1\n8.8.8.8",
                     help="По одному в строке, можно с портом: 127.0.0.1:5353. Пусто — системные"),
             f.integer("dns_timeout", "Ждать ответа DNS, с", default=3, min=1, max=15),
+        ),
+    ))
+    ctx.settings.section(SettingsSection(
+        id="vulndb", title="Уязвимости", icon="shield-alert", group="Модули", order=25,
+        description="Откуда модуль «Уязвимости» берёт данные: NVD — все CVE по программе, база WordPress — плагины "
+                    "и темы, CISA KEV — что уже используют в атаках, EPSS — вероятность атаки. Ответы хранятся "
+                    "в data/vulndb и обновляются сами.",
+        fields=(
+            f.secret("nvd_api_key", "Ключ API NVD",
+                     help="Необязательно. Без ключа NVD отвечает не чаще 5 раз за 30 секунд — первая проверка "
+                          "идёт дольше. Ключ бесплатный: nvd.nist.gov/developers/request-an-api-key"),
+            f.integer("cache_hours", "Обновлять базы раз в, ч", default=24, min=1, max=720, width="half"),
+            f.boolean("use_kev", "Отмечать уязвимости, которые уже используют в атаках (CISA KEV)", default=True),
+            f.boolean("use_epss", "Вероятность атаки в ближайший месяц (EPSS)", default=True),
+            f.url("nvd_url", "Адрес NVD API", default="https://services.nvd.nist.gov/rest/json/cves/2.0"),
+            f.url("kev_url", "Каталог CISA KEV",
+                  default="https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"),
+            f.url("epss_url", "Адрес EPSS API", default="https://api.first.org/data/v1/epss"),
+            f.url("wp_url", "База плагинов и тем WordPress", default="https://www.wpvulnerability.net",
+                  help="Уязвимости плагинов по их названию: собирает Wordfence, Patchstack, WPScan и NVD"),
         ),
     ))
