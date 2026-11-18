@@ -21,7 +21,6 @@ class Config:
     # Модули Python, которые грузятся как встроенные расширения (по порядку).
     builtin_extensions: tuple[str, ...] = (
         "perimeter.extensions.dashboard",
-        "perimeter.extensions.clients",
         "perimeter.extensions.targets",
         "perimeter.extensions.catalog",
         "perimeter.extensions.journal",

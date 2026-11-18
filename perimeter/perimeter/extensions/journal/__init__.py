@@ -14,24 +14,23 @@ from ...web import DB, get_ctx, render
 TITLE = "Журнал"
 DESCRIPTION = "История действий в панели"
 VERSION = "1.0"
-PER_PAGE = 60
+PER_PAGE = 80
 
 router = APIRouter()
 
-GOOD = ("authorized", "paid", "setup")
-BAD = ("revoked", "deleted", "cancelled")
-NEW = ("created",)
+# Метка строки лога по последнему слову действия: target.authorized → [ok]
+LEVELS = {
+    "created": ("[+]", "accent"),
+    "authorized": ("[ok]", "success"),
+    "setup": ("[ok]", "success"),
+    "login": ("[>]", ""),
+    "revoked": ("[x]", "danger"),
+    "deleted": ("[x]", "danger"),
+}
 
 
-def tone(action: str) -> str:
-    tail = action.rsplit(".", 1)[-1]
-    if tail in GOOD:
-        return "success"
-    if tail in BAD:
-        return "danger"
-    if tail in NEW:
-        return "accent"
-    return ""
+def level(action: str) -> tuple[str, str]:
+    return LEVELS.get(action.rsplit(".", 1)[-1], ("[~]", ""))
 
 
 @router.get("/journal")
@@ -49,13 +48,13 @@ def journal(request: Request, db: DB, kind: str = "", q: str = "", page: int = 1
     pages = max(1, math.ceil(total / PER_PAGE))
     page = min(max(page, 1), pages)
     entries = db.scalars(stmt.order_by(AuditEntry.id.desc()).offset((page - 1) * PER_PAGE).limit(PER_PAGE)).all()
-    tabs = [("", "Всё", None)] + [(k, title, None) for k, title in ctx.entity_kinds()] + [("system", "Вход и система", None)]
+    tabs = [("", "Всё", None)] + [(k, title, None) for k, title in ctx.entity_kinds()] + [("system", "Система", None)]
     return render(request, "journal/index.html", entries=entries, kind=kind, q=q, tabs=tabs, page=page, pages=pages,
-                  total=total, query={"kind": kind, "q": q}, tone=tone)
+                  total=total, query={"kind": kind, "q": q}, level=level)
 
 
 def recent(db, ctx: Context) -> dict:
-    return {"entries": db.scalars(select(AuditEntry).order_by(AuditEntry.id.desc()).limit(7)).all(), "tone": tone}
+    return {"entries": db.scalars(select(AuditEntry).order_by(AuditEntry.id.desc()).limit(8)).all(), "level": level}
 
 
 def for_entity(kind: str):
@@ -64,8 +63,8 @@ def for_entity(kind: str):
         if obj is None:
             return None
         entries = db.scalars(select(AuditEntry).where(AuditEntry.entity_type == kind, AuditEntry.entity_id == obj.id)
-                             .order_by(AuditEntry.id.desc()).limit(8)).all()
-        return {"entries": entries, "tone": tone, "more": f"/journal?kind={kind}&q="}
+                             .order_by(AuditEntry.id.desc()).limit(10)).all()
+        return {"entries": entries, "level": level}
     return data
 
 
@@ -73,7 +72,6 @@ def setup(ctx: Context) -> None:
     ctx.pages.add(Page("journal", "Журнал", "/journal", icon="history", section="Система", order=90,
                        description="Кто, что и когда сделал"))
     ctx.add_router(router)
-    ctx.widgets.add(Widget("recent", "Последние действия", "journal/_widget.html", data=recent, icon="history",
-                           order=90, link="/journal"))
-    ctx.add_slot("client.side", Slot("journal", "journal/_entity.html", data=for_entity("client"), order=90))
+    ctx.widgets.add(Widget("recent", "Журнал", "journal/_widget.html", data=recent, icon="history",
+                           order=90, span=3, link="/journal"))
     ctx.add_slot("target.side", Slot("journal", "journal/_entity.html", data=for_entity("target"), order=90))

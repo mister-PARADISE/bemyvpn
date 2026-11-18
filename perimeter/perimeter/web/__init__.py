@@ -2,9 +2,9 @@
 
     from perimeter.web import DB, render, flash, redirect, get_ctx, actor
 
-    @router.get("/clients")
-    def clients(request: Request, db: DB):
-        return render(request, "clients/list.html", clients=...)
+    @router.get("/reports")
+    def reports(request: Request, db: DB):
+        return render(request, "reports/list.html", reports=...)
 """
 
 from __future__ import annotations

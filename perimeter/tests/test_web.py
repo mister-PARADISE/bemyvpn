@@ -1,16 +1,16 @@
-"""Панель целиком: вход, защита форм, клиенты, счета, цели, настройки, страницы."""
+"""Панель целиком: вход, защита форм, цели и разрешения, настройки, поиск, страницы."""
 
 from __future__ import annotations
 
 from datetime import date, timedelta
 
+from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from perimeter.core.models import AuditEntry, User
-from perimeter.extensions.clients.models import Client, Invoice
 from perimeter.extensions.targets.models import Target
 
-from .conftest import PASSWORD
+from .conftest import PASSWORD, Browser
 
 
 def iso(days: int) -> str:
@@ -22,10 +22,16 @@ def rows(ctx, model):
         return s.scalars(select(model)).all()
 
 
+def fresh(app) -> Browser:
+    b = Browser(TestClient(app))
+    b.get("/login")
+    return b
+
+
 # --- вход ---------------------------------------------------------------------
 
 def test_first_run_goes_to_setup(anon):
-    r = anon.get("/clients", follow_redirects=False)
+    r = anon.get("/targets", follow_redirects=False)
     assert r.status_code == 303 and r.headers["location"] == "/setup"
 
 
@@ -35,11 +41,14 @@ def test_setup_validates_password(anon):
     assert r.status_code == 422 and "не короче 10" in r.text
 
 
+def test_setup_only_once(browser, app):
+    b = fresh(app)
+    r = b.post("/setup", {"username": "intruder", "password": PASSWORD, "password2": PASSWORD})
+    assert r.headers["location"] == "/login"
+    assert [u.username for u in rows(app.state.ctx, User)] == ["admin"]
+
+
 def test_login_logout_and_next(browser, app):
-    from fastapi.testclient import TestClient
-
-    from .conftest import Browser
-
     b = Browser(TestClient(app))
     r = b.get("/targets?state=pending", follow_redirects=False)
     assert r.headers["location"] == "/login?next=/targets%3Fstate%3Dpending"
@@ -56,23 +65,13 @@ def test_login_logout_and_next(browser, app):
 
 
 def test_open_redirect_blocked(browser, app):
-    from fastapi.testclient import TestClient
-
-    from .conftest import Browser
-
-    b = Browser(TestClient(app))
-    b.get("/login")
+    b = fresh(app)
     r = b.post("/login", {"username": "admin", "password": PASSWORD, "next": "//evil.example"})
     assert r.headers["location"] == "/"
 
 
 def test_login_throttle(browser, app):
-    from fastapi.testclient import TestClient
-
-    from .conftest import Browser
-
-    b = Browser(TestClient(app))
-    b.get("/login")
+    b = fresh(app)
     for _ in range(5):
         b.post("/login", {"username": "admin", "password": "nope-nope-1"})
     r = b.post("/login", {"username": "admin", "password": PASSWORD})
@@ -80,35 +79,31 @@ def test_login_throttle(browser, app):
 
 
 def test_csrf_required(browser):
-    r = browser.client.post("/clients/new", data={"name": "X"}, follow_redirects=False)
+    r = browser.client.post("/targets/new", data={"domain": "example.com"}, follow_redirects=False)
     assert r.status_code == 403
-    r = browser.client.post("/clients/new", data={"name": "X", "_csrf": "forged"}, follow_redirects=False)
+    r = browser.client.post("/targets/new", data={"domain": "example.com", "_csrf": "forged"}, follow_redirects=False)
     assert r.status_code == 403
 
 
 def test_password_change_ends_other_sessions(browser, app, ctx):
-    from fastapi.testclient import TestClient
-
-    from .conftest import Browser
-
-    other = Browser(TestClient(app))
-    other.get("/login")
+    other = fresh(app)
     other.post("/login", {"username": "admin", "password": PASSWORD})
-    assert other.get("/clients").status_code == 200
+    assert other.get("/targets").status_code == 200
     r = browser.post("/account/password", {"current": PASSWORD, "new": "another-pass-2", "new2": "another-pass-2"})
     assert r.status_code == 303
-    assert other.get("/clients", follow_redirects=False).status_code == 303
-    assert browser.get("/clients").status_code == 200
+    assert other.get("/targets", follow_redirects=False).status_code == 303
+    assert browser.get("/targets").status_code == 200
     assert rows(ctx, User)[0].session_epoch == 1
 
 
 # --- страницы ------------------------------------------------------------------
 
 def test_every_registered_page_renders(browser, ctx):
+    assert {p.id for p in ctx.pages} == {"dashboard", "targets", "modules", "journal", "settings"}
     for page in ctx.pages:
         r = browser.get(page.path)
         assert r.status_code == 200, (page.id, r.text[:500])
-        assert "<html" in r.text
+        assert 'class="cursor"' in r.text  # терминальная шапка на месте
 
 
 def test_security_headers(browser):
@@ -119,78 +114,28 @@ def test_security_headers(browser):
 
 
 def test_404_page(browser):
-    r = browser.get("/clients/999")
-    assert r.status_code == 404 and "Клиент не найден" not in r.text  # общий понятный текст
-    assert "Страница не найдена" in r.text
+    r = browser.get("/targets/999")
+    assert r.status_code == 404 and "Страница не найдена" in r.text
 
 
-# --- клиенты и счета -------------------------------------------------------------
-
-def make_client(browser, **data):
-    payload = {"name": "Алексей", "status": "active", "telegram": "https://t.me/amorozov"} | data
-    r = browser.post("/clients/new", payload)
-    assert r.status_code == 303, r.text
-    return int(r.headers["location"].rsplit("/", 1)[1])
-
-
-def test_client_create_validates_and_normalizes(browser, ctx):
-    r = browser.post("/clients/new", {"name": "", "email": "bad", "status": "active"})
-    assert r.status_code == 422
-    cid = make_client(browser)
-    client = rows(ctx, Client)[0]
-    assert client.id == cid and client.telegram == "amorozov"
-    page = browser.get(f"/clients/{cid}").text
-    assert "@amorozov" in page
-
-
-def test_invoice_paid_extends_paid_until(browser, ctx):
-    cid = make_client(browser, status="lead")
-    r = browser.post(f"/clients/{cid}/invoices", {"title": "Аудит", "amount": "450", "currency": "USD",
-                                                    "covers_until": iso(30)})
-    assert r.status_code == 303
-    invoice = rows(ctx, Invoice)[0]
-    assert invoice.number == f"{date.today().year}-001" and invoice.status == "issued"
-    browser.post(f"/invoices/{invoice.id}/status", {"to": "paid"})
-    client = rows(ctx, Client)[0]
-    assert client.paid_until == date.today() + timedelta(days=30)
-    assert client.status == "active"  # первый оплаченный счёт делает лид клиентом
-    # недопустимый переход: оплаченный счёт нельзя «отменить»
-    browser.post(f"/invoices/{invoice.id}/status", {"to": "cancelled"})
-    assert rows(ctx, Invoice)[0].status == "paid"
-
-
-def test_invoice_numbers_are_unique(browser, ctx):
-    cid = make_client(browser)
-    for _ in range(3):
-        browser.post(f"/clients/{cid}/invoices", {"title": "x", "amount": "1", "currency": "USD"})
-    numbers = [i.number for i in rows(ctx, Invoice)]
-    assert len(set(numbers)) == 3
-    r = browser.post(f"/clients/{cid}/invoices", {"title": "x", "amount": "1", "currency": "USD", "number": numbers[0]})
-    assert len(rows(ctx, Invoice)) == 3 and r.status_code == 303
-
-
-def test_client_with_targets_cannot_be_deleted(browser, ctx):
-    cid = make_client(browser)
-    browser.post("/targets/new", {"domain": "example.com", "client_id": str(cid)})
-    browser.post(f"/clients/{cid}/delete")
-    assert len(rows(ctx, Client)) == 1
-    tid = rows(ctx, Target)[0].id
-    browser.post(f"/targets/{tid}/delete")
-    browser.post(f"/clients/{cid}/delete")
-    assert rows(ctx, Client) == []
+def test_static_font_served(browser):
+    r = browser.client.get("/static/fonts/jetbrains-mono-cyrillic-wght-normal.woff2")
+    assert r.status_code == 200 and r.content[:4] == b"wOF2"
 
 
 # --- цели ----------------------------------------------------------------------
 
 def test_target_normalization_and_duplicates(browser, ctx):
-    r = browser.post("/targets/new", {"domain": "https://WWW.Пример.рф/shop", "client_id": ""})
+    r = browser.post("/targets/new", {"domain": "https://WWW.Пример.рф/shop"})
     assert r.status_code == 303
     target = rows(ctx, Target)[0]
     assert target.domain == "xn--e1afmkfd.xn--p1ai" and target.name == "пример.рф"
-    r = browser.post("/targets/new", {"domain": "пример.рф", "client_id": ""})
+    r = browser.post("/targets/new", {"domain": "пример.рф"})
     assert r.status_code == 422 and "уже есть" in r.text
-    r = browser.post("/targets/new", {"domain": "example.org", "include": "not a host", "client_id": ""})
+    r = browser.post("/targets/new", {"domain": "example.org", "include": "not a host"})
     assert r.status_code == 422 and "Не разобрал" in r.text
+    r = browser.post("/targets/new", {"domain": "localhost"})
+    assert r.status_code == 422
 
 
 def test_authorization_lifecycle(browser, ctx):
@@ -200,12 +145,15 @@ def test_authorization_lifecycle(browser, ctx):
     # без подтверждения разрешение не ставится
     browser.post(f"/targets/{t.id}/authorize", {"method": "document", "note": ""})
     assert rows(ctx, Target)[0].auth_status == "pending"
+    # прошедшая дата не принимается
+    browser.post(f"/targets/{t.id}/authorize", {"method": "document", "note": "x", "valid_until": iso(-1)})
+    assert rows(ctx, Target)[0].auth_status == "pending"
     browser.post(f"/targets/{t.id}/authorize", {"method": "document", "note": "Договор №1", "valid_until": iso(10)})
     t = rows(ctx, Target)[0]
     assert t.is_authorized and t.auth_note == "Договор №1"
-    # смена домена сбрасывает разрешение
+    # смена домена сбрасывает разрешение и код подтверждения
     token = t.auth_token
-    browser.post(f"/targets/{t.id}/edit", {"domain": "example.net", "client_id": ""})
+    browser.post(f"/targets/{t.id}/edit", {"domain": "example.net"})
     t = rows(ctx, Target)[0]
     assert t.auth_status == "pending" and t.auth_token != token
     browser.post(f"/targets/{t.id}/authorize", {"method": "dns_txt", "note": "TXT найден"})
@@ -213,6 +161,17 @@ def test_authorization_lifecycle(browser, ctx):
     assert rows(ctx, Target)[0].auth_state == "revoked"
     actions = [e.action for e in rows(ctx, AuditEntry)]
     assert "target.authorized" in actions and "target.revoked" in actions
+
+
+def test_new_token_only_without_permission(browser, ctx):
+    browser.post("/targets/new", {"domain": "example.com"})
+    t = rows(ctx, Target)[0]
+    browser.post(f"/targets/{t.id}/token")
+    assert rows(ctx, Target)[0].auth_token != t.auth_token
+    browser.post(f"/targets/{t.id}/authorize", {"method": "document", "note": "ok"})
+    token = rows(ctx, Target)[0].auth_token
+    browser.post(f"/targets/{t.id}/token")
+    assert rows(ctx, Target)[0].auth_token == token
 
 
 def test_expired_authorization(ctx, browser):
@@ -224,6 +183,8 @@ def test_expired_authorization(ctx, browser):
     t = rows(ctx, Target)[0]
     assert t.auth_state == "expired" and not t.is_authorized
     assert "Разрешение истекло" in browser.get("/targets").text
+    assert "Разрешение истекло" in browser.get("/targets?state=expired").text
+    assert "example.com" not in browser.get("/targets?state=verified").text
 
 
 def test_scope_check_endpoint(browser, ctx):
@@ -235,33 +196,49 @@ def test_scope_check_endpoint(browser, ctx):
     assert bad["allowed"] is False and "Исключено" in bad["reason"]
 
 
-# --- настройки, поиск, тема ------------------------------------------------------
+def test_delete_target(browser, ctx):
+    browser.post("/targets/new", {"domain": "example.com"})
+    tid = rows(ctx, Target)[0].id
+    browser.post(f"/targets/{tid}/delete")
+    assert rows(ctx, Target) == []
+    assert any(e.action == "target.deleted" for e in rows(ctx, AuditEntry))
+
+
+# --- обзор, настройки, поиск -----------------------------------------------------
+
+def test_dashboard_widgets(browser):
+    browser.post("/targets/new", {"domain": "example.com"})
+    page = browser.get("/").text
+    for title in ("Цели", "Модули", "Система", "Журнал"):
+        assert title in page
+    assert "[+]" in page and "Новая цель example.com" in page
+
 
 def test_settings_page_saves_and_audits(browser, ctx):
-    r = browser.post("/settings/general", {"brand_name": "Моя панель", "operator_name": "", "timezone": "UTC",
-                                           "currency": "EUR", "remind_days": "7"})
+    r = browser.post("/settings/general", {"brand_name": "Моя панель", "timezone": "UTC", "remind_days": "7"})
     assert r.status_code == 303
     assert ctx.settings.get("general.brand_name") == "Моя панель"
     assert "Моя панель" in browser.get("/").text
     assert any(e.action == "settings.updated" for e in rows(ctx, AuditEntry))
-    r = browser.post("/settings/general", {"brand_name": "X", "timezone": "UTC", "currency": "EUR", "remind_days": "0"})
+    r = browser.post("/settings/general", {"brand_name": "X", "timezone": "UTC", "remind_days": "0"})
     assert r.status_code == 422
     assert ctx.settings.get("general.brand_name") == "Моя панель"
 
 
-def test_theme_api(browser, ctx):
-    r = browser.json_post("/api/theme", {"theme": "light"})
-    assert r.status_code == 200 and ctx.settings.get("appearance.theme") == "light"
-    assert browser.json_post("/api/theme", {"theme": "neon"}).status_code == 400
-    assert browser.client.post("/api/theme", json={"theme": "dark"}).status_code == 403
+def test_accent_setting(browser, ctx):
+    browser.post("/settings/appearance", {"accent": "amber", "density": "compact"})
+    page = browser.get("/").text
+    assert 'data-accent="amber"' in page and 'data-density="compact"' in page
+    r = browser.post("/settings/appearance", {"accent": "pink", "density": "compact"})
+    assert r.status_code == 422
 
 
 def test_search(browser):
-    make_client(browser, name="Ирина Соколова", company="Ромашка")
-    browser.post("/targets/new", {"domain": "romashka.example"})
+    browser.post("/targets/new", {"domain": "romashka.example", "title": "Ромашка"})
     items = browser.client.get("/api/search", params={"q": "ромаш"}).json()["items"]
-    kinds = {i["kind"] for i in items}
-    assert "Клиенты" in kinds
-    items = browser.client.get("/api/search", params={"q": "romashka"}).json()["items"]
+    assert any(i["kind"] == "Цели" for i in items)  # кириллица без учёта регистра
+    items = browser.client.get("/api/search", params={"q": "ROMASHKA"}).json()["items"]
     assert any(i["kind"] == "Цели" for i in items)
+    items = browser.client.get("/api/search", params={"q": "часовой"}).json()["items"]
+    assert any(i["kind"] == "Настройки" for i in items)
     assert browser.client.get("/api/search").json()["items"]  # пустой запрос — список разделов

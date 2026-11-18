@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 from datetime import date, datetime, timezone
-from decimal import Decimal
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -23,9 +22,6 @@ from .csrf import csrf_token
 log = logging.getLogger("perimeter.web")
 
 WEB_DIR = Path(__file__).parent
-CURRENCY_SIGNS = {"USD": "$", "EUR": "€", "RUB": "₽", "USDT": "USDT", "KZT": "₸", "UAH": "₴"}
-CURRENCIES = {"USD": "Доллар США ($)", "EUR": "Евро (€)", "RUB": "Рубль (₽)", "USDT": "USDT", "KZT": "Тенге (₸)",
-              "UAH": "Гривна (₴)"}
 
 
 def plural(n: int | float, one: str, few: str, many: str) -> str:
@@ -35,16 +31,6 @@ def plural(n: int | float, one: str, few: str, many: str) -> str:
     if 2 <= n % 10 <= 4 and not 12 <= n % 100 <= 14:
         return few
     return many
-
-
-def money(amount: Decimal | float | int | None, currency: str = "USD") -> str:
-    if amount is None:
-        return "—"
-    value = Decimal(amount).quantize(Decimal("0.01"))
-    whole, _, frac = f"{value:,.2f}".replace(",", " ").partition(".")
-    text = whole if frac == "00" else f"{whole},{frac}"
-    sign = CURRENCY_SIGNS.get(currency, currency)
-    return f"{text} {sign}"
 
 
 class UI:
@@ -64,7 +50,6 @@ class UI:
             ago=self.fmt_ago,
             days_left=days_left,
             due=self.due,
-            money=money,
             host=display_host,
             nl2br=lambda s: Markup("<br>".join(escape(s or "").split("\n"))),
         )
@@ -88,7 +73,7 @@ class UI:
     # --- вставки расширений ------------------------------------------------
     @pass_context
     def render_slot(self, context, name: str, **kwargs: Any) -> Markup:
-        """{{ slot("client.detail", client=client) }} — блоки всех расширений для этого места."""
+        """{{ slot("target.main", target=target) }} — блоки всех расширений для этого места."""
         registry = self.ctx.slots.get(name)
         if not registry:
             return Markup("")
@@ -209,7 +194,6 @@ class UI:
             "nav": nav,
             "active_page": active,
             "brand": settings.get("general.brand_name"),
-            "theme": settings.get("appearance.theme"),
             "accent": settings.get("appearance.accent"),
             "density": settings.get("appearance.density"),
             "flashes": pop_flashes(request) if has_session else [],

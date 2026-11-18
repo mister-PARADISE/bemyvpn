@@ -2,8 +2,7 @@
 {% import "_ui.html" as ui with context %}
 {% block content %}
 {% call ui.head("Обзор", [today]) %}
-  <a class="ib" href="/clients/new" data-tip="Новый клиент" aria-label="Новый клиент">{{ icon('users') }}</a>
-  <a class="ib" href="/targets/new" data-tip="Новая цель" aria-label="Новая цель">{{ icon('globe') }}</a>
+  <a class="ib primary" href="/targets/new" data-tip="Новая цель" aria-label="Новая цель">{{ icon('plus') }}</a>
 {% endcall %}
 
 {% if widgets %}

@@ -1,14 +1,7 @@
 {% if entries %}
-<ul class="timeline">
-  {% for e in entries %}
-    {% set url = ctx.entity_url(e.entity_type, e.entity_id) %}
-    <li>
-      <span class="dot tone-{{ tone(e.action) }}"></span>
-      <span class="l1 soft" style="white-space:normal;font-size:13px">{% if url %}<a href="{{ url }}" style="color:inherit">{{ e.summary }}</a>{% else %}{{ e.summary }}{% endif %}</span>
-      <span class="when" title="{{ e.at|dt }}">{{ e.at|ago }}</span>
-    </li>
-  {% endfor %}
+<ul class="log">
+  {% for e in entries %}{% with full=False %}{% include "journal/_line.html" %}{% endwith %}{% endfor %}
 </ul>
 {% else %}
-<div class="card-body muted small">Пока ничего не происходило</div>
+<div class="card-body muted small"># пока ничего не происходило</div>
 {% endif %}

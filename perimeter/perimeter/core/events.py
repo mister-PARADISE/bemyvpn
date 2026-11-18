@@ -1,7 +1,7 @@
 """Шина событий: расширения узнают друг о друге, не импортируя друг друга.
 
     ctx.events.on("target.authorized", handler)
-    ctx.events.on("client.*", handler)      # все события клиентов
+    ctx.events.on("target.*", handler)      # все события целей
     ctx.events.on("*", handler)             # вообще всё
     ctx.events.emit("target.authorized", target_id=5)
 

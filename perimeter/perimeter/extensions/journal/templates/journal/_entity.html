@@ -1,16 +1,16 @@
 <div class="card">
   <div class="card-head"><h2>{{ icon('history') }}История</h2></div>
   {% if entries %}
-  <ul class="timeline">
+  <ul class="log">
     {% for e in entries %}
+    {% set mark, tone = level(e.action) %}
     <li>
-      <span class="dot tone-{{ tone(e.action) }}"></span>
-      <span class="l1 soft" style="white-space:normal;font-size:13px">{{ e.summary }}</span>
-      <span class="when" title="{{ e.at|dt }}">{{ e.at|ago }}</span>
+      <span class="when" title="{{ e.at|dt }}">{{ (e.at|dt)[:5] }}</span>
+      <span class="what"><span class="lvl tone-{{ tone }}">{{ mark }}</span>{{ e.summary }}</span>
     </li>
     {% endfor %}
   </ul>
   {% else %}
-  <div class="card-body muted small">Записей пока нет</div>
+  <div class="card-body muted small"># записей пока нет</div>
   {% endif %}
 </div>

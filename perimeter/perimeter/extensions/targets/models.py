@@ -3,12 +3,11 @@ from __future__ import annotations
 import secrets
 from datetime import date, datetime
 
-from sqlalchemy import JSON, Date, DateTime, ForeignKey, Integer, String, Text
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy import JSON, Date, DateTime, Integer, String, Text
+from sqlalchemy.orm import Mapped, mapped_column
 
 from ...core.db import Base, TimestampMixin
 from ...core.scope import Scope, display_host
-from ..clients.models import Client
 
 AUTH_METHODS = {
     "dns_txt": "TXT-запись в DNS",
@@ -20,7 +19,7 @@ AUTH_METHODS = {
 
 AUTH_STATES = {
     "pending": ("Ждёт разрешения", "warning"),
-    "verified": ("Разрешение есть", "success"),
+    "verified": ("Разрешено", "success"),
     "expired": ("Разрешение истекло", "danger"),
     "revoked": ("Разрешение отозвано", "neutral"),
 }
@@ -34,7 +33,6 @@ class Target(TimestampMixin, Base):
     __tablename__ = "target"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    client_id: Mapped[int | None] = mapped_column(ForeignKey("client.id", ondelete="RESTRICT"), index=True)
     domain: Mapped[str] = mapped_column(String(253), unique=True, nullable=False)
     title: Mapped[str] = mapped_column(String(160), default="", nullable=False)
     include: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
@@ -47,8 +45,6 @@ class Target(TimestampMixin, Base):
     auth_note: Mapped[str] = mapped_column(Text, default="", nullable=False)
     auth_verified_at: Mapped[datetime | None] = mapped_column(DateTime)
     auth_valid_until: Mapped[date | None] = mapped_column(Date)
-
-    client: Mapped[Client | None] = relationship()
 
     @property
     def name(self) -> str:

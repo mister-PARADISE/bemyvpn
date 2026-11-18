@@ -3,14 +3,11 @@
 {% block title %}Первый запуск{% endblock %}
 {% block auth %}
 <div class="auth-card">
-  <div class="auth-brand">
-    <span class="logo"><svg aria-hidden="true" viewBox="0 0 32 32"><use href="#i-logo"></use></svg></span>
-    <span class="brand-name">{{ brand }}</span>
-  </div>
+  {% include "_banner.html" %}
   <div class="card">
     <div class="card-body">
-      <h1>Первый запуск</h1>
-      <p class="sub">Придумайте имя и пароль администратора.<br>Пароль хранится только в виде хэша.</p>
+      <h1><span class="prompt">&gt;</span>init<span class="cursor" aria-hidden="true"></span></h1>
+      <p class="sub"># первый запуск: придумайте имя и пароль администратора<br># пароль хранится только в виде хэша</p>
       <form class="form" method="post" action="/setup">
         {{ ui.csrf_field() }}
         {{ ui.input("username", "Имя", form.username, errors, required=True, attrs='autocomplete="username" autofocus') }}

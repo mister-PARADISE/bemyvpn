@@ -4,13 +4,13 @@
 добавить в панель, добавляется через ctx:
 
     def setup(ctx: Context) -> None:
-        ctx.pages.add(Page("clients", "Клиенты", "/clients", icon="users"))
+        ctx.pages.add(Page("reports", "Отчёты", "/reports", icon="file"))
         ctx.add_router(router)
-        ctx.widgets.add(Widget("payments", "Оплаты", "clients/_widget.html", data=...))
+        ctx.widgets.add(Widget("risk", "Риски", "reports/_widget.html", data=...))
         ctx.settings.section(SettingsSection(...))
         ctx.modules.add(SomeModule)
         ctx.search(provider)
-        ctx.entity("client", lambda id: f"/clients/{id}")
+        ctx.entity("report", lambda id: f"/reports/{id}")
         ctx.events.on("target.authorized", handler)
 """
 
@@ -75,7 +75,7 @@ class Widget:
 
 @dataclass(frozen=True)
 class Slot:
-    """Вставка в чужую страницу. Страница объявляет место: {{ slot("client.detail", client=client) }},
+    """Вставка в чужую страницу. Страница объявляет место: {{ slot("target.main", target=target) }},
     а любое расширение кладёт туда свой блок — не трогая код страницы.
 
     data(session, ctx, **kwargs) → дополнительный контекст шаблона.
@@ -160,7 +160,7 @@ class Context:
     def hook(self, name: str, fn: Callable[..., Any]) -> Callable[..., Any]:
         """Крючок: в отличие от события, его ответ важен тому, кто спрашивает.
 
-        ctx.hook("client.before_delete", check)  →  ctx.call_hooks(...) соберёт ответы всех.
+        ctx.hook("target.before_delete", check)  →  ctx.call_hooks(...) соберёт ответы всех.
         """
         self.hooks.setdefault(name, []).append(fn)
         return fn

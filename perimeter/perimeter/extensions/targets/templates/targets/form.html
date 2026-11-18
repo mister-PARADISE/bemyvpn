@@ -3,8 +3,11 @@
 {% block title %}{{ target.name if target else "Новая цель" }}{% endblock %}
 {% block content %}
 <div class="narrow">
-  {{ ui.head(target.name if target else "Новая цель", ["Сайт, его границы и заметки"],
-             back=("/targets/%d"|format(target.id)) if target else "/targets", back_text=target.name if target else "Цели") }}
+  {% if target %}
+    {{ ui.head("Изменить", ["Домен, название, границы и заметки"], back="/targets/%d"|format(target.id), back_text=target.name) }}
+  {% else %}
+    {{ ui.head("Новая цель", ["Сайт, который вы будете проверять, и его границы"], back="/targets", back_text="Цели") }}
+  {% endif %}
   <form class="card" method="post">
     <div class="card-body form">
       {{ ui.csrf_field() }}

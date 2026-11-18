@@ -2,12 +2,14 @@
 
 {% macro csrf_field() %}<input type="hidden" name="_csrf" value="{{ csrf }}">{% endmacro %}
 
-{# Шапка страницы: заголовок, строки пояснения (без «·» — каждая с новой строки), справа — кнопки #}
+{# Шапка страницы: путь как в терминале, заголовок с курсором, строки-комментарии, справа — кнопки.
+   back — ссылка на родителя: ~/цели/example.com #}
 {% macro head(title, lines=(), back=None, back_text=None) %}
+{% set slug = title|lower|replace(" ", "-") %}
 <div class="page-head">
   <div class="page-title">
-    {% if back %}<a class="back" href="{{ back }}">{{ icon('chevron-left') }}{{ back_text }}</a>{% endif %}
-    <h1><span>{{ title }}</span></h1>
+    <div class="path">~/{% if back %}<a href="{{ back }}">{{ back_text|lower|replace(" ", "-") }}</a>/{% endif %}{{ slug }}</div>
+    <h1><span class="prompt" aria-hidden="true">&gt;</span><span class="title">{{ title }}</span><span class="cursor" aria-hidden="true"></span></h1>
     {% set lines = lines|reject('none')|reject('equalto', '')|list %}
     {% if lines %}<div class="sub">{% for line in lines %}<span>{{ line }}</span>{% endfor %}</div>{% endif %}
   </div>

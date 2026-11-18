@@ -16,13 +16,12 @@ from ..core import fields as f
 from ..core.context import Context
 from ..core.db import Database
 from ..core.extensions import load_all
-from ..core.fields import FieldError
 from ..core.settings import SettingsSection
 from . import DB, get_ctx, render
 from .auth import LoginRequired, account, login_redirect_url, require_user
 from .auth import router as auth_router
 from .csrf import verify_csrf
-from .ui import CURRENCIES, WEB_DIR, UI
+from .ui import WEB_DIR, UI
 
 log = logging.getLogger("perimeter")
 
@@ -56,36 +55,28 @@ TIMEZONES = {
 }
 
 ACCENTS = {
-    "blue": "Синий",
+    "green": "Зелёный люминофор",
+    "amber": "Янтарный монитор",
     "cyan": "Бирюзовый",
-    "violet": "Фиолетовый",
-    "green": "Зелёный",
-    "amber": "Янтарный",
-    "rose": "Розовый",
 }
 
 
 def register_core(ctx: Context) -> None:
     ctx.settings.section(SettingsSection(
         id="general", title="Основное", icon="sliders", order=10,
-        description="Как панель называется, чьё имя стоит в документах и в каком часовом поясе показывать время.",
+        description="Как панель называется и в каком часовом поясе показывать время.",
         fields=(
             f.text("brand_name", "Название панели", default="Периметр", max_length=40),
-            f.text("operator_name", "Ваше имя или студия", default="",
-                   help="Подпись в отчётах и счетах", max_length=120),
             f.choice("timezone", "Часовой пояс", TIMEZONES, default="Europe/Moscow"),
-            f.choice("currency", "Валюта по умолчанию", CURRENCIES, default="USD",
-                     help="Подставляется в новые счета"),
             f.integer("remind_days", "Предупреждать заранее, дней", default=14, min=1, max=90,
-                      help="За сколько дней до конца оплаты или разрешения панель начинает напоминать"),
+                      help="За сколько дней до конца разрешения цель попадает в напоминания на «Обзоре»"),
         ),
     ))
     ctx.settings.section(SettingsSection(
         id="appearance", title="Внешний вид", icon="palette", order=20,
-        description="Тема, акцентный цвет и плотность интерфейса.",
+        description="Цвет терминала и плотность интерфейса.",
         fields=(
-            f.choice("theme", "Тема", {"auto": "Как в системе", "light": "Светлая", "dark": "Тёмная"}, default="auto"),
-            f.choice("accent", "Акцентный цвет", ACCENTS, default="blue"),
+            f.choice("accent", "Цвет", ACCENTS, default="green"),
             f.choice("density", "Плотность", {"comfortable": "Свободно", "compact": "Компактно"}, default="comfortable"),
         ),
     ))
@@ -182,17 +173,6 @@ def _api_router() -> APIRouter:
             for hit in ctx.run_search(db, query):
                 items.append(hit.__dict__)
         return {"items": items[:30]}
-
-    @api.post("/theme")
-    async def set_theme(request: Request):
-        ctx = get_ctx(request)
-        data = await request.json()
-        theme = data.get("theme")
-        try:
-            ctx.settings.set("appearance.theme", theme)
-        except FieldError as exc:
-            return JSONResponse({"error": str(exc)}, status_code=400)
-        return {"theme": theme}
 
     return api
 

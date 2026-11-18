@@ -1,0 +1,8 @@
+{# Одна строка лога. Ожидает: e, level, full (показывать дату) #}
+{% set mark, tone = level(e.action) %}
+{% set url = ctx.entity_url(e.entity_type, e.entity_id) %}
+<li>
+  {% set stamp = e.at|dt %}
+  <span class="when" title="{{ stamp }}">{{ stamp if full else stamp[:5] ~ " " ~ stamp[-5:] }}</span>
+  <span class="what"><span class="lvl tone-{{ tone }}">{{ mark }}</span>{% if url %}<a href="{{ url }}">{{ e.summary }}</a>{% else %}{{ e.summary }}{% endif %}{% if full %} <span class="who">— {{ e.actor }}</span>{% endif %}</span>
+</li>
