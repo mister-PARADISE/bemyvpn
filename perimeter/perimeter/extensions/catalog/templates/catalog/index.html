@@ -1,0 +1,94 @@
+{% extends "base.html" %}
+{% import "_ui.html" as ui with context %}
+{% block content %}
+{{ ui.head("Модули", ["Каждый инструмент — отдельный модуль", "Модули передают друг другу данные по типам: домен → поддомены → IP → порты"]) }}
+
+<div style="margin-bottom:var(--gap)">{{ ui.seg(tabs, tab, "tab", query) }}</div>
+
+{% if tab == "modules" %}
+  {% if categories %}
+    {% for category, items in categories %}
+    <div class="group-title" style="margin-top:{{ '0' if loop.first else '24px' }}">{{ category }}</div>
+    <div class="grid cols-2">
+      {% for m in items %}
+      {% set s = m.spec %}
+      <div class="card module">
+        <div class="head">
+          <span class="item-ico tone-{{ 'warning' if s.kind == Kind.ACTIVE else 'info' }}">{{ icon(s.icon) }}</span>
+          <div class="cell grow">
+            <span class="l1"><span>{{ s.title }}</span><span class="kind {{ s.kind.value }}">{{ s.kind.title }}</span></span>
+            <span class="l2">{{ s.id }} {{ s.version }}</span>
+          </div>
+        </div>
+        {% if s.description %}<p class="ink2 small">{{ s.description }}</p>{% endif %}
+        <div class="flow">
+          {% for t in s.consumes %}<span class="chip">{{ ctx.asset_types.get(t).title if ctx.asset_types.get(t) else t }}</span>{% endfor %}
+          {{ icon('arrow-right') }}
+          {% for t in s.produces %}<span class="chip">{{ ctx.asset_types.get(t).title if ctx.asset_types.get(t) else t }}</span>{% else %}<span class="muted small">отчёт</span>{% endfor %}
+        </div>
+        {% set next = ctx.modules.followers(s.id) %}
+        {% if next %}<div class="small muted">Дальше могут работать: {{ next|map(attribute='spec.title')|join(', ') }}</div>{% endif %}
+      </div>
+      {% endfor %}
+    </div>
+    {% endfor %}
+  {% else %}
+  <div class="card">
+    {% call ui.empty("puzzle", "Модулей пока нет", ["Модуль — это класс с паспортом и методом run.", "Положите его в папку data/plugins — панель подхватит при запуске"]) %}
+    <pre class="code" style="text-align:left;margin-top:18px;max-width:560px;margin-left:auto;margin-right:auto">from perimeter.core.modules import Module, ModuleSpec, Kind
+
+class Whois(Module):
+    spec = ModuleSpec(
+        id="whois", title="WHOIS", kind=Kind.PASSIVE,
+        category="Разведка", consumes=("domain",), produces=(),
+        description="Регистратор и сроки домена",
+    )
+
+    async def run(self, run):
+        ...
+
+def setup(ctx):
+    ctx.modules.add(Whois)</pre>
+    {% endcall %}
+  </div>
+  {% endif %}
+
+{% elif tab == "types" %}
+  <div class="card">
+    <div class="table-wrap">
+      <table class="table rows">
+        <thead><tr><th>Тип</th><th>Кто выдаёт</th><th>Кто принимает</th></tr></thead>
+        <tbody>
+        {% for row in types %}
+          <tr>
+            <td><div class="row"><span class="item-ico">{{ icon(row.type.icon) }}</span>
+              <div class="cell"><span class="l1"><span>{{ row.type.title }}</span></span><span class="l2">{{ row.type.id }}</span></div></div></td>
+            <td class="ink2 small">{{ row.producers|map(attribute='spec.title')|join(', ') or '—' }}</td>
+            <td class="ink2 small">{{ row.consumers|map(attribute='spec.title')|join(', ') or '—' }}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+{% else %}
+  <div class="card">
+    <div class="list">
+      {% for e in extensions %}
+      <div class="item">
+        <span class="item-ico tone-{{ 'success' if e.ok else 'danger' }}">{{ icon('check' if e.ok else 'alert') }}</span>
+        <div class="cell grow">
+          <span class="l1"><span>{{ e.title }}</span>{% if e.version %}<span class="chip">{{ e.version }}</span>{% endif %}
+            <span class="kind">{{ 'встроенное' if e.origin == 'builtin' else 'своё' }}</span></span>
+          <span class="l2 {{ 'err' if not e.ok else '' }}">{{ e.error if not e.ok else (e.description or e.name) }}</span>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+    <div class="card-body" style="border-top:1px solid var(--line)">
+      <div class="note">{{ icon('info') }}<div>Своё расширение — папка в <b>data/plugins</b> с файлом <b>__init__.py</b> и функцией <b>setup(ctx)</b>. Подключается при запуске панели</div></div>
+    </div>
+  </div>
+{% endif %}
+{% endblock %}

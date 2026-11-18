@@ -1,0 +1,72 @@
+from __future__ import annotations
+
+import re
+import warnings
+from pathlib import Path
+
+import pytest
+
+warnings.filterwarnings("ignore", category=DeprecationWarning)
+
+from fastapi.testclient import TestClient  # noqa: E402
+
+from perimeter.config import Config  # noqa: E402
+from perimeter.web.app import create_app  # noqa: E402
+
+PASSWORD = "secret-pass-1"
+
+
+class Browser:
+    """Тестовый клиент, который ведёт себя как браузер: берёт CSRF-токен со страницы."""
+
+    def __init__(self, client: TestClient) -> None:
+        self.client = client
+        self.csrf = ""
+
+    def get(self, url: str, **kw):
+        r = self.client.get(url, **kw)
+        m = re.search(r'data-csrf="([^"]+)"', r.text)
+        if m:
+            self.csrf = m.group(1)
+        return r
+
+    def post(self, url: str, data: dict | None = None, **kw):
+        if not self.csrf:
+            self.get("/login")
+        payload = {"_csrf": self.csrf, **(data or {})}
+        kw.setdefault("follow_redirects", False)
+        return self.client.post(url, data=payload, **kw)
+
+    def json_post(self, url: str, body: dict):
+        if not self.csrf:
+            self.get("/")
+        return self.client.post(url, json=body, headers={"X-CSRF-Token": self.csrf})
+
+
+def make_app(tmp_path: Path, **overrides):
+    return create_app(Config(data_dir=tmp_path / "data", **overrides))
+
+
+@pytest.fixture
+def app(tmp_path):
+    return make_app(tmp_path)
+
+
+@pytest.fixture
+def anon(app) -> Browser:
+    return Browser(TestClient(app))
+
+
+@pytest.fixture
+def browser(app) -> Browser:
+    b = Browser(TestClient(app))
+    b.get("/setup")
+    r = b.post("/setup", {"username": "admin", "password": PASSWORD, "password2": PASSWORD})
+    assert r.status_code == 303, r.text
+    b.get("/")
+    return b
+
+
+@pytest.fixture
+def ctx(app):
+    return app.state.ctx

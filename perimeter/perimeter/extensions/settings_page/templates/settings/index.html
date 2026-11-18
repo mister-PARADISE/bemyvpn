@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% import "_ui.html" as ui with context %}
+{% block title %}{{ section.title }} — Настройки{% endblock %}
+{% block content %}
+{{ ui.head("Настройки", ["Всё, что меняется без правки кода"]) }}
+<div class="with-nav">
+  <nav class="subnav" aria-label="Разделы настроек">
+    {% for group, sections in groups %}
+      <div class="subnav-title">{{ group }}</div>
+      {% for s in sections %}
+      <a class="{% if s.id == section.id %}on{% endif %}" href="/settings/{{ s.id }}">{{ icon(s.icon) }}<span class="truncate">{{ s.title }}</span></a>
+      {% endfor %}
+    {% endfor %}
+  </nav>
+
+  <div class="stack">
+    {% if section.fields %}
+    <form class="card" method="post" action="/settings/{{ section.id }}">
+      <div class="card-head"><h2>{{ icon(section.icon) }}{{ section.title }}</h2></div>
+      <div class="card-body form">
+        {{ ui.csrf_field() }}
+        {% if section.description %}<p class="ink2 small">{{ section.description }}</p>{% endif %}
+        <div class="form-grid">
+          {% for f in section.fields %}{{ ui.field(f, values.get(f.key), errors, is_set.get(f.key)) }}{% endfor %}
+        </div>
+      </div>
+      <div class="card-foot"><button class="btn-primary">Сохранить</button></div>
+    </form>
+    {% endif %}
+    {% if section.template %}{% include section.template %}{% endif %}
+  </div>
+</div>
+{% endblock %}

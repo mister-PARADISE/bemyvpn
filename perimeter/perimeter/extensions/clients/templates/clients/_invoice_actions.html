@@ -1,0 +1,16 @@
+{# Кнопки строки счёта. Ожидает: inv, back #}
+{% import "_ui.html" as ui with context %}
+<span class="ibar">
+  {% if inv.status == "draft" %}
+    {{ ui.post_ib("/invoices/%d/status"|format(inv.id), "send", "Выставить", "accent", fields={"to": "issued", "back": back}, sm=True) }}
+  {% elif inv.status == "issued" %}
+    {{ ui.post_ib("/invoices/%d/status"|format(inv.id), "check", "Оплачен", "good", fields={"to": "paid", "back": back}, sm=True) }}
+    {{ ui.post_ib("/invoices/%d/status"|format(inv.id), "x", "Отменить счёт", "warn", fields={"to": "cancelled", "back": back}, sm=True) }}
+  {% else %}
+    {{ ui.post_ib("/invoices/%d/status"|format(inv.id), "refresh", "Снова ждёт оплаты", "", fields={"to": "issued", "back": back}, sm=True) }}
+  {% endif %}
+  <a class="ib sm" href="/invoices/{{ inv.id }}/edit" data-tip="Изменить" aria-label="Изменить">{{ icon('edit') }}</a>
+  {{ ui.post_ib("/invoices/%d/delete"|format(inv.id), "trash", "Удалить счёт", "danger",
+                confirm="Счёт исчезнет из списка. Запись о нём в журнале останется.",
+                confirm_title="Удалить счёт №" ~ inv.number ~ "?", confirm_ok="Удалить", sm=True) }}
+</span>

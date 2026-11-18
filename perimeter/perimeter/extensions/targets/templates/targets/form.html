@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% import "_ui.html" as ui with context %}
+{% block title %}{{ target.name if target else "Новая цель" }}{% endblock %}
+{% block content %}
+<div class="narrow">
+  {{ ui.head(target.name if target else "Новая цель", ["Сайт, его границы и заметки"],
+             back=("/targets/%d"|format(target.id)) if target else "/targets", back_text=target.name if target else "Цели") }}
+  <form class="card" method="post">
+    <div class="card-body form">
+      {{ ui.csrf_field() }}
+      {{ ui.fields(fields, values, errors) }}
+      {% if target and target.auth_status == "verified" %}
+      <div class="note tone-warning">{{ icon('alert') }}<div>Если сменить домен, разрешение перестанет действовать: его выдавали на <b>{{ target.name }}</b></div></div>
+      {% endif %}
+    </div>
+    <div class="card-foot">
+      <a class="btn-ghost" href="{{ ('/targets/%d'|format(target.id)) if target else '/targets' }}">Отмена</a>
+      <button class="btn-primary">{{ "Сохранить" if target else "Добавить цель" }}</button>
+    </div>
+  </form>
+</div>
+{% endblock %}

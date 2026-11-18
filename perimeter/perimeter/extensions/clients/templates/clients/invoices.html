@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% import "_ui.html" as ui with context %}
+{% block content %}
+{{ ui.head("Счета", ["Счета выставляются из карточки клиента"]) }}
+
+<div class="grid cols-3" style="margin-bottom:var(--gap)">
+  {% set open_lines = [] %}{% for cur, s in open_total %}{% set _ = open_lines.append(s|money(cur)) %}{% endfor %}
+  {{ ui.stat("Ждёт оплаты", open_lines[0] if open_lines else "0", open_lines[1:], "warn" if open_lines else "", "clock") }}
+  {% set over_lines = [] %}{% for cur, s in overdue_total %}{% set _ = over_lines.append(s|money(cur)) %}{% endfor %}
+  {{ ui.stat("Просрочено", over_lines[0] if over_lines else "0", over_lines[1:], "err" if over_lines else "", "alert") }}
+  {% set paid_lines = [] %}{% for cur, s in paid_month %}{% set _ = paid_lines.append(s|money(cur)) %}{% endfor %}
+  {{ ui.stat("Оплачено в этом месяце", paid_lines[0] if paid_lines else "0", paid_lines[1:], "ok" if paid_lines else "", "check-circle") }}
+</div>
+
+<div class="card">
+  <div class="toolbar">{{ ui.seg(tabs, status, "status", query) }}</div>
+  {% if invoices %}
+  <div class="table-wrap">
+    <table class="table rows">
+      <thead><tr><th>Счёт</th><th>Клиент</th><th>Сумма</th><th>Статус</th><th></th></tr></thead>
+      <tbody>
+      {% for inv in invoices %}
+        {% set d = inv.due_on|due("срок прошёл") %}
+        <tr>
+          <td><div class="cell"><span class="l1"><span>{{ ui.cp(inv.number, label="№" ~ inv.number) }}</span></span><span class="l2">{{ inv.title }}</span></div></td>
+          <td><div class="cell"><span class="l1 soft"><a href="/clients/{{ inv.client_id }}">{{ inv.client.name }}</a></span><span class="l2">{{ inv.client.company }}</span></div></td>
+          <td><div class="cell"><span class="l1 tnum"><span>{{ inv.amount|money(inv.currency) }}</span></span><span class="l2">от {{ inv.issued_on|date }}</span></div></td>
+          <td><div class="cell">
+            <span class="l1">{{ ui.badge(inv.status_title if not inv.is_overdue else "Просрочен", inv.status_tone, dot=True) }}</span>
+            <span class="l2 {{ d.tone if inv.status == 'issued' else '' }}">
+              {% if inv.status == "paid" %}оплачен {{ inv.paid_on|date }}{% elif inv.status == "issued" and inv.due_on %}{{ d.text }}{% endif %}
+            </span>
+          </div></td>
+          <td class="act">{% with back="/invoices?status=" ~ status %}{% include "clients/_invoice_actions.html" %}{% endwith %}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {{ ui.pager(page, pages, total, query) }}
+  {% else %}
+    {{ ui.empty("receipt", "Здесь пусто", ["Счета выставляются из карточки клиента:", "откройте клиента и нажмите «Новый счёт»"]) }}
+  {% endif %}
+</div>
+{% endblock %}

@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% import "_ui.html" as ui with context %}
+{% block content %}
+{% call ui.head("Цели", [total ~ " " ~ plural(total, "сайт", "сайта", "сайтов") ~ (" в выборке" if q or state else "")]) %}
+  <a class="ib primary" href="/targets/new" data-tip="Новая цель" aria-label="Новая цель">{{ icon('plus') }}</a>
+{% endcall %}
+
+<div class="card">
+  <div class="toolbar">
+    {{ ui.seg(tabs, state, "state", query) }}
+    <form class="grow search-field" method="get" role="search">
+      <input type="hidden" name="state" value="{{ state }}">
+      {{ icon('search') }}
+      <input class="input" type="search" name="q" value="{{ q }}" placeholder="Домен, название, клиент" aria-label="Поиск целей">
+    </form>
+  </div>
+  {% if targets %}
+  <div class="table-wrap">
+    <table class="table rows">
+      <thead><tr><th>Сайт</th><th>Клиент</th><th>Разрешение</th><th>Границы</th></tr></thead>
+      <tbody>
+      {% for t in targets %}
+        {% set d = t.auth_valid_until|due("истекло") %}
+        <tr data-href="/targets/{{ t.id }}">
+          <td><div class="cell"><span class="l1"><span>{{ t.name }}</span></span><span class="l2">{{ t.title or "Без названия" }}</span></div></td>
+          <td><div class="cell"><span class="l1 soft"><span>{{ t.client.name if t.client else "Свой сайт" }}</span></span><span class="l2">{{ t.client.company if t.client else "" }}</span></div></td>
+          <td><div class="cell">
+            <span class="l1">{{ ui.badge(t.state_title, t.state_tone, dot=True) }}</span>
+            <span class="l2 {{ d.tone if t.auth_status == 'verified' else '' }}">
+              {% if t.auth_status == "verified" %}{{ ("до " ~ (t.auth_valid_until|date) ~ ", " ~ d.text) if t.auth_valid_until else "бессрочно" }}{% elif t.auth_status == "pending" %}нужно подтверждение владельца{% endif %}
+            </span>
+          </div></td>
+          <td class="hide-sm"><div class="cell">
+            <span class="l1 soft"><span>{{ t.name }} и поддомены</span></span>
+            <span class="l2">{% if t.include %}ещё {{ t.include|length }}{% endif %}{% if t.include and t.exclude %}, {% endif %}{% if t.exclude %}исключений {{ t.exclude|length }}{% endif %}</span>
+          </div></td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {{ ui.pager(page, pages, total, query) }}
+  {% elif q or state %}
+    {{ ui.empty("search", "Ничего не нашлось", ["Попробуйте другой запрос или другой фильтр"]) }}
+  {% else %}
+    {{ ui.empty("globe", "Целей пока нет", ["Цель — это сайт, который вы проверяете.", "У каждой есть границы и разрешение владельца"], "/targets/new", "Новая цель") }}
+  {% endif %}
+</div>
+{% endblock %}

@@ -1,0 +1,23 @@
+{% import "_ui.html" as ui with context %}
+<div class="card-body">
+  <dl class="kv">
+    <dt>Ждёт оплаты</dt>
+    <dd>
+      {% for cur, total in open_total %}<div class="tnum">{{ total|money(cur) }}</div>{% else %}<span class="muted">ничего</span>{% endfor %}
+      {% if open_count %}<div class="small {{ 'error-text' if overdue_count else 'muted' }}">{{ open_count }} {{ plural(open_count, "счёт", "счёта", "счетов") }}{% if overdue_count %}, просрочено {{ overdue_count }}{% endif %}</div>{% endif %}
+    </dd>
+    <dt>Оплачено за месяц</dt>
+    <dd>{% for cur, total in paid_month %}<div class="tnum">{{ total|money(cur) }}</div>{% else %}<span class="muted">пока ничего</span>{% endfor %}</dd>
+  </dl>
+</div>
+{% if expiring %}
+<div class="list" style="border-top:1px solid var(--line)">
+  {% for c in expiring %}
+    {% set d = c.paid_until|due("закончилась") %}
+    <a class="item" href="/clients/{{ c.id }}">
+      <span class="item-ico tone-{{ 'danger' if d.tone == 'err' else 'warning' }}">{{ icon('clock') }}</span>
+      <span class="cell grow"><span class="l1"><span>{{ c.name }}</span></span><span class="l2 {{ d.tone }}">Оплата {{ d.text }}</span></span>
+    </a>
+  {% endfor %}
+</div>
+{% endif %}

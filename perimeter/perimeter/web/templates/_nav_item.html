@@ -1,0 +1,4 @@
+<a class="{% if item.active %}on{% endif %}" href="{{ item.page.path }}" data-tip="{{ item.page.title }}" data-tip-when="collapsed"{% if item.active %} aria-current="page"{% endif %}>
+  <span class="ico">{{ icon(item.page.icon) }}</span><span class="txt">{{ item.page.title }}</span>
+  {% if item.badge %}<span class="end"><span class="count {{ {'warning': 'warn', 'danger': 'err'}.get(item.page.badge_tone, '') }}">{{ item.badge }}</span></span>{% endif %}
+</a>

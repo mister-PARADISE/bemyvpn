@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "perimeter"
+version = "0.1.0"
+description = "Панель аудита внешнего периметра сайтов: клиенты, цели, разрешения, модули"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.110",
+    "uvicorn>=0.27",
+    "jinja2>=3.1",
+    "sqlalchemy>=2.0",
+    "itsdangerous>=2.1",
+    "python-multipart>=0.0.9",
+    "tzdata; sys_platform == 'win32'",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "httpx>=0.27"]
+
+[project.scripts]
+perimeter = "perimeter.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["perimeter*"]
+
+[tool.setuptools.package-data]
+"*" = ["templates/**/*", "static/**/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

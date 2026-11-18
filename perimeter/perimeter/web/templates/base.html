@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="ru" data-theme="{{ theme }}" data-accent="{{ accent }}" data-density="{{ density }}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="robots" content="noindex, nofollow">
+  <title>{% block title %}{{ active_page.title if active_page else brand }}{% endblock %} — {{ brand }}</title>
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/app.css?v={{ version }}">
+  <script src="/static/boot.js?v={{ version }}"></script>
+  <script src="/static/app.js?v={{ version }}" defer></script>
+</head>
+<body data-csrf="{{ csrf }}">
+{% include "_icons.svg" %}
+{% if user %}
+<div class="app">
+  <aside class="side" aria-label="Главное меню">
+    <div class="side-head">
+      <a class="brand" href="/">
+        <span class="logo"><svg aria-hidden="true" viewBox="0 0 32 32"><use href="#i-logo"></use></svg></span>
+        <span class="brand-name">{{ brand }}</span>
+      </a>
+      <button class="ib sm collapse" data-action="collapse" data-tip="Свернуть панель" data-tip-key="Ctrl B" aria-label="Свернуть панель">{{ icon('panel') }}</button>
+      <button class="ib sm close" data-action="drawer" aria-label="Закрыть меню">{{ icon('x') }}</button>
+    </div>
+    <button class="side-search" data-action="palette" data-tip="Поиск" data-tip-when="collapsed" aria-label="Поиск">
+      <span class="ico">{{ icon('search', 'i-sm') }}</span><span class="txt">Поиск</span><kbd>/</kbd>
+    </button>
+    <nav class="nav">
+      {% for item in nav.home %}{% include "_nav_item.html" %}{% endfor %}
+      {% for section, items in nav.sections %}
+        {% if nav.home or not loop.first %}<div class="divider"></div>{% endif %}
+        {% for item in items %}{% include "_nav_item.html" %}{% endfor %}
+      {% endfor %}
+    </nav>
+    <div class="side-foot">
+      {% for item in nav.footer %}
+      <a class="foot-row{% if item.active %} on{% endif %}" href="{{ item.page.path }}" data-tip="{{ item.page.title }}" data-tip-when="collapsed">
+        <span class="ico">{{ icon(item.page.icon) }}</span><span class="txt">{{ item.page.title }}</span>
+      </a>
+      {% endfor %}
+      <div class="foot-row server" data-server data-tip="Сервер панели" data-tip-when="collapsed">
+        <span class="ico"><span class="pulse"></span></span><span class="txt">Сервер работает</span>
+      </div>
+      <div class="foot-user">
+        <span class="ico"><span class="avatar">{{ user.username[:1]|upper }}</span></span>
+        <span class="txt truncate small ink2">{{ user.username }}</span>
+        <form method="post" action="/logout" class="end">
+          <input type="hidden" name="_csrf" value="{{ csrf }}">
+          <button class="ib sm danger" data-tip="Выйти" aria-label="Выйти">{{ icon('logout') }}</button>
+        </form>
+      </div>
+    </div>
+  </aside>
+  <div class="scrim" data-action="drawer"></div>
+
+  <div class="main">
+    <header class="topbar">
+      <button class="ib" data-action="drawer" aria-label="Меню">{{ icon('menu') }}</button>
+      <span class="topbar-title">{{ active_page.title if active_page else brand }}</span>
+      <button class="ib" data-action="palette" aria-label="Поиск">{{ icon('search') }}</button>
+    </header>
+    <main class="page">
+      {% block content %}{% endblock %}
+    </main>
+  </div>
+</div>
+
+<dialog class="palette" id="palette" aria-label="Поиск">
+  <div class="box">
+    <div class="palette-input">
+      {{ icon('search') }}
+      <input type="text" placeholder="Клиент, домен, раздел, настройка" autocomplete="off" spellcheck="false" aria-label="Запрос">
+      <kbd>Esc</kbd>
+    </div>
+    <div class="palette-list" role="listbox"></div>
+  </div>
+</dialog>
+
+<dialog id="confirm">
+  <form method="dialog" class="box">
+    <div class="box-body">
+      <span class="box-ico">{{ icon('alert') }}</span>
+      <div><h2 data-slot="title">Точно?</h2><p data-slot="text"></p></div>
+    </div>
+    <div class="box-foot">
+      <button class="btn-ghost" value="cancel">Отмена</button>
+      <button class="btn-danger" value="ok" data-slot="ok">Подтвердить</button>
+    </div>
+  </form>
+</dialog>
+{% else %}
+<main class="auth">{% block auth %}{% endblock %}</main>
+{% endif %}
+<div class="toasts" id="toasts" aria-live="polite" data-flashes='{{ flashes|tojson }}'></div>
+</body>
+</html>

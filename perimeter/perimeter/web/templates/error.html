@@ -1,0 +1,5 @@
+{% extends "base.html" %}
+{% block title %}{{ title }}{% endblock %}
+{% block crumbs %}<span class="current">{{ title }}</span>{% endblock %}
+{% block content %}{% include "_error_body.html" %}{% endblock %}
+{% block auth %}{% include "_error_body.html" %}{% endblock %}

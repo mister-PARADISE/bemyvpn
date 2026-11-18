@@ -1,0 +1,158 @@
+{# Кирпичики интерфейса. Подключение: {% import "_ui.html" as ui with context %} #}
+
+{% macro csrf_field() %}<input type="hidden" name="_csrf" value="{{ csrf }}">{% endmacro %}
+
+{# Шапка страницы: заголовок, строки пояснения (без «·» — каждая с новой строки), справа — кнопки #}
+{% macro head(title, lines=(), back=None, back_text=None) %}
+<div class="page-head">
+  <div class="page-title">
+    {% if back %}<a class="back" href="{{ back }}">{{ icon('chevron-left') }}{{ back_text }}</a>{% endif %}
+    <h1><span>{{ title }}</span></h1>
+    {% set lines = lines|reject('none')|reject('equalto', '')|list %}
+    {% if lines %}<div class="sub">{% for line in lines %}<span>{{ line }}</span>{% endfor %}</div>{% endif %}
+  </div>
+  {% if caller %}<div class="ibar">{{ caller() }}</div>{% endif %}
+</div>
+{% endmacro %}
+
+{% macro badge(text, tone="neutral", icon_name=None, dot=False) -%}
+<span class="badge tone-{{ tone }}{% if dot %} dot{% endif %}">{% if icon_name %}{{ icon(icon_name) }}{% endif %}{{ text }}</span>
+{%- endmacro %}
+
+{# Значение, которое копируется кликом #}
+{% macro cp(value, mono=False, label=None) -%}
+<button type="button" class="cp{% if mono %} mono{% endif %}" data-copy="{{ value }}">{{ label or value }}</button>
+{%- endmacro %}
+
+{% macro empty(icon_name, title, lines=(), action_url=None, action_tip=None) %}
+<div class="empty">
+  <div class="empty-icon">{{ icon(icon_name, 'i-lg') }}</div>
+  <h3>{{ title }}</h3>
+  {% if lines %}<div class="lines">{% for line in lines %}<span>{{ line }}</span>{% endfor %}</div>{% endif %}
+  {% if caller %}{{ caller() }}{% endif %}
+  {% if action_url %}<a class="ib primary" href="{{ action_url }}" data-tip="{{ action_tip }}" aria-label="{{ action_tip }}">{{ icon('plus') }}</a>{% endif %}
+</div>
+{% endmacro %}
+
+{% macro stat(label, value, lines=(), tone="", icon_name=None, href=None) %}
+<{{ 'a' if href else 'div' }} class="card stat"{% if href %} href="{{ href }}"{% endif %}>
+  <span class="label">{% if icon_name %}{{ icon(icon_name) }}{% endif %}{{ label }}</span>
+  <span class="value{% if tone %} {{ tone }}{% endif %}">{{ value }}</span>
+  {% if lines %}<span class="lines">{% for line in lines %}<span>{{ line }}</span>{% endfor %}</span>{% endif %}
+</{{ 'a' if href else 'div' }}>
+{% endmacro %}
+
+{% macro error(errors, name) %}
+{% if errors and errors.get(name) %}<span class="error-text">{{ errors.get(name) }}</span>{% endif %}
+{% endmacro %}
+
+{% macro input(name, label, value="", errors=None, type="text", required=False, placeholder="", help="", cls="full", attrs="") %}
+<div class="field {{ cls }}{% if errors and errors.get(name) %} is-invalid{% endif %}">
+  <label for="f-{{ name }}">{{ label }}{% if required %}<span class="req">*</span>{% endif %}</label>
+  <input class="input" id="f-{{ name }}" name="{{ name }}" type="{{ type }}" value="{{ value if value is not none else '' }}"
+         {%- if placeholder %} placeholder="{{ placeholder }}"{% endif %}
+         {%- if required %} required{% endif %} {{ attrs|safe }}>
+  {% if help %}<span class="help">{{ help }}</span>{% endif %}
+  {{ error(errors, name) }}
+</div>
+{% endmacro %}
+
+{# Поле из описания (core.fields.Field): настройки, формы и параметры модулей рисуются одним макросом #}
+{% macro field(f, value, errors=None, is_set=False) %}
+{% set name = f.key %}
+{% set invalid = errors and errors.get(name) %}
+<div class="field{% if f.width != 'half' %} full{% endif %}{% if invalid %} is-invalid{% endif %}">
+  {% if f.kind == "bool" %}
+    <label class="switch">
+      <input type="checkbox" name="{{ name }}" value="1"{% if value %} checked{% endif %}>
+      <span class="sw"></span><span>{{ f.label }}</span>
+    </label>
+  {% else %}
+    <label for="f-{{ name }}">{{ f.label }}{% if f.required %}<span class="req">*</span>{% endif %}
+      {% if f.restart %}{{ badge("после перезапуска", "warning") }}{% endif %}</label>
+    {% if f.kind == "choice" %}
+      <select class="select" id="f-{{ name }}" name="{{ name }}">
+        {% for key, title in f.choices %}<option value="{{ key }}"{% if key == value %} selected{% endif %}>{{ title }}</option>{% endfor %}
+      </select>
+    {% elif f.kind in ("textarea", "lines") %}
+      <textarea class="textarea{% if f.kind == 'lines' %} mono{% endif %}" id="f-{{ name }}" name="{{ name }}" rows="4"
+                placeholder="{{ f.placeholder }}">{{ f.form_value(value) }}</textarea>
+    {% elif f.kind == "secret" %}
+      <input class="input mono" id="f-{{ name }}" name="{{ name }}" type="password" autocomplete="new-password"
+             placeholder="{{ 'Задан. Оставьте пустым, чтобы не менять' if is_set else (f.placeholder or 'Не задан') }}">
+      {% if is_set %}
+      <label class="switch small"><input type="checkbox" name="{{ name }}__clear" value="1"><span class="sw"></span><span>Удалить сохранённое значение</span></label>
+      {% endif %}
+    {% else %}
+      {% set types = {'int': 'number', 'float': 'number', 'date': 'date', 'email': 'email'} %}
+      <input class="input{% if f.kind == 'decimal' %} mono{% endif %}" id="f-{{ name }}" name="{{ name }}" value="{{ f.form_value(value) }}"
+             type="{{ types.get(f.kind, 'text') }}"
+             {%- if f.required %} required{% endif %}
+             {%- if f.kind == 'float' %} step="any"{% endif %}
+             {%- if f.kind == 'decimal' %} inputmode="decimal"{% endif %}
+             {%- if f.min is not none and f.kind in ('int', 'float') %} min="{{ f.min }}"{% endif %}
+             {%- if f.max is not none and f.kind in ('int', 'float') %} max="{{ f.max }}"{% endif %}
+             {%- if f.placeholder %} placeholder="{{ f.placeholder }}"{% endif %}>
+    {% endif %}
+  {% endif %}
+  {% if f.help %}<span class="help">{{ f.help }}</span>{% endif %}
+  {{ error(errors, name) }}
+</div>
+{% endmacro %}
+
+{# Целая форма из описания полей #}
+{% macro fields(list, values, errors=None) %}
+<div class="form-grid">
+  {% for f in list %}{{ field(f, values.get(f.key), errors) }}{% endfor %}
+</div>
+{% endmacro %}
+
+{# Кнопка-иконка, отправляющая POST; опасные — с подтверждением #}
+{% macro post_ib(url, icon_name, tip, tone="", confirm=None, confirm_title=None, confirm_ok=None, fields=None, sm=False) %}
+<form method="post" action="{{ url }}" class="inline"
+      {%- if confirm %} data-confirm="{{ confirm }}" data-confirm-title="{{ confirm_title or 'Точно?' }}" data-confirm-ok="{{ confirm_ok or tip }}"{% endif %}>
+  {{ csrf_field() }}
+  {% if fields %}{% for k, v in fields.items() %}<input type="hidden" name="{{ k }}" value="{{ v }}">{% endfor %}{% endif %}
+  <button class="ib{% if sm %} sm{% endif %}{% if tone %} {{ tone }}{% endif %}" data-tip="{{ tip }}" aria-label="{{ tip }}">{{ icon(icon_name) }}</button>
+</form>
+{% endmacro %}
+
+{# Текстовая кнопка-POST — где выбору нужны слова #}
+{% macro post_btn(url, label, cls="btn-soft", icon_name=None, confirm=None, confirm_title=None, confirm_ok=None, fields=None) %}
+<form method="post" action="{{ url }}" class="inline"
+      {%- if confirm %} data-confirm="{{ confirm }}" data-confirm-title="{{ confirm_title or 'Точно?' }}" data-confirm-ok="{{ confirm_ok or label }}"{% endif %}>
+  {{ csrf_field() }}
+  {% if fields %}{% for k, v in fields.items() %}<input type="hidden" name="{{ k }}" value="{{ v }}">{% endfor %}{% endif %}
+  <button class="{{ cls }}">{% if icon_name %}{{ icon(icon_name) }}{% endif %}{{ label }}</button>
+</form>
+{% endmacro %}
+
+{% macro code(text) %}
+<div class="code"><span>{{ text }}</span>
+  <button type="button" class="ib sm" data-copy="{{ text }}" data-tip="Скопировать" aria-label="Скопировать">{{ icon('copy') }}</button>
+</div>
+{% endmacro %}
+
+{# Сегменты-фильтры: items — [(значение, подпись, число)] #}
+{% macro seg(items, current, param, query) %}
+<nav class="seg">
+  {% for value, title, count in items %}
+  {% set q = query.copy() %}{% set _ = q.update({param: value, 'page': 1}) %}
+  <a class="{% if value == current %}on{% endif %}" href="?{{ q|urlencode }}">{{ title }}{% if count is not none %} <span class="count">{{ count }}</span>{% endif %}</a>
+  {% endfor %}
+</nav>
+{% endmacro %}
+
+{% macro pager(page, pages, total, query) %}
+{% if pages > 1 %}
+<div class="pager">
+  <span>Страница {{ page }} из {{ pages }}</span>
+  <span class="ibar">
+    {% set q = query.copy() %}{% set _ = q.update({'page': page - 1}) %}
+    <a class="ib sm" href="?{{ q|urlencode }}" data-tip="Назад" aria-label="Назад"{% if page <= 1 %} aria-disabled="true"{% endif %}>{{ icon('chevron-left') }}</a>
+    {% set q = query.copy() %}{% set _ = q.update({'page': page + 1}) %}
+    <a class="ib sm" href="?{{ q|urlencode }}" data-tip="Дальше" aria-label="Дальше"{% if page >= pages %} aria-disabled="true"{% endif %}>{{ icon('chevron-right') }}</a>
+  </span>
+</div>
+{% endif %}
+{% endmacro %}

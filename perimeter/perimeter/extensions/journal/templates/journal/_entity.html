@@ -1,0 +1,16 @@
+<div class="card">
+  <div class="card-head"><h2>{{ icon('history') }}История</h2></div>
+  {% if entries %}
+  <ul class="timeline">
+    {% for e in entries %}
+    <li>
+      <span class="dot tone-{{ tone(e.action) }}"></span>
+      <span class="l1 soft" style="white-space:normal;font-size:13px">{{ e.summary }}</span>
+      <span class="when" title="{{ e.at|dt }}">{{ e.at|ago }}</span>
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <div class="card-body muted small">Записей пока нет</div>
+  {% endif %}
+</div>

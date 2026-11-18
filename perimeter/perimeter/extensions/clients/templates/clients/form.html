@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% import "_ui.html" as ui with context %}
+{% block title %}{{ client.name if client else "Новый клиент" }}{% endblock %}
+{% block content %}
+<div class="narrow">
+  {{ ui.head(client.name if client else "Новый клиент", ["Изменение данных клиента" if client else "Контакты и условия работы"],
+             back=("/clients/%d"|format(client.id)) if client else "/clients", back_text=client.name if client else "Клиенты") }}
+  <form class="card" method="post">
+    <div class="card-body form">
+      {{ ui.csrf_field() }}
+      {{ ui.fields(fields, values, errors) }}
+    </div>
+    <div class="card-foot">
+      <a class="btn-ghost" href="{{ ('/clients/%d'|format(client.id)) if client else '/clients' }}">Отмена</a>
+      <button class="btn-primary">{{ "Сохранить" if client else "Добавить клиента" }}</button>
+    </div>
+  </form>
+</div>
+{% endblock %}
