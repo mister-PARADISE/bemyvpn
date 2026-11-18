@@ -1,0 +1,9 @@
+{# Строки, которые приносят расширения через ctx.stats #}
+<div class="kvlist">
+  {% for r in rows %}
+  <div class="kvrow">
+    <span class="k">{% if r.link %}<a href="{{ r.link }}">{{ r.label }}</a>{% else %}{{ r.label }}{% endif %}</span>
+    <span class="v{% if r.tone %} t-{{ r.tone }}{% endif %}">{{ r.text }}</span>
+  </div>
+  {% endfor %}
+</div>

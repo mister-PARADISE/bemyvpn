@@ -1,22 +1,25 @@
-"""Обзор: главная страница собирается из виджетов, которые приносят расширения."""
+"""Обзор: состояние машины (как htop), строки «Панели» от расширений, журнал.
+
+Блоки приносят расширения: ctx.widgets — целые разделы, ctx.stats — строки
+«Панели» («цели 4», «прокси 12 живых из 15»). Сам обзор ничего не знает
+о том, что именно показывает.
+"""
 
 from __future__ import annotations
 
 import logging
-import platform
 from datetime import date
 
 from fastapi import APIRouter, Request
 
-from ... import __version__
-from ...core.context import Context, Page, Widget
-from ...core.db import utcnow
+from ...core.context import Context, Page, Stat, Widget
 from ...web import DB, get_ctx, render
-from ...web.ui import plural, ru_date
+from ...web.ui import ru_date
+from . import system
 
 TITLE = "Обзор"
-DESCRIPTION = "Главная страница из виджетов расширений"
-VERSION = "1.0"
+DESCRIPTION = "Состояние машины и панели"
+VERSION = "2.0"
 
 log = logging.getLogger("perimeter.dashboard")
 router = APIRouter()
@@ -30,54 +33,47 @@ def dashboard(request: Request, db: DB):
         try:
             data = widget.data(db, ctx) if widget.data else {}
             widgets.append({"widget": widget, "data": data, "error": None})
-        except Exception:  # noqa: BLE001 — сломанный виджет не ломает главную
+        except Exception:  # noqa: BLE001 — сломанный блок не ломает главную
             log.exception("Виджет %s упал", widget.id)
-            widgets.append({"widget": widget, "data": {}, "error": "Не удалось собрать данные — подробности в логе"})
-    return render(request, "dashboard/index.html", widgets=widgets, today=ru_date(date.today()))
+            widgets.append({"widget": widget, "data": {}, "error": "не удалось собрать данные, подробности в логе"})
+    snap = system.snapshot(ctx.config.data_dir)
+    return render(request, "dashboard/index.html", widgets=widgets,
+                  lines=[ru_date(date.today()), f"{snap['host']}, {snap['os']}"])
 
 
-def _size(num: float) -> str:
-    for unit in ("Б", "КБ", "МБ", "ГБ"):
-        if num < 1024 or unit == "ГБ":
-            return f"{num:.0f} {unit}" if unit == "Б" else f"{num:.1f} {unit}"
-        num /= 1024
-    return f"{num:.1f} ГБ"
+@router.get("/api/system")
+def system_api(request: Request):
+    return system.snapshot(get_ctx(request).config.data_dir)
 
 
-def _uptime(started) -> str:
-    seconds = int((utcnow() - started).total_seconds())
-    days, rest = divmod(seconds, 86400)
-    hours, rest = divmod(rest, 3600)
-    minutes = rest // 60
-    if days:
-        return f"{days} {plural(days, 'день', 'дня', 'дней')} {hours} ч"
-    if hours:
-        return f"{hours} ч {minutes} мин"
-    return f"{minutes} мин"
+def system_widget(db, ctx: Context) -> dict:
+    return system.snapshot(ctx.config.data_dir)
 
 
-def system_widget(started):
-    def data(db, ctx: Context) -> dict:
-        base = ctx.config.data_dir / "perimeter.db"
-        size = sum(p.stat().st_size for p in (base, base.with_name(base.name + "-wal")) if p.exists())
-        broken = [e for e in ctx.extensions if not e.ok]
-        return {
-            "rows": [
-                ("версия", __version__),
-                ("работает", _uptime(started)),
-                ("база", _size(size)),
-                ("python", platform.python_version()),
-                ("адрес", f"{ctx.config.host}:{ctx.config.port}"),
-            ],
-            "extensions": len(ctx.extensions) - len(broken),
-            "broken": broken,
-        }
-    return data
+def panel_widget(db, ctx: Context) -> dict:
+    rows = []
+    for stat in ctx.stats:
+        try:
+            value = stat.value(db, ctx)
+        except Exception:  # noqa: BLE001
+            log.exception("Строка %s упала", stat.id)
+            value = ("ошибка", "err")
+        text, tone = value if isinstance(value, tuple) else (value, "")
+        rows.append({"label": stat.label, "text": text, "tone": tone, "link": stat.link})
+    return {"rows": rows}
+
+
+def extensions_stat(db, ctx: Context):
+    broken = [e.name for e in ctx.extensions if not e.ok]
+    if broken:
+        return f"ошибка: {', '.join(broken)}", "err"
+    return f"{len(ctx.extensions)} ok", "ok"
 
 
 def setup(ctx: Context) -> None:
     ctx.pages.add(Page("dashboard", "Обзор", "/", icon="grid", placement="home", order=0,
-                       description="Главная: цели, модули, система, журнал"))
+                       description="Машина, панель, журнал"))
     ctx.add_router(router)
-    ctx.widgets.add(Widget("system", "Система", "dashboard/_system.html", data=system_widget(utcnow()),
-                           icon="server", order=30))
+    ctx.widgets.add(Widget("system", "Система", "dashboard/_system.html", data=system_widget, order=0, span=3))
+    ctx.widgets.add(Widget("panel", "Панель", "dashboard/_panel.html", data=panel_widget, order=10))
+    ctx.stats.add(Stat("extensions", "расширения", extensions_stat, order=90, link="/modules?tab=extensions"))

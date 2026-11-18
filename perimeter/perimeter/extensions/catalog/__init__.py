@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Request
 
-from ...core.context import Context, Page, Widget
+from ...core.context import Context, Page, Stat
 from ...core.modules import Kind
 from ...web import get_ctx, render
 
@@ -36,19 +36,16 @@ def catalog(request: Request, tab: str = "modules"):
                   query={"tab": tab})
 
 
-def modules_widget(db, ctx: Context) -> dict:
+def modules_stat(db, ctx: Context) -> str:
     modules = list(ctx.modules)
-    return {
-        "passive": sum(1 for m in modules if m.spec.kind == Kind.PASSIVE),
-        "active": sum(1 for m in modules if m.spec.kind == Kind.ACTIVE),
-        "types": len(ctx.asset_types),
-        "broken": [e for e in ctx.extensions if not e.ok],
-    }
+    if not modules:
+        return "пока нет"
+    passive = sum(1 for m in modules if m.spec.kind == Kind.PASSIVE)
+    return f"{passive} пассивных, {len(modules) - passive} активных"
 
 
 def setup(ctx: Context) -> None:
     ctx.pages.add(Page("modules", "Модули", "/modules", icon="puzzle", section="Инструменты", order=60,
                        description="Инструменты проверки и как они связаны"))
     ctx.add_router(router)
-    ctx.widgets.add(Widget("modules", "Модули", "catalog/_widget.html", data=modules_widget, icon="puzzle",
-                           order=20, link="/modules"))
+    ctx.stats.add(Stat("modules", "модули", modules_stat, order=20, link="/modules"))

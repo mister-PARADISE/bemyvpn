@@ -97,7 +97,8 @@ class _Snapshot:
     def __init__(self, ctx: Context) -> None:
         self.ctx = ctx
         self.registries: list[tuple[Registry, set[str]]] = [
-            (r, set(r._items)) for r in (ctx.pages, ctx.widgets, ctx.asset_types, ctx.modules, ctx.settings.sections,
+            (r, set(r._items)) for r in (ctx.pages, ctx.widgets, ctx.stats, ctx.asset_types, ctx.modules,
+                                         ctx.settings.sections,
                                          *ctx.slots.values())
         ]
         self.slot_names = set(ctx.slots)

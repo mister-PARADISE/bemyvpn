@@ -276,6 +276,60 @@
     setTimeout(watchServer, ok ? 15000 : 3000);
   }
 
+  /* ---------- Монитор на обзоре: раз в 2 с, пока вкладка открыта ---------- */
+  function watchMonitor() {
+    const mon = $("[data-monitor]");
+    if (!mon) return;
+    // длина полосы — сколько знаков влезает в строку, как в htop (запас под ключ и подпись)
+    const charWidth = () => {
+      const probe = document.createElement("span");
+      probe.textContent = "0".repeat(10);
+      probe.style.cssText = "position:absolute;visibility:hidden;white-space:pre";
+      mon.appendChild(probe);
+      const w = probe.getBoundingClientRect().width / 10;
+      probe.remove();
+      return w || 8;
+    };
+    // запас: ключ 6 + скобки 2 + промежутки 2 + самая длинная подпись (~22 знака) + 1 на округление
+    const width = () => {
+      const row = $(".mon-row", mon);
+      return Math.max(8, Math.min(40, Math.floor((row ? row.clientWidth : mon.clientWidth) / charWidth()) - 33));
+    };
+    const draw = (row, pct) => {
+      const bar = $("[data-bar]", row);
+      if (!bar) return;
+      const n = width();
+      const filled = Math.max(0, Math.min(n, Math.round((pct / 100) * n)));
+      bar.textContent = "|".repeat(filled) + " ".repeat(n - filled);
+    };
+    const redraw = () => $$(".mon-row[data-pct]", mon).forEach((row) => draw(row, +row.dataset.pct));
+    redraw();
+    addEventListener("resize", redraw);
+    const tick = async () => {
+      if (!document.hidden) {
+        try {
+          const r = await fetch("/api/system", { headers: { Accept: "application/json" }, cache: "no-store" });
+          if (r.ok) {
+            const data = await r.json();
+            data.rows.forEach((row) => {
+              const el = $(`.mon-row[data-key="${CSS.escape(row.key)}"]`, mon);
+              if (!el) return;
+              const bar = $("[data-bar]", el);
+              if (bar && row.bar !== null) {
+                el.dataset.pct = row.pct;
+                draw(el, row.pct);
+                bar.parentElement.className = `mon-bar t-${row.tone}`;
+              }
+              $("[data-text]", el).textContent = row.text;
+            });
+          }
+        } catch { /* сервер недоступен — об этом скажет строка состояния */ }
+      }
+      setTimeout(tick, 2000);
+    };
+    setTimeout(tick, 2000);
+  }
+
   /* ---------- Часы в строке состояния ---------- */
   function tickClock() {
     const el = $("[data-clock]");
@@ -334,6 +388,7 @@
     restoreScroll();
     syncShowIf();
     initTerm();
+    watchMonitor();
     palette.init();
     setTimeout(tickClock, (60 - new Date().getSeconds()) * 1000 + 50);
     watchServer();

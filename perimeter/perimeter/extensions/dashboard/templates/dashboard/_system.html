@@ -1,7 +1,10 @@
-<div class="card-body">
-  <dl class="kv">
-    {% for key, value in rows %}<dt>{{ key }}</dt><dd class="tnum">{{ value }}</dd>{% endfor %}
-    <dt>расширения</dt>
-    <dd>{% if broken %}<span class="t-err">{{ broken|length }} с ошибкой</span>{% else %}<span class="t-ok">{{ extensions }} ok</span>{% endif %}</dd>
-  </dl>
+{# Монитор как в htop: обновляется из JS раз в 2 с (app.js → watchMonitor) #}
+<div class="mon" data-monitor>
+  {% for r in rows %}
+  <div class="mon-row" data-key="{{ r.key }}"{% if r.pct is defined %} data-pct="{{ r.pct }}"{% endif %}>
+    <span class="mon-k">{{ r.key }}</span>
+    {%- if r.bar is not none %}<span class="mon-bar t-{{ r.tone }}">[<span data-bar>{{ r.bar }}</span>]</span>{% endif -%}
+    <span class="mon-v" data-text>{{ r.text }}</span>
+  </div>
+  {% endfor %}
 </div>

@@ -162,12 +162,22 @@ def test_delete_target(browser, ctx):
 
 # --- обзор, настройки, поиск -----------------------------------------------------
 
-def test_dashboard_widgets(browser):
+def test_dashboard_is_a_monitor(browser):
     browser.post("/targets/new", {"domain": "example.com"})
     page = browser.get("/").text
-    for title in ("Цели", "Модули", "Система", "Журнал"):
+    for title in ("Система", "Панель", "Журнал"):
         assert title in page
+    assert "data-monitor" in page and 'data-key="disk"' in page  # полосы как в htop
+    assert ">цели</a>" in page  # строка «Панели» от расширения целей
     assert "[+]" in page and "Новая цель example.com" in page
+
+
+def test_system_api(browser):
+    data = browser.client.get("/api/system").json()
+    keys = {row["key"] for row in data["rows"]}
+    assert {"cpu", "ram", "disk", "panel"} <= keys
+    disk = next(r for r in data["rows"] if r["key"] == "disk")
+    assert len(disk["bar"]) == 30 and set(disk["bar"]) <= {"|", " "} and disk["tone"] in {"ok", "warn", "err"}
 
 
 def test_settings_page_saves_and_audits(browser, ctx):

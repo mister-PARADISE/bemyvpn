@@ -12,7 +12,7 @@ from .conftest import PASSWORD, Browser, make_app
 GOOD_PLUGIN = '''
 from fastapi import APIRouter, Request
 from perimeter.core import fields as f
-from perimeter.core.context import Page, Slot, Widget
+from perimeter.core.context import Page, Slot, Stat, Widget
 from perimeter.core.modules import AssetType, Kind, Module, ModuleSpec
 from perimeter.core.settings import SettingsSection
 from perimeter.web import render
@@ -48,6 +48,7 @@ def setup(ctx):
     ctx.settings.section(SettingsSection(id="hello", title="Привет", group="Модули",
                                          fields=(f.text("who", "Кого", default="мир"),)))
     ctx.widgets.add(Widget("hello", "Привет", "hello/widget.html"))
+    ctx.stats.add(Stat("hello", "привет", lambda db, ctx: ("всем", "ok")))
     ctx.add_slot("target.side", Slot("hello", "hello/widget.html"))
     for m in (Whois, Ports, Resolve, Headers):
         ctx.modules.add(m)
@@ -96,6 +97,7 @@ def test_plugin_extends_everything(tmp_path):
     b = login(app)
     assert "Привет, мир!" in b.get("/hello").text
     assert "Привет" in b.get("/").text and "виджет-привет" in b.get("/").text
+    assert "всем" in b.get("/").text  # строка расширения в «Панели»
     b.post("/settings/hello", {"who": "Периметр"})
     assert "Привет, Периметр!" in b.get("/hello").text
 

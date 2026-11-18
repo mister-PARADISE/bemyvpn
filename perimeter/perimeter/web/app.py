@@ -75,7 +75,7 @@ def register_core(ctx: Context) -> None:
         description="Цвет терминала и плотность интерфейса.",
         fields=(
             f.choice("accent", "Цвет", ACCENTS, default="green"),
-            f.boolean("crt", "Полосы как на мониторе ЭЛТ", default=True,
+            f.boolean("crt", "Полосы как на мониторе ЭЛТ", default=False,
                       help="Едва заметные горизонтальные линии и затемнение по краям"),
             f.choice("density", "Плотность", {"comfortable": "Свободно", "compact": "Компактно"}, default="comfortable"),
         ),

@@ -1,28 +1,24 @@
 {% extends "base.html" %}
 {% import "_ui.html" as ui with context %}
 {% block content %}
-{% call ui.head("Обзор", [today]) %}
-  <a class="ib primary" href="/targets/new" data-tip="Новая цель" aria-label="Новая цель">{{ icon('plus') }}</a>
+{% call ui.head("Обзор", lines) %}
+  <a class="ib" href="/targets/new" data-tip="Новая цель" aria-label="Новая цель">{{ icon('plus') }}</a>
 {% endcall %}
 
-{% if widgets %}
-<div class="grid cols-3">
+<div class="grid cols-3 dash">
   {% for item in widgets %}
     {% set w = item.widget %}
     <section class="card{% if w.span == 2 %} span-2{% elif w.span == 3 %} span-3{% endif %}">
       <div class="card-head">
-        <h2>{{ icon(w.icon) }}{{ w.title }}</h2>
+        <h2>{{ w.title }}</h2>
         {% if w.link %}<a class="ib sm" href="{{ w.link }}" data-tip="Открыть" aria-label="Открыть: {{ w.title }}">{{ icon('arrow-right') }}</a>{% endif %}
       </div>
       {% if item.error %}
-        <div class="card-body"><div class="note tone-danger">{{ icon('alert') }}<div>{{ item.error }}</div></div></div>
+        <div class="card-body t-err">! {{ item.error }}</div>
       {% else %}
         {{ partial(w.template, item.data) }}
       {% endif %}
     </section>
   {% endfor %}
 </div>
-{% else %}
-<div class="card">{{ ui.empty("grid", "Виджетов нет", ["Их добавляют расширения через ctx.widgets.add(...)"]) }}</div>
-{% endif %}
 {% endblock %}

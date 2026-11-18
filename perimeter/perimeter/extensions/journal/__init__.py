@@ -70,6 +70,6 @@ def setup(ctx: Context) -> None:
     ctx.pages.add(Page("journal", "Журнал", "/journal", icon="history", section="Система", order=90,
                        description="Кто, что и когда сделал"))
     ctx.add_router(router)
-    ctx.widgets.add(Widget("recent", "Журнал", "journal/_widget.html", data=recent, icon="history",
-                           order=90, span=3, link="/journal"))
+    ctx.widgets.add(Widget("recent", "Журнал", "journal/_widget.html", data=recent, order=90, span=2,
+                           link="/journal"))
     ctx.add_slot("target.side", Slot("journal", "journal/_entity.html", data=for_entity("target"), order=90))

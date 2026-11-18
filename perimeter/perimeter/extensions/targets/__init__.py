@@ -16,7 +16,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.engine import Connection
 
 from ...core import fields as f
-from ...core.context import Context, Page, SearchHit, Widget
+from ...core.context import Context, Page, SearchHit, Stat
 from ...core.scope import ScopeError, display_host, normalize_host, parse_rules
 from ...web import DB, actor, flash, form_data, get_ctx, redirect, render
 from .models import Target
@@ -173,12 +173,10 @@ def target_scope_check(request: Request, db: DB, target_id: int, host: str = "")
     return {"allowed": allowed, "reason": reason, "host": normalized}
 
 
-# --- виджет, поиск ----------------------------------------------------------------
+# --- строка на обзоре, поиск ----------------------------------------------------------------
 
-def targets_widget(db, ctx: Context) -> dict:
-    total = db.scalar(select(func.count()).select_from(Target)) or 0
-    latest = db.scalars(select(Target).order_by(Target.updated_at.desc()).limit(5)).all()
-    return {"total": total, "latest": latest}
+def targets_stat(db, ctx: Context) -> str:
+    return str(db.scalar(select(func.count()).select_from(Target)) or 0)
 
 
 def search_targets(db, q: str) -> list[SearchHit]:
@@ -221,8 +219,7 @@ def _v3_no_consent(conn: Connection) -> None:
 def setup(ctx: Context) -> None:
     ctx.pages.add(Page("targets", "Цели", "/targets", icon="globe", order=20, description="Сайты и их границы"))
     ctx.add_router(router)
-    ctx.widgets.add(Widget("targets", "Цели", "targets/_widget.html", data=targets_widget, icon="globe",
-                           order=10, link="/targets"))
+    ctx.stats.add(Stat("targets", "цели", targets_stat, order=10, link="/targets"))
     ctx.search(search_targets)
     ctx.entity("target", lambda id: f"/targets/{id}", "Цели")
     ctx.db.migration("targets", 2, _v2_consent)

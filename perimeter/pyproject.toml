@@ -15,6 +15,7 @@ dependencies = [
     "sqlalchemy>=2.0",
     "itsdangerous>=2.1",
     "python-multipart>=0.0.9",
+    "psutil>=5.9",
     "tzdata; sys_platform == 'win32'",
 ]
 

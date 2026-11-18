@@ -88,6 +88,20 @@ class Slot:
 
 
 @dataclass(frozen=True)
+class Stat:
+    """Строка в разделе «Панель» на обзоре: «цели  4», «прокси  12 живых из 15».
+
+    value(session, ctx) → текст или (текст, оттенок: ok | warn | err).
+    """
+
+    id: str
+    label: str
+    value: Callable[[Session, "Context"], str | tuple[str, str]]
+    order: int = 100
+    link: str | None = None
+
+
+@dataclass(frozen=True)
 class SearchHit:
     title: str
     url: str
@@ -122,6 +136,7 @@ class Context:
     settings: Settings = field(init=False)
     pages: Registry[Page] = field(default_factory=lambda: Registry("Страница"))
     widgets: Registry[Widget] = field(default_factory=lambda: Registry("Виджет"))
+    stats: Registry[Stat] = field(default_factory=lambda: Registry("Строка состояния"))
     asset_types: Registry[AssetType] = field(default_factory=lambda: Registry("Тип данных"))
     modules: ModuleRegistry = field(init=False)
     extensions: list[ExtensionInfo] = field(default_factory=list)

@@ -31,7 +31,6 @@
 :root{
   --accent-soft:color-mix(in srgb,var(--accent) 11%,var(--surface));
   --accent-line:color-mix(in srgb,var(--accent) 38%,transparent);
-  --glow:0 0 14px color-mix(in srgb,var(--accent) 30%,transparent);
   --copy:color-mix(in srgb,var(--accent) 70%,#fff);
   --ok-soft:color-mix(in srgb,var(--ok) 11%,var(--surface));
   --warn-soft:color-mix(in srgb,var(--warn) 11%,var(--surface));
@@ -80,9 +79,9 @@ svg.i-lg{width:22px;height:22px}
 @keyframes pop{from{transform:translateY(6px);opacity:0}}
 
 /* мигающий курсор и приглашение — подпись терминала */
-.prompt{color:var(--accent);text-shadow:var(--glow);margin-right:.6ch;user-select:none}
+.prompt{color:var(--accent);margin-right:.6ch;user-select:none}
 .cursor{display:inline-block;width:.6em;height:1.05em;margin-left:.35ch;vertical-align:-.15em;background:var(--accent);
-        box-shadow:var(--glow);animation:blink 1.1s steps(1) infinite;flex:none}
+        animation:blink 1.1s steps(1) infinite;flex:none}
 @media (prefers-reduced-motion:reduce){.cursor,.pulse{animation:none}}
 
 /* ---------- Кнопки-иконки ---------- */
@@ -92,13 +91,13 @@ svg.i-lg{width:22px;height:22px}
 .ib.sm{width:28px;height:28px}
 .ib.on{background:var(--accent-soft);color:var(--accent)}
 .ib.primary{border-color:var(--accent-line);color:var(--accent)}
-.ib.primary:hover{background:var(--accent);color:var(--accent-ink);box-shadow:var(--glow)}
+.ib.primary:hover{background:var(--accent);color:var(--accent-ink)}
 .ib.accent{color:var(--accent)}
 .ib.danger:hover{background:var(--err-soft);color:var(--err)}
 .ib.good:hover{background:var(--ok-soft);color:var(--ok)}
 .ib.warn:hover{background:var(--warn-soft);color:var(--warn)}
 .ib[aria-disabled="true"],.ib:disabled{opacity:.3;cursor:default;background:transparent;color:var(--ink2);pointer-events:none}
-.ibar{display:inline-flex;align-items:center;gap:2px;padding:3px;border-radius:var(--r);background:var(--surface);border:1px solid var(--line)}
+.ibar{display:inline-flex;align-items:center;gap:2px}
 .ibar .sep{width:1px;height:16px;background:var(--line2);margin:0 4px}
 .ibar form{display:contents}
 
@@ -111,7 +110,7 @@ svg.i-lg{width:22px;height:22px}
 :is(.btn-primary,.btn-soft,.btn-ghost,.btn-danger,.btn-good)::before{content:"[";opacity:.55;font-weight:400}
 :is(.btn-primary,.btn-soft,.btn-ghost,.btn-danger,.btn-good)::after{content:"]";opacity:.55;font-weight:400}
 .btn-primary{border-color:var(--accent);background:var(--accent-soft);color:var(--accent)}
-.btn-primary:hover{background:var(--accent);color:var(--accent-ink);box-shadow:var(--glow)}
+.btn-primary:hover{background:var(--accent);color:var(--accent-ink)}
 .btn-soft{border-color:var(--line2);background:var(--sunken);color:var(--ink)}
 .btn-soft:hover{border-color:var(--accent-line);color:var(--accent)}
 .btn-ghost{background:none;color:var(--ink2);font-weight:500}
@@ -131,8 +130,7 @@ form.inline{display:inline}
 .side-head{height:60px;flex:none;display:flex;align-items:center;gap:10px;padding:0 14px;border-bottom:1px solid var(--line)}
 .brand{display:flex;align-items:center;gap:10px;min-width:0;color:var(--ink)}
 .brand:hover{text-decoration:none}
-.logo{width:32px;height:32px;flex:none;display:grid;place-items:center;border-radius:var(--r-sm);border:1px solid var(--accent-line);
-      background:var(--accent-soft);color:var(--accent);box-shadow:var(--glow)}
+.logo{width:32px;height:32px;flex:none;display:grid;place-items:center;color:var(--accent)}
 .logo svg{width:22px;height:22px;fill:none;stroke:currentColor;stroke-linecap:round;stroke-linejoin:round}
 .brand-text{display:flex;flex-direction:column;min-width:0;line-height:1.25;transition:opacity .15s}
 .brand-name{font-weight:700;font-size:14px;letter-spacing:.02em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -154,7 +152,7 @@ form.inline{display:inline}
        white-space:nowrap;transition:background .12s,color .12s}
 .nav a:hover{background:var(--sunken);color:var(--accent);text-decoration:none}
 /* выбранный пункт — инверсия, как выделение в htop и Midnight Commander */
-.nav a.on{background:var(--accent);color:var(--accent-ink);font-weight:700;box-shadow:var(--glow)}
+.nav a.on{background:var(--accent);color:var(--accent-ink);font-weight:700}
 .nav a.on .count{color:var(--accent-ink)}
 .nav .ico{position:relative;width:40px;height:36px;flex:none;display:grid;place-items:center}
 .nav .txt{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;transition:opacity .15s}
@@ -169,13 +167,13 @@ form.inline{display:inline}
 .side-foot .foot-row{display:flex;align-items:center;height:36px;border-radius:var(--r-sm);font-size:12.5px;color:var(--ink2);
                      white-space:nowrap;width:100%;padding:0;border:0;background:none;text-align:left}
 .side-foot a.foot-row:hover{background:var(--sunken);color:var(--ink);text-decoration:none}
-.side-foot .foot-row.on{background:var(--accent);color:var(--accent-ink);font-weight:700;box-shadow:var(--glow)}
+.side-foot .foot-row.on{background:var(--accent);color:var(--accent-ink);font-weight:700}
 .side-foot .ico{width:40px;height:36px;flex:none;display:grid;place-items:center}
 .side-foot .txt{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;transition:opacity .15s}
-.pulse{width:7px;height:7px;border-radius:50%;background:var(--ok);box-shadow:0 0 0 3px var(--ok-soft),0 0 10px var(--ok);
+.pulse{width:7px;height:7px;border-radius:50%;background:var(--ok);
        animation:pulse 2.4s ease-in-out infinite}
 .server.down{color:var(--err)}
-.server.down .pulse{background:var(--err);box-shadow:0 0 0 3px var(--err-soft);animation:none}
+.server.down .pulse{background:var(--err);animation:none}
 .foot-user{display:flex;align-items:center;height:36px;font-size:12.5px}
 .avatar{width:24px;height:24px;border-radius:5px;display:grid;place-items:center;font-size:11.5px;font-weight:700;
         background:var(--sunken);border:1px solid var(--line2);color:var(--accent)}
@@ -191,8 +189,8 @@ form.inline{display:inline}
   :root.collapsed .nav .divider{margin:8px 4px}
   /* в свёрнутой панели число превращается в точку на иконке */
   :root.collapsed .nav a:has(.count) .ico::after{content:"";position:absolute;top:7px;right:8px;width:6px;height:6px;border-radius:50%;background:var(--ink2)}
-  :root.collapsed .nav a:has(.count.warn) .ico::after{background:var(--warn);box-shadow:0 0 6px var(--warn)}
-  :root.collapsed .nav a:has(.count.err) .ico::after{background:var(--err);box-shadow:0 0 6px var(--err)}
+  :root.collapsed .nav a:has(.count.warn) .ico::after{background:var(--warn)}
+  :root.collapsed .nav a:has(.count.err) .ico::after{background:var(--err)}
 }
 
 .main{flex:1;min-width:0;display:flex;flex-direction:column}
@@ -228,18 +226,18 @@ form.inline{display:inline}
                          .with-nav{grid-template-columns:minmax(0,1fr)}}
 @media (max-width:520px){.cols-4{grid-template-columns:minmax(0,1fr)}}
 
-/* ---------- Карточки: окна терминала ---------- */
-.card{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);min-width:0}
-.card-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:8px 8px 8px var(--pad);background:color-mix(in srgb,var(--accent) 5%,var(--surface));
-           min-height:46px;border-bottom:1px solid var(--line)}
-.card-head h2{display:flex;align-items:center;gap:9px;font-size:11.5px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;
-              color:var(--ink2);min-width:0}
-.card-head h2{color:var(--accent)}
+/* ---------- Разделы: заголовок с линией до края, без рамок и подложек ---------- */
+.card{background:none;border:0;border-radius:0;min-width:0;--pad:10px}
+.card-head{display:flex;align-items:center;gap:12px;padding:0 0 6px;min-height:30px}
+.card-head h2{order:0;flex:none;display:flex;align-items:center;gap:9px;font-size:11.5px;font-weight:700;letter-spacing:.1em;
+              text-transform:uppercase;color:var(--ink2);min-width:0}
 .card-head h2 svg.i{display:none}
+.card-head::after{content:"";order:1;flex:1;min-width:24px;height:1px;background:var(--line2)}
+.card-head>:not(h2){order:2}
 .card-head .count{font-size:11.5px;font-weight:500;color:var(--ink3);letter-spacing:0;font-variant-numeric:tabular-nums}
 .card-head .count::before{content:"["}.card-head .count::after{content:"]"}
-.card-body{padding:var(--pad)}
-.card-foot{display:flex;align-items:center;justify-content:flex-end;gap:8px;padding:10px var(--pad);border-top:1px solid var(--line)}
+.card-body{padding:10px var(--pad)}
+.card-foot{display:flex;align-items:center;justify-content:flex-end;gap:8px;padding:12px var(--pad) 0;border-top:1px solid var(--line)}
 
 /* ---------- Показатели ---------- */
 .stat{display:flex;flex-direction:column;gap:2px;padding:14px var(--pad);color:var(--ink)}
@@ -247,7 +245,7 @@ a.stat:hover{text-decoration:none;background:var(--raised)}
 .stat .label{display:flex;align-items:center;gap:7px;font-size:11.5px;color:var(--ink3);text-transform:uppercase;letter-spacing:.06em}
 .stat .value{font-size:26px;line-height:34px;font-weight:700;font-variant-numeric:tabular-nums}
 .stat .value.warn{color:var(--warn)}.stat .value.err{color:var(--err)}
-.stat .value.ok,.stat .value.accent{color:var(--accent);text-shadow:var(--glow)}
+.stat .value.ok,.stat .value.accent{color:var(--accent)}
 .stat .lines{display:flex;flex-direction:column;font-size:12px;line-height:18px;color:var(--ink3)}
 
 /* ---------- Двухстрочная ячейка ---------- */
@@ -279,7 +277,6 @@ a.stat:hover{text-decoration:none;background:var(--raised)}
 .table tr:last-child td{border-bottom:0}
 .table tbody tr{transition:background .1s}
 .table tbody tr:hover{background:var(--raised)}
-.table tbody tr:hover td:first-child{box-shadow:inset 2px 0 0 var(--accent)}
 .table tr[data-href]{cursor:pointer}
 .table tr[data-href]:hover .l1{color:var(--accent)}
 .table td.act{width:1%;white-space:nowrap;text-align:right}
@@ -288,13 +285,13 @@ a.stat:hover{text-decoration:none;background:var(--raised)}
 @media (hover:none){.table td.act .ibar{opacity:1}}
 
 /* ---------- Сегменты-фильтры ---------- */
-.seg{display:inline-flex;gap:2px;padding:3px;border-radius:var(--r);border:1px solid var(--line);background:var(--bg);max-width:100%;overflow-x:auto}
+.seg{display:inline-flex;gap:4px;max-width:100%;overflow-x:auto}
 .seg a,.seg button{position:relative;height:28px;display:inline-flex;align-items:center;gap:7px;padding:0 11px;border:0;border-radius:var(--r-sm);
                    background:none;color:var(--ink3);font-size:12.5px;white-space:nowrap;cursor:pointer;transition:color .12s,background .12s}
 .seg a:hover,.seg button:hover{color:var(--ink);text-decoration:none}
-.seg .on{background:var(--accent-soft);color:var(--accent)}
+.seg .on{background:var(--accent);color:var(--accent-ink);font-weight:700}
 .seg .count{font-size:11px;color:var(--ink3);font-variant-numeric:tabular-nums}
-.seg .on .count{color:var(--accent)}
+.seg .on .count{color:var(--accent-ink)}
 
 .toolbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 10px 10px var(--pad);border-bottom:1px solid var(--line)}
 .toolbar .grow{min-width:180px}
@@ -315,7 +312,7 @@ a.stat:hover{text-decoration:none;background:var(--raised)}
 .textarea{min-height:92px;padding:8px 11px;resize:vertical;line-height:1.55}
 .input::placeholder,.textarea::placeholder{color:var(--ink3);opacity:.8}
 .input:hover,.select:hover,.textarea:hover{border-color:color-mix(in srgb,var(--line2) 50%,var(--ink3))}
-.input:focus,.select:focus,.textarea:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft),var(--glow)}
+.input:focus,.select:focus,.textarea:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
 .is-invalid :is(.input,.select,.textarea){border-color:var(--err)}
 .is-invalid :is(.input,.select,.textarea):focus{box-shadow:0 0 0 3px var(--err-soft)}
 .select{appearance:none;padding-right:30px;cursor:pointer;
@@ -331,14 +328,14 @@ input[type=date]::-webkit-calendar-picker-indicator{filter:invert(.6) sepia(1) h
 .switch .sw{width:34px;height:19px;border-radius:4px;background:var(--bg);border:1px solid var(--line2);position:relative;transition:.15s;flex:none}
 .switch .sw::after{content:"";position:absolute;top:2px;left:2px;width:13px;height:13px;border-radius:2px;background:var(--ink3);transition:.15s var(--ease)}
 .switch input:checked+.sw{border-color:var(--accent);background:var(--accent-soft)}
-.switch input:checked+.sw::after{left:17px;background:var(--accent);box-shadow:var(--glow)}
+.switch input:checked+.sw::after{left:17px;background:var(--accent)}
 .switch input:focus-visible+.sw{outline:1px solid var(--accent);outline-offset:2px}
 
 /* ---------- Бейджи: как метки в логе ---------- */
 .badge{display:inline-flex;align-items:center;gap:6px;height:21px;padding:0 8px;border-radius:2px;font-size:11px;font-weight:600;
        letter-spacing:.04em;text-transform:uppercase;border:1px solid var(--line2);color:var(--ink2);white-space:nowrap;width:max-content;flex:none}
 .badge svg.i{width:12px;height:12px}
-.badge.dot::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor;box-shadow:0 0 6px currentColor}
+.badge.dot::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor}
 .badge.tone-success{color:var(--ok);border-color:color-mix(in srgb,var(--ok) 40%,transparent);background:var(--ok-soft)}
 .badge.tone-warning{color:var(--warn);border-color:color-mix(in srgb,var(--warn) 40%,transparent);background:var(--warn-soft)}
 .badge.tone-danger{color:var(--err);border-color:color-mix(in srgb,var(--err) 40%,transparent);background:var(--err-soft)}
@@ -361,13 +358,14 @@ input[type=date]::-webkit-calendar-picker-indicator{filter:invert(.6) sepia(1) h
 .group-title::before{content:"// ";color:var(--accent)}
 
 /* ---------- Пустые состояния ---------- */
-.empty{padding:44px 24px;text-align:center}
-.empty-icon{width:48px;height:48px;margin:0 auto 16px;display:grid;place-items:center;border-radius:var(--r);border:1px dashed var(--line2);color:var(--accent)}
-.empty h3{margin:0 0 6px;font-size:14px}
-.empty .lines{display:flex;flex-direction:column;gap:2px;color:var(--ink2);font-size:12.5px;max-width:520px;margin:0 auto}
+.empty{padding:6px var(--pad,10px);text-align:left}
+.empty-icon{display:none}
+.empty h3{margin:0 0 4px;font-size:13px;font-weight:600;color:var(--ink2)}
+.empty h3::before{content:"# ";color:var(--ink3)}
+.empty .lines{display:flex;flex-direction:column;gap:2px;color:var(--ink3);font-size:12.5px}
 .empty code{padding:2px 6px;border-radius:4px;background:var(--sunken);word-break:break-all}
 .empty .ib,.empty .btn-primary{margin-top:16px}
-.card .empty{padding:30px 16px}
+
 
 /* ---------- Заметки: строки лога с уровнем ---------- */
 .note{display:flex;gap:10px;padding:10px 12px;border-radius:var(--r-sm);background:var(--sunken);border-left:2px solid var(--line2);
@@ -403,13 +401,13 @@ pre.code{display:block;padding:12px 14px;white-space:pre;overflow-x:auto;margin:
 .item:last-child{border-bottom:0}
 a.item:hover{background:var(--raised);text-decoration:none}
 a.item:hover .l1{color:var(--accent)}
-.item-ico{width:32px;height:32px;flex:none;display:grid;place-items:center;border-radius:var(--r-sm);border:1px solid var(--line2);color:var(--ink2)}
+.item-ico{width:18px;flex:none;display:grid;place-items:center;color:var(--ink3)}
 .item-ico svg.i{width:16px;height:16px}
-.item-ico.tone-warning{color:var(--warn);border-color:color-mix(in srgb,var(--warn) 40%,transparent);background:var(--warn-soft)}
-.item-ico.tone-danger{color:var(--err);border-color:color-mix(in srgb,var(--err) 40%,transparent);background:var(--err-soft)}
-.item-ico.tone-success{color:var(--ok);border-color:color-mix(in srgb,var(--ok) 40%,transparent);background:var(--ok-soft)}
-.item-ico.tone-accent{color:var(--accent);border-color:var(--accent-line);background:var(--accent-soft)}
-.item-ico.tone-info{color:var(--info);border-color:color-mix(in srgb,var(--info) 40%,transparent);background:var(--info-soft)}
+.item-ico.tone-warning{color:var(--warn)}
+.item-ico.tone-danger{color:var(--err)}
+.item-ico.tone-success{color:var(--ok)}
+.item-ico.tone-accent{color:var(--accent)}
+.item-ico.tone-info{color:var(--info)}
 
 /* лента событий — как вывод `tail -f` */
 .log{list-style:none;margin:0;padding:6px 0}
@@ -437,7 +435,7 @@ a.item:hover .l1{color:var(--accent)}
 @media (max-width:900px){.subnav{position:static;flex-direction:row;overflow-x:auto;padding-bottom:4px}.subnav-title{display:none}}
 
 /* ---------- Модули ---------- */
-.module{display:flex;flex-direction:column;gap:12px;padding:var(--pad)}
+.module{display:flex;flex-direction:column;gap:10px;padding:2px 0 2px 14px;border-left:1px solid var(--line2)}
 .module .head{display:flex;gap:12px;align-items:flex-start}
 .flow{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
 .flow>svg.i{color:var(--accent);width:14px;height:14px}
@@ -453,8 +451,8 @@ a.item:hover .l1{color:var(--accent)}
 /* ---------- Уведомления: снизу по центру ---------- */
 .toasts{position:fixed;left:50%;bottom:40px;z-index:110;display:flex;flex-direction:column;align-items:center;gap:8px;width:max-content;
         max-width:min(460px,calc(100vw - 32px));transform:translateX(-50%);pointer-events:none}
-.toast{display:flex;align-items:flex-start;gap:10px;padding:9px 13px;border-radius:var(--r-sm);background:var(--bg);color:var(--ink);
-       border:1px solid var(--accent-line);font-size:12.5px;line-height:1.5;box-shadow:var(--pop),var(--glow);animation:pop .16s var(--ease);
+.toast{display:flex;align-items:flex-start;gap:10px;padding:9px 13px;border-radius:var(--r-sm);background:var(--surface);color:var(--ink);
+       border:1px solid var(--line2);font-size:12.5px;line-height:1.5;box-shadow:var(--pop);animation:pop .16s var(--ease);
        pointer-events:auto;cursor:default}
 .toast svg.i{display:none}
 .toast::before{content:"[ok]";font-weight:700;color:var(--accent);flex:none}
@@ -462,7 +460,7 @@ a.item:hover .l1{color:var(--accent)}
 .toast.tone-warning::before{content:"[!]";color:var(--warn)}
 .toast.bad::before{content:"[err]";color:var(--err)}
 .toast .text{white-space:pre-line}
-.toast.bad{border-color:var(--err);box-shadow:var(--pop)}
+.toast.bad{border-color:color-mix(in srgb,var(--err) 50%,var(--line2))}
 .toast.leave{opacity:0;transform:translateY(6px);transition:opacity .18s,transform .18s}
 
 /* ---------- Окна ---------- */
@@ -477,7 +475,7 @@ dialog::backdrop{background:rgba(0,0,0,.72);-webkit-backdrop-filter:blur(3px);ba
 .box-foot{display:flex;justify-content:flex-end;gap:8px;padding:0 20px 18px}
 
 .palette{width:600px;margin-top:12vh;margin-bottom:auto}
-.palette .box{width:100%;border-color:var(--accent-line);box-shadow:var(--pop),var(--glow)}
+.palette .box{width:100%;box-shadow:var(--pop)}
 .palette-input{display:flex;align-items:center;gap:10px;padding:0 14px;border-bottom:1px solid var(--line)}
 .palette-input .prompt{margin:0}
 .palette-input input{flex:1;height:50px;border:0;background:transparent;font-size:14px;outline:none}
@@ -493,7 +491,7 @@ dialog::backdrop{background:rgba(0,0,0,.72);-webkit-backdrop-filter:blur(3px);ba
 
 /* ---------- Страницы без входа (ошибки) ---------- */
 .auth{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px 16px}
-.banner{color:var(--accent);text-shadow:var(--glow);white-space:pre;overflow:hidden}
+.banner{color:var(--accent);white-space:pre;overflow:hidden}
 
 /* ---------- Вход как в консоль: без окон, строки вывода и строки ввода ---------- */
 .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0 0 0 0);border:0}
@@ -507,20 +505,39 @@ dialog::backdrop{background:rgba(0,0,0,.72);-webkit-backdrop-filter:blur(3px);ba
 .tl.err{color:var(--err)}
 .tprompt{display:flex;align-items:baseline;cursor:text;white-space:normal}
 .tprompt .tp{flex:none;margin-right:1ch;white-space:pre}
-.tprompt .host{color:var(--accent);text-shadow:var(--glow)}
+.tprompt .host{color:var(--accent)}
 .tin{position:relative;flex:1;min-width:0;min-height:1.75em}
 .tin input{width:100%;border:0;outline:0;padding:0;margin:0;background:transparent;color:var(--ink);font:inherit;line-height:inherit;caret-color:var(--accent)}
 .tin .echo,.tin .tcur{display:none}
 /* с JS: настоящее поле невидимо поверх строки, видны эхо и блочный курсор */
 :root.js-term .tin input{position:absolute;inset:0;height:100%;opacity:0;font-size:16px}
 :root.js-term .tin .echo{display:inline;white-space:pre-wrap;word-break:break-all}
-:root.js-term .tin .tcur{display:inline-block;width:.6em;height:1.1em;vertical-align:-.2em;background:var(--accent);box-shadow:var(--glow);opacity:0}
+:root.js-term .tin .tcur{display:inline-block;width:.6em;height:1.1em;vertical-align:-.2em;background:var(--accent);opacity:0}
 :root.js-term .tin:focus-within .tcur{opacity:1;animation:blink 1.1s steps(1) infinite}
 .term-screen.sending .tcur{animation:none!important;opacity:.35!important}
 @media (prefers-reduced-motion:reduce){.tl{animation:none}}
 
 .error-page{min-height:60vh;display:grid;place-items:center;text-align:center}
-.error-code{font-size:56px;line-height:1;font-weight:700;color:var(--accent);text-shadow:var(--glow);margin-bottom:12px}
+.error-code{font-size:56px;line-height:1;font-weight:700;color:var(--accent);margin-bottom:12px}
+
+/* ---------- Монитор на обзоре, как в htop ---------- */
+.mon{display:flex;flex-direction:column;gap:2px;padding:6px var(--pad);font-size:13px;line-height:1.7}
+.mon-row{display:flex;align-items:baseline;gap:1ch;flex-wrap:wrap;min-width:0}
+.mon-k{width:6ch;flex:none;color:var(--accent)}
+.mon-bar{white-space:pre;color:var(--ink3)}
+.mon-bar [data-bar]{color:inherit}
+.mon-bar.t-ok [data-bar]{color:var(--ok)}
+.mon-bar.t-warn [data-bar]{color:var(--warn)}
+.mon-bar.t-err [data-bar]{color:var(--err)}
+.mon-v{color:var(--ink2);font-variant-numeric:tabular-nums}
+.kvlist{display:flex;flex-direction:column;padding:6px var(--pad);font-size:13px;line-height:1.9}
+.kvrow{display:flex;gap:1ch;min-width:0}
+.kvrow .k{width:14ch;flex:none;color:var(--ink3)}
+.kvrow .k a{color:inherit}
+.kvrow .k a:hover{color:var(--accent)}
+.kvrow .v{color:var(--ink);min-width:0;overflow-wrap:anywhere}
+.dash{gap:28px 36px}
+@media (max-width:380px){.mon{font-size:11.5px}}
 
 /* ---------- Строка состояния внизу, как в tmux ---------- */
 .statusbar{position:sticky;bottom:0;z-index:15;display:flex;align-items:stretch;height:26px;margin-top:auto;
@@ -534,8 +551,8 @@ dialog::backdrop{background:rgba(0,0,0,.72);-webkit-backdrop-filter:blur(3px);ba
 .statusbar .win.on{color:var(--accent);font-weight:700}
 .statusbar .fill{flex:1}
 .statusbar .sb.r{border-right:0;border-left:1px solid var(--line)}
-.statusbar .pulse{width:6px;height:6px;box-shadow:0 0 0 2px var(--ok-soft),0 0 8px var(--ok)}
-.statusbar .server.down .pulse{background:var(--err);box-shadow:0 0 0 2px var(--err-soft);animation:none}
+.statusbar .pulse{width:6px;height:6px}
+.statusbar .server.down .pulse{background:var(--err);animation:none}
 .statusbar .server.down{color:var(--err)}
 
 /* ---------- Полосы как на мониторе ЭЛТ: едва заметные, выключаются в настройках ---------- */
