@@ -251,8 +251,18 @@
     }
   });
 
+  /* ---------- Поле видно, только когда включён переключатель (Field.show_if) ---------- */
+  function syncShowIf(scope = document) {
+    $$("[data-show-if]", scope).forEach((el) => {
+      const name = CSS.escape(el.dataset.showIf);
+      const toggle = el.closest("form")?.querySelector(`input[type=checkbox][name="${name}"]`);
+      if (toggle) el.hidden = !toggle.checked;
+    });
+  }
+
   document.addEventListener("change", (e) => {
     if (e.target.matches("[data-autosubmit]")) e.target.form?.requestSubmit();
+    if (e.target.matches("input[type=checkbox]") && e.target.form) syncShowIf(e.target.form);
   });
 
   document.addEventListener("keydown", (e) => {
@@ -267,6 +277,7 @@
 
   document.addEventListener("DOMContentLoaded", () => {
     restoreScroll();
+    syncShowIf();
     palette.init();
     watchServer();
     const box = $("#toasts");

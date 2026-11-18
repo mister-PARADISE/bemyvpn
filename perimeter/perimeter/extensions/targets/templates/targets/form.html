@@ -4,17 +4,14 @@
 {% block content %}
 <div class="narrow">
   {% if target %}
-    {{ ui.head("Изменить", ["Домен, название, границы и заметки"], back="/targets/%d"|format(target.id), back_text=target.name) }}
+    {{ ui.head("Изменить", ["домен, название, согласие, границы, заметки"], back="/targets/%d"|format(target.id), back_text=target.name) }}
   {% else %}
-    {{ ui.head("Новая цель", ["Сайт, который вы будете проверять, и его границы"], back="/targets", back_text="Цели") }}
+    {{ ui.head("Новая цель", ["обязательно только поле домена"], back="/targets", back_text="Цели") }}
   {% endif %}
   <form class="card" method="post">
     <div class="card-body form">
       {{ ui.csrf_field() }}
       {{ ui.fields(fields, values, errors) }}
-      {% if target and target.auth_status == "verified" %}
-      <div class="note tone-warning">{{ icon('alert') }}<div>Если сменить домен, разрешение перестанет действовать: его выдавали на <b>{{ target.name }}</b></div></div>
-      {% endif %}
     </div>
     <div class="card-foot">
       <a class="btn-ghost" href="{{ ('/targets/%d'|format(target.id)) if target else '/targets' }}">Отмена</a>

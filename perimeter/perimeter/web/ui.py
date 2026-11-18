@@ -48,8 +48,6 @@ class UI:
             dt=self.fmt_datetime,
             date=self.fmt_date,
             ago=self.fmt_ago,
-            days_left=days_left,
-            due=self.due,
             host=display_host,
             nl2br=lambda s: Markup("<br>".join(escape(s or "").split("\n"))),
         )
@@ -144,21 +142,6 @@ class UI:
             return f"{days} {plural(days, 'день', 'дня', 'дней')} назад"
         return self.fmt_date(value)
 
-    def due(self, value: date | None, past: str = "просрочено", soon_days: int | None = None) -> dict[str, str]:
-        """Срок человеческими словами: {'text': 'через 3 дня', 'tone': 'warn'}."""
-        if value is None:
-            return {"text": "", "tone": ""}
-        left = (value - date.today()).days
-        soon = self.ctx.settings.get("general.remind_days") if soon_days is None else soon_days
-        if left < 0:
-            n = -left
-            return {"text": f"{past} {n} {plural(n, 'день', 'дня', 'дней')} назад", "tone": "err"}
-        if left == 0:
-            return {"text": "сегодня последний день", "tone": "warn"}
-        if left == 1:
-            return {"text": "завтра", "tone": "warn"}
-        return {"text": f"через {left} {plural(left, 'день', 'дня', 'дней')}", "tone": "warn" if left <= soon else ""}
-
     # --- общий контекст --------------------------------------------------
     def nav(self, request: Request) -> dict[str, Any]:
         """Меню: home — отдельно сверху, sections — группы через разделитель, footer — внизу."""
@@ -201,12 +184,6 @@ class UI:
         }
         base.update(context)
         return self.templates.TemplateResponse(request, template, base, status_code=status_code)
-
-
-def days_left(value: date | None) -> int | None:
-    if value is None:
-        return None
-    return (value - date.today()).days
 
 
 def icon(name: str, cls: str = "") -> Markup:

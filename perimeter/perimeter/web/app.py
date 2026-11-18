@@ -68,8 +68,6 @@ def register_core(ctx: Context) -> None:
         fields=(
             f.text("brand_name", "Название панели", default="Периметр", max_length=40),
             f.choice("timezone", "Часовой пояс", TIMEZONES, default="Europe/Moscow"),
-            f.integer("remind_days", "Предупреждать заранее, дней", default=14, min=1, max=90,
-                      help="За сколько дней до конца разрешения цель попадает в напоминания на «Обзоре»"),
         ),
     ))
     ctx.settings.section(SettingsSection(

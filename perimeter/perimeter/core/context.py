@@ -11,7 +11,7 @@
         ctx.modules.add(SomeModule)
         ctx.search(provider)
         ctx.entity("report", lambda id: f"/reports/{id}")
-        ctx.events.on("target.authorized", handler)
+        ctx.events.on("target.consent", handler)
 """
 
 from __future__ import annotations
@@ -48,7 +48,7 @@ class Page:
     order: int = 100
     # home — первым пунктом, отдельно; main — в группах по section; footer — внизу панели.
     placement: str = "main"
-    # Число рядом с пунктом меню (например, сколько целей ждут разрешения).
+    # Число рядом с пунктом меню (например, сколько запусков идёт сейчас).
     badge: Callable[[Session], int | None] | None = None
     badge_tone: str = "accent"
     description: str = ""

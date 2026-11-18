@@ -1,25 +1,20 @@
 {% import "_ui.html" as ui with context %}
 <div class="card-body">
   <dl class="kv">
-    <dt>Всего</dt><dd class="tnum">{{ total }}</dd>
-    <dt>Разрешены</dt><dd class="tnum t-ok">{{ counts.verified }}</dd>
-    <dt>Ждут разрешения</dt><dd class="tnum{% if counts.pending %} t-warn{% endif %}">{{ counts.pending }}</dd>
-    {% if counts.expired %}<dt>Истекли</dt><dd class="tnum t-err">{{ counts.expired }}</dd>{% endif %}
+    <dt>всего</dt><dd class="tnum">{{ total }}</dd>
+    <dt>с согласием</dt><dd class="tnum t-ok">{{ with_consent }}</dd>
+    <dt>только пассивные</dt><dd class="tnum">{{ total - with_consent }}</dd>
   </dl>
 </div>
-{% if attention %}
+{% if latest %}
 <div class="list" style="border-top:1px solid var(--line)">
-  {% for t in attention %}
-    {% set d = t.auth_valid_until|due("истекло") %}
+  {% for t in latest %}
     <a class="item" href="/targets/{{ t.id }}">
-      <span class="item-ico tone-{{ 'danger' if t.auth_state == 'expired' else 'warning' }}">{{ icon('shield-alert') }}</span>
-      <span class="cell grow">
-        <span class="l1"><span>{{ t.name }}</span></span>
-        <span class="l2 {{ 'err' if t.auth_state == 'expired' else 'warn' }}">{% if t.auth_state == "verified" %}разрешение кончается {{ d.text }}{% else %}{{ t.state_title|lower }}{% endif %}</span>
-      </span>
+      <span class="item-ico{% if t.consent %} tone-success{% endif %}">{{ icon('globe') }}</span>
+      <span class="cell grow"><span class="l1"><span>{{ t.name }}</span></span><span class="l2">{{ t.mode_title|lower }}</span></span>
     </a>
   {% endfor %}
 </div>
-{% elif not total %}
+{% else %}
 <div class="card-body" style="border-top:1px solid var(--line)"><a class="btn-soft btn-sm" href="/targets/new">{{ icon('plus') }}Добавить первую цель</a></div>
 {% endif %}

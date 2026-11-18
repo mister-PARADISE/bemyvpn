@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from datetime import date, timedelta
-
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
@@ -11,10 +9,6 @@ from perimeter.core.models import AuditEntry, User
 from perimeter.extensions.targets.models import Target
 
 from .conftest import PASSWORD, Browser
-
-
-def iso(days: int) -> str:
-    return (date.today() + timedelta(days=days)).isoformat()
 
 
 def rows(ctx, model):
@@ -138,53 +132,31 @@ def test_target_normalization_and_duplicates(browser, ctx):
     assert r.status_code == 422
 
 
-def test_authorization_lifecycle(browser, ctx):
-    browser.post("/targets/new", {"domain": "example.com", "include": "203.0.113.10", "exclude": "pay.example.com"})
+def test_consent_in_form_and_on_page(browser, ctx):
+    browser.post("/targets/new", {"domain": "example.com"})
     t = rows(ctx, Target)[0]
-    assert t.auth_state == "pending" and not t.is_authorized
-    # без подтверждения разрешение не ставится
-    browser.post(f"/targets/{t.id}/authorize", {"method": "document", "note": ""})
-    assert rows(ctx, Target)[0].auth_status == "pending"
-    # прошедшая дата не принимается
-    browser.post(f"/targets/{t.id}/authorize", {"method": "document", "note": "x", "valid_until": iso(-1)})
-    assert rows(ctx, Target)[0].auth_status == "pending"
-    browser.post(f"/targets/{t.id}/authorize", {"method": "document", "note": "Договор №1", "valid_until": iso(10)})
+    assert not t.consent and t.consent_at is None  # по умолчанию — только пассивные
+    page = browser.get(f"/targets/{t.id}").text
+    assert "Только пассивные" in page and "Владелец согласен" in page
+    browser.post(f"/targets/{t.id}/consent", {"consent_note": "попросил в Telegram"})
     t = rows(ctx, Target)[0]
-    assert t.is_authorized and t.auth_note == "Договор №1"
-    # смена домена сбрасывает разрешение и код подтверждения
-    token = t.auth_token
-    browser.post(f"/targets/{t.id}/edit", {"domain": "example.net"})
+    assert t.consent and t.consent_note == "попросил в Telegram" and t.consent_at is not None
+    assert "Все модули" in browser.get(f"/targets/{t.id}").text
+    browser.post(f"/targets/{t.id}/consent/remove")
     t = rows(ctx, Target)[0]
-    assert t.auth_status == "pending" and t.auth_token != token
-    browser.post(f"/targets/{t.id}/authorize", {"method": "dns_txt", "note": "TXT найден"})
-    browser.post(f"/targets/{t.id}/revoke")
-    assert rows(ctx, Target)[0].auth_state == "revoked"
+    assert not t.consent and t.consent_at is None
     actions = [e.action for e in rows(ctx, AuditEntry)]
-    assert "target.authorized" in actions and "target.revoked" in actions
+    assert "target.consent" in actions and "target.consent_removed" in actions
 
 
-def test_new_token_only_without_permission(browser, ctx):
-    browser.post("/targets/new", {"domain": "example.com"})
+def test_consent_checkbox_on_create_and_edit(browser, ctx):
+    browser.post("/targets/new", {"domain": "example.com", "consent": "1", "consent_note": "договор"})
     t = rows(ctx, Target)[0]
-    browser.post(f"/targets/{t.id}/token")
-    assert rows(ctx, Target)[0].auth_token != t.auth_token
-    browser.post(f"/targets/{t.id}/authorize", {"method": "document", "note": "ok"})
-    token = rows(ctx, Target)[0].auth_token
-    browser.post(f"/targets/{t.id}/token")
-    assert rows(ctx, Target)[0].auth_token == token
-
-
-def test_expired_authorization(ctx, browser):
-    browser.post("/targets/new", {"domain": "example.com"})
-    with ctx.db.session() as s:
-        t = s.scalars(select(Target)).one()
-        t.auth_status = "verified"
-        t.auth_valid_until = date.today() - timedelta(days=1)
-    t = rows(ctx, Target)[0]
-    assert t.auth_state == "expired" and not t.is_authorized
-    assert "Разрешение истекло" in browser.get("/targets").text
-    assert "Разрешение истекло" in browser.get("/targets?state=expired").text
-    assert "example.com" not in browser.get("/targets?state=verified").text
+    assert t.consent and t.consent_note == "договор"
+    browser.post(f"/targets/{t.id}/edit", {"domain": "example.com", "consent_note": "договор"})  # галочка снята
+    assert not rows(ctx, Target)[0].consent
+    assert "example.com" in browser.get("/targets?mode=no").text
+    assert "example.com" not in browser.get("/targets?mode=yes").text
 
 
 def test_scope_check_endpoint(browser, ctx):
@@ -215,12 +187,12 @@ def test_dashboard_widgets(browser):
 
 
 def test_settings_page_saves_and_audits(browser, ctx):
-    r = browser.post("/settings/general", {"brand_name": "Моя панель", "timezone": "UTC", "remind_days": "7"})
+    r = browser.post("/settings/general", {"brand_name": "Моя панель", "timezone": "UTC"})
     assert r.status_code == 303
     assert ctx.settings.get("general.brand_name") == "Моя панель"
     assert "Моя панель" in browser.get("/").text
     assert any(e.action == "settings.updated" for e in rows(ctx, AuditEntry))
-    r = browser.post("/settings/general", {"brand_name": "X", "timezone": "UTC", "remind_days": "0"})
+    r = browser.post("/settings/general", {"brand_name": "X" * 41, "timezone": "UTC"})
     assert r.status_code == 422
     assert ctx.settings.get("general.brand_name") == "Моя панель"
 

@@ -54,6 +54,7 @@ class Field:
     choices: tuple[tuple[str, str], ...] = ()
     restart: bool = False  # изменение вступит в силу после перезапуска
     width: str = "full"  # full | half — ширина в сетке формы
+    show_if: str | None = None  # ключ поля-переключателя: поле видно, только когда он включён
 
     def __post_init__(self) -> None:
         if self.kind not in KINDS:

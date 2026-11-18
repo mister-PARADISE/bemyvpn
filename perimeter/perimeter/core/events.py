@@ -1,9 +1,9 @@
 """Шина событий: расширения узнают друг о друге, не импортируя друг друга.
 
-    ctx.events.on("target.authorized", handler)
+    ctx.events.on("target.consent", handler)
     ctx.events.on("target.*", handler)      # все события целей
     ctx.events.on("*", handler)             # вообще всё
-    ctx.events.emit("target.authorized", target_id=5)
+    ctx.events.emit("target.consent", target_id=5)
 
 Ошибка в одном обработчике не ломает остальные и не ломает того, кто событие
 отправил: она пишется в лог.

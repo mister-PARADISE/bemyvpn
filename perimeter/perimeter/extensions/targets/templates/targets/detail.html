@@ -7,92 +7,31 @@
   <a class="ib" href="https://{{ target.domain }}" target="_blank" rel="noopener noreferrer" data-tip="Открыть сайт" aria-label="Открыть сайт">{{ icon('external') }}</a>
   <a class="ib" href="/targets/{{ target.id }}/edit" data-tip="Изменить" aria-label="Изменить">{{ icon('edit') }}</a>
   {{ ui.post_ib("/targets/%d/delete"|format(target.id), "trash", "Удалить цель", "danger",
-                confirm="Цель, её границы и отметка о разрешении будут удалены. Записи в журнале останутся.",
+                confirm="Цель и её границы будут удалены. Записи в журнале останутся.",
                 confirm_title="Удалить " ~ target.name ~ "?", confirm_ok="Удалить") }}
 {% endcall %}
 
 <div class="with-side">
   <div class="stack">
 
-    {# --- Разрешение владельца --- #}
-    <div class="card">
-      <div class="card-head">
-        <h2>{{ icon('shield-check' if target.is_authorized else 'shield-alert') }}Разрешение владельца</h2>
-        <span class="row">
-          {{ ui.badge(target.state_title, target.state_tone, dot=True) }}
-          {% if not target.is_authorized %}{{ ui.post_ib("/targets/%d/token"|format(target.id), "refresh", "Новый код подтверждения", sm=True) }}{% endif %}
-        </span>
-      </div>
-      {% if target.is_authorized %}
-        {% set d = target.auth_valid_until|due("истекло") %}
-        <div class="card-body">
-          <dl class="kv">
-            <dt>Чем подтверждено</dt><dd>{{ target.method_title }}</dd>
-            <dt>Подтверждение</dt><dd>{{ target.auth_note|nl2br }}</dd>
-            <dt>Действует</dt>
-            <dd>{% if target.auth_valid_until %}<div class="cell"><span class="l1 soft">до {{ target.auth_valid_until|date }}</span><span class="l2 {{ d.tone }}">{{ d.text }}</span></div>{% else %}бессрочно{% endif %}</dd>
-            <dt>Отмечено</dt><dd>{{ target.auth_verified_at|dt }}</dd>
-          </dl>
-        </div>
-        <div class="card-foot">
-          {{ ui.post_btn("/targets/%d/revoke"|format(target.id), "Отозвать разрешение", "btn-danger",
-                         confirm="Активные модули для этой цели перестанут запускаться, пока разрешение не подтвердят снова.",
-                         confirm_title="Отозвать разрешение?", confirm_ok="Отозвать") }}
-        </div>
-      {% else %}
-        <div class="card-body stack">
-          <div class="note tone-{{ 'danger' if target.auth_state == 'expired' else 'warning' }}">
-            {{ icon('info') }}
-            <div class="stack-sm" style="gap:2px">
-              {% if target.auth_state == "expired" %}<b>Срок разрешения закончился {{ target.auth_valid_until|date }}</b>
-              {% elif target.auth_state == "revoked" %}<b>Разрешение отозвано</b>
-              {% else %}<b>Без разрешения доступны только пассивные проверки</b>{% endif %}
-              <span>Активные проверки обращаются к сайту и запускаются только с подтверждением владельца</span>
-            </div>
-          </div>
-
-          <div>
-            <div class="group-title">Как владелец может подтвердить</div>
-            <div class="stack-sm">
-              <div class="cell"><span class="l1 soft">1. TXT-запись в DNS домена {{ target.name }}</span></div>
-              {{ ui.code("perimeter-verify=" ~ target.auth_token) }}
-              <div class="cell" style="margin-top:8px"><span class="l1 soft">2. Файл на сайте</span><span class="l2">{{ "https://" ~ target.domain ~ verify_file }}, внутри только код</span></div>
-              {{ ui.code(target.auth_token) }}
-              <div class="cell" style="margin-top:8px"><span class="l1 soft">3. Meta-тег на главной странице</span></div>
-              {{ ui.code('<meta name="perimeter-verify" content="' ~ target.auth_token ~ '">') }}
-              <div class="cell" style="margin-top:8px"><span class="l1 soft">4. Договор или письмо</span><span class="l2">с почты на этом домене или с подписью владельца</span></div>
-            </div>
-          </div>
-          <div class="note">{{ icon('clock') }}<div>Автоматическая проверка записи и файла появится вместе с модулями. Пока проверьте сами и отметьте ниже, чем подтверждено</div></div>
-        </div>
-        <details class="fold" open>
-          <summary>{{ icon('check-circle') }}Отметить разрешение</summary>
-          <form class="body form" method="post" action="/targets/{{ target.id }}/authorize">
-            {{ ui.csrf_field() }}
-            {{ ui.fields(auth_fields, auth_values) }}
-            <div><button class="btn-primary">Разрешение получено</button></div>
-          </form>
-        </details>
-      {% endif %}
-    </div>
-
     {# --- Модули --- #}
     <div class="card">
-      <div class="card-head"><h2>{{ icon('puzzle') }}Модули <span class="count">{{ modules|length }}</span></h2></div>
+      <div class="card-head"><h2>{{ icon('puzzle') }}Модули <span class="count">{{ modules|length }}</span></h2>
+        {{ ui.badge(target.mode_title, target.mode_tone, dot=True) }}</div>
       {% if modules %}
       <div class="list">
         {% for m in modules %}
-          {% set locked = m.spec.kind == Kind.ACTIVE and not target.is_authorized %}
+          {% set locked = m.spec.kind == Kind.ACTIVE and not target.consent %}
           <div class="item">
             <span class="item-ico">{{ icon(m.spec.icon) }}</span>
             <span class="cell grow"><span class="l1"><span>{{ m.spec.title }}</span><span class="kind {{ m.spec.kind.value }}">{{ m.spec.kind.title }}</span></span><span class="l2">{{ m.spec.description }}</span></span>
-            {% if locked %}<span class="badge" title="{{ m.spec.kind.hint }}">{{ icon('lock') }}Нужно разрешение</span>{% endif %}
+            {% if locked %}<span class="badge">{{ icon('lock') }}Нужно согласие</span>{% endif %}
           </div>
         {% endfor %}
       </div>
       {% else %}
         {{ ui.empty("puzzle", "Модулей пока нет", ["Инструменты подключаются как модули: WHOIS, DNS, поддомены, сертификаты, порты.",
-                    "Пассивные работают сразу, активные — только при разрешении владельца"]) }}
+                    "Пассивные работают для любого сайта, активные — когда владелец согласен"]) }}
       {% endif %}
     </div>
 
@@ -100,6 +39,28 @@
   </div>
 
   <div class="stack">
+    {# --- Согласие владельца: одна отметка, клиенту ничего делать не нужно --- #}
+    <div class="card">
+      <div class="card-head"><h2>{{ icon('shield-check' if target.consent else 'shield') }}Согласие</h2>
+        {{ ui.badge("есть" if target.consent else "нет", "success" if target.consent else "neutral", dot=True) }}</div>
+      {% if target.consent %}
+        <div class="card-body">
+          <dl class="kv">
+            <dt>откуда</dt><dd>{{ target.consent_note or "—" }}</dd>
+            <dt>отмечено</dt><dd class="tnum">{{ target.consent_at|dt }}</dd>
+          </dl>
+        </div>
+        <div class="card-foot">{{ ui.post_btn("/targets/%d/consent/remove"|format(target.id), "Снять отметку", "btn-ghost btn-sm") }}</div>
+      {% else %}
+        <form class="card-body stack-sm" method="post" action="/targets/{{ target.id }}/consent">
+          {{ ui.csrf_field() }}
+          <p class="small ink2">{{ hint }}</p>
+          <input class="input" name="consent_note" maxlength="300" placeholder="откуда согласие, необязательно" aria-label="Откуда согласие">
+          <button class="btn-primary">Владелец согласен</button>
+        </form>
+      {% endif %}
+    </div>
+
     {# --- Границы --- #}
     <div class="card">
       <div class="card-head"><h2>{{ icon('target') }}Границы</h2>
