@@ -538,3 +538,6 @@ dialog::backdrop{background:rgba(10,10,14,.46);-webkit-backdrop-filter:blur(8px)
   .table.rows td{flex:0 1 auto}
   .table.rows .cp{white-space:normal;overflow-wrap:anywhere}
 }
+@media (max-width:760px){
+  .table.rows td.act{flex:none;width:auto;margin-left:auto}
+}
