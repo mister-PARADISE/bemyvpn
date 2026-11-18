@@ -196,6 +196,8 @@ class UI:
             "brand": settings.get("general.brand_name"),
             "accent": settings.get("appearance.accent"),
             "density": settings.get("appearance.density"),
+            "crt": settings.get("appearance.crt"),
+            "nav_all": every,
             "flashes": pop_flashes(request) if has_session else [],
             "csrf": csrf_token(request) if has_session else "",
         }

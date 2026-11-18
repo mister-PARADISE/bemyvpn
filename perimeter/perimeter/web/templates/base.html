@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="ru" data-accent="{{ accent }}" data-density="{{ density }}">
+<html lang="ru" data-accent="{{ accent }}" data-density="{{ density }}" data-crt="{{ 'on' if crt else 'off' }}">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
@@ -42,9 +42,6 @@
         <span class="ico">{{ icon(item.page.icon) }}</span><span class="txt">{{ item.page.title }}</span>
       </a>
       {% endfor %}
-      <div class="foot-row server" data-server data-tip="Сервер панели" data-tip-when="collapsed">
-        <span class="ico"><span class="pulse"></span></span><span class="txt">Сервер работает</span>
-      </div>
       <div class="foot-user">
         <span class="ico"><span class="avatar">{{ user.username[:1]|upper }}</span></span>
         <span class="txt truncate small ink2">{{ user.username }}</span>
@@ -66,6 +63,16 @@
     <main class="page">
       {% block content %}{% endblock %}
     </main>
+    <footer class="statusbar" aria-label="Строка состояния">
+      <span class="sb name">[perimeter]</span>
+      <nav class="wins" aria-label="Окна">
+        {%- for item in nav_all %}<a class="win{% if item.active %} on{% endif %}" href="{{ item.page.path }}">{{ loop.index0 }}:{{ item.page.title|lower }}{{ "*" if item.active else "" }}</a>{% endfor -%}
+      </nav>
+      <span class="fill"></span>
+      <span class="sb r server" data-server><span class="pulse"></span><span class="txt">online</span></span>
+      <span class="sb r hide-sm">{{ user.username }}@{{ request.url.hostname }}</span>
+      <span class="sb r tnum" data-clock data-tz="{{ ctx.settings.get('general.timezone') }}">{{ now_line()[-5:] }}</span>
+    </footer>
   </div>
 </div>
 

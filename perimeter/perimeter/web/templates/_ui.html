@@ -8,7 +8,8 @@
 {% set slug = title|lower|replace(" ", "-") %}
 <div class="page-head">
   <div class="page-title">
-    <div class="path">~/{% if back %}<a href="{{ back }}">{{ back_text|lower|replace(" ", "-") }}</a>/{% endif %}{{ slug }}</div>
+    <div class="path"><span class="who">{{ user.username if user else "root" }}@perimeter</span>:~/
+      {%- if back %}<a href="{{ back }}">{{ back_text|lower|replace(" ", "-") }}</a>/{% endif %}{{ slug }}$</div>
     <h1><span class="prompt" aria-hidden="true">&gt;</span><span class="title">{{ title }}</span><span class="cursor" aria-hidden="true"></span></h1>
     {% set lines = lines|reject('none')|reject('equalto', '')|list %}
     {% if lines %}<div class="sub">{% for line in lines %}<span>{{ line }}</span>{% endfor %}</div>{% endif %}

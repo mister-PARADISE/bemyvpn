@@ -29,7 +29,7 @@
     if (key && toasts.has(key)) toasts.get(key)();
     const el = document.createElement("div");
     const bad = tone === "error" || tone === "danger";
-    el.className = `toast${bad ? " bad" : ""}`;
+    el.className = `toast tone-${bad ? "error" : tone}${bad ? " bad" : ""}`;
     el.setAttribute("role", bad ? "alert" : "status");
     const ico = { error: "x-circle", danger: "x-circle", warning: "alert", info: "info" }[tone] || "check-circle";
     el.innerHTML = `${svg(ico)}<div class="text">${esc(text)}</div>`;
@@ -272,8 +272,19 @@
     let ok = true;
     try { ok = (await fetch("/health", { cache: "no-store" })).ok; } catch { ok = false; }
     el.classList.toggle("down", !ok);
-    $(".txt", el).textContent = ok ? "Сервер работает" : "Нет связи с сервером";
+    $(".txt", el).textContent = ok ? "online" : "offline";
     setTimeout(watchServer, ok ? 15000 : 3000);
+  }
+
+  /* ---------- Часы в строке состояния ---------- */
+  function tickClock() {
+    const el = $("[data-clock]");
+    if (!el) return;
+    const now = new Date();
+    try {
+      el.textContent = new Intl.DateTimeFormat("ru-RU", { hour: "2-digit", minute: "2-digit", timeZone: el.dataset.tz }).format(now);
+    } catch { /* неизвестный пояс — оставляем время сервера */ }
+    setTimeout(tickClock, (60 - now.getSeconds()) * 1000 + 50);
   }
 
   /* ---------- Делегирование ---------- */
@@ -324,6 +335,7 @@
     syncShowIf();
     initTerm();
     palette.init();
+    setTimeout(tickClock, (60 - new Date().getSeconds()) * 1000 + 50);
     watchServer();
     const box = $("#toasts");
     if (box?.dataset.flashes) {

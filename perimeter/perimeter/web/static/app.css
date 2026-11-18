@@ -19,7 +19,7 @@
   --ok:#3ee06f;--warn:#e5c07b;--err:#ff6b6b;--info:#61afef;--violet:#c678dd;
   --font:"JetBrains Mono",ui-monospace,"SF Mono","Cascadia Mono",Menlo,Consolas,"Liberation Mono",monospace;
   --mono:var(--font);
-  --r:8px;--r-sm:6px;
+  --r:3px;--r-sm:2px;
   --pop:0 24px 60px rgba(0,0,0,.7);
   --ease:cubic-bezier(.2,.8,.2,1);
   --side-open:248px;--side-closed:64px;
@@ -107,6 +107,9 @@ svg.i-lg{width:22px;height:22px}
   gap:8px;padding:0 14px;border:1px solid transparent;border-radius:var(--r-sm);font-size:12.5px;font-weight:600;white-space:nowrap;
   cursor:pointer;transition:background .12s,color .12s,border-color .12s,box-shadow .12s}
 :is(.btn-primary,.btn-soft,.btn-ghost,.btn-danger,.btn-good):hover{text-decoration:none}
+/* [ Сохранить ] — команда в скобках */
+:is(.btn-primary,.btn-soft,.btn-ghost,.btn-danger,.btn-good)::before{content:"[";opacity:.55;font-weight:400}
+:is(.btn-primary,.btn-soft,.btn-ghost,.btn-danger,.btn-good)::after{content:"]";opacity:.55;font-weight:400}
 .btn-primary{border-color:var(--accent);background:var(--accent-soft);color:var(--accent)}
 .btn-primary:hover{background:var(--accent);color:var(--accent-ink);box-shadow:var(--glow)}
 .btn-soft{border-color:var(--line2);background:var(--sunken);color:var(--ink)}
@@ -149,9 +152,10 @@ form.inline{display:inline}
 .nav{flex:1;display:flex;flex-direction:column;gap:1px;padding:8px 12px;overflow-x:hidden;overflow-y:auto}
 .nav a{position:relative;display:flex;align-items:center;height:36px;flex:none;border-radius:var(--r-sm);color:var(--ink2);
        white-space:nowrap;transition:background .12s,color .12s}
-.nav a:hover{background:var(--sunken);color:var(--ink);text-decoration:none}
-.nav a.on{background:var(--accent-soft);color:var(--accent)}
-.nav a.on::before{content:"";position:absolute;left:-12px;top:8px;bottom:8px;width:2px;background:var(--accent);box-shadow:var(--glow)}
+.nav a:hover{background:var(--sunken);color:var(--accent);text-decoration:none}
+/* выбранный пункт — инверсия, как выделение в htop и Midnight Commander */
+.nav a.on{background:var(--accent);color:var(--accent-ink);font-weight:700;box-shadow:var(--glow)}
+.nav a.on .count{color:var(--accent-ink)}
 .nav .ico{position:relative;width:40px;height:36px;flex:none;display:grid;place-items:center}
 .nav .txt{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;transition:opacity .15s}
 .nav .end{flex:none;display:flex;align-items:center;padding-right:10px;transition:opacity .15s}
@@ -165,7 +169,7 @@ form.inline{display:inline}
 .side-foot .foot-row{display:flex;align-items:center;height:36px;border-radius:var(--r-sm);font-size:12.5px;color:var(--ink2);
                      white-space:nowrap;width:100%;padding:0;border:0;background:none;text-align:left}
 .side-foot a.foot-row:hover{background:var(--sunken);color:var(--ink);text-decoration:none}
-.side-foot .foot-row.on{background:var(--accent-soft);color:var(--accent)}
+.side-foot .foot-row.on{background:var(--accent);color:var(--accent-ink);font-weight:700;box-shadow:var(--glow)}
 .side-foot .ico{width:40px;height:36px;flex:none;display:grid;place-items:center}
 .side-foot .txt{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;transition:opacity .15s}
 .pulse{width:7px;height:7px;border-radius:50%;background:var(--ok);box-shadow:0 0 0 3px var(--ok-soft),0 0 10px var(--ok);
@@ -202,6 +206,7 @@ form.inline{display:inline}
 .path{font-size:12px;color:var(--ink3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .path a{color:var(--ink2)}
 .path a:hover{color:var(--accent)}
+.path .who{color:var(--accent)}
 .page-title h1{font-size:21px;line-height:30px;font-weight:700;letter-spacing:-.01em;display:flex;align-items:center;min-width:0}
 .page-title h1 .title{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .page-title .sub{display:flex;flex-direction:column;color:var(--ink3);font-size:12px;line-height:18px}
@@ -225,11 +230,12 @@ form.inline{display:inline}
 
 /* ---------- Карточки: окна терминала ---------- */
 .card{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);min-width:0}
-.card-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:8px 8px 8px var(--pad);
+.card-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:8px 8px 8px var(--pad);background:color-mix(in srgb,var(--accent) 5%,var(--surface));
            min-height:46px;border-bottom:1px solid var(--line)}
 .card-head h2{display:flex;align-items:center;gap:9px;font-size:11.5px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;
               color:var(--ink2);min-width:0}
-.card-head h2 svg.i{color:var(--accent);width:15px;height:15px}
+.card-head h2{color:var(--accent)}
+.card-head h2 svg.i{display:none}
 .card-head .count{font-size:11.5px;font-weight:500;color:var(--ink3);letter-spacing:0;font-variant-numeric:tabular-nums}
 .card-head .count::before{content:"["}.card-head .count::after{content:"]"}
 .card-body{padding:var(--pad)}
@@ -273,6 +279,7 @@ a.stat:hover{text-decoration:none;background:var(--raised)}
 .table tr:last-child td{border-bottom:0}
 .table tbody tr{transition:background .1s}
 .table tbody tr:hover{background:var(--raised)}
+.table tbody tr:hover td:first-child{box-shadow:inset 2px 0 0 var(--accent)}
 .table tr[data-href]{cursor:pointer}
 .table tr[data-href]:hover .l1{color:var(--accent)}
 .table td.act{width:1%;white-space:nowrap;text-align:right}
@@ -328,7 +335,7 @@ input[type=date]::-webkit-calendar-picker-indicator{filter:invert(.6) sepia(1) h
 .switch input:focus-visible+.sw{outline:1px solid var(--accent);outline-offset:2px}
 
 /* ---------- Бейджи: как метки в логе ---------- */
-.badge{display:inline-flex;align-items:center;gap:6px;height:21px;padding:0 8px;border-radius:4px;font-size:11px;font-weight:600;
+.badge{display:inline-flex;align-items:center;gap:6px;height:21px;padding:0 8px;border-radius:2px;font-size:11px;font-weight:600;
        letter-spacing:.04em;text-transform:uppercase;border:1px solid var(--line2);color:var(--ink2);white-space:nowrap;width:max-content;flex:none}
 .badge svg.i{width:12px;height:12px}
 .badge.dot::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor;box-shadow:0 0 6px currentColor}
@@ -338,10 +345,10 @@ input[type=date]::-webkit-calendar-picker-indicator{filter:invert(.6) sepia(1) h
 .badge.tone-accent{color:var(--accent);border-color:var(--accent-line);background:var(--accent-soft)}
 .badge.tone-info{color:var(--info);border-color:color-mix(in srgb,var(--info) 40%,transparent);background:var(--info-soft)}
 .badge.tone-violet{color:var(--violet);border-color:color-mix(in srgb,var(--violet) 40%,transparent);background:var(--violet-soft)}
-.chip{display:inline-flex;align-items:center;gap:5px;height:22px;padding:0 8px;border-radius:4px;font-size:11.5px;
+.chip{display:inline-flex;align-items:center;gap:5px;height:22px;padding:0 8px;border-radius:2px;font-size:11.5px;
       background:var(--bg);border:1px solid var(--line2);color:var(--ink2);white-space:nowrap}
 .chip svg.i{width:12px;height:12px;color:var(--ink3)}
-.kind{display:inline-flex;align-items:center;height:18px;padding:0 6px;border-radius:3px;font-size:10px;font-weight:700;
+.kind{display:inline-flex;align-items:center;height:18px;padding:0 6px;border-radius:2px;font-size:10px;font-weight:700;
       letter-spacing:.06em;text-transform:uppercase;border:1px solid var(--line2);color:var(--ink2);flex:none}
 .kind.passive{color:var(--info);border-color:color-mix(in srgb,var(--info) 40%,transparent)}
 .kind.active{color:var(--warn);border-color:color-mix(in srgb,var(--warn) 40%,transparent)}
@@ -426,7 +433,7 @@ a.item:hover .l1{color:var(--accent)}
 .subnav-title:first-child{padding-top:0}
 .subnav a{display:flex;align-items:center;gap:10px;height:34px;padding:0 10px;border-radius:var(--r-sm);color:var(--ink2);white-space:nowrap}
 .subnav a:hover{background:var(--sunken);color:var(--ink);text-decoration:none}
-.subnav a.on{background:var(--accent-soft);color:var(--accent)}
+.subnav a.on{background:var(--accent);color:var(--accent-ink);font-weight:700}
 @media (max-width:900px){.subnav{position:static;flex-direction:row;overflow-x:auto;padding-bottom:4px}.subnav-title{display:none}}
 
 /* ---------- Модули ---------- */
@@ -444,15 +451,18 @@ a.item:hover .l1{color:var(--accent)}
 @media (hover:none){.tooltip{display:none}}
 
 /* ---------- Уведомления: снизу по центру ---------- */
-.toasts{position:fixed;left:50%;bottom:20px;z-index:110;display:flex;flex-direction:column;align-items:center;gap:8px;width:max-content;
+.toasts{position:fixed;left:50%;bottom:40px;z-index:110;display:flex;flex-direction:column;align-items:center;gap:8px;width:max-content;
         max-width:min(460px,calc(100vw - 32px));transform:translateX(-50%);pointer-events:none}
 .toast{display:flex;align-items:flex-start;gap:10px;padding:9px 13px;border-radius:var(--r-sm);background:var(--bg);color:var(--ink);
        border:1px solid var(--accent-line);font-size:12.5px;line-height:1.5;box-shadow:var(--pop),var(--glow);animation:pop .16s var(--ease);
        pointer-events:auto;cursor:default}
-.toast svg.i{margin-top:1px;width:16px;height:16px;color:var(--accent)}
+.toast svg.i{display:none}
+.toast::before{content:"[ok]";font-weight:700;color:var(--accent);flex:none}
+.toast.tone-info::before{content:"[i]";color:var(--info)}
+.toast.tone-warning::before{content:"[!]";color:var(--warn)}
+.toast.bad::before{content:"[err]";color:var(--err)}
 .toast .text{white-space:pre-line}
 .toast.bad{border-color:var(--err);box-shadow:var(--pop)}
-.toast.bad svg.i{color:var(--err)}
 .toast.leave{opacity:0;transform:translateY(6px);transition:opacity .18s,transform .18s}
 
 /* ---------- Окна ---------- */
@@ -512,6 +522,27 @@ dialog::backdrop{background:rgba(0,0,0,.72);-webkit-backdrop-filter:blur(3px);ba
 .error-page{min-height:60vh;display:grid;place-items:center;text-align:center}
 .error-code{font-size:56px;line-height:1;font-weight:700;color:var(--accent);text-shadow:var(--glow);margin-bottom:12px}
 
+/* ---------- Строка состояния внизу, как в tmux ---------- */
+.statusbar{position:sticky;bottom:0;z-index:15;display:flex;align-items:stretch;height:26px;margin-top:auto;
+           border-top:1px solid var(--line);background:var(--surface);font-size:11.5px;color:var(--ink2);white-space:nowrap;overflow:hidden}
+.statusbar .sb{display:flex;align-items:center;gap:7px;padding:0 12px;border-right:1px solid var(--line);min-width:0}
+.statusbar .sb.name{background:var(--accent);color:var(--accent-ink);font-weight:700;border-right:0}
+/* список окон, как в tmux: 0:обзор 1:цели* … — по нему можно ходить */
+.statusbar .wins{display:flex;align-items:stretch;min-width:0;overflow:hidden}
+.statusbar .win{display:flex;align-items:center;padding:0 8px;color:var(--ink3)}
+.statusbar .win:hover{color:var(--ink);text-decoration:none}
+.statusbar .win.on{color:var(--accent);font-weight:700}
+.statusbar .fill{flex:1}
+.statusbar .sb.r{border-right:0;border-left:1px solid var(--line)}
+.statusbar .pulse{width:6px;height:6px;box-shadow:0 0 0 2px var(--ok-soft),0 0 8px var(--ok)}
+.statusbar .server.down .pulse{background:var(--err);box-shadow:0 0 0 2px var(--err-soft);animation:none}
+.statusbar .server.down{color:var(--err)}
+
+/* ---------- Полосы как на мониторе ЭЛТ: едва заметные, выключаются в настройках ---------- */
+:root[data-crt="on"] body::after{content:"";position:fixed;inset:0;z-index:200;pointer-events:none;
+  background:repeating-linear-gradient(to bottom,rgba(255,255,255,.022) 0 1px,transparent 1px 3px),
+             radial-gradient(ellipse at center,transparent 62%,rgba(0,0,0,.32) 100%)}
+
 /* ---------- Узкие экраны: панель выезжает поверх страницы ---------- */
 @media (max-width:760px){
   .side{position:fixed;left:0;top:0;bottom:0;height:auto;width:var(--side-open);transform:translateX(-102%);transition:transform .22s var(--ease)}
@@ -526,6 +557,7 @@ dialog::backdrop{background:rgba(0,0,0,.72);-webkit-backdrop-filter:blur(3px);ba
   .page{padding:18px 14px 48px}
   .page-head{flex-wrap:wrap;align-items:flex-start}
   .page-title h1{font-size:18px}
+  .statusbar .hide-sm,.statusbar .win:not(.on){display:none}
   .kv{grid-template-columns:minmax(0,42%) minmax(0,1fr);gap:8px 12px}
   .box-foot{flex-wrap:wrap}
   .toolbar .grow{flex-basis:100%}
