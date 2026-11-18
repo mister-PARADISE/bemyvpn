@@ -18,13 +18,11 @@ PER_PAGE = 80
 
 router = APIRouter()
 
-# Метка строки лога по последнему слову действия: target.consent → [ok]
+# Метка строки лога по последнему слову действия: auth.setup → [ok]
 LEVELS = {
     "created": ("[+]", "accent"),
-    "consent": ("[ok]", "success"),
     "setup": ("[ok]", "success"),
     "login": ("[>]", ""),
-    "consent_removed": ("[x]", "danger"),
     "deleted": ("[x]", "danger"),
 }
 

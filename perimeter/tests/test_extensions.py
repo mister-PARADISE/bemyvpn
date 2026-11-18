@@ -107,10 +107,8 @@ def test_plugin_extends_everything(tmp_path):
     b.post("/targets/new", {"domain": "example.com"})
     detail = b.get("/targets/1").text
     assert "WHOIS" in detail and "Заголовки" in detail and "Порты" not in detail  # Порты ждут IP, не домен
-    assert detail.count("Нужно согласие") == 1  # закрыт только активный модуль
+    assert "Активный" in detail and "Пассивный" in detail
     assert "виджет-привет" in detail  # вставка расширения в карточку цели
-    b.post("/targets/1/consent", {"consent_note": "попросил в Telegram"})
-    assert "Нужно согласие" not in b.get("/targets/1").text
 
 
 def test_module_with_unknown_type_is_dropped(tmp_path):

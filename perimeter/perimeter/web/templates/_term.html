@@ -1,0 +1,18 @@
+{# Экран-консоль: строки вывода и строки ввода. Подключение: {% import "_term.html" as term with context %}
+   Без JS — обычные поля в строку; с JS — эхо ввода, блочный курсор и шаги по Enter (app.js → initTerm). #}
+
+{% macro line(text="", cls="", i=0) -%}
+<div class="tl{% if cls %} {{ cls }}{% endif %}" style="--i:{{ i }}">{{ text }}</div>
+{%- endmacro %}
+
+{# Строка ввода. host — показать «perimeter» перед подписью, как имя машины;
+   later — строка появится, когда заполнена предыдущая; focus — сюда курсор при открытии. #}
+{% macro prompt(name, label, type="text", value="", autocomplete="off", error=None, i=0, host=False, later=False, focus=False) %}
+{# Строка собрана без пробелов между тегами: в консоли white-space сохраняется, и перенос из шаблона
+   уронил бы ввод на следующую строку. #}
+<label class="tl tprompt" for="t-{{ name }}" style="--i:{{ i }}"{% if later %} data-later{% endif %}>
+  {#- #}<span class="tp">{% if host %}<span class="host">perimeter</span> {% endif %}{{ label }}:</span>
+  {#- #}<span class="tin"><input id="t-{{ name }}" name="{{ name }}" type="{{ type }}" value="{{ value if type != 'password' else '' }}" autocomplete="{{ autocomplete }}" autocapitalize="none" autocorrect="off" spellcheck="false"{% if focus %} autofocus data-focus{% endif %}><span class="echo" aria-hidden="true"></span><span class="tcur" aria-hidden="true"></span></span>
+{#- #}</label>
+{% if error %}{{ line("! " ~ error, "err", i) }}{% endif %}
+{% endmacro %}

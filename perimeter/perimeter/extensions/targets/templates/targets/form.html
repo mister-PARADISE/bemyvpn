@@ -4,7 +4,7 @@
 {% block content %}
 <div class="narrow">
   {% if target %}
-    {{ ui.head("Изменить", ["домен, название, согласие, границы, заметки"], back="/targets/%d"|format(target.id), back_text=target.name) }}
+    {{ ui.head("Изменить", ["домен, название, границы, заметки"], back="/targets/%d"|format(target.id), back_text=target.name) }}
   {% else %}
     {{ ui.head("Новая цель", ["обязательно только поле домена"], back="/targets", back_text="Цели") }}
   {% endif %}

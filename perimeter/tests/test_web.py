@@ -132,31 +132,15 @@ def test_target_normalization_and_duplicates(browser, ctx):
     assert r.status_code == 422
 
 
-def test_consent_in_form_and_on_page(browser, ctx):
+def test_edit_target(browser, ctx):
     browser.post("/targets/new", {"domain": "example.com"})
+    tid = rows(ctx, Target)[0].id
+    r = browser.post(f"/targets/{tid}/edit", {"domain": "shop.example.com", "title": "Магазин", "exclude": "pay.example.com"})
+    assert r.status_code == 303
     t = rows(ctx, Target)[0]
-    assert not t.consent and t.consent_at is None  # по умолчанию — только пассивные
-    page = browser.get(f"/targets/{t.id}").text
-    assert "Только пассивные" in page and "Владелец согласен" in page
-    browser.post(f"/targets/{t.id}/consent", {"consent_note": "попросил в Telegram"})
-    t = rows(ctx, Target)[0]
-    assert t.consent and t.consent_note == "попросил в Telegram" and t.consent_at is not None
-    assert "Все модули" in browser.get(f"/targets/{t.id}").text
-    browser.post(f"/targets/{t.id}/consent/remove")
-    t = rows(ctx, Target)[0]
-    assert not t.consent and t.consent_at is None
-    actions = [e.action for e in rows(ctx, AuditEntry)]
-    assert "target.consent" in actions and "target.consent_removed" in actions
-
-
-def test_consent_checkbox_on_create_and_edit(browser, ctx):
-    browser.post("/targets/new", {"domain": "example.com", "consent": "1", "consent_note": "договор"})
-    t = rows(ctx, Target)[0]
-    assert t.consent and t.consent_note == "договор"
-    browser.post(f"/targets/{t.id}/edit", {"domain": "example.com", "consent_note": "договор"})  # галочка снята
-    assert not rows(ctx, Target)[0].consent
-    assert "example.com" in browser.get("/targets?mode=no").text
-    assert "example.com" not in browser.get("/targets?mode=yes").text
+    assert (t.domain, t.title, t.exclude) == ("shop.example.com", "Магазин", ["pay.example.com"])
+    assert "Магазин" in browser.get("/targets").text
+    assert "Ничего не нашлось" in browser.get("/targets?q=nothing-here").text
 
 
 def test_scope_check_endpoint(browser, ctx):
@@ -214,3 +198,18 @@ def test_search(browser):
     items = browser.client.get("/api/search", params={"q": "часовой"}).json()["items"]
     assert any(i["kind"] == "Настройки" for i in items)
     assert browser.client.get("/api/search").json()["items"]  # пустой запрос — список разделов
+
+
+def test_db_commits_before_response():
+    """Иначе браузер приходит по редиректу раньше, чем изменения попали в базу."""
+    from perimeter.web import DB
+
+    assert DB.__metadata__[0].scope == "function"
+
+
+def test_login_is_a_console(anon, browser):
+    from fastapi.testclient import TestClient
+
+    page = TestClient(browser.client.app).get("/login").text
+    assert "data-term" in page and "perimeter</span> login:" in page and "password:" in page
+    assert 'class="card' not in page  # без окон

@@ -481,13 +481,33 @@ dialog::backdrop{background:rgba(0,0,0,.72);-webkit-backdrop-filter:blur(3px);ba
 .palette-item svg.i{color:var(--ink3)}
 .palette-empty{padding:28px;text-align:center;color:var(--ink3)}
 
-/* ---------- Вход ---------- */
+/* ---------- Страницы без входа (ошибки) ---------- */
 .auth{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px 16px}
-.auth-card{width:100%;max-width:420px;min-width:0}
-.banner{margin:0 0 22px;font-size:12px;line-height:1.2;color:var(--accent);text-shadow:var(--glow);text-align:center;white-space:pre;overflow:hidden}
-.auth-card .card-body{padding:24px}
-.auth-card h1{font-size:16px;line-height:24px;margin-bottom:4px;display:flex;align-items:center}
-.auth-card .sub{color:var(--ink3);font-size:12px;margin-bottom:20px}
+.banner{color:var(--accent);text-shadow:var(--glow);white-space:pre;overflow:hidden}
+
+/* ---------- Вход как в консоль: без окон, строки вывода и строки ввода ---------- */
+.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0 0 0 0);border:0}
+.term{min-height:100vh;padding:clamp(18px,5vw,48px);font-size:14px;line-height:1.75;cursor:text}
+.term-screen{max-width:780px}
+/* ширина лого — 50 знаков по 0.6em: подгоняем размер, чтобы оно всегда влезало в экран */
+.term .banner{text-align:left;font-size:min(13px,calc((100vw - 40px) / 30.5));line-height:1.15;margin:0 0 20px}
+.tl{min-height:1.75em;white-space:pre-wrap;overflow-wrap:anywhere;animation:tl-in 0s steps(1) both;animation-delay:calc(var(--i,0) * 70ms)}
+@keyframes tl-in{from{opacity:0}}
+.tl.dim{color:var(--ink3)}
+.tl.err{color:var(--err)}
+.tprompt{display:flex;align-items:baseline;cursor:text;white-space:normal}
+.tprompt .tp{flex:none;margin-right:1ch;white-space:pre}
+.tprompt .host{color:var(--accent);text-shadow:var(--glow)}
+.tin{position:relative;flex:1;min-width:0;min-height:1.75em}
+.tin input{width:100%;border:0;outline:0;padding:0;margin:0;background:transparent;color:var(--ink);font:inherit;line-height:inherit;caret-color:var(--accent)}
+.tin .echo,.tin .tcur{display:none}
+/* с JS: настоящее поле невидимо поверх строки, видны эхо и блочный курсор */
+:root.js-term .tin input{position:absolute;inset:0;height:100%;opacity:0;font-size:16px}
+:root.js-term .tin .echo{display:inline;white-space:pre-wrap;word-break:break-all}
+:root.js-term .tin .tcur{display:inline-block;width:.6em;height:1.1em;vertical-align:-.2em;background:var(--accent);box-shadow:var(--glow);opacity:0}
+:root.js-term .tin:focus-within .tcur{opacity:1;animation:blink 1.1s steps(1) infinite}
+.term-screen.sending .tcur{animation:none!important;opacity:.35!important}
+@media (prefers-reduced-motion:reduce){.tl{animation:none}}
 
 .error-page{min-height:60vh;display:grid;place-items:center;text-align:center}
 .error-code{font-size:56px;line-height:1;font-weight:700;color:var(--accent);text-shadow:var(--glow);margin-bottom:12px}
@@ -521,7 +541,6 @@ dialog::backdrop{background:rgba(0,0,0,.72);-webkit-backdrop-filter:blur(3px);ba
   .table.rows td.act .ibar{opacity:1}
   .table.rows .l1,.table.rows .l2{white-space:normal}
   .table.rows .cp{white-space:normal;overflow-wrap:anywhere}
-  .banner{font-size:7.6px}
 }
 
 /* ---------- Палец вместо мыши ---------- */

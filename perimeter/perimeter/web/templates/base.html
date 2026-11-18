@@ -93,7 +93,7 @@
   </form>
 </dialog>
 {% else %}
-<main class="auth">{% block auth %}{% endblock %}</main>
+<main class="{% block auth_class %}auth{% endblock %}">{% block auth %}{% endblock %}</main>
 {% endif %}
 <div class="toasts" id="toasts" aria-live="polite" data-flashes='{{ flashes|tojson }}'></div>
 </body>

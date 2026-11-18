@@ -1,22 +1,24 @@
 {% extends "base.html" %}
-{% import "_ui.html" as ui with context %}
+{% import "_term.html" as term with context %}
 {% block title %}Первый запуск{% endblock %}
+{% block auth_class %}term{% endblock %}
 {% block auth %}
-<div class="auth-card">
+{% set first_error = ["username", "password", "password2"]|select("in", errors)|first %}
+<form class="term-screen" method="post" action="/setup" data-term>
+  <input type="hidden" name="_csrf" value="{{ csrf }}">
   {% include "_banner.html" %}
-  <div class="card">
-    <div class="card-body">
-      <h1><span class="prompt">&gt;</span>init<span class="cursor" aria-hidden="true"></span></h1>
-      <p class="sub"># первый запуск: придумайте имя и пароль администратора<br># пароль хранится только в виде хэша</p>
-      <form class="form" method="post" action="/setup">
-        {{ ui.csrf_field() }}
-        {{ ui.input("username", "Имя", form.username, errors, required=True, attrs='autocomplete="username" autofocus') }}
-        {{ ui.input("password", "Пароль", "", errors, type="password", required=True,
-                    help="Не короче 10 символов: буквы вместе с цифрами или знаками", attrs='autocomplete="new-password"') }}
-        {{ ui.input("password2", "Пароль ещё раз", "", errors, type="password", required=True, attrs='autocomplete="new-password"') }}
-        <button class="btn-primary btn-block">Создать и войти</button>
-      </form>
-    </div>
-  </div>
-</div>
+  {{ term.line("Периметр " ~ version ~ " — первый запуск", "dim", 1) }}
+  {{ term.line("# создаём администратора: имя и пароль", "dim", 2) }}
+  {{ term.line("# пароль не короче 10 символов, хранится только в виде хэша", "dim", 3) }}
+  {{ term.line("", "", 4) }}
+  {{ term.prompt("username", "new login", value=form.username, autocomplete="username", error=errors.get("username"),
+                 i=5, host=True, focus=not first_error or first_error == "username") }}
+  {{ term.prompt("password", "new password", type="password", autocomplete="new-password", error=errors.get("password"),
+                 i=6, later=not errors, focus=first_error == "password") }}
+  {{ term.prompt("password2", "retype password", type="password", autocomplete="new-password", error=errors.get("password2"),
+                 i=7, later=not errors, focus=first_error == "password2") }}
+  {{ term.line("", "", 8) }}
+  {{ term.line("# Enter — дальше. Пароль при вводе не отображается", "dim", 8) }}
+  <button type="submit" class="sr-only">Создать</button>
+</form>
 {% endblock %}

@@ -221,6 +221,50 @@
     } catch { toast("Проверка не удалась", "error"); }
   }
 
+  /* ---------- Вход как в консоль: эхо ввода, блочный курсор, шаги по Enter ---------- */
+  function initTerm() {
+    const form = $("form[data-term]");
+    if (!form) return;
+    root.classList.add("js-term");
+    const inputs = $$(".tprompt input", form);
+    const line = (input) => input.closest(".tprompt");
+    const echo = (input) => {
+      const out = $(".echo", line(input));
+      if (out) out.textContent = input.type === "password" ? "" : input.value;
+    };
+    inputs.forEach((input) => {
+      echo(input);
+      input.addEventListener("input", () => echo(input));
+      input.addEventListener("change", () => echo(input));
+    });
+    setTimeout(() => inputs.forEach(echo), 700); // браузер мог подставить сохранённый логин
+    $$(".tprompt[data-later]", form).forEach((p) => { p.hidden = true; });
+    const shown = () => inputs.filter((input) => !line(input).hidden);
+    (inputs.find((input) => input.hasAttribute("data-focus")) || shown()[0])?.focus();
+
+    form.addEventListener("keydown", (e) => {
+      if (e.key !== "Enter") return;
+      const i = inputs.indexOf(document.activeElement);
+      if (i < 0) return;
+      e.preventDefault();
+      if (!inputs[i].value) return; // пустая строка — ждём ввода, как терминал
+      const next = inputs[i + 1];
+      if (next && line(next).hidden) {
+        line(next).style.setProperty("--i", "0");
+        line(next).hidden = false;
+      }
+      if (next && !next.value) { next.focus(); return; }
+      form.classList.add("sending");
+      form.requestSubmit();
+    });
+    // клик в любом месте экрана возвращает курсор в текущую строку
+    document.addEventListener("click", (e) => {
+      if (e.target.closest("a, button, input, label")) return;
+      const visible = shown();
+      (visible.find((input) => !input.value) || visible[visible.length - 1])?.focus();
+    });
+  }
+
   /* ---------- Сервер жив? ---------- */
   async function watchServer() {
     const el = $("[data-server]");
@@ -278,6 +322,7 @@
   document.addEventListener("DOMContentLoaded", () => {
     restoreScroll();
     syncShowIf();
+    initTerm();
     palette.init();
     watchServer();
     const box = $("#toasts");

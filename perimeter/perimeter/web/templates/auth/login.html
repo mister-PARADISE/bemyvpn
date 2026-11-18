@@ -1,22 +1,25 @@
 {% extends "base.html" %}
-{% import "_ui.html" as ui with context %}
+{% import "_term.html" as term with context %}
 {% block title %}Вход{% endblock %}
+{% block auth_class %}term{% endblock %}
 {% block auth %}
-<div class="auth-card">
+<form class="term-screen" method="post" action="/login" data-term>
+  <input type="hidden" name="_csrf" value="{{ csrf }}">
+  <input type="hidden" name="next" value="{{ next }}">
   {% include "_banner.html" %}
-  <div class="card">
-    <div class="card-body">
-      <h1><span class="prompt">&gt;</span>login<span class="cursor" aria-hidden="true"></span></h1>
-      <p class="sub"># панель только для администратора</p>
-      <form class="form" method="post" action="/login">
-        {{ ui.csrf_field() }}
-        <input type="hidden" name="next" value="{{ next }}">
-        {% if error %}<div class="note tone-danger">{{ icon('alert') }}<div>{{ error }}</div></div>{% endif %}
-        {{ ui.input("username", "Имя", username, required=True, attrs='autocomplete="username" autofocus') }}
-        {{ ui.input("password", "Пароль", "", type="password", required=True, attrs='autocomplete="current-password"') }}
-        <button class="btn-primary btn-block">Войти</button>
-      </form>
-    </div>
-  </div>
-</div>
+  {{ term.line("Периметр " ~ version ~ " — панель аудита сайтов", "dim", 1) }}
+  {{ term.line(now_line(), "dim", 2) }}
+  {{ term.line("", "", 3) }}
+  {% if error %}
+    {{ term.line(error, "err", 4) }}
+    {{ term.line("", "", 4) }}
+  {% endif %}
+  {{ term.prompt("username", "login", value=username, autocomplete="username", i=5, host=True,
+                 focus=not (error and username)) }}
+  {{ term.prompt("password", "password", type="password", autocomplete="current-password", i=6,
+                 later=not error, focus=error and username) }}
+  {{ term.line("", "", 7) }}
+  {{ term.line("# Enter — дальше. Пароль при вводе не отображается", "dim", 7) }}
+  <button type="submit" class="sr-only">Войти</button>
+</form>
 {% endblock %}

@@ -5,11 +5,11 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "perimeter"
 version = "0.1.0"
-description = "Панель аудита внешнего периметра сайтов: клиенты, цели, разрешения, модули"
+description = "Панель аудита внешнего периметра сайтов в стиле терминала: цели, границы, модули"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "fastapi>=0.110",
+    "fastapi>=0.121",
     "uvicorn>=0.27",
     "jinja2>=3.1",
     "sqlalchemy>=2.0",

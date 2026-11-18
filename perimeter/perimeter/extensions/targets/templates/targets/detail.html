@@ -16,22 +16,19 @@
 
     {# --- Модули --- #}
     <div class="card">
-      <div class="card-head"><h2>{{ icon('puzzle') }}Модули <span class="count">{{ modules|length }}</span></h2>
-        {{ ui.badge(target.mode_title, target.mode_tone, dot=True) }}</div>
+      <div class="card-head"><h2>{{ icon('puzzle') }}Модули <span class="count">{{ modules|length }}</span></h2></div>
       {% if modules %}
       <div class="list">
         {% for m in modules %}
-          {% set locked = m.spec.kind == Kind.ACTIVE and not target.consent %}
           <div class="item">
             <span class="item-ico">{{ icon(m.spec.icon) }}</span>
             <span class="cell grow"><span class="l1"><span>{{ m.spec.title }}</span><span class="kind {{ m.spec.kind.value }}">{{ m.spec.kind.title }}</span></span><span class="l2">{{ m.spec.description }}</span></span>
-            {% if locked %}<span class="badge">{{ icon('lock') }}Нужно согласие</span>{% endif %}
           </div>
         {% endfor %}
       </div>
       {% else %}
         {{ ui.empty("puzzle", "Модулей пока нет", ["Инструменты подключаются как модули: WHOIS, DNS, поддомены, сертификаты, порты.",
-                    "Пассивные работают для любого сайта, активные — когда владелец согласен"]) }}
+                    "Пассивные берут открытые данные, активные обращаются к сайту — только в его границах"]) }}
       {% endif %}
     </div>
 
@@ -39,28 +36,6 @@
   </div>
 
   <div class="stack">
-    {# --- Согласие владельца: одна отметка, клиенту ничего делать не нужно --- #}
-    <div class="card">
-      <div class="card-head"><h2>{{ icon('shield-check' if target.consent else 'shield') }}Согласие</h2>
-        {{ ui.badge("есть" if target.consent else "нет", "success" if target.consent else "neutral", dot=True) }}</div>
-      {% if target.consent %}
-        <div class="card-body">
-          <dl class="kv">
-            <dt>откуда</dt><dd>{{ target.consent_note or "—" }}</dd>
-            <dt>отмечено</dt><dd class="tnum">{{ target.consent_at|dt }}</dd>
-          </dl>
-        </div>
-        <div class="card-foot">{{ ui.post_btn("/targets/%d/consent/remove"|format(target.id), "Снять отметку", "btn-ghost btn-sm") }}</div>
-      {% else %}
-        <form class="card-body stack-sm" method="post" action="/targets/{{ target.id }}/consent">
-          {{ ui.csrf_field() }}
-          <p class="small ink2">{{ hint }}</p>
-          <input class="input" name="consent_note" maxlength="300" placeholder="откуда согласие, необязательно" aria-label="Откуда согласие">
-          <button class="btn-primary">Владелец согласен</button>
-        </form>
-      {% endif %}
-    </div>
-
     {# --- Границы --- #}
     <div class="card">
       <div class="card-head"><h2>{{ icon('target') }}Границы</h2>

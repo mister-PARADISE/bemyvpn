@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
-
-from sqlalchemy import JSON, Boolean, DateTime, Integer, String, Text, false
+from sqlalchemy import JSON, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from ...core.db import Base, TimestampMixin
@@ -19,11 +17,6 @@ class Target(TimestampMixin, Base):
     exclude: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
     notes: Mapped[str] = mapped_column(Text, default="", nullable=False)
 
-    # Отметка «владелец согласен». Без неё работают только пассивные модули.
-    consent: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false(), nullable=False, index=True)
-    consent_note: Mapped[str] = mapped_column(Text, default="", server_default="", nullable=False)
-    consent_at: Mapped[datetime | None] = mapped_column(DateTime)
-
     @property
     def name(self) -> str:
         return display_host(self.domain)
@@ -31,11 +24,3 @@ class Target(TimestampMixin, Base):
     @property
     def scope(self) -> Scope:
         return Scope.build(self.domain, self.include or [], self.exclude or [])
-
-    @property
-    def mode_title(self) -> str:
-        return "Все модули" if self.consent else "Только пассивные"
-
-    @property
-    def mode_tone(self) -> str:
-        return "success" if self.consent else "neutral"

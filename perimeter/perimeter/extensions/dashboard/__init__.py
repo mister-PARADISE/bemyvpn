@@ -12,7 +12,7 @@ from ... import __version__
 from ...core.context import Context, Page, Widget
 from ...core.db import utcnow
 from ...web import DB, get_ctx, render
-from ...web.ui import plural
+from ...web.ui import plural, ru_date
 
 TITLE = "Обзор"
 DESCRIPTION = "Главная страница из виджетов расширений"
@@ -20,10 +20,6 @@ VERSION = "1.0"
 
 log = logging.getLogger("perimeter.dashboard")
 router = APIRouter()
-
-WEEKDAYS = ("понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье")
-MONTHS = ("января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа", "сентября", "октября",
-          "ноября", "декабря")
 
 
 @router.get("/")
@@ -37,9 +33,7 @@ def dashboard(request: Request, db: DB):
         except Exception:  # noqa: BLE001 — сломанный виджет не ломает главную
             log.exception("Виджет %s упал", widget.id)
             widgets.append({"widget": widget, "data": {}, "error": "Не удалось собрать данные — подробности в логе"})
-    today = date.today()
-    return render(request, "dashboard/index.html", widgets=widgets,
-                  today=f"{WEEKDAYS[today.weekday()]}, {today.day} {MONTHS[today.month - 1]}")
+    return render(request, "dashboard/index.html", widgets=widgets, today=ru_date(date.today()))
 
 
 def _size(num: float) -> str:

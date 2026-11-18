@@ -27,7 +27,10 @@ def get_db(request: Request) -> Iterator[Session]:
         yield session
 
 
-DB = Annotated[Session, Depends(get_db)]
+# scope="function": сессия закрывается (и коммитит) сразу после обработчика, ДО отправки ответа.
+# По умолчанию FastAPI закрывает её после ответа — и браузер успевал прийти по редиректу
+# раньше, чем изменения попали в базу.
+DB = Annotated[Session, Depends(get_db, scope="function")]
 
 
 def render(request: Request, template: str, status_code: int = 200, **context: Any):

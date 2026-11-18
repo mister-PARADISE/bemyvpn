@@ -1,4 +1,4 @@
-"""Старая база (версия 1 с «разрешениями») переезжает сама и продолжает работать."""
+"""Старая база (версия 1 с «разрешениями») догоняет схему по шагам и продолжает работать."""
 
 from __future__ import annotations
 
@@ -45,14 +45,13 @@ def test_v1_database_is_migrated(tmp_path):
     ctx = make_app(tmp_path).state.ctx
     with ctx.db.session() as s:
         old = {t.domain: t for t in s.scalars(select(Target))}
-        assert old["example.com"].consent and old["example.com"].consent_note == "Договор №1"
-        assert not old["example.org"].consent
+        assert set(old) == {"example.com", "example.org"} and old["example.com"].title == "Магазин"
         s.add(Target(domain="example.net"))  # новые записи вставляются без старых колонок
     with sqlite3.connect(data / "perimeter.db") as conn:
         cols = {row[1] for row in conn.execute("PRAGMA table_info(target)")}
         version = conn.execute("SELECT version FROM schema_version WHERE component='targets'").fetchone()[0]
-    assert not any(c.startswith("auth_") for c in cols)
-    assert version == 2
+    assert not any(c.startswith(("auth_", "consent")) for c in cols)
+    assert version == 3
     # повторный запуск ничего не ломает
     make_app(tmp_path)
 
@@ -61,4 +60,4 @@ def test_new_database_starts_at_latest_version(tmp_path):
     make_app(tmp_path)
     with sqlite3.connect(tmp_path / "data" / "perimeter.db") as conn:
         version = conn.execute("SELECT version FROM schema_version WHERE component='targets'").fetchone()[0]
-    assert version == 2
+    assert version == 3

@@ -24,6 +24,11 @@ log = logging.getLogger("perimeter.web")
 WEB_DIR = Path(__file__).parent
 
 
+WEEKDAYS = ("понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье")
+MONTHS = ("января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа", "сентября", "октября",
+          "ноября", "декабря")
+
+
 def plural(n: int | float, one: str, few: str, many: str) -> str:
     n = abs(int(n))
     if n % 10 == 1 and n % 100 != 11:
@@ -31,6 +36,12 @@ def plural(n: int | float, one: str, few: str, many: str) -> str:
     if 2 <= n % 10 <= 4 and not 12 <= n % 100 <= 14:
         return few
     return many
+
+
+def ru_date(value: date, year: bool = False) -> str:
+    """date(2026, 11, 18) → «среда, 18 ноября» (или «…18 ноября 2026»)."""
+    text = f"{WEEKDAYS[value.weekday()]}, {value.day} {MONTHS[value.month - 1]}"
+    return f"{text} {value.year}" if year else text
 
 
 class UI:
@@ -58,10 +69,16 @@ class UI:
             version=__version__,
             slot=self.render_slot,
             partial=self.render_partial,
+            now_line=self.now_line,
             **ctx.template_globals,
         )
         self.env = env
         self.templates = Jinja2Templates(env=env)
+
+    def now_line(self) -> str:
+        """«среда, 18 ноября 2026, 22:47» — в часовом поясе из настроек."""
+        now = datetime.now(timezone.utc).astimezone(self.tz())
+        return f"{ru_date(now.date(), year=True)}, {now:%H:%M}"
 
     @pass_context
     def render_partial(self, context, template: str, data: dict[str, Any] | None = None) -> Markup:

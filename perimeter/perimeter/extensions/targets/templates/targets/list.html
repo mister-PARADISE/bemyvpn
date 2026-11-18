@@ -6,26 +6,22 @@
 {% endcall %}
 
 <div class="card">
+  {% if everything %}
   <div class="toolbar">
-    {{ ui.seg(tabs, mode, "mode", query) }}
     <form class="grow search-field" method="get" role="search">
-      <input type="hidden" name="mode" value="{{ mode }}">
       {{ icon('search') }}
       <input class="input" type="search" name="q" value="{{ q }}" placeholder="домен или название" aria-label="Поиск целей">
     </form>
   </div>
+  {% endif %}
   {% if targets %}
   <div class="table-wrap">
     <table class="table rows">
-      <thead><tr><th>Сайт</th><th>Модули</th><th>Границы</th><th>Изменена</th></tr></thead>
+      <thead><tr><th>Сайт</th><th>Границы</th><th>Изменена</th></tr></thead>
       <tbody>
       {% for t in targets %}
         <tr data-href="/targets/{{ t.id }}">
           <td><div class="cell"><span class="l1"><span>{{ t.name }}</span></span><span class="l2">{{ t.title or "без названия" }}</span></div></td>
-          <td><div class="cell">
-            <span class="l1">{{ ui.badge(t.mode_title, t.mode_tone, dot=True) }}</span>
-            <span class="l2">{{ "владелец согласен" if t.consent else "без согласия" }}</span>
-          </div></td>
           <td class="hide-sm"><div class="cell">
             <span class="l1 soft"><span>{{ t.name }} и поддомены</span></span>
             <span class="l2">
@@ -33,15 +29,15 @@
               {%- if t.exclude %}исключений {{ t.exclude|length }}{% endif -%}
             </span>
           </div></td>
-          <td class="hide-sm"><div class="cell"><span class="l1 soft tnum"><span>{{ t.updated_at|date }}</span></span><span class="l2">{{ t.updated_at|ago }}</span></div></td>
+          <td><div class="cell"><span class="l1 soft tnum"><span>{{ t.updated_at|date }}</span></span><span class="l2">{{ t.updated_at|ago }}</span></div></td>
         </tr>
       {% endfor %}
       </tbody>
     </table>
   </div>
   {{ ui.pager(page, pages, total, query) }}
-  {% elif q or mode %}
-    {{ ui.empty("search", "Ничего не нашлось", ["Попробуйте другой запрос или другой фильтр"]) }}
+  {% elif q %}
+    {{ ui.empty("search", "Ничего не нашлось", ["Попробуйте другой запрос"]) }}
   {% else %}
     {{ ui.empty("globe", "Целей пока нет", ["Цель — это сайт, который вы проверяете.", "Добавьте первый, это одно поле"], "/targets/new", "Новая цель") }}
   {% endif %}
