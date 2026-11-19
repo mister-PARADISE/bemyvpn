@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
-import argparse
-import getpass
 import sys
-from dataclasses import replace
-from pathlib import Path
 
-from .config import Config
+if sys.version_info < (3, 11):  # понятное сообщение вместо трассировки — до импорта всего остального
+    sys.exit(f"Периметру нужен Python 3.11 или новее, а запущен {sys.version.split()[0]}.\n"
+             "Удалите папку .venv и запустите start.sh (start.bat) снова — скрипт найдёт подходящий Python.")
+
+import argparse  # noqa: E402
+import getpass  # noqa: E402
+from dataclasses import replace  # noqa: E402
+from pathlib import Path  # noqa: E402
+
+from .config import Config  # noqa: E402
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -33,7 +38,11 @@ def main(argv: list[str] | None = None) -> int:
 
     import os
 
-    import uvicorn
+    try:
+        import uvicorn
+    except ImportError:
+        print("Не установлены зависимости. Удалите папку .venv и запустите start.sh (start.bat) снова.", file=sys.stderr)
+        return 1
 
     host = getattr(args, "host", None) or config.host
     port = getattr(args, "port", None) or config.port
