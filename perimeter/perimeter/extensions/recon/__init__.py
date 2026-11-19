@@ -17,7 +17,7 @@ from ...core.settings import SettingsSection
 from ...web import DB, actor, get_ctx, redirect
 from ...web.ui import plural
 from ..runs.models import Asset
-from . import netkit, view, vulndb
+from . import feeds, netkit, view, vulndb
 from ..targets.models import Target
 from .modules import MODULES
 
@@ -92,6 +92,11 @@ def _vuln_flags(a):
     return (", ".join(flags), "err" if d.get("kev") else "warn") if flags else ""
 
 
+def _tech_support(a):
+    tag = view.support_tag(a.data or {})
+    return tag if tag else ""
+
+
 COLUMNS = {
     "ip": [("адрес", lambda a: a.value), ("сеть", _ip_net), ("префикс", lambda a: a.data.get("prefix")),
            ("страна", lambda a: a.data.get("country")),
@@ -113,7 +118,7 @@ COLUMNS = {
     "technology": [("программа", lambda a: a.value), ("вид", lambda a: a.data.get("category")),
                    ("где", lambda a: ", ".join((a.data.get("where") or [])[:2])),
                    ("сборка", lambda a: " ".join(x for x in (a.data.get("distro"), a.data.get("package")) if x)),
-                   ("уязвимости", _tech_cves),
+                   ("уязвимости", _tech_cves), ("поддержка", _tech_support),
                    ("", lambda a: ("больше не видно", "") if a.data.get("state") == "gone"
                     else ("убран из каталога WordPress", "warn") if a.data.get("closed") else "")],
     "vulnerability": [("ID", lambda a: a.value), ("программа", lambda a: f"{a.data.get('product_title', '')} {a.data.get('version', '')}"),
@@ -275,14 +280,16 @@ def setup(ctx: Context) -> None:
     ))
     ctx.settings.section(SettingsSection(
         id="vulndb", title="Уязвимости", icon="shield-alert", group="Модули", order=25,
-        description="Откуда модуль «Уязвимости» берёт данные: NVD — все CVE по программе, база WordPress — плагины "
-                    "и темы, CISA KEV — что уже используют в атаках, EPSS — вероятность атаки. Ответы хранятся "
-                    "в data/vulndb и обновляются сами.",
+        description="Откуда модули «Уязвимости» и «Поддержка версий» берут данные: NVD — все CVE по программе, "
+                    "база WordPress — плагины и темы, CISA KEV — что уже используют в атаках, EPSS — вероятность "
+                    "атаки, endoflife.date — сроки поддержки веток. Базы хранятся в data/vulndb и обновляются сами "
+                    "(«Модули → Данные»).",
         fields=(
             f.secret("nvd_api_key", "Ключ API NVD",
                      help="Необязательно. Без ключа NVD отвечает не чаще 5 раз за 30 секунд — первая проверка "
                           "идёт дольше. Ключ бесплатный: nvd.nist.gov/developers/request-an-api-key"),
-            f.integer("cache_hours", "Обновлять базы раз в, ч", default=24, min=1, max=720, width="half"),
+            f.integer("cache_hours", "Обновлять базы раз в, ч", default=24, min=1, max=720, width="half",
+                      help="Обновляет сама, в фоне; после обновления цели перепроверяются («Настройки → Данные модулей»)"),
             f.boolean("use_kev", "Отмечать уязвимости, которые уже используют в атаках (CISA KEV)", default=True),
             f.boolean("use_epss", "Вероятность атаки в ближайший месяц (EPSS)", default=True),
             f.url("nvd_url", "Адрес NVD API", default="https://services.nvd.nist.gov/rest/json/cves/2.0"),
@@ -291,5 +298,7 @@ def setup(ctx: Context) -> None:
             f.url("epss_url", "Адрес EPSS API", default="https://api.first.org/data/v1/epss"),
             f.url("wp_url", "База плагинов и тем WordPress", default="https://www.wpvulnerability.net",
                   help="Уязвимости плагинов по их названию: собирает Wordfence, Patchstack, WPScan и NVD"),
+            f.url("eol_url", "Сроки поддержки версий (endoflife.date)", default="https://endoflife.date/api"),
         ),
     ))
+    feeds.register(ctx)

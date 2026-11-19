@@ -32,8 +32,31 @@ class Product:
         """Есть ли где искать уязвимости этой программы."""
         return bool(self.cpes or self.wp)
 
+    @property
+    def eol(self) -> str:
+        """Название программы в endoflife.date — сроки поддержки её веток; пусто — там её нет."""
+        return EOL_SLUGS.get(self.id, "")
+
 
 _P = Product
+# Программа → её название в endoflife.date (сверено со списком endoflife.date/api/all.json).
+EOL_SLUGS = {
+    "angularjs": "angularjs", "apache": "apache-http-server", "bootstrap": "bootstrap", "caddy": "caddy",
+    "ckeditor": "ckeditor", "confluence": "confluence", "consul": "consul", "django": "django",
+    "docker": "docker-engine", "dovecot": "dovecot", "drupal": "drupal", "elasticsearch": "elasticsearch",
+    "envoy": "envoy", "exchange": "msexchange", "exim": "exim", "express": "express", "gitlab": "gitlab",
+    "grafana": "grafana", "haproxy": "haproxy", "jenkins": "jenkins", "jetty": "eclipse-jetty",
+    "jira": "jira-software", "joomla": "joomla", "jquery": "jquery", "jquery_ui": "jquery-ui", "kibana": "kibana",
+    "kong": "kong-gateway", "kubernetes": "kubernetes", "laravel": "laravel", "magento": "magento",
+    "mariadb": "mariadb", "matomo": "matomo", "mediawiki": "mediawiki", "memcached": "memcached", "moodle": "moodle",
+    "mysql": "mysql", "nextcloud": "nextcloud", "nextjs": "nextjs", "nginx": "nginx", "nodejs": "nodejs",
+    "openssl": "openssl", "perl": "perl", "php": "php", "phpmyadmin": "phpmyadmin", "plesk": "plesk",
+    "postfix": "postfix", "proftpd": "proftpd", "prometheus": "prometheus", "python": "python",
+    "rabbitmq": "rabbitmq", "rails": "rails", "react": "react", "redis": "redis", "roundcube": "roundcube",
+    "sharepoint": "sharepoint", "squid": "squid", "tomcat": "tomcat", "traefik": "traefik", "typo3": "typo3",
+    "vault": "hashicorp-vault", "vue": "vue", "wordpress": "wordpress", "zabbix": "zabbix",
+}
+
 PRODUCTS: dict[str, Product] = {p.id: p for p in (
     # веб-серверы и прокси
     _P("nginx", "nginx", "веб-сервер", ("f5:nginx", "nginx:nginx")),

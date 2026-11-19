@@ -17,9 +17,10 @@ from urllib.parse import urlsplit
 
 from sqlalchemy import func, select
 
+from ...core.db import utcnow
 from ...web.ui import plural
 from ..runs.models import Asset, Run
-from . import netkit
+from . import netkit, versions
 from .ports import RISKY, SERVICES
 
 Seg = tuple[str, str]  # (текст, оттенок: "" | ok | warn | err | dim)
@@ -274,6 +275,17 @@ def _software(f: Facts) -> Group:
     g.facts.append(Fact("уязвимости", segs or [("известных нет", "ok")], href="#vulns",
                         sub=", ".join(x for x in (f"в атаках {kev}" if kev else "", f"с эксплойтом {exploit}" if exploit else "",
                                                   f"всего {len(f.vulns)}" if f.vulns else "") if x)))
+    if f.did("eol"):
+        checked = [a for a in techs if _d(a).get("eol_checked") and _d(a).get("eol_cycle")]
+        ended = [a for a in checked if _d(a).get("eol_state") == "ended"]
+        soon = [a for a in checked if _d(a).get("eol_state") == "soon"]
+        behind = [a for a in checked if _d(a).get("eol_behind")]
+        segs = ([(f"{_d(a).get('title') or a.value} {_d(a).get('eol_cycle')}", "err") for a in ended[:3]]
+                + ([(f"+{len(ended) - 3}", "dim")] if len(ended) > 3 else []))
+        g.facts.append(Fact("поддержка", segs or ([("все ветки поддерживаются", "ok")] if checked else [("нет данных", "dim")]),
+                            href="#issues", sub=", ".join(x for x in (
+                                f"без поддержки {len(ended)}" if ended else "", f"скоро закончится {len(soon)}" if soon else "",
+                                f"отстают внутри ветки {len(behind)}" if behind else "") if x)))
     upgrades = [(_d(a).get("title") or a.value, upgrade_text(_d(a)).replace("версии ", ""))
                 for a in techs if _d(a).get("upgrade_to")]
     if upgrades:
@@ -515,6 +527,7 @@ def issues(f: Facts) -> list[Issue]:
     _mail_issues(f, out)
     _zone_issues(f, out)
     _vuln_issues(f, out)
+    _support_issues(f, out)
     # одно и то же на нескольких именах (общий сертификат example.com и www) — одной строкой
     merged: dict[tuple[str, str, str], Issue] = {}
     for i in out:
@@ -647,6 +660,54 @@ def _zone_issues(f: Facts, out: list[Issue]) -> None:
                          "теми, кем вы пользуетесь (например, letsencrypt.org).", "#" + anchor("dns")))
 
 
+def _support_issues(f: Facts, out: list[Issue]) -> None:
+    """Поддержка ветки. У уязвимой программы — в том же замечании (одна программа — одно замечание),
+    у программы без известных CVE — своим: ветка без поддержки и так открытая дверь на будущее."""
+    by_href = {i.href: i for i in out}
+    for value, tech in f.techs.items():
+        d = _d(tech)
+        state, cycle = d.get("eol_state"), d.get("eol_cycle")
+        if not d.get("eol_checked") or not cycle:
+            continue
+        where = ", ".join((d.get("where") or [])[:2])
+        href = "#" + anchor("vulns", d.get("product"), d.get("version"))
+        newest = d.get("eol_newest")
+        move = (f" Переходите на ветку {newest}" + (f" (сейчас {d['eol_newest_latest']})" if d.get("eol_newest_latest") else "")
+                + "." if newest and newest != cycle else "")
+        inside = f" Последний выпуск ветки {cycle} — {d['eol_latest']}." if d.get("eol_behind") else ""
+        same = by_href.get(href)
+        if same is not None:  # уже есть замечание об уязвимостях этой программы — дополняем его
+            when = d.get("eol_date")
+            if state == "ended":
+                same.title += f"; ветка {cycle} без поддержки" + (f" с {when}" if when else "")
+                hint = same.hint
+                up, latest = d.get("upgrade_to"), d.get("eol_newest_latest")
+                if move and up and latest and versions.compare(latest, up) >= 0:
+                    # переход на актуальную ветку закрывает и известные дыры — один совет вместо двух
+                    hint = hint.replace(f" Обновите до {up} или новее.", "").replace(f" Обновите до версии новее {up}.", "")
+                    move = move[:-1] + " — это закроет и известные уязвимости."
+                same.hint = "Ветку больше не чинят: новые дыры останутся открытыми навсегда." + move + " " + hint + inside
+                same.level = "err"
+            elif state == "soon":
+                same.title += f"; поддержка ветки {cycle} до {when}"
+                same.hint += f" Поддержка ветки {cycle} закончится через {d.get('eol_days')} дн." + move
+            elif d.get("eol_behind"):
+                same.hint += f" Внутри ветки {cycle} уже есть {d['eol_latest']} — это обновление можно ставить сразу."
+            continue
+        if state == "ended":
+            when = d.get("eol_date")
+            out.append(Issue("err", f"{value}: ветка {cycle} без поддержки" + (f" с {when}" if when else ""), where,
+                             "Исправлений безопасности для неё больше не выпускают: новые дыры останутся открытыми "
+                             "навсегда." + move + inside, href, (2,)))
+        elif state == "soon":
+            out.append(Issue("warn", f"{value}: поддержка ветки {cycle} закончится {d.get('eol_date')}", where,
+                             f"Осталось {d.get('eol_days')} дн. Потом исправлений не будет." + move + inside, href, (2,)))
+        elif d.get("eol_behind"):
+            out.append(Issue("warn", f"{value}: в ветке {cycle} уже есть {d.get('eol_latest')}", where,
+                             "Обновление внутри ветки — только исправления, без смены поведения: его можно ставить сразу.",
+                             href, (3,)))
+
+
 def _vuln_issues(f: Facts, out: list[Issue]) -> None:
     """Уязвимая программа — одно замечание: сколько и каких, самые опасные и до какой версии обновиться."""
     for value, tech in f.techs.items():
@@ -682,10 +743,40 @@ def _vuln_issues(f: Facts, out: list[Issue]) -> None:
                          (1, -kev, -c["critical"], -c["high"], -c["medium"], -len(vs))))
 
 
+NEW_DAYS = 7  # «новая»: появилась с прошлой проверки не раньше недели назад
+
+
+def support_tag(d: dict[str, Any]) -> Seg | None:
+    """Поддержка ветки одной меткой: «без поддержки с 2025-12-31», «поддержка до 2027-03-31»…"""
+    state, cycle, when = d.get("eol_state"), d.get("eol_cycle"), d.get("eol_date")
+    if not d.get("eol_checked") or state in (None, "unknown"):
+        return None
+    if state == "ended":
+        return (f"ветка {cycle} без поддержки" + (f" с {when}" if when else ""), "err")
+    if state == "soon":
+        return (f"ветка {cycle}: поддержка до {when}", "warn")
+    if d.get("eol_behind"):
+        return (f"в ветке {cycle} есть {d.get('eol_latest')}", "warn")
+    return (f"ветка {cycle} поддерживается" + (f" до {when}" if when else ""), "dim")
+
+
+def _is_new(v: dict[str, Any]) -> bool:
+    when = v.get("new_at")
+    if not when:
+        return False
+    try:
+        return (utcnow() - datetime.fromisoformat(when)).days < NEW_DAYS
+    except ValueError:
+        return False
+
+
 def vuln_groups(f: Facts, limit: int = 200) -> list[dict[str, Any]]:
-    """Раздел «Уязвимости»: по программе — счётчики, где работает, до чего обновить и сами CVE."""
+    """Раздел «Уязвимости»: по программе — счётчики, где работает, до чего обновить и сами CVE.
+    Программа без известных CVE, но без поддержки (или с обновлением внутри ветки) — тоже здесь."""
     groups = []
-    for value, vs in f.vulns_of.items():
+    quiet = {value: [] for value, tech in f.techs.items() if value not in f.vulns_of and support_tag(_d(tech))
+             and (_d(tech).get("eol_state") in ("ended", "soon") or _d(tech).get("eol_behind"))}
+    for value, vs in [*f.vulns_of.items(), *quiet.items()]:
         tech = f.techs.get(value)
         d = _d(tech) if tech is not None else _d(vs[0])
         c = Counter(_d(a).get("severity") for a in vs)
@@ -693,7 +784,8 @@ def vuln_groups(f: Facts, limit: int = 200) -> list[dict[str, Any]]:
         rows = []
         for a in vs[:limit]:
             v = _d(a)
-            flags = ([("в атаках", "err")] if v.get("kev") else []) + ([("вымогатели", "err")] if v.get("ransomware") else []) \
+            flags = ([("новая", "accent")] if _is_new(v) else []) \
+                + ([("в атаках", "err")] if v.get("kev") else []) + ([("вымогатели", "err")] if v.get("ransomware") else []) \
                 + ([("эксплойт", "warn")] if v.get("exploit") else []) \
                 + ([("нет исправления", "err")] if v.get("unfixed") else []) \
                 + ([("все версии", "dim")] if v.get("how") == "all" else [])
@@ -717,8 +809,10 @@ def vuln_groups(f: Facts, limit: int = 200) -> list[dict[str, Any]]:
             "counts": [(f"{SEV_SHORT[s]} {c[s]}", SEV_TONE[s]) for s in SEV_SHORT if c[s]]
             + ([(f"в атаках {kev}", "err")] if kev else []),
             "upgrade": upgrade_text(d), "total": len(vs), "more": max(0, len(vs) - limit), "rows": rows,
-            "hot": bool(kev or c["critical"] or c["high"]),
-            "rank": (not kev, _SEV_ORDER.get(_d(vs[0]).get("severity", "unknown"), 5), -len(vs)),
+            "hot": bool(kev or c["critical"] or c["high"]), "support": support_tag(d),
+            "fresh": sum(1 for a in vs if _is_new(_d(a))),
+            "rank": (not kev, _SEV_ORDER.get(_d(vs[0]).get("severity", "unknown") if vs else "none", 5)
+                     if vs else 6, -len(vs)),
         })
     return sorted(groups, key=lambda g: g["rank"])
 
@@ -733,9 +827,11 @@ def vuln_totals(f: Facts) -> list[Seg]:
     c = Counter(_d(a).get("severity") for a in f.vulns)
     kev = sum(1 for a in f.vulns if _d(a).get("kev"))
     exploit = sum(1 for a in f.vulns if _d(a).get("exploit"))
-    return ([(f"{SEV_SHORT[s]} {c[s]}", SEV_TONE[s]) for s in SEV_SHORT if c[s]]
+    fresh = sum(1 for a in f.vulns if _is_new(_d(a)))
+    ended = sum(1 for t in f.techs.values() if _d(t).get("eol_state") == "ended")
+    return ([(f"новых {fresh}", "accent")] if fresh else []) + ([(f"{SEV_SHORT[s]} {c[s]}", SEV_TONE[s]) for s in SEV_SHORT if c[s]]
             + ([(f"в атаках {kev}", "err")] if kev else []) + ([(f"с эксплойтом {exploit}", "warn")] if exploit else [])
-            + [(f"программ {len(f.vulns_of)}", "dim")])
+            + ([(f"без поддержки {ended}", "err")] if ended else []) + [(f"программ {len(f.vulns_of)}", "dim")])
 
 
 def unchecked(f: Facts) -> list[str]:
@@ -928,9 +1024,11 @@ def _port_node(f: Facts, ip: str, port: int, asset: Asset | None, urls: list[Url
                      href="#" + anchor("vulns", _d(t).get("product"), _d(t).get("version")) if vs else "")
         if vs:
             child.tags.append((f"CVE {len(vs)}", tone))
+        if _d(t).get("eol_state") == "ended":  # ветка без поддержки: дыры в ней больше не чинят
+            child.tags.insert(0, ("EOL", "err"))
         node.children.append(child)
     if len(here) > 12:
         node.children.append(Node([("", f"… ещё {len(here) - 12}")], "more", dim=True, href="#found"))
     if total:
-        node.tags.append((f"CVE {total}", "err" if any(c.tags and c.tags[-1][1] == "err" for c in node.children) else "warn"))
+        node.tags.append((f"CVE {total}", "err" if any(t[1] == "err" for c in node.children for t in c.tags) else "warn"))
     return node

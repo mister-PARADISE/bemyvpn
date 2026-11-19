@@ -123,6 +123,19 @@ def _site(server: dict):
     return http_app(route)
 
 
+# endoflife.date: ветки с датами — как в настоящем, только короче
+EOL = {
+    "php": [{"cycle": "8.4", "releaseDate": "2024-11-21", "eol": "2028-12-31", "support": "2026-12-31", "latest": "8.4.27"},
+            {"cycle": "7.3", "releaseDate": "2018-12-06", "eol": "2021-12-06", "support": "2020-12-06", "latest": "7.3.33"}],
+    "nginx": [{"cycle": "1.31", "releaseDate": "2026-05-13", "eol": False, "latest": "1.31.8"},
+              {"cycle": "1.18", "releaseDate": "2020-04-21", "eol": "2021-04-20", "latest": "1.18.0"}],
+    "wordpress": [{"cycle": "7.1", "releaseDate": "2026-08-19", "eol": False, "support": True, "latest": "7.1.4"},
+                  {"cycle": "6.4", "releaseDate": "2023-11-07", "eol": False, "support": "2024-04-02", "latest": "6.4.14"}],
+    "jquery": [{"cycle": "4", "releaseDate": "2026-01-17", "eol": False, "support": True, "latest": "4.1.0"},
+               {"cycle": "1", "releaseDate": "2006-08-26", "eol": True, "latest": "1.12.4"}],
+}
+
+
 @pytest.fixture
 def vulnlab(browser, ctx, monkeypatch):
     nvd = json.loads((DATA / "nvd.json").read_text(encoding="utf-8"))
@@ -137,7 +150,7 @@ def vulnlab(browser, ctx, monkeypatch):
     server = {"nginx": "nginx/1.18.0"}
     with FakeDNS({("shop.test", "A"): ["127.0.0.1"]}) as dnsd, \
             Service(vulndb_app(nvd, ["CVE-2019-11043", "CVE-2020-11023"], {"CVE-2019-11043": 0.94}, hits,
-                               wp={"plugin/contact-form-7": wpv})) as vdb, \
+                               wp={"plugin/contact-form-7": wpv}, eol=EOL)) as vdb, \
             Service(_site(server)) as site, Service(greeter(b"SSH-2.0-OpenSSH_9.3p1 Ubuntu-1ubuntu3\r\n")) as ssh:
         monkeypatch.setattr(portlib, "HTTP_PORTS", portlib.HTTP_PORTS | {site.port})
         monkeypatch.setattr(portlib, "SERVICES", {**portlib.SERVICES, ssh.port: "ssh"})
@@ -145,14 +158,15 @@ def vulnlab(browser, ctx, monkeypatch):
         base = f"http://127.0.0.1:{vdb.port}"
         for key, value in {"recon.dns_servers": [f"127.0.0.1:{dnsd.port}"], "recon.dns_timeout": 2,
                            "vulndb.nvd_url": f"{base}/rest/json/cves/2.0", "vulndb.kev_url": f"{base}/kev.json",
-                           "vulndb.epss_url": f"{base}/epss", "vulndb.wp_url": base}.items():
+                           "vulndb.epss_url": f"{base}/epss", "vulndb.wp_url": base,
+                           "vulndb.eol_url": f"{base}/api"}.items():
             ctx.settings.set(key, value)
         r = browser.post("/targets/new", {"domain": "shop.test"})
         tid = int(r.headers["location"].rsplit("/", 1)[1])
         state = run_and_wait(browser, tid, "ports", preset="custom", custom=f"{site.port},{ssh.port}",
                              timeout_ms=500, banners="1")
         assert state["status"] == "done", state["text"]
-        yield {"tid": tid, "hits": hits, "server": server, "site": site, "ssh": ssh}
+        yield {"tid": tid, "hits": hits, "server": server, "site": site, "ssh": ssh, "nvd": nvd}
 
 
 def _of(ctx, tid, kind):
@@ -254,3 +268,116 @@ def test_upgrade_text():
     # «уязвимы до 8.0.44 включительно»: номер с исправлением база не называет — любая новее
     assert view.upgrade_text({"upgrade_to": "8.0.44", "upgrade_after": True}) == "версии новее 8.0.44"
     assert view.upgrade_text({}) == ""
+
+
+# --- поддержка версий ----------------------------------------------------------------
+
+def test_support_module_finds_ended_branches(browser, ctx, vulnlab):
+    tid = vulnlab["tid"]
+    state = run_and_wait(browser, tid, "eol", timeout=60)
+    assert state["status"] == "done", state["text"]
+    assert [m for m, _ in state["chain"]][-2:] == ["tech", "eol"]  # «Технологии» — сами, как основа
+    techs = _of(ctx, tid, "technology")
+    php, nginx, wp, jq = (techs[k] for k in ("PHP 7.3.5", "nginx 1.18.0", "WordPress 6.4.2", "jQuery 1.12.4"))
+    assert (php["eol_state"], php["eol_cycle"], php["eol_date"], php["eol_latest"], php["eol_behind"]) == \
+        ("ended", "7.3", "2021-12-06", "7.3.33", True)
+    assert php["eol_newest"] == "8.4" and php["eol_newest_latest"] == "8.4.27"
+    assert nginx["eol_state"] == "ended" and not nginx["eol_behind"]  # 1.18.0 — последний выпуск своей ветки
+    assert wp["eol_state"] == "security" and wp["eol_behind"] and wp["eol_latest"] == "6.4.14"
+    assert jq["eol_state"] == "ended" and jq["eol_date"] == ""  # «без поддержки», дата не указана
+    assert "OpenSSH" not in " ".join(k for k, v in techs.items() if v.get("eol_checked"))  # её в endoflife.date нет
+    assert "без поддержки 3" in state["summary"] and "отстают внутри ветки 2" in state["summary"]
+
+    page = browser.get(f"/targets/{tid}").text
+    assert "PHP 7.3.5: ветка 7.3 без поддержки с 2021-12-06" in page  # замечание
+    assert "Переходите на ветку 8.4 (сейчас 8.4.27)" in page and "Последний выпуск ветки 7.3 — 7.3.33" in page
+    assert "WordPress 6.4.2: в ветке 6.4 уже есть 6.4.14" in page
+    assert ">поддержка<" in page and "без поддержки 3" in page  # строка сводки
+
+
+# --- данные модулей обновляются сами ----------------------------------------------------
+
+def _age_caches(ctx, days: float) -> None:
+    """Сдвинуть время скачивания всех баз в прошлое — как будто прошло days дней."""
+    for path in (ctx.config.data_dir / "vulndb").rglob("*.json"):
+        data = json.loads(path.read_text(encoding="utf-8"))
+        data["fetched"] -= days * 86400
+        path.write_text(json.dumps(data), encoding="utf-8")
+
+
+def _wait_runs(ctx, actor: str, timeout: float = 30) -> list:
+    import time
+
+    from perimeter.extensions.runs.models import Run
+    end = time.time() + timeout
+    while time.time() < end:
+        with ctx.db.session() as s:
+            runs = list(s.scalars(select(Run).where(Run.actor == actor)))
+            if runs and all(r.status not in ("queued", "running") for r in runs):
+                s.expunge_all()
+                return runs
+        time.sleep(0.2)
+    raise AssertionError("перепроверка не закончилась")
+
+
+def test_feeds_update_only_changes_and_recheck_targets(browser, ctx, vulnlab):
+    from perimeter.extensions.feeds.models import FeedState
+    tid, hits, nvd = vulnlab["tid"], vulnlab["hits"], vulnlab["nvd"]
+    assert run_and_wait(browser, tid, "cve", timeout=60)["status"] == "done"
+    assert run_and_wait(browser, tid, "eol", timeout=60)["status"] == "done"
+    assert "CVE-2026-99999" not in _of(ctx, tid, "vulnerability")
+
+    # прошли сутки: в NVD появилась новая уязвимость nginx 1.18.0, а одну старую уточнили
+    fresh = {"id": "CVE-2026-99999", "published": "2026-11-18T10:00:00.000", "lastModified": "2026-11-19T00:00:00.000",
+             "vulnStatus": "Analyzed", "descriptions": [{"lang": "en", "value": "nginx resolver heap overflow"}],
+             "metrics": {"cvssMetricV31": [{"type": "Primary", "cvssData": {"baseScore": 9.8, "vectorString": "CVSS:3.1/AV:N"}}]},
+             "configurations": [{"nodes": [{"operator": "OR", "negate": False, "cpeMatch": [
+                 {"vulnerable": True, "criteria": "cpe:2.3:a:f5:nginx:*:*:*:*:*:*:*:*", "versionEndExcluding": "1.26.3",
+                  "matchCriteriaId": "1"}]}]}]}
+    nvd["f5:nginx"].append(fresh)
+    _age_caches(ctx, 2)
+    hits.clear()
+
+    sched = ctx.services["feeds"]
+    result = ctx.services["engine"].spawn(sched.cycle).result(timeout=60)
+    assert result["feeds"] == 5 and result["rechecked"] >= 1, result
+    assert "f5:nginx+delta" in hits and "f5:nginx" not in hits  # только изменения, без полной перекачки
+    with ctx.db.session() as s:
+        states = {st.id: (st.status, st.changed) for st in s.scalars(select(FeedState))}
+    assert all(status == "ok" for status, _ in states.values()), states
+    assert states["vulndb.nvd"][1] >= 1
+
+    runs = _wait_runs(ctx, "расписание")
+    assert {r.module_id for r in runs} == {"cve"}  # перепроверяют только пассивные: «Технологии» сами не запустились
+    vulns = _of(ctx, tid, "vulnerability")
+    assert vulns["CVE-2026-99999"]["new_at"] and vulns["CVE-2026-99999"]["severity"] == "critical"
+    assert not vulns["CVE-2021-23017"].get("new_at")  # старые — не «новые»
+    assert any("новых 1" in r.summary for r in runs)
+
+    page = browser.get(f"/targets/{tid}").text
+    assert ">новая<" in page and "новых 1" in page
+    # уязвимости и ветка без поддержки у одной программы — одно замечание, не два
+    assert "в атаках 1; ветка 7.3 без поддержки с 2021-12-06" in page and "PHP 7.3.5: ветка 7.3" not in page
+    data = browser.get("/modules?tab=data").text
+    assert "NVD" in data and "endoflife.date" in data and "обновлены" in data and "перепроверено целей: 1" in data
+    assert "Данные модулей обновлены: NVD" in browser.get("/journal").text
+
+    # второй цикл сразу: всё свежее — никто не обновляется, цели не трогаем
+    hits.clear()
+    again = ctx.services["engine"].spawn(sched.cycle).result(timeout=30)
+    assert again["feeds"] == 0 and not hits
+
+
+def test_feed_refresh_button(browser, ctx, vulnlab):
+    from perimeter.extensions.feeds.models import FeedState
+    r = browser.post("/feeds/vulndb.kev/refresh")
+    assert r.status_code == 303 and r.headers["location"] == "/modules?tab=data"
+    import time
+    for _ in range(100):
+        with ctx.db.session() as s:
+            st = s.get(FeedState, "vulndb.kev")
+            if st is not None and st.status == "ok":
+                break
+        time.sleep(0.1)
+    assert st.status == "ok" and st.items == 2 and st.actor == "admin"
+    assert browser.post("/feeds/nope/refresh").status_code == 404

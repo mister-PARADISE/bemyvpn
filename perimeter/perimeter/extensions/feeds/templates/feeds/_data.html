@@ -1,0 +1,46 @@
+{# Модули → Данные: базы модулей, которые панель обновляет сама #}
+{% import "_ui.html" as ui with context %}
+<section class="card" id="feeds"{% if running %} data-refresh="2500"{% endif %}>
+  <div class="card-head"><h2>Данные модулей <span class="count">{{ rows|length }}</span></h2>
+    <form method="post" action="/feeds/refresh" class="inline">{{ ui.csrf_field() }}
+      <button class="btn-soft btn-sm">{{ icon('refresh') }}Обновить всё</button></form>
+  </div>
+  <p class="feeds-note small">
+    {% if auto %}<span class="t-ok">[ok]</span> обновляются сами по расписанию{% else %}<span class="t-warn">[~]</span> сами не обновляются — только кнопкой{% endif %}
+    · {% if recheck %}после обновления пассивные модули перепроверяют цели — к сайтам не обращаются{% else %}цели после обновления не перепроверяются{% endif %}
+    · <a href="/settings/feeds">настроить</a>
+  </p>
+  <div class="feeds">
+    {% for r in rows %}{% set fd = r.feed %}{% set st = r.state %}
+    <details class="feed"{% if r.running or (st and st.status == 'failed') %} open{% endif %}>
+      <summary>
+        <span class="dot t-{{ 'accent' if r.running else (st.state_tone if st else 'muted') }}">●</span>
+        <span class="feed-title">{{ fd.title }}</span>
+        {% if fd.source %}<span class="muted small">{{ fd.source }}</span>{% endif %}
+        <span class="feed-meta small">
+          {%- if r.running %}<span class="t-accent">обновляются…</span>
+          {%- elif st and st.status == 'failed' %}<span class="t-err">ошибка {{ st.finished_at|ago }}</span>
+          {%- elif st and st.ok_at %}<span>обновлены {{ st.ok_at|ago }}</span>
+          {%- else %}<span class="muted">ещё не обновлялись</span>{% endif %}
+          {%- if st and st.items %}<span class="muted">записей {{ st.items }}</span>{% endif %}
+          {%- if st and st.changed %}<span class="t-warn">изменилось {{ st.changed }}</span>{% endif %}
+          <span class="muted">{{ r.every }}{% if r.next %}, следующее {{ r.next }}{% endif %}</span>
+        </span>
+      </summary>
+      <div class="feed-body">
+        {% if fd.description %}<p class="ink2 small">{{ fd.description }}</p>{% endif %}
+        <p class="small muted">
+          {% if r.users %}Пользуются: {{ r.users|join(", ") }}{% if st and st.rechecked %} · после прошлого обновления перепроверено целей: {{ st.rechecked }}{% endif %}<br>{% endif %}
+          {% if st and st.summary %}Итог: {{ st.summary }}{% endif %}
+          {% if st and st.error %}<span class="t-err">{{ st.error }}</span>{% endif %}
+        </p>
+        {% if st and st.log %}
+        <div class="feed-log">{% for at, level, text in st.log[-40:] %}<div class="cl lvl-{{ level }}"><span class="ts">{{ at|clock }}</span>{{ text }}</div>{% endfor %}</div>
+        {% endif %}
+        <form method="post" action="/feeds/{{ fd.id }}/refresh" class="inline">{{ ui.csrf_field() }}
+          <button class="btn-soft btn-sm"{% if r.running %} disabled{% endif %}>{{ icon('refresh') }}Обновить сейчас</button></form>
+      </div>
+    </details>
+    {% endfor %}
+  </div>
+</section>

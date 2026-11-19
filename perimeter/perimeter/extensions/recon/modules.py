@@ -29,10 +29,11 @@ from contextlib import suppress
 from statistics import mean
 
 from ...core import fields as f
+from ...core.db import utcnow
 from ...core.modules import Kind, Module, ModuleError, ModuleSpec
 from ...core.scope import ScopeError, normalize_host
 from ...web.ui import plural
-from . import fingerprints as fp, netkit, ports as portlib, versions, vulndb, web
+from . import fingerprints as fp, netkit, ports as portlib, support, versions, vulndb, web
 
 REDIRECTS = (301, 302, 303, 307, 308)
 
@@ -1032,6 +1033,9 @@ class Vulnerabilities(Module):
         seen: set[str] = set()
         total = Counter()
         exploited = 0
+        before = {a["value"] for a in run.assets("vulnerability") if a["data"].get("state") != "closed"}
+        fresh: list[tuple[str, str]] = []  # (CVE, программа): появились с прошлой проверки этой же программы
+        now = utcnow().isoformat(timespec="seconds")
         for t, prod, version, matched, known, closed in results:
             d = t["data"]
             matched.sort(key=lambda x: (not (kev.get(x[0]["id"]) or x[0]["kev"]), -(x[0]["cvss"] or 0), x[0]["id"]))
@@ -1048,6 +1052,9 @@ class Vulnerabilities(Module):
                 else:  # верхней границы нет вовсе: исправления не называют
                     no_fix += 1
                 in_kev += bool(k)
+                if c["id"] not in before and d.get("cve_checked"):  # программу уже проверяли — значит, это новое
+                    fresh.append((c["id"], t["value"]))
+                    await run.emit("vulnerability", c["id"], new_at=now)
                 await run.emit("vulnerability", c["id"], product=prod.id, product_title=prod.title, version=version,
                                tech=t["value"], where=d.get("where") or [], cvss=c["cvss"], severity=c["severity"],
                                vector=c["vector"], cvss_version=c["cvss_version"], summary=c["summary"],
@@ -1067,7 +1074,7 @@ class Vulnerabilities(Module):
             total.update(counts)
             exploited += in_kev
             self._report(run, prod, version, d, matched, counts, in_kev,
-                         (f"новее {upgrade}" if after else upgrade) if upgrade else "", known, kev, epss)
+                         (f"версии новее {upgrade}" if after else upgrade) if upgrade else "", known, kev, epss)
             if closed:
                 run.log(f"      [!] {prod.title} убран из каталога WordPress ({closed}) — обновлений больше не будет, "
                         "замените его", "err")
@@ -1075,6 +1082,9 @@ class Vulnerabilities(Module):
         if vague:
             run.log(f"[i] записей NVD без указания версий («все версии»): {vague} — не учтены, обычно это старые "
                     "описания; включить можно в параметрах", "dim")
+        if fresh:
+            run.log(f"[+] новых с прошлой проверки: {len(fresh)} — " + ", ".join(f"{cid} ({tech})" for cid, tech in fresh[:6])
+                    + (f" и ещё {len(fresh) - 6}" if len(fresh) > 6 else ""), "found")
         closed = 0
         for a in run.assets("vulnerability"):
             if a["value"] not in seen and a["data"].get("state") != "closed":
@@ -1084,7 +1094,8 @@ class Vulnerabilities(Module):
             run.log(f"[i] закрыто с прошлого раза: {closed}", "ok")
         n = sum(total.values())
         run.summary = (f"уязвимостей {n}" + (f": критических {total['critical']}, высоких {total['high']}" if n else "")
-                       + (f", в атаках {exploited}" if exploited else "") + f"; запросов к базам {db.requests}")
+                       + (f", в атаках {exploited}" if exploited else "") + (f"; новых {len(fresh)}" if fresh else "")
+                       + f"; запросов к базам {db.requests}")
 
     @staticmethod
     def _report(run, prod, version, d, matched, counts, in_kev, upgrade, known, kev, epss) -> None:
@@ -1110,6 +1121,60 @@ class Vulnerabilities(Module):
                     "err" if c["severity"] == "critical" or k else "warn" if c["severity"] == "high" else "info")
         if len(matched) > 8:
             run.log(f"      … и ещё {len(matched) - 8} — все в разделе «Уязвимости»", "dim")
+
+
+class Support(Module):
+    spec = ModuleSpec(
+        id="eol", title="Поддержка версий", kind=Kind.PASSIVE, category="Уязвимости", order=48, icon="calendar",
+        consumes=("technology",), produces=("technology",), needs=("tech",), timeout=600,
+        description="Поддерживается ли ещё ветка каждой найденной программы: до какого числа для неё выпускают "
+                    "исправления безопасности, какой последний выпуск в этой ветке и какая ветка актуальная. "
+                    "Ветку без поддержки не чинят вовсе — новые дыры в ней остаются навсегда. "
+                    "Данные endoflife.date, сайт не трогает",
+    )
+
+    async def run(self, run) -> None:
+        techs = [a for a in run.assets("technology") if a["data"].get("state") != "gone"]
+        if not techs:
+            run.log("[!] программ не найдено — нечего проверять", "warn")
+            run.summary = "программ не найдено"
+            return
+        db = vulndb.VulnDB(run.data_dir / "vulndb", run.setting, say=run.log)
+        counts: Counter = Counter()
+        behind = 0
+        skipped: list[str] = []
+        async with db.client() as client:
+            for i, t in enumerate(techs):
+                run.progress(i, len(techs), "программ")
+                d = t["data"]
+                prod = fp.product(d.get("product", ""))
+                version = d.get("version") or ""
+                if prod is None or not prod.eol:
+                    continue
+                if not version:
+                    skipped.append(prod.title)
+                    continue
+                try:
+                    cycles = await db.eol(client, prod.eol)
+                except vulndb.VulnDBError as exc:
+                    run.log(f"    [!] {prod.title}: {exc}", "err")
+                    continue
+                info = support.status(cycles, version)
+                await run.emit("technology", t["value"], **info, eol_checked=True)
+                state = info["eol_state"]
+                counts[state] += 1
+                behind += bool(info["eol_behind"])
+                level = {"ended": "err", "soon": "warn", "unknown": "dim"}.get(state, "warn" if info["eol_behind"] else "ok")
+                mark = {"ended": "[!]", "soon": "[~]", "unknown": "[-]"}.get(state, "[~]" if info["eol_behind"] else "[ok]")
+                run.log(f"{mark} {prod.title} {version}: {support.describe(info)}", level)
+        run.progress(len(techs), len(techs), "программ")
+        if skipped:
+            run.log(f"[-] версия не видна — ветку не определить: {', '.join(skipped)}", "dim")
+        checked = sum(counts.values())
+        parts = [f"{support.STATES[k][0]} {counts[k]}" for k in ("ended", "soon") if counts[k]]
+        run.summary = (f"проверено программ {checked}" + (": " + ", ".join(parts) if parts else ", все ветки поддерживаются"
+                                                          if checked else "")
+                       + (f"; отстают внутри ветки {behind}" if behind else ""))
 
 
 _KIND_NOISE = re.compile(r"\([^)]*\)|\bvulnerabilit(?:y|ies)\b|[^a-z ]+")
@@ -1154,4 +1219,4 @@ def _vuln_link(c: dict) -> str:
 
 
 MODULES = (Resolve, Provider, ReverseNames, Zone, Mail, Neighbors, Ping, Site, Certificate, OpenPorts,
-           Technologies, Vulnerabilities)
+           Technologies, Vulnerabilities, Support)

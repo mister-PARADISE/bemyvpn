@@ -28,6 +28,7 @@ from sqlalchemy.orm import Session
 from ..config import Config
 from .db import Database
 from .events import EventBus
+from .feeds import Feed
 from .models import AuditEntry
 from .modules import BUILTIN_ASSET_TYPES, AssetType, ModuleRegistry
 from .registry import Registry
@@ -142,6 +143,8 @@ class Context:
     widgets: Registry[Widget] = field(default_factory=lambda: Registry("Виджет"))
     stats: Registry[Stat] = field(default_factory=lambda: Registry("Строка состояния"))
     asset_types: Registry[AssetType] = field(default_factory=lambda: Registry("Тип данных"))
+    # данные модулей, которые панель обновляет сама: базы уязвимостей и т. п. (core/feeds.py)
+    feeds: Registry[Feed] = field(default_factory=lambda: Registry("Данные модуля"))
     modules: ModuleRegistry = field(init=False)
     extensions: list[ExtensionInfo] = field(default_factory=list)
     routers: list[tuple[APIRouter, bool]] = field(default_factory=list)

@@ -65,6 +65,7 @@ class UI:
             dt=self.fmt_datetime,
             date=self.fmt_date,
             ago=self.fmt_ago,
+            clock=self.fmt_clock,
             host=display_host,
             nl2br=lambda s: Markup("<br>".join(escape(s or "").split("\n"))),
         )
@@ -139,6 +140,17 @@ class UI:
         if value.tzinfo is None:
             value = value.replace(tzinfo=timezone.utc)
         return value.astimezone(self.tz())
+
+    def fmt_clock(self, value: datetime | str | None) -> str:
+        """Время строки журнала — в часовом поясе панели: 03:29:36. Принимает и ISO-строку (UTC)."""
+        if isinstance(value, str):
+            try:
+                value = datetime.fromisoformat(value)
+            except ValueError:
+                return value
+        if value is None:
+            return ""
+        return self.local(value).strftime("%H:%M:%S")
 
     def fmt_datetime(self, value: datetime | None) -> str:
         if value is None:

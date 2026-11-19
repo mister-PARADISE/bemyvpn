@@ -29,6 +29,8 @@
         {% if s.needs %}<div class="small muted">Построен на: {% for n in s.needs %}«{{ ctx.modules.get(n).spec.title if ctx.modules.get(n) else n }}»{{ ", " if not loop.last }}{% endfor %} — запустятся сами, если нужно</div>{% endif %}
         {% set built = built_on.get(s.id, []) %}
         {% if built %}<div class="small muted">На нём построены: {{ built|map(attribute='spec.title')|join(', ') }}</div>{% endif %}
+        {% set data = feeds_of.get(s.id, []) %}
+        {% if data %}<div class="small muted">Данные: {{ data|join(', ') }} — <a href="?tab=data">обновляются сами</a></div>{% endif %}
       </div>
       {% endfor %}
     </div>
@@ -54,6 +56,9 @@ def setup(ctx):
   </div>
   {% endif %}
 
+{% elif tab == "data" %}
+  {{ slot("catalog.data") }}
+  {% if not ctx.feeds|length %}<div class="card">{{ ui.empty("refresh", "Обновляемых данных нет", ["Модуль, которому нужны свежие базы, описывает их через ctx.feeds.add(Feed(...))", "Панель обновит их сама и перепроверит цели"]) }}</div>{% endif %}
 {% elif tab == "types" %}
   <div class="card">
     <div class="table-wrap">

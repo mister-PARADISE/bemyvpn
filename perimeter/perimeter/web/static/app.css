@@ -670,7 +670,8 @@ dialog::backdrop{background:rgba(0,0,0,.72);-webkit-backdrop-filter:blur(3px);ba
 .vg-title{font-weight:700}
 .vg-ver{color:var(--ink2);font-weight:500}
 .vg-counts{display:flex;flex-wrap:wrap;gap:2px 1.4ch}
-.vg-counts>span,.vtotal>span,.vg-fix{white-space:nowrap}
+.vg-counts>span,.vtotal>span,.vg-fix,.vg-sup{white-space:nowrap}
+.vg-sup{font-size:12px}
 .vg-fix{color:var(--warn)}
 .vg-where{margin-left:auto;font-size:12px}
 .vg-note{margin:2px 0 6px;padding:0 var(--pad);font-size:12px;color:var(--ink3)}
@@ -766,3 +767,20 @@ dialog::backdrop{background:rgba(0,0,0,.72);-webkit-backdrop-filter:blur(3px);ba
   :is(.btn-primary,.btn-soft,.btn-ghost,.btn-danger,.btn-good){height:38px;padding:0 15px}
 }
 @media (hover:none){.cp:hover:not(.done){color:inherit}}
+
+/* ---------- Модули → Данные: базы модулей, которые обновляются сами ---------- */
+.feeds-note{margin:0 0 10px;padding:0 var(--pad);color:var(--ink2)}
+.feeds{display:flex;flex-direction:column;gap:6px;padding:0 var(--pad) var(--pad)}
+.feed{border:1px solid var(--line);border-radius:var(--r)}
+.feed>summary{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 14px;padding:9px 12px;cursor:pointer;list-style:none}
+.feed>summary::-webkit-details-marker{display:none}
+.feed>summary:hover{background:var(--raised)}
+.feed .dot{font-size:10px}
+.feed-title{font-weight:700}
+.feed-meta{display:flex;flex-wrap:wrap;gap:2px 1.6ch;margin-left:auto}
+.feed-meta>span{white-space:nowrap}
+.feed-body{padding:2px 12px 12px;border-top:1px dashed var(--line)}
+.feed-body p{margin:8px 0}
+.feed-log{max-height:260px;overflow:auto;margin:8px 0 10px;padding:8px 10px;background:var(--sunken);border-radius:var(--r-sm);
+          font-size:12px;line-height:1.6}
+.feed-log .cl{white-space:pre-wrap;overflow-wrap:anywhere}

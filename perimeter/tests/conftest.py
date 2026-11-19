@@ -45,7 +45,8 @@ class Browser:
 
 def make_app(tmp_path: Path, **overrides):
     # debug: упавший блок страницы роняет тест, а не прячется за заглушкой
-    return create_app(Config(data_dir=tmp_path / "data", **{"debug": True, **overrides}))
+    # фоновые обновления данных выключены: тест не должен ходить в интернет сам по себе
+    return create_app(Config(data_dir=tmp_path / "data", **{"debug": True, "background": False, **overrides}))
 
 
 @pytest.fixture

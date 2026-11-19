@@ -18,6 +18,8 @@ class Config:
     host: str = "127.0.0.1"
     port: int = 8710
     debug: bool = False
+    # фоновая работа: обновление данных модулей по расписанию; в тестах выключена
+    background: bool = True
     # Модули Python, которые грузятся как встроенные расширения (по порядку).
     builtin_extensions: tuple[str, ...] = (
         "perimeter.extensions.dashboard",
@@ -26,6 +28,7 @@ class Config:
         "perimeter.extensions.recon",
         "perimeter.extensions.proxies",
         "perimeter.extensions.catalog",
+        "perimeter.extensions.feeds",
         "perimeter.extensions.journal",
         "perimeter.extensions.settings_page",
     )

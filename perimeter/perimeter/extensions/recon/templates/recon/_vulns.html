@@ -28,13 +28,14 @@
     <details class="vgroup" id="{{ g.anchor }}"{% if loop.first %} open{% endif %}>
       <summary>
         <span class="vg-title">{{ g.title }} <span class="vg-ver">{{ g.version }}</span></span>
-        <span class="vg-counts">{% for text, tone in g.counts %}<span class="t-{{ tone }}">{{ text }}</span>{% endfor %}</span>
+        <span class="vg-counts">{% if g.fresh %}<span class="t-accent">новых {{ g.fresh }}</span>{% endif %}{% for text, tone in g.counts %}<span class="t-{{ tone }}">{{ text }}</span>{% endfor %}</span>
+        {% if g.support %}<span class="vg-sup t-{{ g.support[1] }}">{{ g.support[0] }}</span>{% endif %}
         {% if g.upgrade %}<span class="vg-fix">обновить до {{ g.upgrade }}</span>{% endif %}
         <span class="vg-where muted" title="{{ g.where_all }}">{{ g.where }}</span>
       </summary>
       {% if g.closed %}<p class="vg-note t-err"># убран из каталога WordPress ({{ g.closed }}) — исправлений больше не будет, замените</p>{% endif %}
       {% if g.distro %}<p class="vg-note"># сборка {{ g.distro }}{% if g.package %} {{ g.package }}{% endif %}: часть исправлений могли перенести без смены версии — сверяйте с бюллетенями {{ g.distro }}</p>{% endif %}
-      {{ vtable(g.rows[:10]) }}
+      {% if g.rows %}{{ vtable(g.rows[:10]) }}{% else %}<p class="vg-note"># известных уязвимостей в этой версии нет — но см. поддержку ветки выше</p>{% endif %}
       {% if g.rows|length > 10 %}
       <details class="vmore"><summary>[ ещё {{ g.rows|length - 10 }} ]</summary>{{ vtable(g.rows[10:], head=False) }}</details>
       {% endif %}

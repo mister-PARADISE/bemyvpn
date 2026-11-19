@@ -190,12 +190,13 @@ def self_signed(dirpath: Path, names: list[str], days: int = 10) -> tuple[Path, 
 
 
 def vulndb_app(nvd: dict[str, list[dict]], kev: list[str], epss: dict[str, float], hits: list[str] | None = None,
-               wp: dict[str, dict] | None = None):
-    """Поддельные NVD, CISA KEV, EPSS и база плагинов WordPress в одном сервере.
+               wp: dict[str, dict] | None = None, eol: dict[str, list[dict]] | None = None):
+    """Поддельные NVD, CISA KEV, EPSS, база плагинов WordPress и endoflife.date в одном сервере.
 
     nvd — {«vendor:product»: [записи NVD «cve»]}; ищет по virtualMatchString, листает по startIndex/
-    resultsPerPage, как настоящая. wp — {«plugin/слаг»: ответ WPVulnerability}. hits — сюда пишутся
-    все запросы к базам (для проверки кеша)."""
+    resultsPerPage, с lastModStartDate/lastModEndDate отдаёт только изменённое — как настоящая.
+    wp — {«plugin/слаг»: ответ WPVulnerability}; eol — {слаг: ветки}. hits — сюда пишутся все запросы
+    к базам (для проверки кеша): «f5:nginx», «f5:nginx+delta», «plugin/слаг», «eol/php»."""
     from urllib.parse import parse_qs, urlsplit
 
     def route(line: str, headers: dict[str, str]):
@@ -207,6 +208,13 @@ def vulndb_app(nvd: dict[str, list[dict]], kev: list[str], epss: dict[str, float
                                          "requiredAction": "Apply updates", "knownRansomwareCampaignUse": "Unknown"}
                                         for c in kev]}
             return 200, {"Content-Type": "application/json"}, json.dumps(feed).encode()
+        if url.path.startswith("/api/") and url.path.endswith(".json"):
+            slug = url.path[len("/api/"):-len(".json")]
+            if hits is not None:
+                hits.append(f"eol/{slug}")
+            if eol is None or slug not in eol:
+                return 404, {"Content-Type": "application/json"}, b'{"message":"not found"}'
+            return 200, {"Content-Type": "application/json"}, json.dumps(eol[slug]).encode()
         if url.path.startswith(("/plugin/", "/theme/")):
             key = url.path.strip("/")
             if hits is not None:
@@ -221,9 +229,12 @@ def vulndb_app(nvd: dict[str, list[dict]], kev: list[str], epss: dict[str, float
             return 200, {"Content-Type": "application/json"}, json.dumps({"data": data}).encode()
         f = q.get("virtualMatchString", "").split(":")
         key = f"{f[3]}:{f[4]}" if len(f) > 4 else ""
+        since, until = q.get("lastModStartDate", "")[:19], q.get("lastModEndDate", "")[:19]
         if hits is not None:
-            hits.append(key)
+            hits.append(key + ("+delta" if since else ""))
         items = nvd.get(key, [])
+        if since:  # только изменённое за период — так панель обновляет базу без полной перекачки
+            items = [c for c in items if since <= str(c.get("lastModified", ""))[:19] <= (until or "9999")]
         start, size = int(q.get("startIndex", 0)), int(q.get("resultsPerPage", 2000))
         page = items[start:start + size]
         body = {"resultsPerPage": len(page), "startIndex": start, "totalResults": len(items), "format": "NVD_CVE",

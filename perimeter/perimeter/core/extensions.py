@@ -103,7 +103,7 @@ class _Snapshot:
     def __init__(self, ctx: Context) -> None:
         self.ctx = ctx
         self.registries: list[tuple[Registry, set[str]]] = [
-            (r, set(r._items)) for r in (ctx.pages, ctx.widgets, ctx.stats, ctx.asset_types, ctx.modules,
+            (r, set(r._items)) for r in (ctx.pages, ctx.widgets, ctx.stats, ctx.asset_types, ctx.modules, ctx.feeds,
                                          ctx.settings.sections,
                                          *ctx.slots.values())
         ]

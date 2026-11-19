@@ -15,6 +15,7 @@ import json
 import logging
 import re
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
@@ -29,8 +30,19 @@ _REF_RANK = {"Exploit": 0, "Vendor Advisory": 1, "Patch": 2, "Mitigation": 3, "R
 
 # NVD без ключа: 5 запросов за 30 секунд на всех; с ключом — 50. Пауза общая для всех запусков.
 NVD_GAP = {"key": 0.7, "free": 6.5}
+NVD_DELTA_DAYS = 110  # NVD отдаёт изменения не больше чем за 120 дней; дольше — качаем программу заново
 _nvd_lock = asyncio.Lock()
 _nvd_last = 0.0
+# одна программа — одна загрузка: модуль и фоновое обновление не качают одно и то же дважды
+_file_locks: dict[str, asyncio.Lock] = {}
+
+
+def _lock(path: Path) -> asyncio.Lock:
+    return _file_locks.setdefault(str(path), asyncio.Lock())
+
+
+def _iso(ts: float) -> str:
+    return datetime.fromtimestamp(ts, timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000+00:00")
 
 
 class VulnDBError(Exception):
@@ -157,17 +169,23 @@ class VulnDB:
         self.get = get
         self.say = say or (lambda text, level="dim": None)
         self.requests = 0
+        self.changed = 0  # сколько записей добавилось, изменилось или ушло при обновлении — для «Данных модулей»
         self.nvd_down = ""  # NVD не ответила и после повторов — остальные программы не ждут её зря
 
     # --- общее ---------------------------------------------------------------------
-    def _fresh(self, path: Path) -> Any | None:
+    @staticmethod
+    def _read(path: Path) -> Any | None:
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
+            return json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return None
-        if time.time() - data.get("fetched", 0) > float(self.get("vulndb.cache_hours")) * 3600:
-            return None
-        return data
+
+    def _is_fresh(self, data: dict[str, Any]) -> bool:
+        return time.time() - data.get("fetched", 0) <= float(self.get("vulndb.cache_hours")) * 3600
+
+    def _fresh(self, path: Path) -> Any | None:
+        data = self._read(path)
+        return data if data is not None and self._is_fresh(data) else None
 
     def _save(self, path: Path, data: dict[str, Any]) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -215,32 +233,70 @@ class VulnDB:
         raise VulnDBError(err)
 
     async def product(self, client: httpx.AsyncClient, vp: str, target_sw: str = "*") -> list[dict[str, Any]]:
-        """Все CVE продукта (vendor:product) из NVD — из кеша, если он свежий."""
+        """Все CVE продукта (vendor:product) из NVD. Свежий кеш — как есть; устаревший — догружаем только то,
+        что в NVD изменилось с прошлого раза (обычно один короткий запрос); совсем старый или пустой — целиком."""
         safe = re.sub(r"[^a-z0-9._-]+", "_", f"{vp}__{target_sw}".lower())
         path = self.dir / "nvd" / f"{safe}.json"
-        cached = self._fresh(path)
-        if cached is not None:
-            return cached["items"]
-        vendor, product = vp.split(":", 1)
-        match = f"cpe:2.3:a:{vendor}:{product}:*:*:*:*:*:{target_sw}:*:*"
-        items: list[dict[str, Any]] = []
+        async with _lock(path):
+            cached = self._read(path)
+            if cached is not None and self._is_fresh(cached):
+                return cached["items"]
+            vendor, product = vp.split(":", 1)
+            match = f"cpe:2.3:a:{vendor}:{product}:*:*:*:*:*:{target_sw}:*:*"
+            since = (cached or {}).get("fetched", 0)
+            now = time.time()
+            if cached is not None and now - since < NVD_DELTA_DAYS * 86400:
+                items = await self._nvd_delta(client, vp, target_sw, match, cached["items"], since - 3600, now)
+            else:
+                items = await self._nvd_all(client, vp, target_sw, match)
+                if cached is not None:
+                    old = {c["id"]: c for c in cached["items"]}
+                    self.changed += sum(1 for c in items if old.get(c["id"]) != c) + len(set(old) - {c["id"] for c in items})
+            self._save(path, {"vp": vp, "total": len(items), "items": items})
+            return items
+
+    async def _nvd_pages(self, client: httpx.AsyncClient, vp: str, params: dict[str, Any]):
         start, total = 0, None
         while total is None or start < total:
-            data = await self._nvd_get(client, {"virtualMatchString": match, "resultsPerPage": NVD_PAGE,
-                                                "startIndex": start, "noRejected": ""})
+            data = await self._nvd_get(client, {**params, "resultsPerPage": NVD_PAGE, "startIndex": start})
             total = int(data.get("totalResults") or 0)
             page = data.get("vulnerabilities") or []
             for item in page:
-                c = compact(item.get("cve") or {}, vp, target_sw)
-                if c is not None:
-                    items.append(c)
+                yield item.get("cve") or {}
             if not page:
                 break
             start += len(page)
             if total > NVD_PAGE:
                 self.say(f"    … {vp}: загружено {min(start, total)} из {total}", "dim")
-        self._save(path, {"vp": vp, "total": total or 0, "items": items})
+
+    async def _nvd_all(self, client: httpx.AsyncClient, vp: str, target_sw: str, match: str) -> list[dict[str, Any]]:
+        items = []
+        async for cve in self._nvd_pages(client, vp, {"virtualMatchString": match, "noRejected": ""}):
+            c = compact(cve, vp, target_sw)
+            if c is not None:
+                items.append(c)
         return items
+
+    async def _nvd_delta(self, client: httpx.AsyncClient, vp: str, target_sw: str, match: str,
+                         items: list[dict[str, Any]], since: float, now: float) -> list[dict[str, Any]]:
+        """Только изменившееся: новые CVE, уточнённые версии и оценки; отозванные (Rejected) — убираем."""
+        known = {c["id"]: c for c in items}
+        changed = 0
+        params = {"virtualMatchString": match, "lastModStartDate": _iso(since), "lastModEndDate": _iso(now)}
+        async for cve in self._nvd_pages(client, vp, params):
+            cid = cve.get("id")
+            if not cid:
+                continue
+            c = None if cve.get("vulnStatus") == "Rejected" else compact(cve, vp, target_sw)
+            if c is None:
+                changed += known.pop(cid, None) is not None
+            elif known.get(cid) != c:
+                known[cid] = c
+                changed += 1
+        if changed:
+            self.say(f"    {vp}: изменилось в NVD {changed}", "dim")
+        self.changed += changed
+        return list(known.values())
 
     # --- плагины и темы WordPress ----------------------------------------------------
     async def wordpress(self, client: httpx.AsyncClient, kind: str, slug: str) -> dict[str, Any]:
@@ -250,8 +306,12 @@ class VulnDB:
         Ответ: {"items": записи как у NVD, "name": название, "closed": причина, если плагин убрали из каталога}."""
         safe = re.sub(r"[^a-z0-9._-]+", "_", f"{kind}__{slug}".lower())
         path = self.dir / "wordpress" / f"{safe}.json"
-        cached = self._fresh(path)
-        if cached is not None:
+        async with _lock(path):
+            return await self._wordpress(client, kind, slug, path)
+
+    async def _wordpress(self, client: httpx.AsyncClient, kind: str, slug: str, path: Path) -> dict[str, Any]:
+        cached = self._read(path)
+        if cached is not None and self._is_fresh(cached):
             return cached["result"]
         self.requests += 1
         try:
@@ -278,15 +338,49 @@ class VulnDB:
                     merged[c["id"]] = c
             closed = str(data.get("closed_reason") or "закрыт") if str(data.get("closed") or "0") not in ("0", "") else ""
             result = {"items": list(merged.values()), "name": str(data.get("name") or ""), "closed": closed}
+        if cached is not None:
+            old = {c["id"]: c for c in cached["result"]["items"]}
+            new = {c["id"]: c for c in result["items"]}
+            self.changed += sum(1 for i, c in new.items() if old.get(i) != c) + len(set(old) - set(new))
         self._save(path, {"result": result})
         return result
+
+    # --- сроки поддержки (endoflife.date) -------------------------------------------------
+    async def eol(self, client: httpx.AsyncClient, slug: str) -> list[dict[str, Any]]:
+        """Ветки программы: когда вышла, до какого числа исправляют дыры (eol), последний выпуск."""
+        path = self.dir / "eol" / f"{re.sub(r'[^a-z0-9._-]+', '_', slug.lower())}.json"
+        async with _lock(path):
+            cached = self._read(path)
+            if cached is not None and self._is_fresh(cached):
+                return cached["cycles"]
+            self.requests += 1
+            try:
+                resp = await client.get(f"{str(self.get('vulndb.eol_url')).rstrip('/')}/{slug}.json")
+            except httpx.HTTPError as exc:
+                raise VulnDBError(f"endoflife.date не ответил: {type(exc).__name__}") from None
+            if resp.status_code == 404:
+                cycles: list[dict[str, Any]] = []
+            elif resp.status_code != 200:
+                raise VulnDBError(f"endoflife.date ответил {resp.status_code}")
+            else:
+                try:
+                    rows = resp.json()
+                except ValueError:
+                    raise VulnDBError("endoflife.date прислал не JSON") from None
+                keep = ("cycle", "releaseDate", "eol", "support", "extendedSupport", "latest", "latestReleaseDate", "lts")
+                cycles = [{k: r.get(k) for k in keep} for r in rows if isinstance(r, dict) and r.get("cycle") is not None]
+            if cached is not None:
+                old = {str(c["cycle"]): c for c in cached["cycles"]}
+                self.changed += sum(1 for c in cycles if old.get(str(c["cycle"])) != c)
+            self._save(path, {"cycles": cycles})
+            return cycles
 
     # --- CISA KEV ------------------------------------------------------------------
     async def kev(self, client: httpx.AsyncClient) -> dict[str, dict[str, Any]]:
         """Уязвимости, которые уже используют в атаках (каталог CISA KEV)."""
         path = self.dir / "kev.json"
-        cached = self._fresh(path)
-        if cached is not None:
+        cached = self._read(path)
+        if cached is not None and self._is_fresh(cached):
             return cached["items"]
         try:
             resp = await client.get(self.get("vulndb.kev_url"))
@@ -299,6 +393,8 @@ class VulnDB:
                               "action": v.get("requiredAction", ""),
                               "ransomware": v.get("knownRansomwareCampaignUse") == "Known"}
                  for v in feed.get("vulnerabilities") or [] if v.get("cveID")}
+        if cached is not None:
+            self.changed += len(set(items) - set(cached["items"]))
         self._save(path, {"items": items})
         return items
 
@@ -306,7 +402,8 @@ class VulnDB:
     async def epss(self, client: httpx.AsyncClient, ids: list[str]) -> dict[str, tuple[float, float]]:
         """Вероятность эксплуатации в ближайшие 30 дней (FIRST EPSS) и её процентиль."""
         path = self.dir / "epss.json"
-        cached = self._fresh(path) or {"items": {}}
+        stale = self._read(path) or {"items": {}}
+        cached = stale if self._is_fresh(stale) else {"items": {}}
         known: dict[str, list[float]] = cached["items"]
         need = [i for i in dict.fromkeys(ids) if i not in known]
         for n in range(0, len(need), 100):
@@ -322,5 +419,8 @@ class VulnDB:
                 self.say(f"    [~] EPSS недоступен ({type(exc).__name__}) — без вероятности атаки", "warn")
                 break
         if need:
+            before = stale["items"]
+            self.changed += sum(1 for i in need if i in known and i in before
+                                and abs(known[i][0] - before[i][0]) >= 0.01)
             self._save(path, {"items": known})
         return {i: (known[i][0], known[i][1]) for i in ids if i in known}
